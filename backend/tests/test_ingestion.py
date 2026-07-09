@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,6 +51,35 @@ def test_chunk_text_splits_oversized_single_line():
     assert len(chunks) > 1
     assert all(len(c) <= 500 + 50 + 1 for c in chunks)
     assert "".join(chunks).replace(" ", "").count("a") >= 1200
+
+
+def test_chunk_text_keeps_each_paragraph_as_its_own_chunk():
+    # แต่ละหัวข้อ (คั่นด้วยบรรทัดว่าง) ต้องไม่ถูกรวมเข้า chunk เดียวกับหัวข้ออื่น
+    # แม้จะรวมกันแล้วยังพอดี chunk_size ก็ตาม (บั๊กเดิม: ยัดหลายหัวข้อใน chunk เดียว)
+    text = "topic A: do X\n\ntopic B: do Y\n\ntopic C: do Z"
+    chunks = chunk_text(text, chunk_size=500)
+    assert chunks == ["topic A: do X", "topic B: do Y", "topic C: do Z"]
+
+
+def test_chunk_text_real_manual_produces_one_chunk_per_topic():
+    text = load_manual(MANUAL_TXT)
+    chunks = chunk_text(text)
+    assert len(chunks) == 5
+    assert "Facebook" in chunks[0]
+    assert "Alt+F4" in chunks[1]
+
+
+def test_chunk_text_never_splits_a_word_across_chunks():
+    # ย่อหน้าเดียวยาวมาก หลายประโยค ไม่มีบรรทัดว่างคั่น -> ต้อง fallback ไปแบ่งตามประโยค/คำ
+    # และห้ามมี chunk ไหนขึ้นต้นหรือจบกลางคำ (บั๊กเดิม: overlap ตัดกลางคำ)
+    words = [f"word{i}" for i in range(200)]
+    text = ". ".join(" ".join(words[i:i + 8]) for i in range(0, len(words), 8)) + "."
+    chunks = chunk_text(text, chunk_size=120, overlap=20)
+    assert len(chunks) > 1
+    for c in chunks:
+        # ทุก token ในทุก chunk ต้องเป็น "wordN" เต็มคำเสมอ ห้ามมีเศษคำที่ถูกตัดครึ่ง
+        for token in c.replace(".", " ").split():
+            assert re.fullmatch(r"word\d+", token), f"found broken token: {token!r} in chunk {c!r}"
 
 
 # --- ingest_manual (mock chroma กันยิง DB จริง/โหลดโมเดล embedding ตอนรัน unit test) ---
