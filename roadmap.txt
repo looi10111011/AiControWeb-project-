@@ -12,14 +12,17 @@
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
               (server /health, /config/check, BrowserSession start/stop)
-  [x] W1 [B]  ลง ChromaDB (connection skeleton) + เตรียม SRS template — เสร็จ
-  [x] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
+  [x] W1 [B]  ลง ChromaDB (connection) + เตรียม SRS template — เสร็จ
+  [ ] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
               (docs/SRS.md ยังเป็น TBD ทั้งหมด — ค้างจากหมุดหมาย W1)
 
   [x] W2 [A]  Perception: get_snapshot() ดึง indexed elements จริงแล้ว
-              (backend/app/core/perception.py — click_by_index/fill_by_index
-              + demo() ทดสอบ login saucedemo.com ผ่านจริง บนสาขา `Perception`)
-  [ ] W2 [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ — ยังไม่เริ่ม
+              (backend/app/core/perception.py — click/fill/select/scroll_by_index
+              ทดสอบ login + sort dropdown + กรอกฟอร์ม checkout บน saucedemo.com ผ่านจริง)
+  [x] W2 [B]  ChromaDB schema + chunking pipeline — เสร็จ
+              (metadata: source/chunk_index/total_chunks/path, chunk_text()
+              ตัดบรรทัดที่ยาวเกิน chunk_size เองด้วย กัน chunk บวมตอนเจอ PDF
+              ที่ extract ออกมาไม่มี newline)
 
   [~] W3 [A]  Browser actions เริ่มแล้วบางส่วน (dropdown/scroll + error
               handling) — คลิก/พิมพ์/สลับ tab ยังไม่ครบ
@@ -33,10 +36,28 @@
                 ยิง index ผิด (9999) แล้วโปรแกรมไม่ crash ทำงานต่อได้ปกติ
               (ยังอยู่ใน perception.py ไม่ใช่ actions.py ตามแผนเดิม —
               คงต้องย้าย/แยกให้ตรง module ทีหลัง)
+  [x] W3 [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ — เสร็จ
+              (backend/app/rag/ingestion.py: load_manual รองรับ 3 นามสกุล,
+              collection.upsert() กัน id ชนตอน ingest ซ้ำ
+              มี unit test ครบใน backend/tests/test_ingestion.py
+              + integration script backend/tests/test_rag.py วัด precision@k จริง
+              — ผ่าน 100% กับ manual_test.txt)
+              *** เปลี่ยนจาก Gemini API embedding มาใช้ local embedding
+              (all-MiniLM-L6-v2 ผ่าน ChromaDB DefaultEmbeddingFunction) แล้ว —
+              รันได้ offline ไม่ต้องมี API key, โหลดโมเดลครั้งแรก ~90MB (cache
+              ไว้ในเครื่อง), แต่กิน RAM ตอนรัน — ทุก collection ที่เคย ingest
+              ด้วย Gemini ต้อง re-ingest ใหม่หมด เพราะมิติเวกเตอร์ไม่ตรงกัน ***
 
-  เพิ่มเติม (นอกแผนเดิม): run.py — launcher รวมคำสั่ง (server/test/perception
-  demo) ไว้ไฟล์เดียว + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน
-  Windows console อัตโนมัติ
+  เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
+  - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
+    จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
+    เสมอไม่ throw — มี unit test 8 เคสใน backend/tests/test_retriever.py
+    *** ยังไม่ได้เชื่อมกับ orchestrator/Planner จริง — งานเชื่อมยังเป็นของ W6 ***
+  - run.py — launcher รวมคำสั่ง server/test/perception/ingest/query ไว้ไฟล์เดียว
+    + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน Windows console อัตโนมัติ
+  - แก้บั๊ก config.py: .env มี LLM_PROVIDER/ANTHROPIC_MODEL ที่ Settings ไม่มี
+    field รองรับ ทำให้ Settings() พังตั้งแต่ import (บล็อกทั้งโปรเจกต์) — เพิ่ม
+    field ให้ครบแล้ว
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
@@ -74,11 +95,11 @@
 
   W2 ┬ [A]  Perception: ดึง snapshot หน้าเว็บเป็น
      │      indexed elements  (หัวใจ! ประหยัด token)  ✅ เสร็จแล้ว
-     └ [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ
+     └ [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ  ✅ เสร็จแล้ว
 
   W3 ┬ [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab  🔶 เริ่มแล้ว
      │      (dropdown/scroll/error-handling เสร็จ, tab-switch ยังไม่ทำ)
-     └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ
+     └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ  ✅ เสร็จแล้ว
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)
      └ [B]  Permission layer: allowlist / blocklist action  (เริ่ม)
@@ -96,7 +117,8 @@
 ================================================================
 
   W6 ┬ [A]  Planner prompt: รวม page state + คู่มือ + ความจำ
-     └ [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน
+     └ [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน  🔶 retrieve()
+            พร้อมแล้ว (รับ page_state ได้) เหลือแค่เชื่อมเข้า orchestrator จริง
             *** จุดนี้ 2 คนต้อง sync กัน เพราะเป็นที่หน้าเว็บ
                 กับคู่มือมาเจอกัน ***
 

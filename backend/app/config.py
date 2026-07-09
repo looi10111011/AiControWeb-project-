@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     primary_llm_provider: str = "anthropic"
     fallback_llm_provider: str = "gemini"
+    llm_provider: str = "anthropic"
+    anthropic_model: str = "claude-haiku-4-5-20251001"
 
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
@@ -21,3 +23,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
