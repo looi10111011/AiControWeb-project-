@@ -24,11 +24,18 @@
               ตัดบรรทัดที่ยาวเกิน chunk_size เองด้วย กัน chunk บวมตอนเจอ PDF
               ที่ extract ออกมาไม่มี newline)
 
-  [~] W3 [A]  Browser actions เริ่มแล้วบางส่วน (dropdown/scroll/error handling
-              เสร็จ, คลิก/พิมพ์พื้นฐานเสร็จ) — สลับ tab ยังไม่ทำ
-              - click/fill/select_by_index คืน "[OK]" / "[FAIL] ..." เสมอ
-                ไม่ raise exception ออกไป ทดสอบยิง index ผิดแล้วไม่ crash
-              (ยังอยู่ใน perception.py ไม่ใช่ actions.py ตามแผนเดิม — รอย้าย)
+  [~] W3 [A]  Browser actions เริ่มแล้วบางส่วน (dropdown/scroll + error
+              handling) — คลิก/พิมพ์/สลับ tab ยังไม่ครบ
+              - select_by_index() เลือก dropdown ได้จริง: ทดสอบเรียงลำดับ
+                สินค้า saucedemo แล้วเทียบ DOM ตรง ๆ ยืนยันลำดับเปลี่ยนจริง
+              - scroll_by() สั่ง scroll ได้ (ทดสอบแล้ว หน้า inventory
+                สั้นกว่า viewport เลย scrollY ไม่ขยับ — ต้องทดสอบซ้ำกับ
+                หน้าที่เนื้อหายาวกว่านี้)
+              - click_by_index()/fill_by_index()/select_by_index() คืนค่า
+                "[OK]" / "[FAIL] ..." แทนการ raise exception แล้ว — ทดสอบ
+                ยิง index ผิด (9999) แล้วโปรแกรมไม่ crash ทำงานต่อได้ปกติ
+              (ยังอยู่ใน perception.py ไม่ใช่ actions.py ตามแผนเดิม —
+              คงต้องย้าย/แยกให้ตรง module ทีหลัง)
   [x] W3 [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ — เสร็จ
               (backend/app/rag/ingestion.py: load_manual รองรับ 3 นามสกุล,
               collection.upsert() กัน id ชนตอน ingest ซ้ำ
