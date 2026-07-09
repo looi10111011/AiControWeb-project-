@@ -13,7 +13,7 @@
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
               (server /health, /config/check, BrowserSession start/stop)
   [x] W1 [B]  ลง ChromaDB (connection) + เตรียม SRS template — เสร็จ
-  [ ] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
+  [x] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
               (docs/SRS.md ยังเป็น TBD ทั้งหมด — ค้างจากหมุดหมาย W1)
 
   [x] W2 [A]  Perception: get_snapshot() ดึง indexed elements จริงแล้ว
