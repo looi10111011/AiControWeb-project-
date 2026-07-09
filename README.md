@@ -13,7 +13,7 @@ backend/
     config.py          # Settings (env vars)
     core/               # Agent core — [A]
       orchestrator.py   # Perceive -> Plan -> Act -> Verify loop
-      perception.py      # หน้าเว็บ -> indexed elements snapshot
+      perception.py      # หน้าเว็บ -> indexed elements snapshot (W2 ✅)
       actions.py         # Browser actions ผ่าน Playwright
       memory.py          # short-term / long-term memory
     rag/                 # Knowledge — [B]

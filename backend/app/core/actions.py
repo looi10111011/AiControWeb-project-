@@ -1,30 +1,211 @@
-"""Browser control via Playwright.
+"""
+actions.py  —  W3: Browser Actions (ชุดเครื่องมือให้ Agent สั่งงาน)
+------------------------------------------------------------------
+หน้าที่: ห่อการกระทำบน browser ให้เป็น "action มาตรฐาน" ที่ Agent Loop (W4)
+         เรียกใช้ได้ด้วย index ที่ได้จาก perception.get_snapshot()
 
-W1: skeleton only — launches a browser and confirms Playwright works end-to-end.
-W3: implement click/type/scroll/dropdown/tab-switch actions here.
+ออกแบบให้ทุก action:
+  1. รับ index (หรือ params) เดียวกันกับที่ LLM เห็นตอน perceive
+  2. คืน ActionResult (success/ข้อความ) เสมอ -> W4 เอาไปทำ Verify + Retry ต่อได้
+  3. ไม่ throw ดิบๆ ออกไป -> จับ error แล้วรายงานกลับแทน (agent จะได้ไม่ตาย)
+
+ใช้คู่กับ perception.py (ไฟล์เดียวกับ W2)
 """
 
-from playwright.async_api import async_playwright, Browser, Page
+import asyncio
+from dataclasses import dataclass
+from typing import Optional
+from playwright.async_api import Page, TimeoutError as PWTimeout
 
-from backend.app.config import settings
+
+# ------------------------------------------------------------
+# ผลลัพธ์มาตรฐานของทุก action
+# ------------------------------------------------------------
+@dataclass
+class ActionResult:
+    success: bool
+    action: str
+    message: str = ""
+
+    def __str__(self):
+        mark = "OK" if self.success else "FAIL"
+        return f"[{mark}] {self.action} -> {self.message}"
 
 
-class BrowserSession:
-    def __init__(self):
-        self._playwright = None
-        self.browser: Browser | None = None
-        self.page: Page | None = None
+# selector ที่ผูกกับ index ที่ perception ติดไว้บน element
+def _sel(index: int) -> str:
+    return f'[data-ai-index="{index}"]'
 
-    async def start(self) -> Page:
-        self._playwright = await async_playwright().start()
-        self.browser = await self._playwright.chromium.launch(
-            headless=settings.browser_headless
-        )
-        self.page = await self.browser.new_page()
-        return self.page
 
-    async def stop(self):
-        if self.browser:
-            await self.browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+# ------------------------------------------------------------
+# ACTIONS
+# ------------------------------------------------------------
+
+async def click(page: Page, index: int, timeout: int = 5000) -> ActionResult:
+    """คลิก element ตาม index"""
+    try:
+        await page.click(_sel(index), timeout=timeout)
+        return ActionResult(True, f"click({index})", "คลิกสำเร็จ")
+    except PWTimeout:
+        return ActionResult(False, f"click({index})", "หา element ไม่เจอ/คลิกไม่ได้ (timeout)")
+    except Exception as e:
+        return ActionResult(False, f"click({index})", f"error: {e}")
+
+
+async def fill(page: Page, index: int, text: str, timeout: int = 5000) -> ActionResult:
+    """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
+    try:
+        await page.fill(_sel(index), text, timeout=timeout)
+        return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ")
+    except PWTimeout:
+        return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
+    except Exception as e:
+        return ActionResult(False, f"fill({index})", f"error: {e}")
+
+
+async def select_option(page: Page, index: int, label: str, timeout: int = 5000) -> ActionResult:
+    """เลือกตัวเลือกใน dropdown (<select>) ตาม index — เลือกด้วยข้อความที่เห็น"""
+    try:
+        await page.select_option(_sel(index), label=label, timeout=timeout)
+        return ActionResult(True, f"select({index})", f"เลือก '{label}' สำเร็จ")
+    except PWTimeout:
+        return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
+    except Exception as e:
+        # เผื่อ label ไม่ตรงเป๊ะ -> ลองเลือกด้วย value แทน
+        try:
+            await page.select_option(_sel(index), value=label, timeout=timeout)
+            return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ")
+        except Exception as e2:
+            return ActionResult(False, f"select({index})", f"error: {e2}")
+
+
+async def check(page: Page, index: int, timeout: int = 5000) -> ActionResult:
+    """ติ๊ก checkbox/radio ตาม index"""
+    try:
+        await page.check(_sel(index), timeout=timeout)
+        return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ")
+    except Exception as e:
+        return ActionResult(False, f"check({index})", f"error: {e}")
+
+
+async def scroll(page: Page, direction: str = "down", amount: int = 600) -> ActionResult:
+    """เลื่อนหน้าจอ ('down'/'up') — ใช้ตอน element ที่ต้องการอยู่นอกจอ"""
+    try:
+        dy = amount if direction == "down" else -amount
+        await page.mouse.wheel(0, dy)
+        await page.wait_for_timeout(300)
+        return ActionResult(True, f"scroll({direction})", f"เลื่อน {dy}px")
+    except Exception as e:
+        return ActionResult(False, f"scroll({direction})", f"error: {e}")
+
+
+async def goto(page: Page, url: str, timeout: int = 15000) -> ActionResult:
+    """เปิด URL ใหม่"""
+    try:
+        await page.goto(url, timeout=timeout)
+        return ActionResult(True, "goto", f"ไปที่ {url}")
+    except Exception as e:
+        return ActionResult(False, "goto", f"error: {e}")
+
+
+async def go_back(page: Page) -> ActionResult:
+    """ย้อนกลับหน้าก่อนหน้า"""
+    try:
+        await page.go_back()
+        return ActionResult(True, "go_back", "ย้อนกลับสำเร็จ")
+    except Exception as e:
+        return ActionResult(False, "go_back", f"error: {e}")
+
+
+async def switch_tab(page: Page, tab_index: int) -> ActionResult:
+    """สลับไป tab อื่นในหน้าต่างเดียวกัน (บาง action เปิด tab ใหม่)"""
+    try:
+        pages = page.context.pages
+        if tab_index >= len(pages):
+            return ActionResult(False, f"switch_tab({tab_index})", f"มีแค่ {len(pages)} tab")
+        await pages[tab_index].bring_to_front()
+        return ActionResult(True, f"switch_tab({tab_index})", "สลับ tab สำเร็จ")
+    except Exception as e:
+        return ActionResult(False, f"switch_tab({tab_index})", f"error: {e}")
+
+
+async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
+    """รอให้หน้าเว็บนิ่ง — เรียกหลังทุก action ที่ทำให้หน้าเปลี่ยน ก่อน snapshot รอบใหม่"""
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout)
+        return ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
+    except PWTimeout:
+        # ไม่ถือเป็น fail ร้ายแรง — บางหน้ามี network ยิงตลอด
+        return ActionResult(True, "wait_stable", "timeout แต่เดินต่อได้")
+    except Exception as e:
+        return ActionResult(False, "wait_stable", f"error: {e}")
+
+
+# ------------------------------------------------------------
+# ทางเข้าเดียวสำหรับ W4: agent ส่ง action มาเป็น dict แล้ว dispatch
+# ------------------------------------------------------------
+async def execute(page: Page, cmd: dict) -> ActionResult:
+    """
+    รับคำสั่งจาก LLM ในรูป dict เช่น:
+        {"type": "fill",   "index": 0, "text": "standard_user"}
+        {"type": "click",  "index": 2}
+        {"type": "select", "index": 2, "label": "Price (low to high)"}
+        {"type": "scroll", "direction": "down"}
+        {"type": "goto",   "url": "https://..."}
+    แล้ว dispatch ไป action ที่ถูกต้อง — นี่คือจุดที่ W4 จะเรียกใช้
+    """
+    t = cmd.get("type")
+    try:
+        if t == "click":       return await click(page, cmd["index"])
+        if t == "fill":        return await fill(page, cmd["index"], cmd["text"])
+        if t == "select":      return await select_option(page, cmd["index"], cmd["label"])
+        if t == "check":       return await check(page, cmd["index"])
+        if t == "scroll":      return await scroll(page, cmd.get("direction", "down"))
+        if t == "goto":        return await goto(page, cmd["url"])
+        if t == "go_back":     return await go_back(page)
+        if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
+        if t == "wait":        return await wait_stable(page)
+        return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
+    except KeyError as e:
+        return ActionResult(False, f"{t}", f"ขาด parameter: {e}")
+
+
+# ------------------------------------------------------------
+# DEMO: ทดสอบ actions ครบชุดบน saucedemo (login -> เลือก dropdown -> checkout)
+# ------------------------------------------------------------
+async def demo():
+    from playwright.async_api import async_playwright
+    from perception import get_snapshot   # ใช้ perception จาก W2
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        page = await browser.new_page()
+        await page.goto("https://www.saucedemo.com/")
+
+        # ทุก step: perceive -> execute -> log ผล (นี่คือตัวอย่างย่อของ W4)
+        steps = [
+            {"type": "fill",   "index": 0, "text": "standard_user"},
+            {"type": "fill",   "index": 1, "text": "secret_sauce"},
+            {"type": "click",  "index": 2},
+            {"type": "wait"},
+        ]
+
+        for cmd in steps:
+            res = await execute(page, cmd)
+            print(res)
+
+        # perceive หน้าใหม่ แล้วลอง action ที่ยังไม่เคยเทสต์: select dropdown + scroll
+        elements, text_repr = await get_snapshot(page)
+        print("\n--- หน้า inventory ---")
+        print(text_repr[:400], "...\n")
+
+        sel_idx = next(e['index'] for e in elements if e['tag'] == 'select')
+        print(await execute(page, {"type": "select", "index": sel_idx, "label": "Price (low to high)"}))
+        print(await execute(page, {"type": "scroll", "direction": "down"}))
+
+        await asyncio.sleep(3)
+        await browser.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(demo())

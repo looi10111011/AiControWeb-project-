@@ -1,44 +1,65 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-*.egg-info/
-build/
-dist/
+# ============================================================
+#  .gitignore — AI Browser Agent
+#  จุดสำคัญที่สุด: กัน API key / ความลับ หลุดขึ้น GitHub
+# ============================================================
 
-# Env / secrets
+# ---- ความลับ / API keys (ห้ามขึ้น repo เด็ดขาด) ----
 .env
 .env.*
-!.env.example
+!.env.example          # ยกเว้นไฟล์ตัวอย่าง (ไม่มี key จริง) ให้ขึ้น repo ได้
+*.key
+*.pem
+secrets.json
+config.local.py
+credentials*.json
 
-# ChromaDB local storage
-data/chroma/
-data/screenshots/*
-!data/screenshots/.gitkeep
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
 
-# Playwright
-backend/test-results/
-backend/playwright-report/
+# ---- Virtual environment ----
+.venv/
+venv/
+env/
+ENV/
 
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.env
+# ---- ChromaDB / ฐานข้อมูล vector (ไฟล์ใหญ่ ไม่ควรขึ้น repo) ----
+chroma_db/
+*.chroma/
+db/
+*.sqlite3
 
-# Editor / OS
+# ---- Playwright ----
+playwright-report/
+test-results/
+.playwright/
+# screenshot / วิดีโอที่ agent ถ่ายระหว่างรัน
+screenshots/
+videos/
+*.webm
+
+# ---- คู่มือ / ไฟล์อัปโหลดของ user (ถ้าไม่อยากให้ข้อมูลจริงขึ้น repo) ----
+uploads/
+manuals/
+# ถ้าอยากเก็บคู่มือตัวอย่างบางไฟล์ ให้ย้ายไป sample_manuals/ แล้วลบบรรทัดล่างนี้
+# sample_manuals/
+
+# ---- Log / ผลลัพธ์ระหว่างรัน ----
+*.log
+logs/
+output/
+tmp/
+
+# ---- IDE / ระบบปฏิบัติการ ----
 .vscode/
 .idea/
+*.swp
 .DS_Store
 Thumbs.db
-
-# Logs
-*.log
-
-# Office lock files
-~$*.xlsx
-~$*.docx
-
-# Pytest
-.pytest_cache/
-

@@ -87,13 +87,45 @@ async def get_snapshot(page: Page):
 
 
 # --- helper: ให้ agent สั่งงานกลับด้วย "หมายเลข" ที่ perception ให้มา ---
+# ทุก action คืนค่า "[OK]" หรือ "[FAIL] เหตุผล" เสมอ ไม่ raise exception ออกไป
+# เพื่อให้ agent loop (W4) จับ error แล้วตัดสินใจ retry/แจ้ง user ต่อได้ ไม่ crash ทั้ง process
 
-async def click_by_index(page: Page, index: int):
-    await page.click(f'[data-ai-index="{index}"]')
+ACTION_TIMEOUT_MS = 3000
 
 
-async def fill_by_index(page: Page, index: int, text: str):
-    await page.fill(f'[data-ai-index="{index}"]', text)
+async def click_by_index(page: Page, index: int) -> str:
+    try:
+        await page.click(f'[data-ai-index="{index}"]', timeout=ACTION_TIMEOUT_MS)
+        return "[OK]"
+    except Exception as e:
+        return f"[FAIL] click index={index}: {type(e).__name__}"
+
+
+async def fill_by_index(page: Page, index: int, text: str) -> str:
+    try:
+        await page.fill(f'[data-ai-index="{index}"]', text, timeout=ACTION_TIMEOUT_MS)
+        return "[OK]"
+    except Exception as e:
+        return f"[FAIL] fill index={index}: {type(e).__name__}"
+
+
+async def select_by_index(page: Page, index: int, label: str) -> str:
+    """เลือกตัวเลือกใน <select> (เช่น dropdown เรียงสินค้าของ saucedemo)"""
+    try:
+        await page.select_option(
+            f'[data-ai-index="{index}"]', label=label, timeout=ACTION_TIMEOUT_MS
+        )
+        return "[OK]"
+    except Exception as e:
+        return f"[FAIL] select index={index} label={label!r}: {type(e).__name__}"
+
+
+async def scroll_by(page: Page, dy: int = 1000) -> str:
+    try:
+        await page.mouse.wheel(0, dy)
+        return "[OK]"
+    except Exception as e:
+        return f"[FAIL] scroll dy={dy}: {type(e).__name__}"
 
 
 # ------------------------------------------------------------
@@ -117,22 +149,50 @@ async def demo():
         p_idx = next(e['index'] for e in elements if 'pass' in e['label'].lower())
         b_idx = next(e['index'] for e in elements if e['tag'] == 'input' and e['type'] == 'submit')
 
-        await fill_by_index(page, u_idx, "standard_user")
-        await fill_by_index(page, p_idx, "secret_sauce")
-        await click_by_index(page, b_idx)
+        print("[LOGIN]")
+        print(" fill username:", await fill_by_index(page, u_idx, "standard_user"))
+        print(" fill password:", await fill_by_index(page, p_idx, "secret_sauce"))
+        print(" click submit :", await click_by_index(page, b_idx))
         await page.wait_for_load_state("networkidle")
 
         # 3) Perceive อีกครั้ง — พิสูจน์ว่า agent เรียนรู้หน้าใหม่เองได้
-        _, text_repr2 = await get_snapshot(page)
-        print("=== หน้าถัดไปหลัง login (agent เห็นอะไรใหม่) ===")
-        print(text_repr2[:1000])
+        elements2, text_repr2 = await get_snapshot(page)
+        print("\n=== หน้า Inventory หลัง login (agent เห็นอะไรใหม่) ===")
+        print(text_repr2)
+
+        # --- Dropdown: เรียงลำดับสินค้า ---
+        names_before = await page.locator(".inventory_item_name").all_inner_texts()
+        sort_idx = next(e['index'] for e in elements2 if e['tag'] == 'select')
+
+        print("\n[SORT DROPDOWN]")
+        print(" ก่อนเรียง :", names_before)
+        result = await select_by_index(page, sort_idx, "Price (low to high)")
+        print(" select result:", result)
+        await page.wait_for_timeout(300)
+        names_after = await page.locator(".inventory_item_name").all_inner_texts()
+        print(" หลังเรียง :", names_after)
+        print(" ลำดับเปลี่ยนจริงไหม:", names_before != names_after)
+
+        # --- Scroll ---
+        print("\n[SCROLL]")
+        y_before = await page.evaluate("window.scrollY")
+        print(" scroll result:", await scroll_by(page, 1000))
+        y_after = await page.evaluate("window.scrollY")
+        print(f" scrollY: {y_before} -> {y_after} (เปลี่ยนจริง: {y_after != y_before})")
+
+        # --- ทดสอบ error handling: ยิง index ที่ไม่มีอยู่จริง ---
+        print("\n[ERROR HANDLING] ยิง action ด้วย index ผิดๆ (ไม่ควร crash)")
+        print(" click index=9999 ->", await click_by_index(page, 9999))
+        print(" fill  index=9999 ->", await fill_by_index(page, 9999, "x"))
+        print(" select index=9999 ->", await select_by_index(page, 9999, "x"))
+        print(" (โปรแกรมยังรันต่อได้ไม่ crash = error handling ทำงาน)")
 
         # --- หน้า cart ---
         await page.click("button:has-text('Add to cart')")   # ใส่สินค้าลงตะกร้า 1 ชิ้น
         await page.click(".shopping_cart_link")               # เปิดตะกร้า
         await page.wait_for_load_state("networkidle")
         _, cart_repr = await get_snapshot(page)
-        print("=== หน้า Cart ที่ AI มองเห็น ===")
+        print("\n=== หน้า Cart ที่ AI มองเห็น ===")
         print(cart_repr)
 
         # --- หน้า checkout (ฟอร์มกรอกข้อมูล) ---
