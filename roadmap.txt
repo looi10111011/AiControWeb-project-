@@ -2,9 +2,41 @@
   แผนงาน AI BROWSER AGENT — 14 week
 ================================================================
 
-เป้าหมาย: สร้าง AI ที่ควบคุมหน้าเว็บได้เอง 
+เป้าหมาย: สร้าง AI ที่ควบคุมหน้าเว็บได้เอง
 โดย 		(1) เรียนรู้หน้าเว็บด้วยตัวเอง
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
+
+----------------------------------------------------------------
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-09)
+----------------------------------------------------------------
+
+  [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
+              (server /health, /config/check, BrowserSession start/stop)
+  [x] W1 [B]  ลง ChromaDB (connection skeleton) + เตรียม SRS template — เสร็จ
+  [x] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
+              (docs/SRS.md ยังเป็น TBD ทั้งหมด — ค้างจากหมุดหมาย W1)
+
+  [x] W2 [A]  Perception: get_snapshot() ดึง indexed elements จริงแล้ว
+              (backend/app/core/perception.py — click_by_index/fill_by_index
+              + demo() ทดสอบ login saucedemo.com ผ่านจริง บนสาขา `Perception`)
+  [ ] W2 [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ — ยังไม่เริ่ม
+
+  [~] W3 [A]  Browser actions เริ่มแล้วบางส่วน (dropdown/scroll + error
+              handling) — คลิก/พิมพ์/สลับ tab ยังไม่ครบ
+              - select_by_index() เลือก dropdown ได้จริง: ทดสอบเรียงลำดับ
+                สินค้า saucedemo แล้วเทียบ DOM ตรง ๆ ยืนยันลำดับเปลี่ยนจริง
+              - scroll_by() สั่ง scroll ได้ (ทดสอบแล้ว หน้า inventory
+                สั้นกว่า viewport เลย scrollY ไม่ขยับ — ต้องทดสอบซ้ำกับ
+                หน้าที่เนื้อหายาวกว่านี้)
+              - click_by_index()/fill_by_index()/select_by_index() คืนค่า
+                "[OK]" / "[FAIL] ..." แทนการ raise exception แล้ว — ทดสอบ
+                ยิง index ผิด (9999) แล้วโปรแกรมไม่ crash ทำงานต่อได้ปกติ
+              (ยังอยู่ใน perception.py ไม่ใช่ actions.py ตามแผนเดิม —
+              คงต้องย้าย/แยกให้ตรง module ทีหลัง)
+
+  เพิ่มเติม (นอกแผนเดิม): run.py — launcher รวมคำสั่ง (server/test/perception
+  demo) ไว้ไฟล์เดียว + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน
+  Windows console อัตโนมัติ
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
@@ -41,10 +73,11 @@
 ================================================================
 
   W2 ┬ [A]  Perception: ดึง snapshot หน้าเว็บเป็น
-     │      indexed elements  (หัวใจ! ประหยัด token)
+     │      indexed elements  (หัวใจ! ประหยัด token)  ✅ เสร็จแล้ว
      └ [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ
 
-  W3 ┬ [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab
+  W3 ┬ [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab  🔶 เริ่มแล้ว
+     │      (dropdown/scroll/error-handling เสร็จ, tab-switch ยังไม่ทำ)
      └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)
