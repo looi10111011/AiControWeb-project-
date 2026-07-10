@@ -130,19 +130,32 @@ def run_agent():
     asyncio.run(_run())
 
 
+class _FakePage:
+    """เพจปลอม (ไม่ใช่ Playwright จริง) ไว้ demo permission layer อย่างเดียว — จำลอง
+    click()/fill() ให้ "สำเร็จ" เสมอ (ไม่ throw) พิสูจน์ว่า flow permission check ->
+    dispatch จริงทำงานถูกทั้งระบบ โดยไม่ต้องเปิด browser จริง"""
+
+    async def click(self, selector, timeout=5000):
+        pass
+
+    async def fill(self, selector, text, timeout=5000):
+        pass
+
+
 _PERMISSION_DEMO_CMDS = [
     ("SAFE — click ปกติ", {"type": "click", "index": 0}),
     ("BLOCKED — goto โดเมนที่บล็อกไว้", {"type": "goto", "url": "https://malicious.com/login"}),
-    ("NEEDS_CONFIRMATION — submit", {"type": "submit"}),
-    ("NEEDS_CONFIRMATION — purchase", {"type": "purchase"}),
+    ("NEEDS_CONFIRMATION — submit (index 3)", {"type": "submit", "index": 3}),
+    ("NEEDS_CONFIRMATION — purchase (index 7)", {"type": "purchase", "index": 7}),
 ]
 
 
 def run_permission_demo():
     print("=== ทดสอบ Permission Layer (classify_action + execute) ===", flush=True)
-    print("ไม่เปิด browser จริง ไม่ยิง LLM API จริง — ทดสอบ permission check ตรงๆ\n", flush=True)
+    print("ใช้ fake page (ไม่เปิด browser จริง ไม่ยิง LLM API จริง) — พิสูจน์ flow", flush=True)
+    print("permission check -> dispatch จริงทำงานถูกทั้งระบบ\n", flush=True)
     from backend.app.core.actions import execute
-    from backend.app.permission.rules import ActionRisk, classify_action
+    from backend.app.permission.rules import classify_action
 
     print("--- 1) classify_action(cmd) อย่างเดียว ---")
     for label, cmd in _PERMISSION_DEMO_CMDS:
@@ -150,18 +163,15 @@ def run_permission_demo():
         print(f"  [{label}]")
         print(f"    cmd={cmd} -> {risk.value}")
 
-    print("\n--- 2) execute(page=None, cmd) จริง ---")
-    print("    (SAFE ข้ามไป เพราะต้องมี browser จริงถึงจะ dispatch ได้ — ลองผ่าน")
-    print("    `python run.py agent` แทน ถ้าอยากเห็น SAFE action รันจริงบนหน้าเว็บ)")
-    print("    NEEDS_CONFIRMATION จะขึ้น prompt y/n จริง ให้ลองตอบเอง\n")
+    print("\n--- 2) execute(page, cmd) จริง (fake page) ---")
+    print("    NEEDS_CONFIRMATION จะขึ้น prompt y/n จริง ให้ลองตอบเอง — กด y แล้วต้อง")
+    print("    เห็น [OK] จริง (submit/purchase เป็น alias ของ click ที่ต้องขอยืนยันก่อน)\n")
 
     async def _run():
+        page = _FakePage()
         for label, cmd in _PERMISSION_DEMO_CMDS:
-            if classify_action(cmd) == ActionRisk.SAFE:
-                print(f"[{label}] ข้าม (SAFE ต้องมี browser จริง)")
-                continue
             print(f"[{label}]")
-            result = await execute(None, cmd)
+            result = await execute(page, cmd)
             print(f"  -> {result}\n")
 
     asyncio.run(_run())

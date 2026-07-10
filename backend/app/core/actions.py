@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
-from backend.app.permission.rules import ActionRisk, classify_action
+from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
 
 # ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
 # เช่น API server (W10) จะ inject callback ที่ส่ง event ไป UI แล้วรอ user กดยืนยันจริง
@@ -202,6 +202,13 @@ async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = 
         if t == "go_back":     return await go_back(page)
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
         if t == "wait":        return await wait_stable(page)
+        if t in DEFAULT_NEEDS_CONFIRMATION:
+            # submit/delete/purchase/pay ไม่ใช่ action จริงแยกต่างหาก — เป็นแค่ risk
+            # category ของ classify_action() (เช็คผ่านไปแล้วด้านบนตอนมาถึงตรงนี้) ที่จริง
+            # แล้วคือคลิก element ตัวเดิม แค่ต้องขอยืนยันจาก human ก่อนเพราะเสี่ยงกว่า
+            # click ธรรมดา — คืน label เดิม (เช่น "submit(2)") ไม่ใช่ "click(2)" กันสับสน
+            result = await click(page, cmd["index"])
+            return ActionResult(result.success, f"{t}({cmd['index']})", result.message)
         return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
     except KeyError as e:
         return ActionResult(False, f"{t}", f"ขาด parameter: {e}")
