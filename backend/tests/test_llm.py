@@ -37,6 +37,85 @@ def _fake_bad_request(code: str) -> GroqBadRequestError:
     )
 
 
+def _fake_anthropic_tool_use_block(name, input_dict, block_id="tu_1"):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.name = name
+    block.input = input_dict
+    block.id = block_id
+    return block
+
+
+def _fake_anthropic_response(content_blocks, **usage_kwargs):
+    """usage_kwargs: input_tokens/output_tokens/cache_creation_input_tokens/
+    cache_read_input_tokens (default 0) — ต้อง set ครบทุกตัวเสมอ ไม่งั้น MagicMock
+    auto-attribute จะรั่วเข้าไปแทนที่ int แล้วเทียบ TokenUsage ไม่ตรง"""
+    response = MagicMock()
+    response.content = content_blocks
+    response.usage = MagicMock(
+        input_tokens=usage_kwargs.get("input_tokens", 0),
+        output_tokens=usage_kwargs.get("output_tokens", 0),
+        cache_creation_input_tokens=usage_kwargs.get("cache_creation_input_tokens", 0),
+        cache_read_input_tokens=usage_kwargs.get("cache_read_input_tokens", 0),
+    )
+    return response
+
+
+# --- next_action() (Anthropic) — เทสต์ prompt caching wiring + parse tool_use ---
+
+
+@pytest.mark.asyncio
+async def test_next_action_sends_cache_control_on_system_and_tools():
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "click", "index": 1})
+    response = _fake_anthropic_response([block], input_tokens=20, output_tokens=8)
+
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    tool_name, tool_input, tool_use_id, messages, usage = await llm.next_action(
+        client, "claude-haiku-4-5-20251001", "goal", "[0] button", []
+    )
+
+    assert tool_name == "browser_action"
+    assert tool_input == {"type": "click", "index": 1}
+    assert tool_use_id == "tu_1"
+    assert usage == llm.TokenUsage(input_tokens=20, output_tokens=8)
+
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_next_action_extracts_cache_read_and_creation_tokens():
+    block = _fake_anthropic_tool_use_block("finish_task", {"success": True, "message": "done"})
+    response = _fake_anthropic_response(
+        [block], input_tokens=5, output_tokens=3, cache_creation_input_tokens=0, cache_read_input_tokens=500
+    )
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    _, _, _, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3, cache_creation_tokens=0, cache_read_tokens=500)
+
+
+@pytest.mark.asyncio
+async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
+    text_block = MagicMock()
+    text_block.type = "text"
+    response = _fake_anthropic_response([text_block], input_tokens=5, output_tokens=3)
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    tool_name, tool_input, tool_use_id, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert tool_name == "finish_task"
+    assert tool_input["success"] is False
+    assert tool_use_id == ""
+    assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3)
+
+
 def _fake_gemini_function_call_part(name: str, args: dict):
     part = MagicMock()
     part.function_call.name = name
@@ -70,6 +149,9 @@ def _fake_gemini_client(response):
     client = MagicMock()
     client.GenerativeModel = MagicMock(return_value=gemini_model)
     return client, gemini_model
+
+
+# --- next_action_groq() (Groq) ---
 
 
 @pytest.mark.asyncio

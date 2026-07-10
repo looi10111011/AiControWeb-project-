@@ -14,8 +14,15 @@ actions.py  —  W3: Browser Actions (ชุดเครื่องมือใ
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
+
+from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
+
+# ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
+# เช่น API server (W10) จะ inject callback ที่ส่ง event ไป UI แล้วรอ user กดยืนยันจริง
+# แทนที่จะพึ่ง terminal input() ตรงๆ — รับ cmd dict คืน bool (True = อนุญาต)
+AskUserFunc = Callable[[dict], Awaitable[bool]]
 
 
 # ------------------------------------------------------------
@@ -142,9 +149,26 @@ async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
 
 
 # ------------------------------------------------------------
+# Permission layer: กัน action เสี่ยง/บล็อก ก่อนถึง dispatch จริง
+# adapted จาก PR "permission-ab" — จุดต่างจาก PR เดิม: ask_user_func ถูกใช้งานจริง
+# (PR เดิมรับ param นี้มาแต่ไม่ได้เรียกใช้เลย ยังเรียก input() ตรงๆ เสมอ)
+# ------------------------------------------------------------
+async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc]) -> bool:
+    if ask_user_func is not None:
+        return bool(await ask_user_func(cmd))
+    print(f"\n[HUMAN-IN-THE-LOOP] Agent ต้องการเรียกใช้คำสั่งที่มีความเสี่ยง: {cmd}", flush=True)
+    # ใช้ asyncio.to_thread เพื่อให้รับ input() ได้โดยไม่บล็อก async event loop หลัก
+    choice = await asyncio.to_thread(input, "คุณต้องการอนุญาตให้ทำ Action นี้หรือไม่? (y/n): ")
+    approved = choice.strip().lower() in ("y", "yes")
+    if approved:
+        print("[APPROVED] อนุญาตให้ดำเนินการต่อ...", flush=True)
+    return approved
+
+
+# ------------------------------------------------------------
 # ทางเข้าเดียวสำหรับ W4: agent ส่ง action มาเป็น dict แล้ว dispatch
 # ------------------------------------------------------------
-async def execute(page: Page, cmd: dict) -> ActionResult:
+async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
         {"type": "fill",   "index": 0, "text": "standard_user"}
@@ -153,8 +177,21 @@ async def execute(page: Page, cmd: dict) -> ActionResult:
         {"type": "scroll", "direction": "down"}
         {"type": "goto",   "url": "https://..."}
     แล้ว dispatch ไป action ที่ถูกต้อง — นี่คือจุดที่ W4 จะเรียกใช้
+
+    ก่อน dispatch จริง เช็ค permission ก่อนเสมอ (classify_action จาก
+    backend/app/permission/rules.py): BLOCKED -> ปฏิเสธทันทีไม่ถาม, NEEDS_CONFIRMATION ->
+    ถาม user ก่อน (ผ่าน ask_user_func ถ้ามี ไม่งั้น fallback เป็น input() ทาง terminal)
     """
     t = cmd.get("type")
+
+    risk = classify_action(cmd)
+    if risk == ActionRisk.BLOCKED:
+        return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
+    if risk == ActionRisk.NEEDS_CONFIRMATION:
+        approved = await _confirm_action(cmd, ask_user_func)
+        if not approved:
+            return ActionResult(False, f"{t}", "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)")
+
     try:
         if t == "click":       return await click(page, cmd["index"])
         if t == "fill":        return await fill(page, cmd["index"], cmd["text"])
@@ -165,6 +202,13 @@ async def execute(page: Page, cmd: dict) -> ActionResult:
         if t == "go_back":     return await go_back(page)
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
         if t == "wait":        return await wait_stable(page)
+        if t in DEFAULT_NEEDS_CONFIRMATION:
+            # submit/delete/purchase/pay ไม่ใช่ action จริงแยกต่างหาก — เป็นแค่ risk
+            # category ของ classify_action() (เช็คผ่านไปแล้วด้านบนตอนมาถึงตรงนี้) ที่จริง
+            # แล้วคือคลิก element ตัวเดิม แค่ต้องขอยืนยันจาก human ก่อนเพราะเสี่ยงกว่า
+            # click ธรรมดา — คืน label เดิม (เช่น "submit(2)") ไม่ใช่ "click(2)" กันสับสน
+            result = await click(page, cmd["index"])
+            return ActionResult(result.success, f"{t}({cmd['index']})", result.message)
         return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
     except KeyError as e:
         return ActionResult(False, f"{t}", f"ขาด parameter: {e}")
