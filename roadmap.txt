@@ -197,6 +197,41 @@
               unit test 3 เคสใหม่ใน test_orchestrator.py (declined ไม่ยิง action เลย,
               approved ทำงานต่อปกติ, confirm_plan=False ไม่เรียก generate_plan เปล่าๆ)
 
+              เพิ่ม provider ที่ 3 (Gemini) (2026-07-10):
+              user มี Gemini API key จริง (free tier กว้างกว่า Anthropic ที่ยังเป็น
+              placeholder อยู่) เลยขอสลับมาใช้ Gemini เป็น default — เพิ่ม
+              llm.next_action_gemini()/append_tool_result_gemini()/
+              build_gemini_client() ผ่าน google-generativeai (มีอยู่แล้วใน
+              requirements.txt จากตอนทำ RAG แต่เลิกใช้แล้วหลังเปลี่ยนไป local
+              embedding — เอากลับมาใช้กับ agent loop แทน) ต่อเข้า
+              Orchestrator._llm_backend() เป็น provider="gemini" ตัวที่ 3
+              (config.py เพิ่ม gemini_model, default "gemini-flash-lite-latest" —
+              ลองยิงจริงแล้วพบว่า "gemini-2.0-flash" คืน 429 quota=0 ทันทีสำหรับ
+              key นี้ ส่วน "gemini-flash-lite-latest" ใช้ได้ปกติ) llm.generate_plan()
+              ก็รองรับ provider="gemini" ด้วยแล้ว (ใช้กับ confirm_plan=True ด้านบน)
+
+              จุดที่ต่างจาก Anthropic/Groq: google-generativeai ไม่มี client object
+              แยก ใช้ genai.configure(api_key) แบบ global config ครั้งเดียวแล้วสร้าง
+              GenerativeModel ต่อ (tools/tool_config={"mode":"ANY"}/system_instruction
+              คงที่เหมือนเดิมทุก call) — และ response คืนตัวเลขทุกตัวเป็น float ผ่าน
+              protobuf Struct เสมอแม้ schema จะระบุ "integer" (เช่น index: 0.0)
+              ถ้าไม่แปลงกลับเป็น int selector ที่ยิงเข้า Playwright จะพัง (เจอบั๊กนี้
+              จากการทดสอบจริง) — เพิ่ม _normalize_gemini_args() แปลงกลับให้ก่อนคืนค่า
+              เสมอ ส่วน tool_use_id ที่คืนกลับใช้ชื่อ function แทน call id จริง เพราะ
+              SDK เวอร์ชันนี้ไม่มี call id ให้ (append_tool_result_gemini() ผูก
+              function_response กลับด้วยชื่อ function เหมือนกัน)
+
+              unit test ใหม่ 5 เคสใน test_llm.py (parse function call จริง, แปลง
+              float->int, fallback เมื่อไม่มี function call, _normalize_gemini_args
+              แยกเป็น unit test ของตัวเอง, append_tool_result format) — รันจริงบน
+              saucedemo.com ผ่าน Gemini (gemini-flash-lite-latest) 2 รอบ: goal
+              login อย่างเดียว และ login+เพิ่มสินค้าลงตะกร้า ผ่านทั้งคู่ตั้งแต่รอบ
+              แรกไม่ต้องลองซ้ำเลย พร้อม message ที่เช็คหลักฐานจากหน้าเว็บจริง (ไอคอน
+              ตะกร้า/ปุ่มเปลี่ยนเป็น Remove) — reliable กว่า Groq/Llama free tier
+              ที่เจอปัญหา premature finish_task(false) ซ้ำๆ ในการทดสอบก่อนหน้านี้
+              มาก (ดู "guard กัน finish_task(false)" ด้านบน) — .env เปลี่ยน
+              LLM_PROVIDER เป็น gemini แล้ว (ตัวไฟล์ .env เอง ไม่ได้ขึ้น git)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []

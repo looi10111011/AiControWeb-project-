@@ -10,7 +10,7 @@ playwright==1.48.0
 
 # LLM
 anthropic==0.116.0
-google-generativeai==0.8.3
+google-generativeai==0.8.3   # provider สำรอง (Gemini) — agent loop function calling
 groq==1.5.0   # ทางเลือกไว้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
 
 # RAG / Vector DB

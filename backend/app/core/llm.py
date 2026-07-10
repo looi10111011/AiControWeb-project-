@@ -7,10 +7,11 @@ W4: ใช้ tool-use / function calling แทนการให้ LLM ตอ
 ผูกกับ actions.execute()'s cmd dict โดยตรง: tool "browser_action" คืน dict ที่ยิงเข้า
 execute(page, cmd) ได้ทันที ส่วน tool "finish_task" คือสัญญาณให้ orchestrator หยุด loop
 
-รองรับ 2 provider:
+รองรับ 3 provider:
   - Anthropic (Claude) — ตัวหลักตาม roadmap
+  - Gemini (Google) — provider สำรอง มี free tier กว้างกว่า Anthropic
   - Groq — ใช้ทดสอบ agent loop ชั่วคราวตอนยังไม่มี Anthropic key จริง (มี free tier)
-ทั้งคู่คืนค่ารูปแบบเดียวกัน (tool_name, tool_input, tool_use_id, messages, usage) ให้
+ทั้งหมดคืนค่ารูปแบบเดียวกัน (tool_name, tool_input, tool_use_id, messages, usage) ให้
 orchestrator.py เรียกใช้แบบไม่ต้องรู้ว่าข้างในเป็น provider ไหน — usage คือจำนวน token
 ที่ใช้ไปในการเรียก LLM รอบนี้ (รวมทุก retry ถ้ามี) ไว้ให้ orchestrator log/สรุปได้
 
@@ -23,6 +24,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+import google.generativeai as genai
 from anthropic import AsyncAnthropic
 from groq import AsyncGroq, BadRequestError as GroqBadRequestError
 
@@ -86,7 +88,7 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 - finish_task(success=false) ใช้เฉพาะตอนลองหลายทางแล้วไปต่อไม่ได้จริงๆ เท่านั้น
 """
 
-# --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq (แค่ห่อ format ต่างกัน) ---
+# --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq/Gemini (แค่ห่อ format ต่างกัน) ---
 
 _BROWSER_ACTION_PARAMS = {
     "type": "object",
@@ -138,6 +140,16 @@ FINISH_TASK_TOOL = {
 _GROQ_TOOLS = [
     {"type": "function", "function": {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS}},
     {"type": "function", "function": {"name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS}},
+]
+
+# --- Gemini (google-generativeai) tool format ---
+_GEMINI_TOOLS = [
+    {
+        "function_declarations": [
+            {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS},
+            {"name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS},
+        ]
+    }
 ]
 
 
@@ -287,6 +299,82 @@ def append_tool_result_groq(messages: list[dict], tool_use_id: str, result_text:
     return messages + [{"role": "tool", "tool_call_id": tool_use_id, "content": result_text}]
 
 
+def build_gemini_client(api_key: str):
+    """google-generativeai ใช้ global config (genai.configure) ไม่มี client object
+    แยกต่างหากเหมือน Anthropic/Groq — configure() ครั้งเดียวแล้วคืน genai module กลับไป
+    ให้ next_action_gemini() ใช้สร้าง GenerativeModel ต่อ (tools/system_instruction
+    เหมือนเดิมทุกครั้ง แค่ constructor local object เฉยๆ ไม่มี network call)"""
+    genai.configure(api_key=api_key)
+    return genai
+
+
+def _normalize_gemini_args(args: dict) -> dict[str, Any]:
+    """Gemini คืนตัวเลขทุกตัวเป็น float ผ่าน protobuf Struct เสมอ แม้ schema จะระบุ
+    "integer" ไว้ก็ตาม (เช่น index: 0.0 แทน 0) — ถ้าไม่แปลงกลับ selector ที่ยิงเข้า
+    Playwright จะพัง ('[data-ai-index="0.0"]' ไม่ตรงกับ element จริงที่ index="0")"""
+    return {
+        key: int(value) if isinstance(value, float) and value.is_integer() else value
+        for key, value in args.items()
+    }
+
+
+async def next_action_gemini(
+    client,
+    model: str,
+    goal: str,
+    page_text: str,
+    messages: list,
+) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
+    """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
+
+    messages เก็บ Content ของ Gemini เอง (dict {"role": ..., "parts": [...]} หรือ
+    Content proto ที่ SDK คืนมาตรงๆ ก็ใส่ต่อ list ได้เลย) — คนละ shape กับ
+    Anthropic/Groq แต่ orchestrator.py ไม่แคร์ เพราะแค่ถือ opaque state ส่งเข้า-ออก
+
+    tool_use_id ที่คืนกลับ คือชื่อ function ("browser_action"/"finish_task") ไม่ใช่ id
+    จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
+    ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
+    """
+    gemini_model = client.GenerativeModel(
+        model_name=model,
+        tools=_GEMINI_TOOLS,
+        tool_config={"function_calling_config": {"mode": "ANY"}},
+        system_instruction=SYSTEM_PROMPT,
+    )
+
+    messages = messages + [
+        {"role": "user", "parts": [{"text": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"}]}
+    ]
+
+    response = await gemini_model.generate_content_async(contents=messages)
+    usage = TokenUsage(
+        response.usage_metadata.prompt_token_count,
+        response.usage_metadata.candidates_token_count,
+    )
+
+    content = response.candidates[0].content
+    messages = messages + [content]
+
+    part = next((p for p in content.parts if p.function_call and p.function_call.name), None)
+    if part is None:
+        # ไม่ควรเกิดขึ้นเพราะ tool_config mode="ANY" บังคับให้เรียก function เสมอ — กันไว้
+        # เผื่อ API เปลี่ยนพฤติกรรม (เหมือน next_action() ฝั่ง Anthropic)
+        return "finish_task", {"success": False, "message": "LLM ไม่เรียก tool ใดๆ กลับมา"}, "", messages, usage
+
+    fc = part.function_call
+    tool_input = _normalize_gemini_args(dict(fc.args))
+    return fc.name, tool_input, fc.name, messages, usage
+
+
+def append_tool_result_gemini(messages: list, tool_use_id: str, result_text: str) -> list:
+    """ต่อผลลัพธ์ของ action ที่เพิ่งทำเข้าไปในบทสนทนา ก่อนเรียก next_action_gemini() รอบ
+    ถัดไป — tool_use_id ตรงนี้คือชื่อ function (ดู next_action_gemini())"""
+    return messages + [
+        {
+            "role": "user",
+            "parts": [{"function_response": {"name": tool_use_id, "response": {"result": result_text}}}],
+        }
+    ]
 _PLAN_PROMPT_TEMPLATE = (
     "Goal: {goal}\n\nหน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
     "เขียนแผนคร่าวๆ เป็น bullet สั้นๆ (ไม่เกิน 5-6 ข้อ) ว่าจะทำ goal นี้ให้สำเร็จด้วย"
@@ -319,4 +407,11 @@ async def generate_plan(client, model: str, goal: str, page_text: str, provider:
         )
         return (response.choices[0].message.content or "").strip()
 
-    raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/groq)")
+    if provider == "gemini":
+        gemini_model = client.GenerativeModel(model_name=model)
+        response = await gemini_model.generate_content_async(
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        )
+        return response.text.strip()
+
+    raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")

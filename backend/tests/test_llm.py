@@ -5,7 +5,7 @@ from groq import BadRequestError as GroqBadRequestError
 
 from backend.app.core import llm
 
-# ทุกเทสต์ mock ทั้ง AsyncGroq client — ไม่ยิง Groq API จริง
+# ทุกเทสต์ mock ทั้ง AsyncGroq/Gemini client — ไม่ยิง API จริง
 
 
 def _fake_tool_call(call_id, name, arguments_json):
@@ -114,6 +114,41 @@ async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
     assert tool_input["success"] is False
     assert tool_use_id == ""
     assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3)
+
+
+def _fake_gemini_function_call_part(name: str, args: dict):
+    part = MagicMock()
+    part.function_call.name = name
+    part.function_call.args = args  # plain dict ก็ dict(...) ได้เหมือน MapComposite จริง
+    return part
+
+
+def _fake_gemini_text_only_part():
+    part = MagicMock()
+    part.function_call.name = ""  # falsy -> ไม่นับว่ามี function call
+    return part
+
+
+def _fake_gemini_response(parts, prompt_tokens=10, candidates_tokens=5):
+    content = MagicMock()
+    content.parts = parts
+    candidate = MagicMock()
+    candidate.content = content
+    response = MagicMock()
+    response.candidates = [candidate]
+    response.usage_metadata.prompt_token_count = prompt_tokens
+    response.usage_metadata.candidates_token_count = candidates_tokens
+    return response
+
+
+def _fake_gemini_client(response):
+    """จำลอง genai module: client.GenerativeModel(...) -> model ที่มี
+    generate_content_async() คืน response ที่กำหนด"""
+    gemini_model = MagicMock()
+    gemini_model.generate_content_async = AsyncMock(return_value=response)
+    client = MagicMock()
+    client.GenerativeModel = MagicMock(return_value=gemini_model)
+    return client, gemini_model
 
 
 # --- next_action_groq() (Groq) ---
@@ -248,3 +283,84 @@ def test_append_tool_result_groq_formats_as_tool_role_message():
     assert result[-1] == {"role": "tool", "tool_call_id": "call_1", "content": "[OK] clicked"}
     assert result[:-1] == messages
     assert result is not messages  # ไม่แก้ list เดิม (immutable-style เหมือน append_tool_result ของ Anthropic)
+
+
+# --- next_action_gemini() (Gemini) ---
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_returns_parsed_function_call():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "click", "index": 2})
+    response = _fake_gemini_response([part], prompt_tokens=10, candidates_tokens=5)
+    client, gemini_model = _fake_gemini_client(response)
+
+    tool_name, tool_input, tool_use_id, messages, usage = await llm.next_action_gemini(
+        client, "gemini-flash-lite-latest", "goal", "[0] button", []
+    )
+
+    assert tool_name == "browser_action"
+    assert tool_input == {"type": "click", "index": 2}
+    # Gemini ไม่มี call id จริง — ใช้ชื่อ function เป็น tool_use_id แทน
+    assert tool_use_id == "browser_action"
+    assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
+    # model ต้องถูกสร้างด้วย tools + tool_config บังคับเรียก function เสมอ
+    _, kwargs = client.GenerativeModel.call_args
+    assert kwargs["tools"] == llm._GEMINI_TOOLS
+    assert kwargs["tool_config"] == {"function_calling_config": {"mode": "ANY"}}
+    assert kwargs["system_instruction"] == llm.SYSTEM_PROMPT
+    # messages ต้องมี user turn ใหม่ + model turn (response content) ต่อท้าย
+    assert messages[-2]["role"] == "user"
+    assert messages[-1] is response.candidates[0].content
+    # ตอนยิง generate_content_async จริง ต้องยังไม่มี model turn (เพิ่งได้ response กลับมา
+    # ถึงจะรู้ว่าโมเดลตอบอะไร) — ส่งแค่ user turn ใหม่เข้าไปตอนเรียก
+    called_contents = gemini_model.generate_content_async.call_args.kwargs["contents"]
+    assert called_contents == messages[:-1]
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_normalizes_whole_number_floats_to_int():
+    """Gemini คืนตัวเลขเป็น float เสมอผ่าน protobuf Struct แม้ schema จะเป็น integer —
+    ต้องแปลงกลับเป็น int ไม่งั้น selector index="2.0" จะไม่ตรงกับ element จริง"""
+    part = _fake_gemini_function_call_part("browser_action", {"type": "click", "index": 2.0})
+    response = _fake_gemini_response([part])
+    client, _ = _fake_gemini_client(response)
+
+    _, tool_input, _, _, _ = await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    assert tool_input["index"] == 2
+    assert isinstance(tool_input["index"], int)
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_falls_back_to_finish_task_when_no_function_call():
+    part = _fake_gemini_text_only_part()
+    response = _fake_gemini_response([part])
+    client, _ = _fake_gemini_client(response)
+
+    tool_name, tool_input, tool_use_id, _, usage = await llm.next_action_gemini(
+        client, "model", "goal", "page", []
+    )
+
+    assert tool_name == "finish_task"
+    assert tool_input["success"] is False
+    assert tool_use_id == ""
+    assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
+
+
+def test_normalize_gemini_args_only_converts_whole_number_floats():
+    result = llm._normalize_gemini_args({"index": 3.0, "text": "hello", "ratio": 1.5, "flag": True})
+
+    assert result == {"index": 3, "text": "hello", "ratio": 1.5, "flag": True}
+    assert isinstance(result["index"], int)
+
+
+def test_append_tool_result_gemini_formats_as_function_response_part():
+    messages = [{"role": "user", "parts": [{"text": "x"}]}]
+    result = llm.append_tool_result_gemini(messages, "browser_action", "[OK] clicked")
+
+    assert result[-1] == {
+        "role": "user",
+        "parts": [{"function_response": {"name": "browser_action", "response": {"result": "[OK] clicked"}}}],
+    }
+    assert result[:-1] == messages
+    assert result is not messages

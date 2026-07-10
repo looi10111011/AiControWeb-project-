@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_model: str = "claude-haiku-4-5-20251001"
     groq_model: str = "llama-3.3-70b-versatile"
+    gemini_model: str = "gemini-flash-lite-latest"
 
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"

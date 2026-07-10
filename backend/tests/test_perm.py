@@ -10,7 +10,8 @@ from backend.app.permission.rules import ActionRisk, classify_action
 # pytest.mark.asyncio + assert ให้รันเป็นส่วนหนึ่งของ test suite ได้จริง
 #
 # execute(None, cmd) ใช้ page=None ได้เฉพาะเคส BLOCKED/NEEDS_CONFIRMATION-rejected
-# เท่านั้น เพราะ permission check คืนค่าก่อนจะแตะ page เลย — เคส SAFE ต้องมี page จริง
+# เท่านั้น เพราะ permission check คืนค่าก่อนจะแตะ page เลย — เคส SAFE/approved ต้องมี
+# page จริง (หรือ mock ที่มี click()/fill()) เพราะ dispatch ไปเรียก page.click() จริง
 
 
 def test_classify_action_blocks_blocked_domain():
@@ -39,22 +40,25 @@ async def test_execute_blocks_goto_to_blocked_domain_without_asking_user():
 @pytest.mark.asyncio
 async def test_execute_asks_user_before_needs_confirmation_action_and_respects_approval():
     ask_user_func = AsyncMock(return_value=True)
-    cmd = {"type": "submit"}
+    mock_page = AsyncMock()
+    cmd = {"type": "submit", "index": 3}
 
-    result = await execute(None, cmd, ask_user_func=ask_user_func)
+    result = await execute(mock_page, cmd, ask_user_func=ask_user_func)
 
     ask_user_func.assert_awaited_once_with(cmd)
-    # submit ไม่ได้ implement ใน dispatch จริง (ไม่มี t == "submit" case) เลยตกไป
-    # "ไม่รู้จัก action นี้" — แต่สำคัญคือผ่าน permission gate ไปถึง dispatch ได้ (ไม่ถูก
-    # ปฏิเสธเพราะ human-in-the-loop) ยืนยันว่า approval ถูก respect จริง
-    assert result.message != "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)"
+    # submit/delete/purchase/pay ไม่ใช่ action จริงแยกต่างหาก — เป็นแค่ risk category
+    # ที่ alias ไปเรียก click() ตัวเดิม (เช็ค permission ผ่านแล้วด้านบน) แค่ต้องขอยืนยัน
+    # ก่อนเพราะเสี่ยงกว่า click ธรรมดา
+    assert result.success is True
+    assert result.action == "submit(3)"
+    mock_page.click.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_execute_rejects_needs_confirmation_action_when_user_declines():
     ask_user_func = AsyncMock(return_value=False)
 
-    result = await execute(None, {"type": "submit"}, ask_user_func=ask_user_func)
+    result = await execute(None, {"type": "submit", "index": 3}, ask_user_func=ask_user_func)
 
     assert result.success is False
     assert "ปฏิเสธ" in result.message

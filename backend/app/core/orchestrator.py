@@ -60,9 +60,9 @@ class Orchestrator:
     @staticmethod
     def _llm_backend(provider: str):
         """เลือก client/model/next_action/append_tool_result ตาม provider
-        รองรับ "anthropic" (ตัวหลักตาม roadmap) และ "groq" (ไว้ทดสอบตอนยังไม่มี
-        Anthropic key จริง) — คืนรูปแบบเดียวกันหมดให้ loop ข้างล่างเรียกแบบไม่ต้อง
-        รู้ว่าเป็น provider ไหน
+        รองรับ "anthropic" (ตัวหลักตาม roadmap), "gemini" (provider สำรอง free tier
+        กว้างกว่า) และ "groq" (ไว้ทดสอบตอนยังไม่มี Anthropic key จริง) — คืนรูปแบบ
+        เดียวกันหมดให้ loop ข้างล่างเรียกแบบไม่ต้องรู้ว่าเป็น provider ไหน
         """
         if provider == "groq":
             return (
@@ -71,6 +71,13 @@ class Orchestrator:
                 llm.next_action_groq,
                 llm.append_tool_result_groq,
             )
+        if provider == "gemini":
+            return (
+                llm.build_gemini_client(settings.gemini_api_key),
+                settings.gemini_model,
+                llm.next_action_gemini,
+                llm.append_tool_result_gemini,
+            )
         if provider == "anthropic":
             return (
                 llm.build_client(settings.anthropic_api_key),
@@ -78,7 +85,7 @@ class Orchestrator:
                 llm.next_action,
                 llm.append_tool_result,
             )
-        raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/groq)")
+        raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
 
     async def run_task(
         self,
