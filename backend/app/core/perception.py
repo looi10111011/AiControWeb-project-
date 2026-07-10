@@ -30,11 +30,17 @@ _COLLECT_JS = r"""
     '[role=tab]', '[onclick]', '[tabindex]'
   ].join(',');
 
+  // footer/ส่วนที่ไม่เกี่ยวกับการทำ task จริง (โซเชียล/copyright/nav ซ้ำ) —
+  // กันไม่ให้กิน token เปล่าๆ ทุก step โดยที่ agent แทบไม่เคยต้องกด element พวกนี้
+  const IRRELEVANT_SELECTOR = 'footer, [role="contentinfo"], [id*="footer" i], [class*="footer" i]';
+
   const nodes = Array.from(document.querySelectorAll(selectors));
   const out = [];
   let idx = 0;
 
   for (const el of nodes) {
+    if (el.closest(IRRELEVANT_SELECTOR)) continue;
+
     // เช็คว่ามองเห็นจริงไหม
     const rect = el.getBoundingClientRect();
     const st = window.getComputedStyle(el);

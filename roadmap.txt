@@ -110,6 +110,93 @@
               backend/tests/test_orchestrator.py (unpack TokenUsage element
               ที่ 5, เช็ค result["tokens"] และ history[i]["tokens"])
 
+              ลด token cost ต่อ step (2026-07-10):
+              1) ย่อ SYSTEM_PROMPT ใน llm.py ให้กระชับขึ้น (ตัดประโยคซ้ำ/ตัวอย่าง
+                 ยาวๆ ออก) ยังคงกติกาครบทุกข้อเดิม แค่เขียนสั้นลง
+              2) perception.py::get_snapshot() กรอง element ที่อยู่ใน
+                 footer/[role=contentinfo]/id-class ที่มีคำว่า "footer" ออกตั้งแต่
+                 ใน _COLLECT_JS (ก่อนนับ index) — เพราะ agent แทบไม่เคยต้องกด
+                 social link/copyright แต่ดันกิน token ทุก step ที่ perceive
+                 มี unit test จริง (เปิด chromium, set_content มี footer ปลอม)
+                 ยืนยันว่า element ใน footer ถูกกรองออกใน backend/tests/test_perception.py
+              3) เปิด Anthropic prompt caching: system prompt (_SYSTEM_BLOCKS) +
+                 FINISH_TASK_TOOL มี cache_control={"type":"ephemeral"} — เพราะ
+                 tools+system เหมือนเดิมทุก step ของ loop เดียวกัน ต่างแค่
+                 messages ที่ยาวขึ้นเรื่อยๆ ลด input token cost ของทุก step
+                 หลังจาก step แรกได้เยอะ (เข้า cache read แทน cache write เต็ม)
+                 *** ใช้ได้เฉพาะ Anthropic เท่านั้น Groq ไม่ได้ทำตรงนี้ (ไม่รองรับ
+                 cache_control แบบเดียวกันผ่าน chat.completions) — ยังไม่เคยยืนยัน
+                 กับ Anthropic API จริง เพราะ .env ยังเป็น placeholder key
+                 (มีความเสี่ยงว่า prompt อาจสั้นกว่า minimum cacheable length ของ
+                 โมเดล ทำให้ cache_control เงียบๆ ไม่ทำงาน — ต้องเช็คจาก
+                 usage.cache_read/cache_creation ตอนรันจริงครั้งแรก) ***
+                 เพิ่ม TokenUsage.cache_creation_tokens/cache_read_tokens +
+                 unit test ใหม่ครบใน test_llm.py (cache_control ถูกส่งจริง,
+                 parse cache token ถูกต้อง, fallback เมื่อไม่มี tool_use block)
+
+              guard กัน finish_task(false) ก่อนเวลาอันควร (2026-07-10):
+              user รายงานว่า agent หยุดกลางคันหลัง login เสร็จ ไม่ทำต่อจนจบ goal —
+              สืบแล้วเป็นเคสเดิมที่บันทึกไว้ข้างบน (Llama บน Groq เรียก
+              finish_task(success=false) เร็วเกินไป) ยืนยันด้วย get_snapshot() จริง
+              บน saucedemo.com ว่าปุ่ม "Add to cart" ยัง visible อยู่ตอนที่โมเดลเลือก
+              จะหยุด — ไม่ใช่บั๊ก perception/footer-filter (element ที่ต้องกดยังอยู่
+              ในลิสต์ปกติ)
+
+              เพิ่ม guard ใน orchestrator.py::run_task(): finish_task(success=false)
+              ที่มี tool_use_id จริง (ไม่ใช่ fallback ตอนไม่เรียก tool เลย) และยังเหลือ
+              step ให้ลอง จะไม่ถูกยอมรับทันที — ส่งข้อความเตือนกลับเข้า tool_result
+              ("ยังไม่ยอมรับ... ให้ลองทำ action ที่ยังไม่ได้ลอง") แล้วบังคับให้โมเดล
+              ตัดสินใจใหม่ สูงสุด _MAX_PREMATURE_FALSE_FINISH_RETRIES (2) ครั้งก่อนจะ
+              ยอมรับ false จริงๆ (กัน infinite loop ถ้าติดจริง) — unit test ครบ 3 เคส
+              ใน test_orchestrator.py (override แล้วสำเร็จ, ยืนกราน false เกิน quota
+              แล้วยอมรับ, ไม่ override เคส fallback ที่ tool_use_id ว่าง)
+
+              *** รันจริงบน saucedemo.com ผ่าน Groq (llama-3.3-70b) 3 รอบหลังใส่
+              guard แล้ว: log ยืนยันว่า guard ทำงานถูก (เตือน 2 ครั้งจริงตามที่ตั้งไว้)
+              แต่โมเดลไม่ได้ตอบสนองต่อคำเตือนแบบมีความหมาย — แค่พิมพ์ finish_task(false)
+              ซ้ำข้อความเดิมอีกรอบ (บางรอบหยุดหลัง fill username รอบเดียว, บางรอบหยุด
+              หลัง fill ครบ 2 ช่องแต่ยังไม่กด login) ไม่เคยไปถึงขั้นกด Add to cart เลย
+              สักครั้ง — สรุปว่า guard ช่วยกัน "หยุดแบบไม่มีเหตุผลในทันที" และรายงาน
+              message ที่ตรงจุดขึ้น แต่แก้ปัญหาต้นตอ (โมเดล free tier ไม่ persistent
+              พอ) ไม่ได้ทั้งหมด — งานที่เหลือจริงๆ คือทดสอบซ้ำกับ Anthropic (Claude)
+              ตัวจริง (.env ยังเป็น placeholder key) ซึ่งคาดว่าจะ follow instruction
+              ได้ดีกว่านี้มาก, หรือรอ W5 verify/retry ที่เช็คผลจาก DOM จริงแทนที่จะพึ่ง
+              คำตัดสินใจของ LLM อย่างเดียว ***
+
+              ดึง PR "permission-ab" (origin/permission-ab, มิก) มา integrate +
+              ทดสอบกับโค้ดปัจจุบัน (2026-07-10):
+              PR เดิม implement classify_action(cmd) (BLOCKED/NEEDS_CONFIRMATION/SAFE,
+              เช็คทั้ง action type และ blocklist โดเมนสำหรับ goto) + hook เข้า
+              actions.execute() แล้ว แต่เจอบั๊ก 2 จุดตอน integrate:
+              1) execute() รับ ask_user_func param มาแต่ไม่เคยเรียกใช้เลย — ยัง
+                 blocking input() ตรงๆ เสมอไม่ว่าจะส่ง callback มาหรือไม่ (แก้แล้ว:
+                 เรียก ask_user_func(cmd) จริงถ้ามี ไม่งั้น fallback เป็น input())
+              2) backend/tests/test_perm.py เดิมเป็น manual script (print + if
+                 __name__=="__main__") ไม่ใช่ pytest test จริง — เขียนใหม่เป็น
+                 pytest.mark.asyncio + assert จริง 6 เคส (blocked domain, needs
+                 confirmation, safe action, execute เคารพ ask_user_func ทั้ง
+                 approve/reject, ไม่ถาม user ซ้ำตอน BLOCKED)
+              merge orchestrator.py ของ PR (diff เล็กมาก แค่ thread ask_user_func
+              เข้า execute()) เข้ากับโค้ดปัจจุบันที่เขียนใหม่ไปเยอะแล้ว (token
+              tracking/premature-finish guard/prompt caching) ด้วยมือแทน git merge
+              ตรงๆ เพราะ diverge กันมาก — test suite ทั้งหมดผ่านหลัง integrate
+
+              plan confirmation gate (2026-07-10):
+              user ขอให้ LLM โชว์แผนก่อน แล้วรอกดยืนยันค่อยเริ่มรัน Orchestrator จริง —
+              เพิ่ม llm.generate_plan(client, model, goal, page_text, provider) (เรียก
+              LLM แบบ plain call ไม่ใช้ tool-use ให้ร่างแผนคร่าวๆ เป็นข้อความธรรมดา)
+              + Orchestrator.run_task(..., confirm_plan=True): หลัง goto หน้าแรกเสร็จ
+              จะ perceive แล้วขอแผนจาก LLM ก่อน โชว์ให้ user เห็นแล้วรอยืนยัน (y/n ทาง
+              terminal ถ้าไม่ส่ง ask_user_func มา — ใช้ callback ตัวเดียวกับ permission
+              layer ข้างบนได้เลย) ถ้าไม่ยืนยัน จะไม่ลงมือทำ action ใดๆ เลย (คืนผลลัพธ์
+              steps=0 ทันที ไม่เข้า loop หลัก) ผลลัพธ์ที่คืนมามี key "plan" เพิ่มเข้ามา
+              เสมอ (None ถ้าไม่เปิด confirm_plan)
+              รันจริงผ่าน Groq บน saucedemo.com ยืนยันทั้ง 2 เคส: กด n -> plan ถูกโชว์
+              จริง ไม่มี action ไหนถูกยิงเลย, กด y -> loop เริ่มทำงานต่อปกติ (เจอ Groq
+              rate limit ระหว่างทดสอบเพราะยิง API ไปเยอะมากวันนี้ — ไม่เกี่ยวกับโค้ด)
+              unit test 3 เคสใหม่ใน test_orchestrator.py (declined ไม่ยิง action เลย,
+              approved ทำงานต่อปกติ, confirm_plan=False ไม่เรียก generate_plan เปล่าๆ)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -165,7 +252,9 @@
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)  ✅ เสร็จแล้ว
      │      (Perceive→Plan→Act เสร็จ, Verify/retry ยังไม่ทำ — เป็นของ W5)
-     └ [B]  Permission layer: allowlist / blocklist action  (เริ่ม)
+     └ [B]  Permission layer: allowlist / blocklist action  🔶 PR permission-ab
+            merge เข้าโค้ดหลักแล้ว (classify_action + execute() hook + human-in-
+            the-loop input()) ยังไม่ได้ต่อ RAG-based permission (ของ W7)
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว
      ├ [B]  Permission layer (ต่อ) + Human-in-the-loop
