@@ -3,11 +3,13 @@
 W1: skeleton only. W4: ทำ loop จริงกับเว็บง่าย 1 หน้า. W5: เพิ่ม verify/retry.
 """
 
+from typing import Optional
+
 from playwright.async_api import async_playwright
 
 from backend.app.config import settings
 from backend.app.core import llm
-from backend.app.core.actions import ActionResult, execute, goto, wait_stable
+from backend.app.core.actions import ActionResult, AskUserFunc, execute, goto, wait_stable
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
 
@@ -71,6 +73,7 @@ class Orchestrator:
         headless: bool | None = None,
         verbose: bool = False,
         provider: str | None = None,
+        ask_user_func: Optional[AskUserFunc] = None,
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
@@ -81,6 +84,10 @@ class Orchestrator:
                   หน้าต่าง browser ที่เปิดโชว์อยู่) — ปิดไว้ (False) ตอนเรียกจาก
                   API server ในอนาคต (W10) กัน log รก
         provider: None = ใช้ settings.llm_provider, หรือระบุ "anthropic"/"groq" ตรงๆ
+        ask_user_func: callback (cmd dict) -> bool ให้ชั้นบน (เช่น API server ใน W10)
+                  ตัดสินใจแทน blocking input() ทาง terminal ตอนเจอ action ที่ต้อง
+                  ขอยืนยันจาก permission layer (actions.execute) — ถ้าไม่ส่งมา fallback
+                  เป็น input() ทาง terminal
 
         W4 v1: ไม่มี retry เมื่อ action ล้มเหลว (เป็นของ W5) — ผลลัพธ์ action ที่ fail
         จะถูกส่งกลับเข้าบทสนทนาให้ LLM เห็นแล้วตัดสินใจเองว่าจะลองทางอื่นยังไงในรอบถัดไป
@@ -164,7 +171,7 @@ class Orchestrator:
                 if verbose:
                     print(f"[step {steps_taken + 1}] {tool_input}", flush=True)
 
-                result: ActionResult = await execute(page, tool_input)
+                result: ActionResult = await execute(page, tool_input, ask_user_func=ask_user_func)
                 steps_taken += 1
                 self.memory.record({
                     "step": steps_taken,

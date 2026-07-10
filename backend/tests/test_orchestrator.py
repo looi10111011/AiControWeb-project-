@@ -98,7 +98,9 @@ async def test_run_task_executes_action_then_finishes():
     assert result["success"] is True
     assert result["steps"] == 1
     assert result["message"] == "เพิ่มลงตะกร้าแล้ว"
-    mock_execute.assert_awaited_once_with(mock_browser.new_page.return_value, {"type": "click", "index": 2})
+    mock_execute.assert_awaited_once_with(
+        mock_browser.new_page.return_value, {"type": "click", "index": 2}, ask_user_func=None
+    )
     assert result["history"] == [
         {"step": 0, "cmd": {"type": "goto", "url": "https://example.com"}, "result": str(_GOTO_OK)},
         {
@@ -182,7 +184,9 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
 
     assert result["success"] is True
     assert result["steps"] == 1
-    mock_execute.assert_awaited_once_with(mock_browser.new_page.return_value, {"type": "click", "index": 5})
+    mock_execute.assert_awaited_once_with(
+        mock_browser.new_page.return_value, {"type": "click", "index": 5}, ask_user_func=None
+    )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
     append_tool_result_mock.assert_any_call(["m1"], "tool_f1", _PREMATURE_FALSE_FINISH_NUDGE)
 

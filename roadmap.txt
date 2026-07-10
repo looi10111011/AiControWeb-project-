@@ -163,6 +163,24 @@
               ได้ดีกว่านี้มาก, หรือรอ W5 verify/retry ที่เช็คผลจาก DOM จริงแทนที่จะพึ่ง
               คำตัดสินใจของ LLM อย่างเดียว ***
 
+              ดึง PR "permission-ab" (origin/permission-ab, มิก) มา integrate +
+              ทดสอบกับโค้ดปัจจุบัน (2026-07-10):
+              PR เดิม implement classify_action(cmd) (BLOCKED/NEEDS_CONFIRMATION/SAFE,
+              เช็คทั้ง action type และ blocklist โดเมนสำหรับ goto) + hook เข้า
+              actions.execute() แล้ว แต่เจอบั๊ก 2 จุดตอน integrate:
+              1) execute() รับ ask_user_func param มาแต่ไม่เคยเรียกใช้เลย — ยัง
+                 blocking input() ตรงๆ เสมอไม่ว่าจะส่ง callback มาหรือไม่ (แก้แล้ว:
+                 เรียก ask_user_func(cmd) จริงถ้ามี ไม่งั้น fallback เป็น input())
+              2) backend/tests/test_perm.py เดิมเป็น manual script (print + if
+                 __name__=="__main__") ไม่ใช่ pytest test จริง — เขียนใหม่เป็น
+                 pytest.mark.asyncio + assert จริง 6 เคส (blocked domain, needs
+                 confirmation, safe action, execute เคารพ ask_user_func ทั้ง
+                 approve/reject, ไม่ถาม user ซ้ำตอน BLOCKED)
+              merge orchestrator.py ของ PR (diff เล็กมาก แค่ thread ask_user_func
+              เข้า execute()) เข้ากับโค้ดปัจจุบันที่เขียนใหม่ไปเยอะแล้ว (token
+              tracking/premature-finish guard/prompt caching) ด้วยมือแทน git merge
+              ตรงๆ เพราะ diverge กันมาก — test suite ทั้งหมดผ่านหลัง integrate
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -218,7 +236,9 @@
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)  ✅ เสร็จแล้ว
      │      (Perceive→Plan→Act เสร็จ, Verify/retry ยังไม่ทำ — เป็นของ W5)
-     └ [B]  Permission layer: allowlist / blocklist action  (เริ่ม)
+     └ [B]  Permission layer: allowlist / blocklist action  🔶 PR permission-ab
+            merge เข้าโค้ดหลักแล้ว (classify_action + execute() hook + human-in-
+            the-loop input()) ยังไม่ได้ต่อ RAG-based permission (ของ W7)
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว
      ├ [B]  Permission layer (ต่อ) + Human-in-the-loop
