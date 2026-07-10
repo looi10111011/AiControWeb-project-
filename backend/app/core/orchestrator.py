@@ -3,6 +3,7 @@
 W1: skeleton only. W4: ทำ loop จริงกับเว็บง่าย 1 หน้า. W5: เพิ่ม verify/retry.
 """
 
+import asyncio
 from typing import Optional
 
 from playwright.async_api import async_playwright
@@ -36,6 +37,20 @@ def _tokens_dict(usage: llm.TokenUsage) -> dict:
         "cache_read": usage.cache_read_tokens,
         "cache_creation": usage.cache_creation_tokens,
     }
+
+
+async def _confirm_plan(plan_text: str, ask_user_func: Optional[AskUserFunc]) -> bool:
+    """โชว์แผนแล้วรอ user ยืนยันก่อนเริ่ม loop จริง — ใช้ callback เดียวกับ permission
+    layer (actions.AskUserFunc) เพื่อให้ชั้นบน (เช่น API server ใน W10) inject วิธีถาม
+    ของตัวเองได้ (ส่ง event ไป UI แทน blocking input() ทาง terminal) โดยไม่ต้องแก้ตรงนี้
+    """
+    if ask_user_func is not None:
+        return bool(await ask_user_func({"type": "confirm_plan", "plan": plan_text}))
+    print("\n=== แผนที่ AI จะทำ ===", flush=True)
+    print(plan_text, flush=True)
+    print("========================", flush=True)
+    choice = await asyncio.to_thread(input, "ยืนยันให้เริ่มทำงานตามแผนนี้หรือไม่? (y/n): ")
+    return choice.strip().lower() in ("y", "yes")
 
 
 class Orchestrator:
@@ -74,6 +89,7 @@ class Orchestrator:
         verbose: bool = False,
         provider: str | None = None,
         ask_user_func: Optional[AskUserFunc] = None,
+        confirm_plan: bool = False,
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
@@ -84,18 +100,21 @@ class Orchestrator:
                   หน้าต่าง browser ที่เปิดโชว์อยู่) — ปิดไว้ (False) ตอนเรียกจาก
                   API server ในอนาคต (W10) กัน log รก
         provider: None = ใช้ settings.llm_provider, หรือระบุ "anthropic"/"groq" ตรงๆ
-        ask_user_func: callback (cmd dict) -> bool ให้ชั้นบน (เช่น API server ใน W10)
-                  ตัดสินใจแทน blocking input() ทาง terminal ตอนเจอ action ที่ต้อง
-                  ขอยืนยันจาก permission layer (actions.execute) — ถ้าไม่ส่งมา fallback
-                  เป็น input() ทาง terminal
+        ask_user_func: callback (cmd/plan dict) -> bool ให้ชั้นบน (เช่น API server)
+                  ตัดสินใจแทน blocking input() ทาง terminal — ใช้ร่วมกันทั้ง permission
+                  layer (actions.execute) และ confirm_plan ด้านล่าง ถ้าไม่ส่งมา fallback
+                  เป็น input() ทาง terminal ทั้งคู่
+        confirm_plan: True = ก่อนเริ่ม loop จริง ให้ LLM ร่างแผนคร่าวๆ (llm.generate_plan)
+                  โชว์ให้ user เห็นแล้วรอกดยืนยันก่อน — ถ้าไม่ยืนยัน จะไม่ลงมือทำ action
+                  ใดๆ เลย (คืนผลลัพธ์ steps=0 ทันที) ไว้กัน agent เริ่มทำอะไรที่ user ยัง
+                  ไม่ได้เห็นแผนมาก่อน
 
         W4 v1: ไม่มี retry เมื่อ action ล้มเหลว (เป็นของ W5) — ผลลัพธ์ action ที่ fail
         จะถูกส่งกลับเข้าบทสนทนาให้ LLM เห็นแล้วตัดสินใจเองว่าจะลองทางอื่นยังไงในรอบถัดไป
         """
         is_headless = settings.browser_headless if headless is None else headless
-        client, model, next_action, append_tool_result = self._llm_backend(
-            provider or settings.llm_provider
-        )
+        resolved_provider = provider or settings.llm_provider
+        client, model, next_action, append_tool_result = self._llm_backend(resolved_provider)
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(headless=is_headless)
         page = await browser.new_page()
@@ -106,6 +125,7 @@ class Orchestrator:
         steps_taken = 0
         total_usage = llm.TokenUsage()
         premature_false_finish_count = 0
+        plan_text: Optional[str] = None
 
         try:
             if verbose:
@@ -115,6 +135,24 @@ class Orchestrator:
             if verbose:
                 print(f"  -> {goto_result}", flush=True)
             await wait_stable(page)
+
+            if confirm_plan:
+                _, plan_page_text = await get_snapshot(page)
+                plan_text = await llm.generate_plan(client, model, goal, plan_page_text, resolved_provider)
+                if verbose:
+                    print(f"[plan]\n{plan_text}", flush=True)
+                approved = await _confirm_plan(plan_text, ask_user_func)
+                if not approved:
+                    if verbose:
+                        print("[plan] ผู้ใช้ไม่ยืนยัน — ยกเลิกก่อนเริ่มทำงาน", flush=True)
+                    return {
+                        "success": False,
+                        "steps": 0,
+                        "message": "ผู้ใช้ไม่ยืนยันแผน — ยกเลิกก่อนเริ่มทำงาน",
+                        "history": self.memory.recent(max_steps),
+                        "tokens": _tokens_dict(total_usage),
+                        "plan": plan_text,
+                    }
 
             for _ in range(max_steps):
                 _, page_text = await get_snapshot(page)
@@ -193,6 +231,7 @@ class Orchestrator:
                 "message": final_message,
                 "history": self.memory.recent(max_steps),
                 "tokens": _tokens_dict(total_usage),
+                "plan": plan_text,
             }
         finally:
             await browser.close()

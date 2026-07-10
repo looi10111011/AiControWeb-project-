@@ -285,3 +285,38 @@ async def next_action_groq(
 def append_tool_result_groq(messages: list[dict], tool_use_id: str, result_text: str) -> list[dict]:
     """ต่อผลลัพธ์ของ action ที่เพิ่งทำเข้าไปในบทสนทนา ก่อนเรียก next_action_groq() รอบถัดไป"""
     return messages + [{"role": "tool", "tool_call_id": tool_use_id, "content": result_text}]
+
+
+_PLAN_PROMPT_TEMPLATE = (
+    "Goal: {goal}\n\nหน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
+    "เขียนแผนคร่าวๆ เป็น bullet สั้นๆ (ไม่เกิน 5-6 ข้อ) ว่าจะทำ goal นี้ให้สำเร็จด้วย"
+    "ขั้นตอนอะไรบ้าง — สรุประดับสูงพอให้ user อ่านแล้วเข้าใจและตัดสินใจอนุมัติได้ ไม่ต้อง"
+    "เรียก tool ไม่ต้องระบุ index ของ element เป๊ะๆ ตอบเป็นข้อความธรรมดา ไม่ต้องมี markdown"
+)
+
+
+async def generate_plan(client, model: str, goal: str, page_text: str, provider: str) -> str:
+    """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
+    ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
+    ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
+    เห็นแผนมาก่อน)
+    """
+    prompt = _PLAN_PROMPT_TEMPLATE.format(goal=goal, page_text=page_text)
+
+    if provider == "anthropic":
+        response = await client.messages.create(
+            model=model,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return "".join(b.text for b in response.content if b.type == "text").strip()
+
+    if provider == "groq":
+        response = await client.chat.completions.create(
+            model=model,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/groq)")

@@ -241,3 +241,78 @@ async def test_run_task_accepts_finish_task_false_immediately_when_no_tool_use_i
     assert result["success"] is False
     assert result["message"] == "no tool call"
     assert mock_next_action.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_task_confirm_plan_stops_before_any_action_when_user_declines():
+    """confirm_plan=True: ต้องโชว์แผนแล้วรอ user ยืนยันก่อน — ถ้า user ปฏิเสธ ห้ามลงมือ
+    ทำ action ใดๆ เลย (ห้ามเรียก next_action/execute เลยแม้แต่ครั้งเดียว)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=False)
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.execute") as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.generate_plan", AsyncMock(return_value="1. ทำ A\n2. ทำ B")) as mock_generate_plan, \
+         patch("backend.app.core.orchestrator.llm.next_action") as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "some goal", provider="anthropic",
+            confirm_plan=True, ask_user_func=ask_user_func,
+        )
+
+    assert result["success"] is False
+    assert result["steps"] == 0
+    assert result["plan"] == "1. ทำ A\n2. ทำ B"
+    mock_generate_plan.assert_awaited_once()
+    ask_user_func.assert_awaited_once_with({"type": "confirm_plan", "plan": "1. ทำ A\n2. ทำ B"})
+    mock_next_action.assert_not_called()
+    mock_execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_task_confirm_plan_proceeds_when_user_approves():
+    """confirm_plan=True + user ยืนยัน -> loop ต้องทำงานตามปกติต่อ ไม่ต่างจากไม่เปิด
+    confirm_plan เลย นอกจากมี plan text แนบมาด้วยตอนจบ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=True)
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.llm.generate_plan", AsyncMock(return_value="1. ทำ A")), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "some goal", provider="anthropic",
+            confirm_plan=True, ask_user_func=ask_user_func,
+        )
+
+    assert result["success"] is True
+    assert result["plan"] == "1. ทำ A"
+    mock_next_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_task_without_confirm_plan_skips_plan_generation_entirely():
+    """confirm_plan=False (default) -> ห้ามเรียก llm.generate_plan เลย กันเสีย token
+    เปล่าๆ กับ use case ที่ไม่ต้องการ gate นี้"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.llm.generate_plan") as mock_generate_plan, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "ok"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["plan"] is None
+    mock_generate_plan.assert_not_called()

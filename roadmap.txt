@@ -181,6 +181,22 @@
               tracking/premature-finish guard/prompt caching) ด้วยมือแทน git merge
               ตรงๆ เพราะ diverge กันมาก — test suite ทั้งหมดผ่านหลัง integrate
 
+              plan confirmation gate (2026-07-10):
+              user ขอให้ LLM โชว์แผนก่อน แล้วรอกดยืนยันค่อยเริ่มรัน Orchestrator จริง —
+              เพิ่ม llm.generate_plan(client, model, goal, page_text, provider) (เรียก
+              LLM แบบ plain call ไม่ใช้ tool-use ให้ร่างแผนคร่าวๆ เป็นข้อความธรรมดา)
+              + Orchestrator.run_task(..., confirm_plan=True): หลัง goto หน้าแรกเสร็จ
+              จะ perceive แล้วขอแผนจาก LLM ก่อน โชว์ให้ user เห็นแล้วรอยืนยัน (y/n ทาง
+              terminal ถ้าไม่ส่ง ask_user_func มา — ใช้ callback ตัวเดียวกับ permission
+              layer ข้างบนได้เลย) ถ้าไม่ยืนยัน จะไม่ลงมือทำ action ใดๆ เลย (คืนผลลัพธ์
+              steps=0 ทันที ไม่เข้า loop หลัก) ผลลัพธ์ที่คืนมามี key "plan" เพิ่มเข้ามา
+              เสมอ (None ถ้าไม่เปิด confirm_plan)
+              รันจริงผ่าน Groq บน saucedemo.com ยืนยันทั้ง 2 เคส: กด n -> plan ถูกโชว์
+              จริง ไม่มี action ไหนถูกยิงเลย, กด y -> loop เริ่มทำงานต่อปกติ (เจอ Groq
+              rate limit ระหว่างทดสอบเพราะยิง API ไปเยอะมากวันนี้ — ไม่เกี่ยวกับโค้ด)
+              unit test 3 เคสใหม่ใน test_orchestrator.py (declined ไม่ยิง action เลย,
+              approved ทำงานต่อปกติ, confirm_plan=False ไม่เรียก generate_plan เปล่าๆ)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
