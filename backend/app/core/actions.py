@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
+from backend.app.permission.rules import ActionRisk, classify_action
+
 
 # ------------------------------------------------------------
 # ผลลัพธ์มาตรฐานของทุก action
@@ -155,6 +157,21 @@ async def execute(page: Page, cmd: dict) -> ActionResult:
     แล้ว dispatch ไป action ที่ถูกต้อง — นี่คือจุดที่ W4 จะเรียกใช้
     """
     t = cmd.get("type")
+    
+    # Permission Check
+    risk = classify_action(cmd)
+    if risk == ActionRisk.BLOCKED:
+        return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
+    elif risk == ActionRisk.NEEDS_CONFIRMATION:
+        import sys
+        # แสดงข้อความแจ้งเตือนมนุษย์
+        print(f"\n[HUMAN-IN-THE-LOOP] Agent ต้องการเรียกใช้คำสั่งที่มีความเสี่ยง: {cmd}", flush=True)
+        # ใช้ asyncio.to_thread เพื่อให้รับ input() ได้โดยไม่บล็อก async event loop หลัก
+        choice = await asyncio.to_thread(input, "คุณต้องการอนุญาตให้ทำ Action นี้หรือไม่? (y/n): ")
+        if choice.strip().lower() not in ('y', 'yes'):
+            return ActionResult(False, f"{t}", "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)")
+        print("[APPROVED] อนุญาตให้ดำเนินการต่อ...", flush=True)
+
     try:
         if t == "click":       return await click(page, cmd["index"])
         if t == "fill":        return await fill(page, cmd["index"], cmd["text"])
