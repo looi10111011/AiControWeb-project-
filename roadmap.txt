@@ -134,6 +134,35 @@
                  unit test ใหม่ครบใน test_llm.py (cache_control ถูกส่งจริง,
                  parse cache token ถูกต้อง, fallback เมื่อไม่มี tool_use block)
 
+              guard กัน finish_task(false) ก่อนเวลาอันควร (2026-07-10):
+              user รายงานว่า agent หยุดกลางคันหลัง login เสร็จ ไม่ทำต่อจนจบ goal —
+              สืบแล้วเป็นเคสเดิมที่บันทึกไว้ข้างบน (Llama บน Groq เรียก
+              finish_task(success=false) เร็วเกินไป) ยืนยันด้วย get_snapshot() จริง
+              บน saucedemo.com ว่าปุ่ม "Add to cart" ยัง visible อยู่ตอนที่โมเดลเลือก
+              จะหยุด — ไม่ใช่บั๊ก perception/footer-filter (element ที่ต้องกดยังอยู่
+              ในลิสต์ปกติ)
+
+              เพิ่ม guard ใน orchestrator.py::run_task(): finish_task(success=false)
+              ที่มี tool_use_id จริง (ไม่ใช่ fallback ตอนไม่เรียก tool เลย) และยังเหลือ
+              step ให้ลอง จะไม่ถูกยอมรับทันที — ส่งข้อความเตือนกลับเข้า tool_result
+              ("ยังไม่ยอมรับ... ให้ลองทำ action ที่ยังไม่ได้ลอง") แล้วบังคับให้โมเดล
+              ตัดสินใจใหม่ สูงสุด _MAX_PREMATURE_FALSE_FINISH_RETRIES (2) ครั้งก่อนจะ
+              ยอมรับ false จริงๆ (กัน infinite loop ถ้าติดจริง) — unit test ครบ 3 เคส
+              ใน test_orchestrator.py (override แล้วสำเร็จ, ยืนกราน false เกิน quota
+              แล้วยอมรับ, ไม่ override เคส fallback ที่ tool_use_id ว่าง)
+
+              *** รันจริงบน saucedemo.com ผ่าน Groq (llama-3.3-70b) 3 รอบหลังใส่
+              guard แล้ว: log ยืนยันว่า guard ทำงานถูก (เตือน 2 ครั้งจริงตามที่ตั้งไว้)
+              แต่โมเดลไม่ได้ตอบสนองต่อคำเตือนแบบมีความหมาย — แค่พิมพ์ finish_task(false)
+              ซ้ำข้อความเดิมอีกรอบ (บางรอบหยุดหลัง fill username รอบเดียว, บางรอบหยุด
+              หลัง fill ครบ 2 ช่องแต่ยังไม่กด login) ไม่เคยไปถึงขั้นกด Add to cart เลย
+              สักครั้ง — สรุปว่า guard ช่วยกัน "หยุดแบบไม่มีเหตุผลในทันที" และรายงาน
+              message ที่ตรงจุดขึ้น แต่แก้ปัญหาต้นตอ (โมเดล free tier ไม่ persistent
+              พอ) ไม่ได้ทั้งหมด — งานที่เหลือจริงๆ คือทดสอบซ้ำกับ Anthropic (Claude)
+              ตัวจริง (.env ยังเป็น placeholder key) ซึ่งคาดว่าจะ follow instruction
+              ได้ดีกว่านี้มาก, หรือรอ W5 verify/retry ที่เช็คผลจาก DOM จริงแทนที่จะพึ่ง
+              คำตัดสินใจของ LLM อย่างเดียว ***
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
