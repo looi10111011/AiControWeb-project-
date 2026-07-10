@@ -110,6 +110,30 @@
               backend/tests/test_orchestrator.py (unpack TokenUsage element
               ที่ 5, เช็ค result["tokens"] และ history[i]["tokens"])
 
+              ลด token cost ต่อ step (2026-07-10):
+              1) ย่อ SYSTEM_PROMPT ใน llm.py ให้กระชับขึ้น (ตัดประโยคซ้ำ/ตัวอย่าง
+                 ยาวๆ ออก) ยังคงกติกาครบทุกข้อเดิม แค่เขียนสั้นลง
+              2) perception.py::get_snapshot() กรอง element ที่อยู่ใน
+                 footer/[role=contentinfo]/id-class ที่มีคำว่า "footer" ออกตั้งแต่
+                 ใน _COLLECT_JS (ก่อนนับ index) — เพราะ agent แทบไม่เคยต้องกด
+                 social link/copyright แต่ดันกิน token ทุก step ที่ perceive
+                 มี unit test จริง (เปิด chromium, set_content มี footer ปลอม)
+                 ยืนยันว่า element ใน footer ถูกกรองออกใน backend/tests/test_perception.py
+              3) เปิด Anthropic prompt caching: system prompt (_SYSTEM_BLOCKS) +
+                 FINISH_TASK_TOOL มี cache_control={"type":"ephemeral"} — เพราะ
+                 tools+system เหมือนเดิมทุก step ของ loop เดียวกัน ต่างแค่
+                 messages ที่ยาวขึ้นเรื่อยๆ ลด input token cost ของทุก step
+                 หลังจาก step แรกได้เยอะ (เข้า cache read แทน cache write เต็ม)
+                 *** ใช้ได้เฉพาะ Anthropic เท่านั้น Groq ไม่ได้ทำตรงนี้ (ไม่รองรับ
+                 cache_control แบบเดียวกันผ่าน chat.completions) — ยังไม่เคยยืนยัน
+                 กับ Anthropic API จริง เพราะ .env ยังเป็น placeholder key
+                 (มีความเสี่ยงว่า prompt อาจสั้นกว่า minimum cacheable length ของ
+                 โมเดล ทำให้ cache_control เงียบๆ ไม่ทำงาน — ต้องเช็คจาก
+                 usage.cache_read/cache_creation ตอนรันจริงครั้งแรก) ***
+                 เพิ่ม TokenUsage.cache_creation_tokens/cache_read_tokens +
+                 unit test ใหม่ครบใน test_llm.py (cache_control ถูกส่งจริง,
+                 parse cache token ถูกต้อง, fallback เมื่อไม่มี tool_use block)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []

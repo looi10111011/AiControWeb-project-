@@ -66,7 +66,7 @@ async def test_run_task_stops_immediately_on_finish_task():
         {"step": 0, "cmd": {"type": "goto", "url": "https://example.com"}, "result": str(_GOTO_OK)}
     ]
     # token ของรอบ next_action ที่นำไปสู่ finish_task ต้องถูกนับรวมด้วย แม้ไม่มี browser action เกิดขึ้นเลย
-    assert result["tokens"] == {"input": 100, "output": 20}
+    assert result["tokens"] == {"input": 100, "output": 20, "cache_read": 0, "cache_creation": 0}
     mock_execute.assert_not_called()
     mock_browser.close.assert_awaited_once()
     mock_playwright_ctx.stop.assert_awaited_once()
@@ -101,11 +101,11 @@ async def test_run_task_executes_action_then_finishes():
             "step": 1,
             "cmd": {"type": "click", "index": 2},
             "result": str(click_result),
-            "tokens": {"input": 50, "output": 10},
+            "tokens": {"input": 50, "output": 10, "cache_read": 0, "cache_creation": 0},
         },
     ]
     # ต้องรวม token ของทั้ง 2 รอบ next_action (browser_action + finish_task) ไม่ใช่แค่รอบสุดท้าย
-    assert result["tokens"] == {"input": 110, "output": 25}
+    assert result["tokens"] == {"input": 110, "output": 25, "cache_read": 0, "cache_creation": 0}
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_run_task_stops_at_max_steps_without_finish_task():
     assert result["steps"] == 3
     assert mock_execute.await_count == 3
     # token สะสมของ next_action ต้องนับทุกรอบ (3 รอบ) ไม่ใช่แค่รอบเดียว
-    assert result["tokens"] == {"input": 90, "output": 15}
+    assert result["tokens"] == {"input": 90, "output": 15, "cache_read": 0, "cache_creation": 0}
 
 
 @pytest.mark.asyncio
@@ -150,5 +150,3 @@ async def test_run_task_closes_browser_even_if_action_raises():
 
     mock_browser.close.assert_awaited_once()
     mock_playwright_ctx.stop.assert_awaited_once()
-
-

@@ -15,6 +15,15 @@ from backend.app.core.perception import get_snapshot
 _PAGE_CHANGING_ACTIONS = {"click", "goto", "select", "go_back"}
 
 
+def _tokens_dict(usage: llm.TokenUsage) -> dict:
+    return {
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cache_creation": usage.cache_creation_tokens,
+    }
+
+
 class Orchestrator:
     def __init__(self):
         self.memory = ShortTermMemory()
@@ -97,7 +106,9 @@ class Orchestrator:
                 if verbose:
                     print(
                         f"  [tokens] input={usage.input_tokens} output={usage.output_tokens}"
-                        f" (รวม: input={total_usage.input_tokens} output={total_usage.output_tokens})",
+                        f" cache_read={usage.cache_read_tokens} cache_write={usage.cache_creation_tokens}"
+                        f" (รวม: input={total_usage.input_tokens} output={total_usage.output_tokens}"
+                        f" cache_read={total_usage.cache_read_tokens} cache_write={total_usage.cache_creation_tokens})",
                         flush=True,
                     )
 
@@ -117,7 +128,7 @@ class Orchestrator:
                     "step": steps_taken,
                     "cmd": tool_input,
                     "result": str(result),
-                    "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
+                    "tokens": _tokens_dict(usage),
                 })
                 if verbose:
                     print(f"  -> {result}", flush=True)
@@ -132,7 +143,7 @@ class Orchestrator:
                 "steps": steps_taken,
                 "message": final_message,
                 "history": self.memory.recent(max_steps),
-                "tokens": {"input": total_usage.input_tokens, "output": total_usage.output_tokens},
+                "tokens": _tokens_dict(total_usage),
             }
         finally:
             await browser.close()
