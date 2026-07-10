@@ -9,8 +9,9 @@ python-dotenv==1.0.1
 playwright==1.48.0
 
 # LLM
-anthropic==0.39.0
+anthropic==0.116.0
 google-generativeai==0.8.3
+groq==1.5.0   # ทางเลือกไว้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
 
 # RAG / Vector DB
 chromadb==1.5.9

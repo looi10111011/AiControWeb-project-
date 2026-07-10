@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-09)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-10)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -48,12 +48,74 @@
               ไว้ในเครื่อง), แต่กิน RAM ตอนรัน — ทุก collection ที่เคย ingest
               ด้วย Gemini ต้อง re-ingest ใหม่หมด เพราะมิติเวกเตอร์ไม่ตรงกัน ***
 
+  [x] W4 [A]  Agent Loop v1: Perceive→Plan→Act (เว็บง่าย 1 หน้า) — เสร็จ
+              (backend/app/core/orchestrator.py::run_task() — วน
+              perceive(get_snapshot) → plan(Claude tool-use) → act(execute())
+              จนกว่า LLM จะเรียก finish_task หรือครบ max_steps)
+              - backend/app/core/llm.py (ใหม่): ใช้ Claude tool-use (function
+                calling) เลือก action แทนให้ตอบ JSON เป็น text แล้วพาร์สเอง —
+                กัน markdown fence/คำอธิบายแถม/JSON ผิดรูปแบบที่พังบ่อย
+              - เจอบั๊กสภาพแวดล้อมระหว่างทำ: anthropic==0.39.0 ที่ pin ไว้ใช้กับ
+                httpx เวอร์ชันที่ลงจริงไม่ได้เลย (AsyncAnthropic() พังตั้งแต่สร้าง
+                client เพราะ httpx เอา kwarg 'proxies' ออกไปแล้ว) — ปัญหานี้จะ
+                บล็อกทุกคนที่ pip install requirements.txt สดใหม่ ไม่ใช่แค่ dev
+                คนเดียว — อัป anthropic เป็น 0.116.0 ใน requirements.txt แก้แล้ว
+              - unit test 4 เคสใน backend/tests/test_orchestrator.py (mock
+                Playwright + llm.next_action ทั้งหมด ไม่ยิง browser/API จริง)
+              - รัน python run.py agent จริงบน saucedemo.com: เปิด browser →
+                goto → perceive → build tool-use request สำเร็จหมด พังแค่ตอน
+                ยิง Anthropic API จริง (401 invalid x-api-key) เพราะ .env ยังเป็น
+                placeholder key — ยังไม่เคยเห็น full run สำเร็จจริงด้วย key จริง
+              *** ไม่มี retry เมื่อ action ล้มเหลว และไม่ได้เช็ค permission/
+              classify_action() เลย — ทั้งคู่เป็นของ W5 ตามแผนเดิม (W4 v1 แค่ให้
+              LLM เห็นผล action ที่ fail แล้วตัดสินใจเองว่าจะลองทางอื่นยังไง) ***
+
+              เพิ่ม provider ที่ 2 (Groq, OpenAI-compatible function calling)
+              เข้า llm.py/orchestrator.py ไว้ทดสอบ loop จริงตอนยังไม่มี Anthropic
+              key จริง (Orchestrator.run_task(..., provider="groq"|"anthropic"))
+              — รันจริงจนจบ loop ได้แล้วบน saucedemo.com (ผ่าน Groq, ไม่ใช่
+              Anthropic) เจอ 2 ประเด็นระหว่างทดสอบ:
+              1) tool_use_failed: llama-3.3-70b บน Groq บางครั้ง generate tool
+                 call ผิดรูปแบบ — แก้ด้วย retry สูงสุด 3 ครั้งใน next_action_groq()
+              2) *** พฤติกรรมโมเดล ไม่ใช่บั๊กโค้ด ***: เจอ agent เรียก
+                 finish_task(success=true) ทั้งที่ทำ goal ที่มีหลายส่วนไปแค่ครึ่งเดียว
+                 (กรอกฟอร์ม login เสร็จแต่ยังไม่ได้กด submit/เพิ่มสินค้าลงตะกร้า) —
+                 แก้ prompt ให้เช็คหลักฐานจากหน้าเว็บก่อนเคลม success ได้ผล (ไม่โกหก
+                 success อีกแล้ว) แต่เจอปัญหาใหม่แทน: agent เปลี่ยนไปเรียก
+                 finish_task(success=false) เร็วเกินไปแทน (หยุดทำงานทั้งที่ยังมี
+                 action ที่ชัดเจนให้ทำต่อ เช่น เห็นปุ่ม Add to cart อยู่ตรงหน้าแต่ไม่กด)
+                 ลอง tighten prompt เพิ่มรอบที่ 2 แล้วดีขึ้นบางส่วนแต่ไม่หายขาด —
+                 สรุปว่าเป็นข้อจำกัดความสามารถของโมเดล (llama-3.3-70b free tier)
+                 ไม่ใช่สิ่งที่แก้ได้ด้วย prompt เพียงอย่างเดียว — ตัดสินใจหยุดไล่แก้
+                 ด้วย prompt ตรงนี้ ยกให้เป็นงานของ W5 Verify+Retry (เช็คผลจริงจาก
+                 หน้าเว็บแทนที่จะเชื่อคำเคลมของ LLM เฉยๆ) และ/หรือรอทดสอบซ้ำกับ
+                 Anthropic (Claude) ตัวจริงที่คาดว่าจะ persistent กว่านี้
+
+              แก้เพิ่ม (2026-07-10):
+              1) next_action_groq(): เดิมถ้า Llama ไม่เรียก tool เลย (ตอบเป็น
+                 ข้อความเฉยๆ แม้ tool_choice="required") จะ fallback เป็น
+                 finish_task(success=False) ทันที — เปลี่ยนเป็นเตือนกลับเข้า
+                 บทสนทนา ("คุณต้องเรียก tool... ลองใหม่อีกครั้ง") แล้วลองใหม่สูงสุด
+                 3 ครั้ง (_GROQ_NO_TOOL_CALL_RETRIES) ก่อนค่อย fallback จริงๆ —
+                 กัน agent หยุดงานเร็วเกินไปจากแค่ generate พลาดรอบเดียว
+              2) เพิ่ม token usage tracking ต่อ action: llm.TokenUsage (input/
+                 output tokens) เป็น element ที่ 5 ที่ next_action()/
+                 next_action_groq() คืนกลับมาทุกครั้ง (Groq รวม token ของทุก
+                 retry ในรอบนั้นด้วย ไม่ใช่แค่ request สุดท้ายที่สำเร็จ) —
+                 orchestrator.run_task() print token ต่อ step (verbose) +
+                 เก็บ "tokens" ใน history แต่ละ step + สรุปรวมใน
+                 result["tokens"] ตอนจบ task, run.py agent print สรุปรวมด้วย
+              unit test เพิ่ม/แก้ครบทั้ง backend/tests/test_llm.py (nudge-then-
+              retry, exhausted-then-finish, usage สะสมถูกต้องรวม retry) และ
+              backend/tests/test_orchestrator.py (unpack TokenUsage element
+              ที่ 5, เช็ค result["tokens"] และ history[i]["tokens"])
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
     เสมอไม่ throw — มี unit test 8 เคสใน backend/tests/test_retriever.py
     *** ยังไม่ได้เชื่อมกับ orchestrator/Planner จริง — งานเชื่อมยังเป็นของ W6 ***
-  - run.py — launcher รวมคำสั่ง server/test/perception/ingest/query ไว้ไฟล์เดียว
+  - run.py — launcher รวมคำสั่ง server/test/perception/ingest/query/agent ไว้ไฟล์เดียว
     + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน Windows console อัตโนมัติ
   - แก้บั๊ก config.py: .env มี LLM_PROVIDER/ANTHROPIC_MODEL ที่ Settings ไม่มี
     field รองรับ ทำให้ Settings() พังตั้งแต่ import (บล็อกทั้งโปรเจกต์) — เพิ่ม
@@ -101,7 +163,8 @@
      │      (dropdown/scroll/error-handling เสร็จ, tab-switch ยังไม่ทำ)
      └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ  ✅ เสร็จแล้ว
 
-  W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)
+  W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)  ✅ เสร็จแล้ว
+     │      (Perceive→Plan→Act เสร็จ, Verify/retry ยังไม่ทำ — เป็นของ W5)
      └ [B]  Permission layer: allowlist / blocklist action  (เริ่ม)
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว
