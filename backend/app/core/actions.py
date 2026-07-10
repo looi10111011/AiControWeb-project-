@@ -14,7 +14,7 @@ actions.py  —  W3: Browser Actions (ชุดเครื่องมือใ
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
 from backend.app.permission.rules import ActionRisk, classify_action
@@ -146,7 +146,7 @@ async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
 # ------------------------------------------------------------
 # ทางเข้าเดียวสำหรับ W4: agent ส่ง action มาเป็น dict แล้ว dispatch
 # ------------------------------------------------------------
-async def execute(page: Page, cmd: dict) -> ActionResult:
+async def execute(page: Page, cmd: dict, ask_user_func: Optional[Callable] = None) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
         {"type": "fill",   "index": 0, "text": "standard_user"}

@@ -3,6 +3,7 @@
 W1: skeleton only. W4: ทำ loop จริงกับเว็บง่าย 1 หน้า. W5: เพิ่ม verify/retry.
 """
 
+from typing import Optional, Callable
 from playwright.async_api import async_playwright
 
 from backend.app.config import settings
@@ -50,6 +51,7 @@ class Orchestrator:
         headless: bool | None = None,
         verbose: bool = False,
         provider: str | None = None,
+        ask_user_func: Optional[Callable] = None,
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
@@ -111,7 +113,7 @@ class Orchestrator:
                 if verbose:
                     print(f"[step {steps_taken + 1}] {tool_input}", flush=True)
 
-                result: ActionResult = await execute(page, tool_input)
+                result: ActionResult = await execute(page, tool_input, ask_user_func=ask_user_func)
                 steps_taken += 1
                 self.memory.record({
                     "step": steps_taken,
