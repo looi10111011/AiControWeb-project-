@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-10)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-13)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -232,6 +232,12 @@
               มาก (ดู "guard กัน finish_task(false)" ด้านบน) — .env เปลี่ยน
               LLM_PROVIDER เป็น gemini แล้ว (ตัวไฟล์ .env เอง ไม่ได้ขึ้น git)
 
+              *** สรุป W4 ปิดจ็อบ (2026-07-13): PR #8 (W4GeminiAPI) merge เข้า
+              main แล้ว รวมทุกอย่างข้างบน (token cost optimization, premature-
+              finish guard, permission layer + human-in-the-loop, plan
+              confirmation gate, provider 3 ตัว anthropic/gemini/groq) เป็นก้อน
+              เดียวบน main — test suite รวม 54 เคสผ่านหมดบน main ตอนนี้ ***
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -286,15 +292,21 @@
      └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ  ✅ เสร็จแล้ว
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)  ✅ เสร็จแล้ว
-     │      (Perceive→Plan→Act เสร็จ, Verify/retry ยังไม่ทำ — เป็นของ W5)
-     └ [B]  Permission layer: allowlist / blocklist action  🔶 PR permission-ab
-            merge เข้าโค้ดหลักแล้ว (classify_action + execute() hook + human-in-
-            the-loop input()) ยังไม่ได้ต่อ RAG-based permission (ของ W7)
+     │      (Perceive→Plan→Act เสร็จ, Verify/retry ยังไม่ทำ — เป็นของ W5;
+     │      เพิ่ม provider anthropic/gemini/groq ครบ 3 ตัว + token cost
+     │      optimization + premature-finish guard + plan confirmation gate
+     │      แล้วด้วย — เกินขอบเขต W4 เดิมไปเยอะ แต่ยังไม่ใช่ verify/retry จริง)
+     └ [B]  Permission layer: allowlist / blocklist action  ✅ เสร็จแล้ว
+            (classify_action + execute() hook + human-in-the-loop input()/
+            ask_user_func — ใช้ร่วมกับ plan confirmation gate ด้วย) ยังไม่ได้
+            ต่อ RAG-based permission (ของ W7)
 
-  W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว
-     ├ [B]  Permission layer (ต่อ) + Human-in-the-loop
-     │      (action อันตรายต้องขอยืนยันก่อน)
-     └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย
+  W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  🔶 เริ่มแล้ว (2026-07-13)
+     ├ [B]  Permission layer (ต่อ) + Human-in-the-loop  ✅ เสร็จแล้ว (ย้ายเสร็จ
+     │      จาก W4[B] ข้างบนแล้ว เพราะ merge เข้ามาไวกว่าแผน)
+     └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย  🔶 ทำ
+            end-to-end สำเร็จแล้วหลายรอบ (ดู W4[A]) + มี permission brake
+            แล้ว — เหลือ verify/retry ให้ครบตามหมุดหมาย
 
   >> หมุดหมาย W5 (สำคัญที่สุด): ถ้าถึงตรงนี้ทันเวลา = ที่เหลือรอด
 
