@@ -48,6 +48,13 @@ def _sel(index: int) -> str:
     return f'[data-ai-index="{index}"]'
 
 
+# W5: timeout สั้นลงสำหรับ action ที่ต้องหา/รอ element (click/fill/select/check) — ถ้า
+# element หาไม่เจอหรือมองไม่เห็น (not visible/not actionable) ภายในเวลานี้ ให้ดีด [FAIL]
+# กลับเข้า loop หลักทันที ไม่รอค้างนาน โดยเฉพาะตอนรวมกับ _dispatch_with_retry ด้านล่างที่
+# ยิงซ้ำอยู่แล้ว (5s เดิม x 3 ครั้ง = รอได้ถึง 15s ต่อ 1 action เดียว นานเกินไป)
+_ELEMENT_ACTION_TIMEOUT_MS = 3000
+
+
 # ------------------------------------------------------------
 # W5: Verify + Retry — action พวก click/fill/select/check พังบ่อยเพราะ DOM ยัง
 # ไม่นิ่ง (element ยัง render/animate ไม่เสร็จ) ไม่ใช่เพราะ index ผิดจริงๆ เสมอไป
@@ -80,7 +87,7 @@ async def _dispatch_with_retry(action_func, *args) -> ActionResult:
 # ACTIONS
 # ------------------------------------------------------------
 
-async def click(page: Page, index: int, timeout: int = 5000) -> ActionResult:
+async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """คลิก element ตาม index"""
     try:
         await page.click(_sel(index), timeout=timeout)
@@ -91,7 +98,7 @@ async def click(page: Page, index: int, timeout: int = 5000) -> ActionResult:
         return ActionResult(False, f"click({index})", f"error: {e}")
 
 
-async def fill(page: Page, index: int, text: str, timeout: int = 5000) -> ActionResult:
+async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
     try:
         await page.fill(_sel(index), text, timeout=timeout)
@@ -102,7 +109,7 @@ async def fill(page: Page, index: int, text: str, timeout: int = 5000) -> Action
         return ActionResult(False, f"fill({index})", f"error: {e}")
 
 
-async def select_option(page: Page, index: int, label: str, timeout: int = 5000) -> ActionResult:
+async def select_option(page: Page, index: int, label: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """เลือกตัวเลือกใน dropdown (<select>) ตาม index — เลือกด้วยข้อความที่เห็น"""
     try:
         await page.select_option(_sel(index), label=label, timeout=timeout)
@@ -118,7 +125,7 @@ async def select_option(page: Page, index: int, label: str, timeout: int = 5000)
             return ActionResult(False, f"select({index})", f"error: {e2}")
 
 
-async def check(page: Page, index: int, timeout: int = 5000) -> ActionResult:
+async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """ติ๊ก checkbox/radio ตาม index"""
     try:
         await page.check(_sel(index), timeout=timeout)

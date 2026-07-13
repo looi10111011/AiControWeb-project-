@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import TimeoutError as PWTimeout
 
-from backend.app.core.actions import ActionResult, execute
+from backend.app.core.actions import ActionResult, _ELEMENT_ACTION_TIMEOUT_MS, execute
 
 # W5: retry ระดับ click/fill/select/check เมื่อ action ล้มเหลว — ไม่เสีย LLM token
 # เพราะ retry อยู่ใน actions.py เอง ไม่ต้องรอ next_action() รอบใหม่ ทุกเทสต์ mock
@@ -25,6 +25,20 @@ async def test_execute_click_succeeds_first_try_without_retry():
     assert result.success is True
     assert "ลองครั้งที่" not in result.message  # สำเร็จรอบแรก ไม่ต้องพูดถึง retry เลย
     mock_page.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_click_uses_short_element_timeout_by_default():
+    """W5: timeout สั้นลงเหลือ 3s (จากเดิม 5s) กัน action ค้างนานเกินไปเวลารวมกับ
+    retry loop — ยืนยันว่า page.click() ถูกเรียกด้วย timeout นี้จริง ไม่ใช่แค่ comment"""
+    mock_page = AsyncMock()
+
+    await execute(mock_page, {"type": "click", "index": 2})
+
+    assert _ELEMENT_ACTION_TIMEOUT_MS == 3000
+    mock_page.click.assert_awaited_once_with(
+        '[data-ai-index="2"]', timeout=_ELEMENT_ACTION_TIMEOUT_MS
+    )
 
 
 @pytest.mark.asyncio
