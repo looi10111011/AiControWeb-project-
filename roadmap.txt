@@ -397,9 +397,8 @@
 
   *** สถานะ PR (2026-07-13): งานทั้งหมดของ W5[A] ข้างบน (retry/timeout tuning,
   loop-detection guard, cart/checkout perception fix, agent-log console window)
-  อยู่ใน branch "W5(edit)" แล้ว เปิด PR #10 ไปที่ main แล้ว
-  (https://github.com/looi10111011/AiControWeb-project-/pull/10) —
-  *** ยังไม่ merge *** รอ review/merge อยู่ ***
+  ไปกับ PR #10 (https://github.com/looi10111011/AiControWeb-project-/pull/10)
+  — *** merge เข้า main แล้ว *** ***
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
