@@ -257,12 +257,94 @@
               permission check (ask_user_func) ถูกเรียกแค่ครั้งเดียวก่อน retry loop
               เริ่ม ไม่ถามซ้ำทุกรอบที่ retry
 
-              unit test ใหม่ 6 เคสใน backend/tests/test_actions.py (สำเร็จรอบแรก
+              unit test ใหม่ 7 เคสใน backend/tests/test_actions.py (สำเร็จรอบแรก
               ไม่ retry, retry แล้วสำเร็จ, ครบ 3 ครั้งแล้วยัง fail, select/check
-              ก็ retry เหมือนกัน, goto ไม่ retry, submit alias ก็ retry) — mock
-              asyncio.sleep กันไม่ให้ test suite ช้าจริง — รันจริงบน saucedemo.com
-              ผ่าน Gemini ยืนยัน flow ปกติไม่พังหลังใส่ retry (ยังไม่เคยเจอ
-              transient failure จริงให้เห็น retry ทำงานสด — เชื่อ unit test เป็นหลัก)
+              ก็ retry เหมือนกัน, goto ไม่ retry, submit alias ก็ retry, timeout
+              ที่ส่งเข้า page.click() จริงตรงกับค่าที่ตั้งไว้) — mock asyncio.sleep
+              กันไม่ให้ test suite ช้าจริง — รันจริงบน saucedemo.com ผ่าน Gemini
+              ยืนยัน flow ปกติไม่พังหลังใส่ retry (ยังไม่เคยเจอ transient failure
+              จริงให้เห็น retry ทำงานสด — เชื่อ unit test เป็นหลัก)
+
+              ลด timeout ต่อ action (2026-07-13):
+              user ขอให้ลด timeout ของ click/fill/select/check จาก 5s เดิม เหลือ
+              3s (_ELEMENT_ACTION_TIMEOUT_MS) เพราะรวมกับ retry loop ข้างบนแล้ว
+              worst case เดิมคือ 5s x 3 ครั้ง = รอได้ถึง 15s ต่อ action เดียว ถ้า
+              element หาไม่เจอ/มองไม่เห็นจริงๆ — นานเกินไปจนเสี่ยง browser/
+              connection ค้าง ลดเหลือ 3s x 3 + delay 0.5s x 2 = worst case ~10s
+              ยืนยันด้วย unit test ว่า page.click()/fill()/select_option()/check()
+              ถูกเรียกด้วย timeout=3000 จริง ไม่ใช่แค่เปลี่ยนตัวเลขใน comment —
+              รันจริงบน saucedemo.com ผ่าน Gemini ยืนยัน flow ปกติไม่พัง (3s
+              เพียงพอสำหรับเว็บที่ render เร็วแบบนี้อยู่แล้ว)
+
+              แก้บั๊ก perception.py: LLM มองไม่เห็นทาง add-to-cart -> checkout
+              (2026-07-13):
+              user รายงานว่าหลัง add to cart แล้ว LLM ไปต่อไม่ได้ ไม่เจอทางไป
+              checkout — สืบจริงบน saucedemo.com เจอ 2 บั๊กซ้อนกันใน get_snapshot():
+
+              1) ปุ่มตะกร้า (.shopping_cart_link) เป็น icon-only element ไม่มี
+                 innerText/aria-label/name เลย (ก่อนใส่ของ) หรือมีแค่ตัวเลข badge
+                 ล้วนๆ เช่น "1" (หลังใส่ของ) — เดิม label extraction มีแค่ 5
+                 แหล่ง (innerText/value/placeholder/aria-label/name) ได้ label ว่าง
+                 หรือแค่ "1" ทำให้ LLM เดาไม่ออกว่า element ไหนคือปุ่มตะกร้า
+                 แก้: เพิ่ม fallback title/data-test(id)/data-qa/id (humanize
+                 kebab-snake-case เป็นช่องว่าง) และถ้า innerText เป็นแค่ตัวเลขล้วน
+                 (badge counter) ให้ผสมกับ label เชิงความหมายแทนที่จะทิ้งไปเฉยๆ
+                 (เช่น "shopping cart link (1)")
+
+              2) *** บั๊กตัวจริงที่บล็อกทั้ง flow ***: ปุ่ม Checkout ของ saucedemo
+                 อยู่ใน <div class="cart_footer"> — filter เดิม
+                 [class*="footer" i] เป็น substring match ตรงๆ ไปแมตช์คำว่า
+                 "footer" ใน "cart_footer" เข้าด้วย (ทั้งที่ตั้งใจจะกรองแค่ site
+                 footer จริง เช่น social link/copyright) ทำให้ปุ่ม Checkout (และ
+                 Continue Shopping) หายไปจาก snapshot ทุกครั้ง ไม่เคยอยู่ในลิสต์ที่
+                 LLM เห็นเลยตั้งแต่แรก — นี่คือสาเหตุหลักที่ agent ไปต่อจาก cart
+                 ไม่ได้ ไม่ใช่แค่ label ของปุ่มตะกร้าอย่างเดียว
+                 แก้: เปลี่ยนจาก substring match เป็น token-aware — ยอมให้ "footer"
+                 โดดๆ หรือมีคำขอบเขตทั้งหน้านำหน้า (site/page/global/main/app)
+                 เท่านั้นถึงจะถือเป็น site footer จริง ชื่อที่มีคำ component อื่น
+                 นำหน้า (cart_footer, modal-footer, card-footer) จะไม่ถูกกรองอีก
+                 ต่อไป เพราะมักเป็น action bar ที่มีปุ่มสำคัญอยู่ข้างใน
+
+              unit test ใหม่ 3 เคสใน backend/tests/test_perception.py (fallback
+              label สำหรับ icon-only element, ผสม badge counter กับ label
+              เชิงความหมาย, component footer ไม่ถูกกรองแต่ site footer จริงยัง
+              ถูกกรองเหมือนเดิม) — รันจริงบน saucedemo.com ยืนยัน flow เต็ม: หลัง
+              login -> add to cart -> เห็น "[N] a 'shopping cart link (1)'" ->
+              คลิกเข้าหน้า cart -> เห็นทั้ง "Continue Shopping" และ "Checkout"
+              เป็น element ปกติในลิสต์แล้ว (ก่อนแก้ 2 ปุ่มนี้หายไปจาก snapshot
+              ทั้งคู่) — test suite รวมเป็น 67 เคสผ่านหมด
+
+              เพิ่ม guard กันบั๊กเดิมซ้ำในอนาคต (2026-07-13) — user ขอ 2 จุด:
+
+              1) กัน badge/ตัวเลขล้วนๆ แย่ง index จากตัวพ่อที่คลิกได้จริง —
+                 selector list ปัจจุบัน ([tabindex]/[onclick]/[role=...]) ยังไม่
+                 แมตช์ <span> badge ธรรมดา แต่ถ้าเว็บอื่นใส่ tabindex/role บน badge
+                 เพื่อ accessibility (พบได้จริงในเว็บที่ทำตาม ARIA guideline) badge
+                 จะกลายเป็น candidate node แยก ได้ index ของตัวเองซ้อนกับตัวพ่อ หรือ
+                 แย่กว่านั้นคือ index ไปชี้ที่ span เล็กๆ ที่คลิกไม่โดน handler ของ
+                 ลิงก์จริง — เพิ่ม isBadgeLikeLeaf() ใน _COLLECT_JS: ถ้า candidate
+                 ไม่ใช่ a/button และ innerText เป็นตัวเลขล้วนๆ (1-4 หลัก) ให้ไต่หา
+                 closest clickable ancestor (a/button/[role=button]/[role=link]/
+                 [onclick]) แล้วแปะ data-ai-index ที่ตัวพ่อแทน — เช็ค
+                 hasAttribute('data-ai-index') กันไม่ให้ push entry ซ้ำถ้าตัวพ่อถูก
+                 index ไปแล้วจากการวนถึงตัวเองก่อนหน้าในลูป (document order ทำให้
+                 พ่อมาก่อนลูกเสมอ จึงชัวร์ว่าพ่อถูกประมวลผลก่อน)
+                 unit test ใหม่ใน test_perception.py: badge span ที่มี tabindex="-1"
+                 ซ้อนใน <a> ต้องได้ element เดียว (ไม่ใช่ 2) label
+                 "shopping cart link (1)" — รันจริงบน saucedemo.com ยืนยัน snapshot
+                 หลัง add-to-cart ยังเหมือนเดิมทุกอย่าง (21 elements, cart index 1)
+                 ไม่มี regression เพราะ badge ของ saucedemo เองไม่มี tabindex อยู่แล้ว
+                 โค้ดนี้เป็น guard สำหรับเว็บอื่นในอนาคต
+
+              2) เพิ่ม anchor text ใน llm.py::SYSTEM_PROMPT: เพิ่มกติกาบอก LLM
+                 ตรงๆ ว่าถ้าต้องไปหน้าตะกร้า/checkout ให้มองหา element ที่ label มี
+                 คำว่า "cart"/"shopping_cart_link"/"ตะกร้า" หรือมีตัวเลขในวงเล็บ
+                 ต่อท้าย (เช่น "shopping cart link (1)") — เสริมจากฝั่ง perception
+                 (ที่ทำให้ label สื่อความหมายแล้ว) ด้วยฝั่ง prompt (บอก LLM ให้รู้จัก
+                 pattern นี้ตรงๆ) กัน 2 ชั้น ไม่ต้องพึ่ง label ฝั่งเดียวล้วนๆ
+                 *** ยังไม่เคยรันจริงผ่าน LLM เพื่อยืนยันว่ากติกาใหม่ช่วยจริง (แค่
+                 ยืนยันว่า test_llm.py ทั้งหมดที่ reference llm.SYSTEM_PROMPT ผ่าน
+                 attribute ไม่ใช่ hardcoded string เลยไม่พังจากการแก้ข้อความ) ***
 
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
@@ -271,6 +353,31 @@
     *** ยังไม่ได้เชื่อมกับ orchestrator/Planner จริง — งานเชื่อมยังเป็นของ W6 ***
   - run.py — launcher รวมคำสั่ง server/test/perception/ingest/query/agent ไว้ไฟล์เดียว
     + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน Windows console อัตโนมัติ
+    + (2026-07-13) user บ่นว่า verbose log ของ agent loop (goto/plan/step/result
+      ทุก step) รก terminal หลักที่ใช้งานอย่างอื่นอยู่ด้วย — เปลี่ยน run_agent()
+      ให้เปิด console หน้าต่างใหม่แยกต่างหาก (subprocess.Popen + creationflags=
+      CREATE_NEW_CONSOLE, เฉพาะ Windows) มารัน agent loop จริงแทน โดย relaunch
+      "python run.py agent [goal] [provider]" ในหน้าต่างใหม่ ส่ง goal/provider
+      เดิมต่อให้ถ้าผู้ใช้ใส่มาทาง CLI อยู่แล้ว (ถ้าไม่ใส่มาก็ปล่อยให้ไปถาม goal เอง
+      ในหน้าต่างใหม่ตามปกติ) กัน infinite spawn ด้วย env var AI_AGENT_WORKER=1
+      ที่ process ลูกจะมีติดตัวมา — terminal เดิมที่เรียก `python run.py agent`
+      จะ return ทันทีหลัง spawn ไม่ block รอ ส่วน input() ทั้งหมด (goal prompt,
+      plan confirm y/n, permission confirm y/n) ยังทำงานปกติเพราะ process ลูกมี
+      stdin/stdout ของตัวเองผูกกับ console ใหม่ — verify ด้วยการ monkeypatch
+      subprocess.Popen/_run_agent_inline ยืนยัน argv/env ที่ส่งไปถูกทั้ง 2 เคส
+      (ใส่ goal/provider ทาง CLI ตรงๆ, และเรียกผ่านเมนูแบบไม่มี goal ใน argv)
+      *** ยังไม่เคยเห็นหน้าต่าง console จริงเด้งขึ้นมาบนจอ user เอง (แค่ทดสอบ
+      logic การ spawn ด้วย mock) — ถ้าเปิดแล้วไม่เด้งจริงต้องเช็ค flag
+      CREATE_NEW_CONSOLE กับ terminal ที่ user ใช้อยู่ (เช่น Windows Terminal
+      บางเวอร์ชันจัดการ console ใหม่ต่างจาก cmd.exe/PowerShell ดั้งเดิม) ***
+
+      แก้เพิ่ม (2026-07-13 เช่นกัน): user ขอไม่ให้หน้าต่างใหม่ปิดอัตโนมัติ —
+      เดิม spawn python.exe ตรงๆ ทำให้ console หายทันทีที่ process จบ (agent
+      error/จบเร็วก็อ่าน log ไม่ทัน) เปลี่ยนมาห่อด้วย "cmd /k <คำสั่งเดิม>"
+      แทน (/k = รันคำสั่งแล้วค้าง shell ไว้ ต้องปิดเอง/พิมพ์ exit) ใช้
+      subprocess.list2cmdline() quote argv ให้ถูกก่อนต่อเป็น string เดียว (กัน
+      goal ที่มีช่องว่างแตกเป็นหลาย arg ผิดๆ) — verify แล้วว่า goal string ที่มี
+      เว้นวรรคยังถูก quote เป็น token เดียวถูกต้องหลังห่อ cmd /k
   - แก้บั๊ก config.py: .env มี LLM_PROVIDER/ANTHROPIC_MODEL ที่ Settings ไม่มี
     field รองรับ ทำให้ Settings() พังตั้งแต่ import (บล็อกทั้งโปรเจกต์) — เพิ่ม
     field ให้ครบแล้ว
@@ -328,6 +435,8 @@
             ต่อ RAG-based permission (ของ W7)
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  🔶 เริ่มแล้ว (2026-07-13)
+     │      (retry click/fill/select/check + timeout สั้นลง 3s — ยังไม่มี
+     │      verify ผล finish_task(success=true) เทียบกับ DOM จริง)
      ├ [B]  Permission layer (ต่อ) + Human-in-the-loop  ✅ เสร็จแล้ว (ย้ายเสร็จ
      │      จาก W4[B] ข้างบนแล้ว เพราะ merge เข้ามาไวกว่าแผน)
      └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย  🔶 ทำ

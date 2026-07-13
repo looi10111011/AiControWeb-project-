@@ -32,14 +32,66 @@ _COLLECT_JS = r"""
 
   // footer/ส่วนที่ไม่เกี่ยวกับการทำ task จริง (โซเชียล/copyright/nav ซ้ำ) —
   // กันไม่ให้กิน token เปล่าๆ ทุก step โดยที่ agent แทบไม่เคยต้องกด element พวกนี้
-  const IRRELEVANT_SELECTOR = 'footer, [role="contentinfo"], [id*="footer" i], [class*="footer" i]';
+  //
+  // *** เดิมใช้ [class*="footer" i] แบบ substring เปล่าๆ ซึ่งดันไปแมตช์ id/class
+  // ของ "แถบปุ่ม action ท้าย component" ด้วย (เช่น saucedemo ใส่ปุ่ม Checkout จริง
+  // ไว้ใน <div class="cart_footer">) ทำให้ปุ่มที่ต้องกดจริงหายไปจาก snapshot ทั้งที่
+  // ไม่ใช่ footer ของทั้งหน้าเลย — เปลี่ยนมาเช็คแบบ token-aware แทน: ยอมให้ "footer"
+  // โดดๆ หรือมีคำขอบเขตระดับทั้งหน้านำหน้า (site/page/global/main/app) เท่านั้น
+  // ถึงจะถือว่าเป็น footer จริงของหน้า — ชื่อที่มีคำ component อื่นนำหน้า (cart_footer,
+  // modal-footer, card-footer) จะไม่ถูกกรอง เพราะมักเป็น action bar ที่มีปุ่มสำคัญ ***
+  const PAGE_SCOPE_FOOTER_WORDS = new Set(['site', 'page', 'global', 'main', 'app']);
+
+  const isGlobalFooterToken = (raw) => {
+    if (!raw) return false;
+    const tokens = raw.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    if (!tokens.includes('footer')) return false;
+    return tokens.every((t) => t === 'footer' || PAGE_SCOPE_FOOTER_WORDS.has(t));
+  };
+
+  const isIrrelevant = (node) => {
+    let cur = node;
+    while (cur && cur.nodeType === 1) {
+      if (cur.tagName.toLowerCase() === 'footer') return true;
+      if (cur.getAttribute('role') === 'contentinfo') return true;
+      if (isGlobalFooterToken(cur.id)) return true;
+      const classStr = cur.classList ? Array.from(cur.classList).join(' ') : '';
+      if (isGlobalFooterToken(classStr)) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+
+  // element ที่เป็นแค่ตัวเลข/badge นับจำนวนล้วนๆ (เช่น <span class="cart-badge">1</span>
+  // ที่ซ้อนอยู่ใน <a class="shopping_cart_link">) ไม่ควรได้ index เป็นของตัวเอง —
+  // ตัวที่คลิกแล้วมีผลจริงคือ element พ่อ (a/button) ถ้าปล่อยให้ badge ได้ index
+  // แยก จะได้ index ชี้ไปที่ span เล็กๆ ที่คลิกไม่โดน handler ของลิงก์จริง (เกิดได้
+  // ถ้า selector อื่นในลิสต์ข้างบนไปแมตช์ badge เข้าโดยบังเอิญ เช่นมี tabindex/
+  // role ติดมาด้วยเพื่อ accessibility) — ให้ขยับไปแปะ index ที่ตัวพ่อที่คลิกได้แทน
+  const CLICKABLE_ANCESTOR_SELECTOR = 'a, button, [role="button"], [role="link"], [onclick]';
+
+  const isBadgeLikeLeaf = (node) => {
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'a' || tag === 'button') return false;
+    const text = (node.innerText || '').trim();
+    return text !== '' && /^\d{1,4}$/.test(text);
+  };
 
   const nodes = Array.from(document.querySelectorAll(selectors));
   const out = [];
   let idx = 0;
 
-  for (const el of nodes) {
-    if (el.closest(IRRELEVANT_SELECTOR)) continue;
+  for (const candidate of nodes) {
+    const ancestor = isBadgeLikeLeaf(candidate)
+      ? candidate.parentElement && candidate.parentElement.closest(CLICKABLE_ANCESTOR_SELECTOR)
+      : null;
+    const el = ancestor || candidate;
+
+    // ตัวพ่ออาจถูกแปะ index ไปแล้ว (จากการวนถึงตัวพ่อเองก่อนหน้านี้ในลูป หรือจาก
+    // badge อีกตัวในพ่อเดียวกัน) — ไม่ต้องแปะซ้ำ/ไม่ต้อง push entry ซ้ำ
+    if (el.hasAttribute('data-ai-index')) continue;
+
+    if (isIrrelevant(el)) continue;
 
     // เช็คว่ามองเห็นจริงไหม
     const rect = el.getBoundingClientRect();
@@ -56,15 +108,42 @@ _COLLECT_JS = r"""
 
     const tag  = el.tagName.toLowerCase();
     const type = el.getAttribute('type') || '';
+
+    // icon-only element (เช่น ปุ่มตะกร้าที่เป็นแค่ svg/background-image ไม่มี
+    // text ข้างใน) ไม่มี innerText/aria-label ให้ใช้ -> ทำให้ LLM เห็นแค่ "[N] a"
+    // เดาไม่ออกว่าคือปุ่มอะไร ทั้งที่ element ยังอยู่ในลิสต์จริง (ไม่ได้โดนกรอง)
+    // แก้ด้วยการเพิ่มแหล่ง label สำรอง: title, data-test(id)/data-qa (attribute
+    // มาตรฐานที่เว็บทำ QA อัตโนมัติมักใส่ไว้ เช่น saucedemo ใส่ data-test บน
+    // แทบทุก element) และ id เป็นตัวสำรองสุดท้าย — แปลง kebab/snake-case เป็น
+    // ช่องว่างให้อ่านง่ายขึ้น (เช่น "shopping-cart-link" -> "shopping cart link")
+    const humanize = (s) => (s || '').replace(/[-_]+/g, ' ').trim();
+    const dataTest = el.getAttribute('data-test') || el.getAttribute('data-testid') ||
+                     el.getAttribute('data-qa') || '';
+    const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
+                      humanize(dataTest) || el.getAttribute('name') ||
+                      humanize(el.id) || '';
+
+    // ปุ่มตะกร้าหลังใส่สินค้าแล้วมี badge span ลูก (เช่น "1") ทำให้ innerText
+    // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้
+    // สื่อว่า element นี้คือปุ่มตะกร้า — ถ้า innerText เป็นแค่ตัวเลขสั้นๆ (badge
+    // counter) แต่มี label เชิงความหมายให้ใช้ ให้ผสมกันแทนที่จะทิ้งไปเฉยๆ
+    const trimmedText = (el.innerText || '').trim();
+    const isBareCounter = /^\d{1,3}$/.test(trimmedText);
+
     // หา label ที่สื่อความหมายที่สุด
-    const label = (
-      el.innerText ||
-      el.value ||
-      el.getAttribute('placeholder') ||
-      el.getAttribute('aria-label') ||
-      el.getAttribute('name') ||
-      ''
-    ).trim().replace(/\s+/g, ' ').slice(0, 80);
+    let label;
+    if (isBareCounter && semantic) {
+      label = `${semantic} (${trimmedText})`;
+    } else {
+      label = (
+        trimmedText ||
+        el.value ||
+        el.getAttribute('placeholder') ||
+        semantic ||
+        ''
+      );
+    }
+    label = label.trim().replace(/\s+/g, ' ').slice(0, 80);
 
     out.push({ index: idx, tag, type, label });
     idx++;

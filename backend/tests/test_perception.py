@@ -42,3 +42,136 @@ async def test_get_snapshot_filters_out_footer_elements():
     assert "Terms" not in labels
     assert len(elements) == 1
     assert "Add to cart" in text_repr
+
+
+# บั๊กที่เจอจริงบน saucedemo.com: ปุ่ม Checkout อยู่ใน <div class="cart_footer">
+# ซึ่งเดิม filter แบบ substring จับคำว่า "footer" ไปแมตช์ผิด ทำให้ปุ่ม Checkout
+# หายไปจาก snapshot ทั้งที่ไม่ใช่ site footer เลย (เป็นแค่ action bar ท้าย
+# component ตะกร้า) — ต้องยังกรอง site-footer/page-footer จริงได้เหมือนเดิมด้วย
+_HTML_WITH_COMPONENT_FOOTER = """
+<html><body>
+  <div class="cart_footer">
+    <button id="continue-shopping">Continue Shopping</button>
+    <button id="checkout">Checkout</button>
+  </div>
+  <div class="modal-footer">
+    <button>Confirm</button>
+  </div>
+  <footer>
+    <a href="https://facebook.com">Facebook</a>
+  </footer>
+  <div class="site-footer">
+    <button>Newsletter signup</button>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_filter_component_footer_action_bars():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_WITH_COMPONENT_FOOTER)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Checkout" in labels
+    assert "Continue Shopping" in labels
+    assert "Confirm" in labels
+    assert "Facebook" not in labels
+    assert "Newsletter signup" not in labels
+
+
+# ทดสอบเคสที่เจอจริงบน saucedemo.com: ปุ่มตะกร้า (.shopping_cart_link) ไม่มี
+# innerText/aria-label เลย (แค่ไอคอนจาก CSS) มีแค่ data-test attribute — เดิม
+# label จะว่างเปล่า ทำให้ LLM เห็นแค่ "[N] a" เดาไม่ออกว่าคือปุ่มตะกร้า
+_HTML_ICON_ONLY_ELEMENTS = """
+<html><body>
+  <a class="shopping_cart_link" data-test="shopping-cart-link" href="/cart.html"
+     style="display:inline-block;width:20px;height:20px;background:gray"></a>
+  <button data-testid="close-modal"></button>
+  <div tabindex="0" id="menu_toggle_button"
+       style="display:inline-block;width:20px;height:20px;background:gray"></div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_falls_back_to_data_test_and_id_for_icon_only_elements():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_ICON_ONLY_ELEMENTS)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "shopping cart link" in labels
+    assert "close modal" in labels
+    assert "menu toggle button" in labels
+
+
+# หลังใส่สินค้าลงตะกร้าจริง ปุ่มตะกร้าจะมี badge span ลูกที่มีแค่ตัวเลข (เช่น
+# "1") เป็น innerText — เดิม innerText ที่ไม่ว่างจะชนะ fallback ทุกตัวไปเลย
+# ทำให้ label กลายเป็นแค่ "1" ไม่สื่อว่านี่คือปุ่มตะกร้า ต้องผสมกับ data-test
+_HTML_CART_WITH_BADGE = """
+<html><body>
+  <a class="shopping_cart_link" data-test="shopping-cart-link" href="/cart.html"
+     style="display:inline-block;width:20px;height:20px;background:gray">
+    <span data-test="shopping-cart-badge">1</span>
+  </a>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_combines_badge_counter_with_semantic_label():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_CART_WITH_BADGE)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "shopping cart link (1)" in labels
+
+
+# บางเว็บใส่ tabindex/role บน badge span เพื่อ accessibility ทำให้ badge เอง
+# ก็ match selector list ([tabindex]) และกลายเป็น candidate node แยกต่างหาก —
+# ถ้าไม่กันไว้ จะได้ index ซ้อน 2 อัน (พ่อ + badge ลูก) ชี้ไปที่สิ่งเดียวกัน หรือ
+# แย่กว่านั้นคือ index ชี้ไปที่ span เล็กๆ ที่คลิกไม่โดน handler ของลิงก์จริง —
+# ต้องขยับ index ไปแปะที่ตัวพ่อที่คลิกได้จริง (a.shopping_cart_link) แทนเสมอ
+_HTML_BADGE_ITSELF_MATCHES_SELECTOR = """
+<html><body>
+  <a class="shopping_cart_link" data-test="shopping-cart-link" href="/cart.html"
+     style="display:inline-block;width:20px;height:20px;background:gray">
+    <span class="shopping_cart_badge" tabindex="-1">1</span>
+  </a>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_redirects_badge_index_to_clickable_ancestor():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_BADGE_ITSELF_MATCHES_SELECTOR)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    # ต้องมี element เดียว (ไม่ใช่ 2 อันซ้อนกันสำหรับพ่อ+badge)
+    assert len(elements) == 1
+    assert elements[0]["tag"] == "a"
+    assert elements[0]["label"] == "shopping cart link (1)"
