@@ -90,7 +90,9 @@ def run_query():
         print("\nออกจากโหมด query")
 
 
-_DEFAULT_AGENT_GOAL = "Log in as standard_user/secret_sauce and add Sauce Labs Backpack to cart"
+
+
+_DEFAULT_AGENT_GOAL = "Log in as standard_user/secret_sauce and add Sauce Labs Backpack to cart and chechout by siamyut phaseeda 12110"
 
 
 def run_agent():

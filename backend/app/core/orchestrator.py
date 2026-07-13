@@ -31,6 +31,12 @@ _PREMATURE_FALSE_FINISH_NUDGE = (
     "ไม่ได้จริง ค่อยเรียก finish_task(success=false) อีกครั้ง"
 )
 
+# W5: loop-detection guard — บางโมเดล (เจอกับ Llama บน Groq) ถึงจะถูกเตือนแล้วก็ยัง
+# วนเรียก browser_action เดิมเป๊ะๆ ซ้ำๆ (dict เดียวกันทุก field) ไม่ว่าจะสำเร็จหรือ fail
+# ก็ตาม แปลว่าไม่มีความคืบหน้าจริง — กันไว้ไม่ให้เสีย step/token ไปเรื่อยๆ จนหมด max_steps
+# โดยไม่ได้อะไรขึ้นมา ถ้าเจอ action เดิมติดกันครบจำนวนนี้ ให้หยุด task ทันที
+_MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
+
 
 def _tokens_dict(usage: llm.TokenUsage) -> dict:
     return {
@@ -137,6 +143,8 @@ class Orchestrator:
         total_usage = llm.TokenUsage()
         premature_false_finish_count = 0
         plan_text: Optional[str] = None
+        last_action_cmd: Optional[dict] = None
+        consecutive_repeat_count = 0
 
         try:
             if verbose:
@@ -215,6 +223,25 @@ class Orchestrator:
                     final_message = tool_input.get("message", "")
                     if verbose:
                         print(f"[finish_task] success={success} message={final_message}", flush=True)
+                    break
+
+                # loop-detection: action เดิมเป๊ะๆ ติดกันกี่ครั้งแล้ว (นับรวมทั้ง success/fail
+                # เพราะแม้ execute() สำเร็จทุกครั้ง แต่ถ้า LLM สั่งซ้ำเดิมไม่เปลี่ยน ก็ไม่ใช่
+                # ความคืบหน้าจริงอยู่ดี)
+                if tool_input == last_action_cmd:
+                    consecutive_repeat_count += 1
+                else:
+                    last_action_cmd = tool_input
+                    consecutive_repeat_count = 1
+
+                if consecutive_repeat_count >= _MAX_CONSECUTIVE_IDENTICAL_ACTIONS:
+                    success = False
+                    final_message = (
+                        f"หยุด task: agent สั่ง action เดิมซ้ำติดกัน "
+                        f"{consecutive_repeat_count} ครั้ง ({tool_input}) โดยไม่มีความคืบหน้า"
+                    )
+                    if verbose:
+                        print(f"[loop-detected] {final_message}", flush=True)
                     break
 
                 if verbose:

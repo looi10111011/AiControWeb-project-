@@ -6,6 +6,7 @@ from backend.app.core import llm
 from backend.app.core.actions import ActionResult
 from backend.app.core.orchestrator import (
     Orchestrator,
+    _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
     _PREMATURE_FALSE_FINISH_NUDGE,
 )
@@ -119,19 +120,23 @@ async def test_run_task_stops_at_max_steps_without_finish_task():
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     scroll_result = ActionResult(True, "scroll(down)", "เลื่อนแล้ว")
 
+    # สลับ direction ทุกครั้งกัน loop-detection guard (W5) เข้าใจผิดว่าเป็น action เดิม
+    # ซ้ำติดกัน — เทสต์นี้อยากวัดพฤติกรรม max_steps ตรงๆ ไม่ใช่ loop guard
+    next_action_calls = [
+        (
+            "browser_action", {"type": "scroll", "direction": "down" if i % 2 == 0 else "up"}, f"tool_{i}", [],
+            llm.TokenUsage(input_tokens=30, output_tokens=5),
+        )
+        for i in range(3)
+    ]
+
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=scroll_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
-         patch(
-             "backend.app.core.orchestrator.llm.next_action",
-             AsyncMock(return_value=(
-                 "browser_action", {"type": "scroll", "direction": "down"}, "tool_x", [],
-                 llm.TokenUsage(input_tokens=30, output_tokens=5),
-             )),
-         ):
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         result = await Orchestrator().run_task(
             "https://example.com", "goal that never finishes", max_steps=3, provider="anthropic"
         )
@@ -316,3 +321,92 @@ async def test_run_task_without_confirm_plan_skips_plan_generation_entirely():
 
     assert result["plan"] is None
     mock_generate_plan.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_task_stops_on_repeated_identical_action():
+    """loop-detection guard: บาง provider (เจอกับ Llama บน Groq) ยังวนเรียก
+    browser_action เดิมเป๊ะๆ ซ้ำๆ แม้ execute() จะสำเร็จทุกครั้ง — ต้องหยุด task เอง
+    ไม่ปล่อยให้วนจนหมด max_steps เสีย token ไปเรื่อยๆ โดยไม่มีความคืบหน้า"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(5)", "คลิกสำเร็จ")
+    same_action = ("browser_action", {"type": "click", "index": 5}, "tool_x", [], llm.TokenUsage())
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(return_value=same_action)) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is False
+    assert "ซ้ำ" in result["message"]
+    # ยิงจริงแค่ (N-1) ครั้ง เพราะการเรียกซ้ำครั้งที่ N ถูกสกัดไว้ก่อน execute()
+    assert result["steps"] == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1
+    assert mock_execute.await_count == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1
+    assert mock_next_action.await_count == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS
+
+
+@pytest.mark.asyncio
+async def test_run_task_loop_guard_does_not_trigger_for_varied_actions():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 1}, "t3", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is True
+    assert mock_execute.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_task_loop_guard_resets_count_after_different_action():
+    """A, A, B, A, A -> ไม่มีช่วงไหนซ้ำติดกันครบ _MAX_CONSECUTIVE_IDENTICAL_ACTIONS
+    ครั้ง (สูงสุดคือ 2 ติดกัน) ต้องไม่ trigger — พิสูจน์ว่า count reset จริงตอนเจอ
+    action ต่างจากเดิม ไม่ใช่แค่นับสะสมรวมทั้ง task"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+    action_a = {"type": "click", "index": 1}
+    action_b = {"type": "click", "index": 2}
+
+    next_action_calls = [
+        ("browser_action", action_a, "t1", [], llm.TokenUsage()),
+        ("browser_action", action_a, "t2", [], llm.TokenUsage()),
+        ("browser_action", action_b, "t3", [], llm.TokenUsage()),
+        ("browser_action", action_a, "t4", [], llm.TokenUsage()),
+        ("browser_action", action_a, "t5", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is True
+    assert mock_execute.await_count == 5
