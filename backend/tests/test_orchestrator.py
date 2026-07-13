@@ -9,6 +9,7 @@ from backend.app.core.orchestrator import (
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
     _PREMATURE_FALSE_FINISH_NUDGE,
+    _RAG_CHUNKS_PER_STEP,
 )
 
 # ทุกเทสต์ mock ทั้ง Playwright และ llm.next_action — ไม่เปิด browser จริง ไม่ยิง LLM API จริง
@@ -20,6 +21,14 @@ from backend.app.core.orchestrator import (
 
 _GOTO_OK = ActionResult(True, "goto", "ไปที่ url")
 _WAIT_OK = ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
+
+
+# pacing delay ท้ายทุก step (_STEP_PACING_DELAY_SECONDS) กันไม่ให้ test suite ช้าจริง —
+# เหมือน test_actions.py ที่ mock asyncio.sleep กัน _ACTION_RETRY_DELAY_SEC ค้าง
+@pytest.fixture(autouse=True)
+def _no_real_sleep():
+    with patch("backend.app.core.orchestrator.asyncio.sleep", AsyncMock()) as mock_sleep:
+        yield mock_sleep
 
 
 def _patch_browser():
@@ -261,6 +270,7 @@ async def test_run_task_confirm_plan_stops_before_any_action_when_user_declines(
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
          patch("backend.app.core.orchestrator.execute") as mock_execute, \
          patch("backend.app.core.orchestrator.llm.generate_plan", AsyncMock(return_value="1. ทำ A\n2. ทำ B")) as mock_generate_plan, \
+         patch("backend.app.core.orchestrator.retriever.retrieve") as mock_retrieve, \
          patch("backend.app.core.orchestrator.llm.next_action") as mock_next_action:
         result = await Orchestrator().run_task(
             "https://example.com", "some goal", provider="anthropic",
@@ -274,6 +284,9 @@ async def test_run_task_confirm_plan_stops_before_any_action_when_user_declines(
     ask_user_func.assert_awaited_once_with({"type": "confirm_plan", "plan": "1. ทำ A\n2. ทำ B"})
     mock_next_action.assert_not_called()
     mock_execute.assert_not_called()
+    # W6[B]: retrieve() ต่อเข้าแค่ per-step loop เท่านั้น ไม่ใช่ generate_plan — ถ้า loop
+    # ไม่เคยเริ่มเลย (user ปฏิเสธแผน) retrieve() ก็ต้องไม่ถูกเรียกเลยเช่นกัน
+    mock_retrieve.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -410,3 +423,76 @@ async def test_run_task_loop_guard_resets_count_after_different_action():
 
     assert result["success"] is True
     assert mock_execute.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_result_into_next_action():
+    """W6[B]: ทุก step ต้องดึงคู่มือด้วย retrieve(query=goal, page_state=page_text ปัจจุบัน,
+    k=_RAG_CHUNKS_PER_STEP) แล้วเอาผลลัพธ์ (join เป็น bullet list) ส่งต่อเข้า next_action()
+    เป็น manual_context"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=["chunk1", "chunk2", "chunk3"]) as mock_retrieve, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
+
+    mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
+    manual_context = mock_next_action.await_args.args[-1]
+    assert manual_context == "- chunk1\n- chunk2\n- chunk3"
+
+
+@pytest.mark.asyncio
+async def test_run_task_calls_retrieve_every_step_with_that_steps_page_text():
+    """retrieve() ต้องถูกเรียกใหม่ทุก step ตาม page_text ของ step นั้นๆ (ไม่ใช่แค่ครั้งเดียว
+    ตอนเริ่ม task) — พิสูจน์ด้วยการให้ get_snapshot คืน page_text ต่างกันทุก step"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    page_texts = [([], "[0] step1 page"), ([], "[0] step2 page"), ([], "[0] step3 page")]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(side_effect=page_texts)), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=["c"]) as mock_retrieve, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", max_steps=10, provider="anthropic")
+
+    assert mock_retrieve.call_count == 3
+    called_page_states = [c.kwargs["page_state"] for c in mock_retrieve.call_args_list]
+    assert called_page_states == ["[0] step1 page", "[0] step2 page", "[0] step3 page"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_chunks():
+    """ยังไม่มีคู่มือ ingest ไว้ (หรือหาไม่เจออะไรตรงกัน) -> retrieve() คืน [] -> manual_context
+    ต้องเป็น "" เฉยๆ ไม่ใช่ None หรือข้อความ placeholder"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    manual_context = mock_next_action.await_args.args[-1]
+    assert manual_context == ""

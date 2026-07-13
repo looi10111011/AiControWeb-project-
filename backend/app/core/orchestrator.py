@@ -15,6 +15,7 @@ from backend.app.core import llm
 from backend.app.core.actions import ActionResult, AskUserFunc, execute, goto, wait_stable
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
+from backend.app.rag import retriever
 
 # action ที่เปลี่ยนหน้า/DOM แบบมีนัยสำคัญ -> ต้องรอหน้านิ่งก่อน perceive รอบถัดไป
 _PAGE_CHANGING_ACTIONS = {"click", "goto", "select", "go_back"}
@@ -36,6 +37,17 @@ _PREMATURE_FALSE_FINISH_NUDGE = (
 # ก็ตาม แปลว่าไม่มีความคืบหน้าจริง — กันไว้ไม่ให้เสีย step/token ไปเรื่อยๆ จนหมด max_steps
 # โดยไม่ได้อะไรขึ้นมา ถ้าเจอ action เดิมติดกันครบจำนวนนี้ ให้หยุด task ทันที
 _MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
+
+# W6[B]: จำนวน chunk คู่มือสูงสุดที่จะดึงมาแนบให้ LLM เห็นทุก step ของ per-step loop —
+# ดึงใหม่ทุก step ตาม page_text ปัจจุบัน (ไม่ใช้กับ generate_plan ซึ่งเป็นแค่แผนคร่าวๆ
+# ครั้งเดียวก่อนเริ่ม loop จริง เก็บ scope ไว้แค่ per-step planner ตามที่คุยกันไว้)
+_RAG_CHUNKS_PER_STEP = 3
+
+# หน่วงท้ายทุก step ที่ยังวนต่อ กันยิง LLM API ถี่เกิน free-tier quota ต่อนาที (RPM) —
+# ไม่ใช่แค่ Gemini เจอ 429 ResourceExhausted เอง (ดู llm.py) provider อื่นก็มี rate
+# limit เหมือนกัน แค่ชื่อ error ต่างกัน ค่านี้เป็น heuristic คร่าวๆ ไม่ได้ผูกกับ quota
+# จริงเป๊ะๆ ของ key ไหน (แต่ละ key/โมเดลจำกัดไม่เท่ากัน)
+_STEP_PACING_DELAY_SECONDS = 3
 
 
 def _tokens_dict(usage: llm.TokenUsage) -> dict:
@@ -99,7 +111,7 @@ class Orchestrator:
         self,
         url: str,
         goal: str,
-        max_steps: int = 15,
+        max_steps: int = 20,
         headless: bool | None = None,
         verbose: bool = False,
         provider: str | None = None,
@@ -176,8 +188,18 @@ class Orchestrator:
             for _ in range(max_steps):
                 _, page_text = await get_snapshot(page)
 
+                # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step (retrieve()
+                # ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error) — ใช้ to_thread เพราะ
+                # เป็นงาน sync (local embedding inference + ChromaDB query) ไม่งั้นจะบล็อก
+                # event loop ตัวเดียวกับที่ Playwright ใช้อยู่ (เหมือน _confirm_plan()
+                # ที่ wrap input() ด้วย to_thread ด้วยเหตุผลเดียวกัน)
+                manual_chunks = await asyncio.to_thread(
+                    retriever.retrieve, query=goal, page_state=page_text, k=_RAG_CHUNKS_PER_STEP
+                )
+                manual_context = "\n".join(f"- {chunk}" for chunk in manual_chunks)
+
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
-                    client, model, goal, page_text, messages
+                    client, model, goal, page_text, messages, manual_context
                 )
                 total_usage += usage
                 if verbose:
@@ -262,6 +284,10 @@ class Orchestrator:
 
                 if tool_input.get("type") in _PAGE_CHANGING_ACTIONS:
                     await wait_stable(page)
+
+                # หน่วงท้าย step ก่อนวน next_action() รอบถัดไป กันยิง LLM API ถี่เกิน
+                # quota ต่อนาที (ดู _STEP_PACING_DELAY_SECONDS ด้านบน)
+                await asyncio.sleep(_STEP_PACING_DELAY_SECONDS)
 
             return {
                 "success": success,

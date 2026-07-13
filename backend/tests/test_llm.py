@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from google.api_core.exceptions import ResourceExhausted
 from groq import BadRequestError as GroqBadRequestError
 
 from backend.app.core import llm
@@ -114,6 +115,37 @@ async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
     assert tool_input["success"] is False
     assert tool_use_id == ""
     assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3)
+
+
+@pytest.mark.asyncio
+async def test_next_action_passes_manual_context_into_prompt():
+    """W6[B]: manual_context จาก retriever.retrieve() ต้องโผล่ในข้อความ user turn จริง"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(client, "model", "goal", "page", [], manual_context="- chunk one")
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "chunk one" in user_content
+    assert "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_default_manual_context_omits_section():
+    """เรียกแบบเดิม (5 args ไม่มี manual_context) ต้องได้ prompt แบบเดิมเป๊ะ ไม่มี section คู่มือ"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(client, "model", "goal", "page", [])
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "คู่มือ" not in user_content
 
 
 def _fake_gemini_function_call_part(name: str, args: dict):
@@ -285,6 +317,34 @@ def test_append_tool_result_groq_formats_as_tool_role_message():
     assert result is not messages  # ไม่แก้ list เดิม (immutable-style เหมือน append_tool_result ของ Anthropic)
 
 
+@pytest.mark.asyncio
+async def test_next_action_groq_passes_manual_context_into_prompt():
+    tool_call = _fake_tool_call("call_5", "browser_action", '{"type": "wait"}')
+    response = _fake_response([tool_call], {"role": "assistant"})
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    await llm.next_action_groq(client, "model", "goal", "page", [], manual_context="- chunk one")
+
+    _, kwargs = client.chat.completions.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "chunk one" in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_groq_default_manual_context_omits_section():
+    tool_call = _fake_tool_call("call_6", "browser_action", '{"type": "wait"}')
+    response = _fake_response([tool_call], {"role": "assistant"})
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    await llm.next_action_groq(client, "model", "goal", "page", [])
+
+    _, kwargs = client.chat.completions.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "คู่มือ" not in user_content
+
+
 # --- next_action_gemini() (Gemini) ---
 
 
@@ -347,6 +407,39 @@ async def test_next_action_gemini_falls_back_to_finish_task_when_no_function_cal
     assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
 
 
+@pytest.mark.asyncio
+async def test_next_action_gemini_retries_on_resource_exhausted_then_succeeds(monkeypatch):
+    """429 ResourceExhausted (quota เต็ม) ต้องไม่ crash ทั้ง process — หน่วงแล้วลองใหม่ก่อน"""
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    good_response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(good_response)
+    gemini_model.generate_content_async = AsyncMock(
+        side_effect=[ResourceExhausted("quota exceeded"), good_response]
+    )
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(llm.asyncio, "sleep", sleep_mock)
+
+    tool_name, tool_input, _, _, _ = await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    assert tool_name == "browser_action"
+    assert tool_input == {"type": "wait"}
+    assert gemini_model.generate_content_async.await_count == 2
+    sleep_mock.assert_awaited_once_with(llm._GEMINI_RATE_LIMIT_BACKOFF_SECONDS * 1)
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_reraises_resource_exhausted_after_max_retries(monkeypatch):
+    """ยังโดน 429 อยู่แม้ retry ครบแล้ว -> ต้อง raise ออกไปจริง ไม่ปล่อยให้วนไม่รู้จบ"""
+    client, gemini_model = _fake_gemini_client(None)
+    gemini_model.generate_content_async = AsyncMock(side_effect=ResourceExhausted("quota exceeded"))
+    monkeypatch.setattr(llm.asyncio, "sleep", AsyncMock())
+
+    with pytest.raises(ResourceExhausted):
+        await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    assert gemini_model.generate_content_async.await_count == llm._GEMINI_RATE_LIMIT_RETRIES
+
+
 def test_normalize_gemini_args_only_converts_whole_number_floats():
     result = llm._normalize_gemini_args({"index": 3.0, "text": "hello", "ratio": 1.5, "flag": True})
 
@@ -364,3 +457,46 @@ def test_append_tool_result_gemini_formats_as_function_response_part():
     }
     assert result[:-1] == messages
     assert result is not messages
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_passes_manual_context_into_prompt():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(client, "model", "goal", "page", [], manual_context="- chunk one")
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "chunk one" in user_text
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_default_manual_context_omits_section():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "คู่มือ" not in user_text
+
+
+# --- _build_user_turn_text() (W6[B]) ---
+
+
+def test_build_user_turn_text_omits_manual_section_when_empty():
+    result = llm._build_user_turn_text("goal", "page")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_manual_section_when_provided():
+    result = llm._build_user_turn_text("goal", "page", "- chunk one\n- chunk two")
+
+    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert "chunk one" in result
+    assert "chunk two" in result

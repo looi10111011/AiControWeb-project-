@@ -359,11 +359,124 @@
                  ยืนยันว่า test_llm.py ทั้งหมดที่ reference llm.SYSTEM_PROMPT ผ่าน
                  attribute ไม่ใช่ hardcoded string เลยไม่พังจากการแก้ข้อความ) ***
 
+  [x] W6 [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน — เสร็จ
+              (2026-07-13)
+              Orchestrator.run_task() per-step loop เรียก
+              retriever.retrieve(query=goal, page_state=page_text ปัจจุบัน, k=3)
+              ใหม่ทุก step (ค่า k=3 ตกลงกับ user แล้ว — เยอะไปกินโทเคน/ค่าใช้จ่าย
+              ทุก step เพราะ manual context เปลี่ยนทุก step ตาม page state เลย
+              ขี่ prompt cache เดิม (system+tools) ไม่ได้) ผลลัพธ์ที่ได้ (list[str])
+              join เป็น bullet list แล้วส่งเข้า next_action()/next_action_groq()/
+              next_action_gemini() (เพิ่มพารามิเตอร์ที่ 6 manual_context: str = ""
+              — มี default กัน backward-compat กับ test เดิมที่เรียกแบบ 5 args
+              ทั้งหมด ไม่ต้องแก้ test เดิมสักเคส) ทั้ง 3 provider ใช้
+              llm._build_user_turn_text() helper ตัวเดียวร่วมกันสร้าง user turn
+              (goal + page state + section คู่มือถ้ามี) กัน format ซ้ำ 3 รอบ —
+              ถ้า retrieve() คืน [] (ไม่มีคู่มือ/หาไม่เจอ) manual_context จะเป็น ""
+              เฉยๆ แล้ว prompt จะไม่มี section คู่มือเลย (เหมือนเดิมทุกตัวอักษร
+              ก่อนแก้) กัน prompt รกด้วย section เปล่าๆ
+
+              *** ตั้งใจไม่เชื่อมเข้า generate_plan() (แผนคร่าวๆ ที่โชว์ครั้งเดียว
+              ก่อนเริ่ม loop ตอน confirm_plan=True) — ตกลงกับ user แล้วว่าจำกัด
+              scope แค่ per-step planner ก่อน ตรงกับคำว่า "query คู่มือทุกครั้งที่
+              วางแผน" ในแผนเดิมที่หมายถึง per-step loop เป็นหลัก ***
+
+              manual_context อยู่ใน user turn เท่านั้น ไม่แตะ _SYSTEM_BLOCKS/
+              SYSTEM_PROMPT เลย เพราะ Anthropic prompt cache (จาก W4) ขึ้นกับ
+              system+tools เหมือนเดิมทุก step ของ loop เดียวกัน — ถ้าเอาไปแปะใน
+              system prompt จะ cache miss ทุก step แทน — เพิ่มกติกาใหม่ 1 ข้อใน
+              SYSTEM_PROMPT บอกโมเดลว่าคู่มือเป็นข้อมูลเสริมเท่านั้น ถ้าขัดแย้งกับ
+              indexed elements จริงให้ยึดหน้าเว็บปัจจุบันเป็นหลักเสมอ (คู่มืออาจ
+              ล้าสมัย/พูดถึงหน้าอื่น)
+
+              retrieve() เป็น sync function (local embedding inference ผ่าน
+              all-MiniLM-L6-v2 + ChromaDB query แบบ disk-backed) เรียกตรงๆ ใน loop
+              async จะบล็อก event loop เดียวกับที่ Playwright ใช้อยู่ — ห่อด้วย
+              asyncio.to_thread() เหมือนที่ _confirm_plan() ทำกับ input() (บล็อก
+              น้อยกว่ามาก แต่ตั้งใจ wrap ไว้ก่อนเพราะ retrieve() รันทุก step ของ
+              ทุก task ไม่ใช่แค่ตอน confirm_plan=True)
+
+              unit test ใหม่ 11 เคส: 8 ใน test_llm.py (_build_user_turn_text
+              เปล่า/มีคู่มือ, ต่อ provider ทั้ง 3 ตัวเช็คว่า manual_context โผล่ใน
+              prompt จริงเมื่อส่งมา และไม่โผล่เลยเมื่อเรียกแบบ 5 args เดิม) + 3 ใน
+              test_orchestrator.py (retrieve เรียกด้วย query/page_state/k ถูกต้อง
+              แล้วผลลัพธ์ไหลเข้า next_action จริง, retrieve เรียกใหม่ทุก step
+              ตาม page_text ของ step นั้นๆ ไม่ใช่ครั้งเดียวตอนเริ่ม task, manual_context
+              เป็น "" เมื่อ retrieve คืน []) + แก้ test เดิม 1 เคส (declined-plan
+              path) ให้ยืนยันว่า retrieve() ไม่ถูกเรียกเลยถ้า user ปฏิเสธแผนก่อน
+              loop จะเริ่ม — รวม test suite ทั้งหมด 79 เคสผ่านหมด
+
+              รันจริงบน saucedemo.com (headless, provider=gemini จาก .env, 2 step
+              login) ยืนยันว่า retriever.retrieve() ถูกเรียกจริงทุก step
+              (query=goal, k=3, คืนมา 3 chunks ทุกครั้งจาก manual_test.txt ที่
+              ingest ไว้ตั้งแต่ W3) ไม่ crash ทั้ง flow — *** แต่ manual_test.txt
+              ที่ ingest ไว้ตอนนี้เป็นเนื้อหาทั่วไป (วิธี login GitHub/ค้นหา Google/
+              เปิด Facebook) ไม่เกี่ยวกับ saucedemo เลย — รันจริงพิสูจน์แค่ว่า
+              "ระบบเชื่อมต่อกันได้ไม่พัง" ไม่ได้พิสูจน์ว่า "RAG context ช่วยให้ agent
+              ทำงานแม่นขึ้นจริง" อันนั้นต้องรอ manual ที่เนื้อหาตรงกับเว็บทดสอบจริงๆ
+              ก่อนถึงจะวัดผลได้ ***
+
+              *** W6[A] (Planner prompt: รวม page state + คู่มือ + ความจำ) ยังไม่
+              ปิดจ็อบทั้งหมด — ทำแค่ส่วนคู่มือ (นี่คือ W6[B]) ส่วน "ความจำ" ยังไม่ได้
+              ทำเพิ่มอะไรใหม่: ShortTermMemory (memory.py) มีอยู่แล้วแต่แค่บันทึก
+              history ไว้โชว์ตอนจบ task เฉยๆ ไม่เคยถูกป้อนกลับเข้า prompt เลย —
+              สิ่งที่ทำหน้าที่ "ความจำ" จริงๆ ตอนนี้คือ messages ที่ยาวขึ้นเรื่อยๆ ใน
+              บทสนทนาเดียวกันของ 1 task run (LLM เห็น action/ผลลัพธ์ก่อนหน้าทั้งหมด
+              ผ่าน conversation history อยู่แล้วโดยธรรมชาติ) — short/long-term
+              memory แบบข้าม task จริงๆ (กันทำซ้ำ, จำ pattern) ยังเป็นของ W7 ตามแผน
+              เดิม ยังไม่ได้แตะ ***
+
+              เพิ่ม max_steps default + robustness แก้ 3 จุด (2026-07-13):
+              user ขอเพิ่ม max_steps default จาก 15 เป็น 20
+              (Orchestrator.run_task()) ให้ agent มี step ให้ลองมากขึ้นก่อนหมด
+              โควต้า — test เดิมทุกเคสส่ง max_steps ตรงๆ อยู่แล้ว ไม่มีเคสไหนพึ่ง
+              default เดิม เลยไม่ต้องแก้ test ไหนเลย
+
+              step เยอะขึ้น = เรียก LLM API ถี่ขึ้น เลยแก้ 3 จุดกันปัญหาที่มากับ
+              โควต้า/rate limit ไปด้วย:
+
+              1) llm.py::next_action_gemini() ดัก google.api_core.exceptions.
+                 ResourceExhausted (Gemini 429 quota เต็ม) ด้วย retry loop
+                 (_GEMINI_RATE_LIMIT_RETRIES=3) + exponential backoff
+                 (_GEMINI_RATE_LIMIT_BACKOFF_SECONDS=20 คูณ attempt คือ 20s/40s/
+                 80s) แทนที่จะปล่อยให้ exception หลุดออกไป crash ทั้ง process
+                 กลางลูป — ถ้า retry ครบแล้วยังโดนอยู่ ค่อย raise จริงออกไป (ไม่
+                 กลืน error เงียบๆ จนวนไม่รู้จบ) unit test ใหม่ 2 เคสใน
+                 test_llm.py (retry แล้วสำเร็จ, retry ครบแล้วยัง raise)
+
+              2) orchestrator.py per-step loop เพิ่ม await asyncio.sleep(
+                 _STEP_PACING_DELAY_SECONDS=3) ท้ายทุก step ที่ยังวนต่อ กันยิง
+                 LLM API ถี่เกิน free-tier quota ต่อนาที (RPM) ตั้งแต่ต้น ไม่ใช่
+                 แค่ดักตอน error เกิดแล้ว — ค่า 3 วิเป็น heuristic คร่าวๆ ไม่ได้
+                 ผูกกับ quota จริงเป๊ะๆ ของ key ไหน (แต่ละ key/โมเดลจำกัดไม่
+                 เท่ากัน) test_orchestrator.py เพิ่ม autouse fixture mock
+                 asyncio.sleep (แบบเดียวกับที่ test_actions.py ทำกับ
+                 _ACTION_RETRY_DELAY_SEC) กันไม่ให้ทุก test ที่วนหลาย step ต้องรอ
+                 จริงเป็นวินาทีๆ
+
+              3) เพิ่มกติกาใหม่ใน SYSTEM_PROMPT: ห้ามใช้ go_back ย้อนกลับไปหน้า
+                 login หลังจาก login + เพิ่มสินค้าลงตะกร้าสำเร็จแล้ว ให้โฟกัสเดิน
+                 หน้าไปหน้าตะกร้า/checkout แทน — กัน agent วน go_back กลับไปหน้า
+                 login ซ้ำๆ จนติด infinite loop (เคสที่ user สังเกตเจอ) *** ยังไม่
+                 เคยรันจริงผ่าน LLM ยืนยันว่ากติกาใหม่ช่วยจริง มีแค่ unit test ที่
+                 ยืนยันว่า SYSTEM_PROMPT ไม่พังจากการแก้ข้อความ (ตาม pattern เดิม
+                 ของกติกาอื่นๆ ที่เพิ่มไปก่อนหน้า) ***
+
+              รวม test suite 42 เคสใน test_llm.py + test_orchestrator.py ผ่านหมด
+              (แยกรันเฉพาะ 2 ไฟล์นี้เร็ว ~14 วิ พิสูจน์ว่า mock asyncio.sleep ได้
+              ผลจริง ไม่ได้แอบรอ 3 วิ x หลาย step จริงๆ) — เจอ test อื่นที่ไม่
+              เกี่ยวกัน (test_ingestion.py::test_chunk_text_real_manual_produces_
+              one_chunk_per_topic) fail อยู่ก่อนแล้วตอนรัน suite เต็ม เพราะมีคนแก้
+              backend/tests/manual_test.txt เพิ่มเนื้อหา SauceDemo Policy เข้าไป
+              (ข่าวดีสำหรับ W6[B] เพราะแปลว่า manual จะ relevant กับ saucedemo
+              มากขึ้น) แต่ assertion เดิม (len(chunks) == 5) ยังไม่ได้อัปเดตตาม —
+              ไม่ใช่งานที่ทำรอบนี้ ปล่อยไว้ก่อน
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
     เสมอไม่ throw — มี unit test 8 เคสใน backend/tests/test_retriever.py
-    *** ยังไม่ได้เชื่อมกับ orchestrator/Planner จริง — งานเชื่อมยังเป็นของ W6 ***
+    *** เชื่อมกับ orchestrator/Planner จริงแล้ว — ดู W6[B] ด้านบน ***
   - run.py — launcher รวมคำสั่ง server/test/perception/ingest/query/agent ไว้ไฟล์เดียว
     + แก้ปัญหา UnicodeEncodeError ตอน print ภาษาไทยบน Windows console อัตโนมัติ
     + (2026-07-13) user บ่นว่า verbose log ของ agent loop (goto/plan/step/result
@@ -456,6 +569,7 @@
      │      (retry click/fill/select/check + timeout สั้นลง 3s — ยังไม่มี
      │      verify ผล finish_task(success=true) เทียบกับ DOM จริง)
      ├ [B]  Permission layer (ต่อ) + Human-in-the-loop  ✅ เสร็จแล้ว (ย้ายเสร็จ
+     
      │      จาก W4[B] ข้างบนแล้ว เพราะ merge เข้ามาไวกว่าแผน)
      └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย  🔶 ทำ
             end-to-end สำเร็จแล้วหลายรอบ (ดู W4[A]) + มี permission brake
@@ -468,11 +582,12 @@
   เฟส 2 : ความรู้จากคู่มือ + ความจำ  (สัปดาห์ 6-8)
 ================================================================
 
-  W6 ┬ [A]  Planner prompt: รวม page state + คู่มือ + ความจำ
-     └ [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน  🔶 retrieve()
-            พร้อมแล้ว (รับ page_state ได้) เหลือแค่เชื่อมเข้า orchestrator จริง
-            *** จุดนี้ 2 คนต้อง sync กัน เพราะเป็นที่หน้าเว็บ
-                กับคู่มือมาเจอกัน ***
+  W6 ┬ [A]  Planner prompt: รวม page state + คู่มือ + ความจำ  🔶 ทำแค่ส่วนคู่มือ
+     │      (=W6[B] ด้านล่าง) ส่วนความจำยังไม่ได้ทำเพิ่ม — ดูรายละเอียดในสถานะ
+     │      ความคืบหน้าด้านบน (W6[B])
+     └ [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน  ✅ เสร็จแล้ว
+            (2026-07-13) — retriever.retrieve() ต่อเข้า per-step loop ของ
+            orchestrator จริงแล้ว (ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
 
   W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)
      └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ

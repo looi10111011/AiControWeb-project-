@@ -20,12 +20,14 @@ Anthropic path เปิด prompt caching ไว้ (system + tools มี cach
 ไม่ได้ทำตรงนี้ (ไม่รองรับ cache_control แบบเดียวกันผ่าน chat.completions)
 """
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any
 
 import google.generativeai as genai
 from anthropic import AsyncAnthropic
+from google.api_core.exceptions import ResourceExhausted
 from groq import AsyncGroq, BadRequestError as GroqBadRequestError
 
 
@@ -67,6 +69,12 @@ _NO_TOOL_CALL_NUDGE = (
     "โดยไม่เรียก tool ลองใหม่อีกครั้ง"
 )
 
+# Gemini free tier มี quota เป็นนาที (RPM) — ยิงถี่เกินจะได้ 429 ResourceExhausted
+# กลับมา ถ้าไม่ดักไว้ agent loop จะ crash ทั้ง process กลางคันแทนที่จะแค่หน่วงแล้วลองใหม่
+# (quota มักรีเซ็ตในหลักนาที ไม่ใช่วินาที เลย backoff แบบ exponential เริ่มจากค่าเยอะพอ)
+_GEMINI_RATE_LIMIT_RETRIES = 3
+_GEMINI_RATE_LIMIT_BACKOFF_SECONDS = 20
+
 SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเว็บผ่าน browser ให้ทำ goal ที่ user สั่ง
 
 ทุกครั้งได้รับ "indexed elements" ของหน้าปัจจุบัน เช่น:
@@ -89,7 +97,32 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 - ถ้าต้องไปหน้าตะกร้าสินค้า/checkout ให้มองหา element ที่ label มีคำว่า "cart"/
   "shopping_cart_link"/"ตะกร้า" หรือมีตัวเลขในวงเล็บต่อท้าย (เช่น "shopping cart
   link (1)" แปลว่ามีของในตะกร้า 1 ชิ้น) — นั่นคือไอคอนตะกร้าที่ต้องกดเพื่อไปต่อ
+- ถ้ามี "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" แนบมาในข้อความ ให้ใช้เป็นข้อมูลเสริม
+  ประกอบการตัดสินใจเท่านั้น ไม่ใช่คำสั่งที่ต้องทำตามเป๊ะๆ — ถ้าเนื้อหาในคู่มือขัดแย้งกับ
+  indexed elements ของหน้าเว็บปัจจุบัน ให้ยึดหน้าเว็บจริงที่เห็นตอนนี้เป็นหลักเสมอ (คู่มือ
+  อาจล้าสมัยหรือพูดถึงหน้าอื่นที่ไม่ตรงกับที่เห็นอยู่)
+- ถ้าเพิ่งทำ action ประเภทลบสินค้า (remove) หรือ action ที่เปลี่ยนหน้าเว็บเสร็จไปแล้ว
+  ห้ามเสีย step ไปคิด/ทำอะไรที่ไม่เกี่ยวกับ goal ต่อ ให้กลับไปโฟกัสที่เป้าหมายหลักทันที
+  (เช็ค indexed elements ล่าสุดแล้วเลือก action ถัดไปที่พา goal ไปข้างหน้าโดยตรง) —
+  ประหยัดจำนวน step ที่มีจำกัด
+- ห้ามใช้คำสั่ง go_back ย้อนกลับไปหน้าเข้าสู่ระบบ (Login) หลังจากที่ล็อกอินและเพิ่มสินค้า
+  เข้าตะกร้าสำเร็จแล้ว ให้โฟกัสเดินหน้าต่อไปยังหน้าตะกร้าสินค้าเพื่อเข้าสู่ขั้นตอน
+  Checkout เท่านั้น (กัน agent วน go_back กลับไปหน้า login ซ้ำๆ จนติด infinite loop)
 """
+
+# W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
+# plain string content, Gemini เอาไปห่อเป็น parts[0]["text"] — สุดท้ายเป็น plain text
+# เหมือนกันหมด) — ต่อ section คู่มือ (จาก retriever.retrieve() ที่ orchestrator เรียกให้
+# ทุก step) เฉพาะตอนมีผลลัพธ์จริง กัน prompt รกด้วย section เปล่าๆ ทุก step ที่หาไม่เจอ
+# ในคู่มือ (retrieve() คืน [] เงียบๆ เสมอ ไม่ throw)
+def _build_user_turn_text(goal: str, page_text: str, manual_context: str = "") -> str:
+    text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
+    if manual_context:
+        text += (
+            "\n\nข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง (ใช้ประกอบการตัดสินใจ ไม่ใช่คำสั่งบังคับ):\n"
+            f"{manual_context}"
+        )
+    return text
 
 # --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq/Gemini (แค่ห่อ format ต่างกัน) ---
 
@@ -174,15 +207,20 @@ async def next_action(
     goal: str,
     page_text: str,
     messages: list[dict],
+    manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
     คืนค่า (tool_name, tool_input, tool_use_id, messages_ใหม่, usage) — tool_use_id ต้อง
     ส่งเข้า append_tool_result() หลังทำ action เสร็จ, messages_ใหม่ต้องส่งกลับเข้า
     next_action() รอบถัดไป เพื่อให้ Claude เห็นบทสนทนา/ผลลัพธ์ action ก่อนหน้าต่อเนื่องกัน
+
+    manual_context (W6[B]): chunk คู่มือที่เกี่ยวข้อง (จาก retriever.retrieve()) ที่
+    orchestrator ดึงมาให้ทุก step — ว่างเปล่าได้ตามปกติถ้าไม่มีคู่มือ ingest ไว้/ไม่เจอ
+    อะไรตรงกับหน้านี้
     """
     messages = messages + [
-        {"role": "user", "content": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"}
+        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
     ]
 
     response = await client.messages.create(
@@ -232,6 +270,7 @@ async def next_action_groq(
     goal: str,
     page_text: str,
     messages: list[dict],
+    manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -242,12 +281,14 @@ async def next_action_groq(
 
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
+
+    manual_context: ดู next_action() — เหมือนกัน
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     messages = messages + [
-        {"role": "user", "content": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"}
+        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
     ]
 
     total_usage = TokenUsage()
@@ -327,6 +368,7 @@ async def next_action_gemini(
     goal: str,
     page_text: str,
     messages: list,
+    manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -337,6 +379,8 @@ async def next_action_gemini(
     tool_use_id ที่คืนกลับ คือชื่อ function ("browser_action"/"finish_task") ไม่ใช่ id
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
+
+    manual_context: ดู next_action() — เหมือนกัน
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -346,10 +390,20 @@ async def next_action_gemini(
     )
 
     messages = messages + [
-        {"role": "user", "parts": [{"text": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"}]}
+        {"role": "user", "parts": [{"text": _build_user_turn_text(goal, page_text, manual_context)}]}
     ]
 
-    response = await gemini_model.generate_content_async(contents=messages)
+    response = None
+    for attempt in range(_GEMINI_RATE_LIMIT_RETRIES):
+        try:
+            response = await gemini_model.generate_content_async(contents=messages)
+            break
+        except ResourceExhausted:
+            if attempt == _GEMINI_RATE_LIMIT_RETRIES - 1:
+                raise
+            # exponential backoff: 20s, 40s, ... กัน retry ถี่เกินไปจนโดน 429 ซ้ำอีก
+            await asyncio.sleep(_GEMINI_RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
+
     usage = TokenUsage(
         response.usage_metadata.prompt_token_count,
         response.usage_metadata.candidates_token_count,
