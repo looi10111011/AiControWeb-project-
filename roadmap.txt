@@ -276,6 +276,19 @@
               รันจริงบน saucedemo.com ผ่าน Gemini ยืนยัน flow ปกติไม่พัง (3s
               เพียงพอสำหรับเว็บที่ render เร็วแบบนี้อยู่แล้ว)
 
+              loop-detection guard (2026-07-13, commit เดียวกับลด timeout ข้างบน
+              แต่ยังไม่เคยบันทึกไว้ในนี้มาก่อน): เพิ่ม
+              orchestrator.py::_MAX_CONSECUTIVE_IDENTICAL_ACTIONS (=3) — ถ้า LLM
+              สั่ง browser_action เดิมเป๊ะๆ (dict เดียวกันทุก field) ติดกันครบ 3
+              ครั้ง ไม่ว่าแต่ละครั้งจะ [OK] หรือ [FAIL] ก็ตาม ให้ตัดจบ task ทันที
+              (success=false, message บอกว่า action ไหนที่วนซ้ำ) แทนที่จะปล่อยให้
+              วนจนหมด max_steps โดยไม่มีความคืบหน้าจริง — เจอเคสนี้จากพฤติกรรม
+              Llama บน Groq (ดู "guard กัน finish_task(false)" ใน W4[A] ด้านบน)
+              ที่แม้จะเตือนกลับไปแล้วบางครั้งก็ยังตอบ action เดิมซ้ำแทนที่จะลองทางอื่น
+              unit test 3 เคสใหม่ใน test_orchestrator.py (หยุดจริงเมื่อ action ซ้ำ
+              ครบ 3, ไม่ trigger ถ้า action หลากหลาย, นับใหม่เมื่อเจอ action ที่
+              ต่างจากเดิม)
+
               แก้บั๊ก perception.py: LLM มองไม่เห็นทาง add-to-cart -> checkout
               (2026-07-13):
               user รายงานว่าหลัง add to cart แล้ว LLM ไปต่อไม่ได้ ไม่เจอทางไป
@@ -381,6 +394,12 @@
   - แก้บั๊ก config.py: .env มี LLM_PROVIDER/ANTHROPIC_MODEL ที่ Settings ไม่มี
     field รองรับ ทำให้ Settings() พังตั้งแต่ import (บล็อกทั้งโปรเจกต์) — เพิ่ม
     field ให้ครบแล้ว
+
+  *** สถานะ PR (2026-07-13): งานทั้งหมดของ W5[A] ข้างบน (retry/timeout tuning,
+  loop-detection guard, cart/checkout perception fix, agent-log console window)
+  อยู่ใน branch "W5(edit)" แล้ว เปิด PR #10 ไปที่ main แล้ว
+  (https://github.com/looi10111011/AiControWeb-project-/pull/10) —
+  *** ยังไม่ merge *** รอ review/merge อยู่ ***
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
