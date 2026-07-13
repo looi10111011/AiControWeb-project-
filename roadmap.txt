@@ -238,6 +238,32 @@
               confirmation gate, provider 3 ตัว anthropic/gemini/groq) เป็นก้อน
               เดียวบน main — test suite รวม 54 เคสผ่านหมดบน main ตอนนี้ ***
 
+  [~] W5 [A]  Verify + Retry เมื่อ action ล้มเหลว — เริ่มแล้ว (2026-07-13)
+              เพิ่ม actions.py::_dispatch_with_retry(): ครอบ click/fill/select/
+              check ให้ retry อัตโนมัติสูงสุด 3 ครั้ง (ครั้งแรก + retry 2 ครั้ง)
+              คั่นด้วย delay 0.5 วิ ก่อนส่งผลลัพธ์กลับให้ orchestrator/LLM — เหตุผล
+              คือ action พวกนี้มักพังเพราะ DOM ยังไม่นิ่ง (element ยัง render/
+              animate ไม่เสร็จ) ไม่ใช่ index ผิดจริงเสมอไป retry ระดับนี้ไม่เสีย
+              LLM token เลยเพราะไม่ต้องรอ next_action() รอบใหม่ — ถ้ายัง fail อยู่
+              หลัง retry ครบ ค่อยส่งผลลัพธ์สุดท้ายให้ LLM ตัดสินใจเหมือนเดิม (W4)
+
+              *** ตั้งใจไม่ retry scroll/goto/go_back/switch_tab/wait เพราะ
+              failure mode ต่างจาก DOM-timing (เช่น goto URL ผิดก็จะผิดซ้ำทุกครั้ง
+              ไม่มีประโยชน์จะ retry) — เลือก scope นี้ตามที่ user ยืนยันตอนคุยแผนก่อน
+              เริ่มเขียนโค้ด ***
+
+              submit/delete/purchase/pay (alias ของ click ใน permission layer)
+              ก็ retry ด้วยเพราะ dispatch ผ่าน _dispatch_with_retry เหมือนกัน —
+              permission check (ask_user_func) ถูกเรียกแค่ครั้งเดียวก่อน retry loop
+              เริ่ม ไม่ถามซ้ำทุกรอบที่ retry
+
+              unit test ใหม่ 6 เคสใน backend/tests/test_actions.py (สำเร็จรอบแรก
+              ไม่ retry, retry แล้วสำเร็จ, ครบ 3 ครั้งแล้วยัง fail, select/check
+              ก็ retry เหมือนกัน, goto ไม่ retry, submit alias ก็ retry) — mock
+              asyncio.sleep กันไม่ให้ test suite ช้าจริง — รันจริงบน saucedemo.com
+              ผ่าน Gemini ยืนยัน flow ปกติไม่พังหลังใส่ retry (ยังไม่เคยเจอ
+              transient failure จริงให้เห็น retry ทำงานสด — เชื่อ unit test เป็นหลัก)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []

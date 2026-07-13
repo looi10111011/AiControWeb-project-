@@ -6,8 +6,12 @@ actions.py  —  W3: Browser Actions (ชุดเครื่องมือใ
 
 ออกแบบให้ทุก action:
   1. รับ index (หรือ params) เดียวกันกับที่ LLM เห็นตอน perceive
-  2. คืน ActionResult (success/ข้อความ) เสมอ -> W4 เอาไปทำ Verify + Retry ต่อได้
+  2. คืน ActionResult (success/ข้อความ) เสมอ
   3. ไม่ throw ดิบๆ ออกไป -> จับ error แล้วรายงานกลับแทน (agent จะได้ไม่ตาย)
+
+W5: execute() retry click/fill/select/check ให้เองในนี้ (_dispatch_with_retry) ก่อน
+ส่งผลลัพธ์กลับ orchestrator — กัน false negative จาก DOM ที่ยังไม่นิ่ง โดยไม่เสีย
+LLM token สักรอบเดียว
 
 ใช้คู่กับ perception.py (ไฟล์เดียวกับ W2)
 """
@@ -42,6 +46,34 @@ class ActionResult:
 # selector ที่ผูกกับ index ที่ perception ติดไว้บน element
 def _sel(index: int) -> str:
     return f'[data-ai-index="{index}"]'
+
+
+# ------------------------------------------------------------
+# W5: Verify + Retry — action พวก click/fill/select/check พังบ่อยเพราะ DOM ยัง
+# ไม่นิ่ง (element ยัง render/animate ไม่เสร็จ) ไม่ใช่เพราะ index ผิดจริงๆ เสมอไป
+# retry เงียบๆ ระดับนี้ก่อน ไม่เสีย token เพราะไม่ต้องถาม LLM จนกว่าจะลองครบ —
+# ถ้ายัง fail อยู่หลัง retry ครบ ค่อยส่งกลับให้ LLM ตัดสินใจเหมือน W4 เดิม
+# ------------------------------------------------------------
+_ACTION_RETRIES = 3  # ครั้งแรก + retry อีก 2 ครั้ง
+_ACTION_RETRY_DELAY_SEC = 0.5
+
+
+async def _dispatch_with_retry(action_func, *args) -> ActionResult:
+    """เรียก action_func(*args) สูงสุด _ACTION_RETRIES ครั้ง คั่นด้วย delay สั้นๆ ถ้า fail
+    คืนผลลัพธ์แรกที่สำเร็จทันที หรือผลลัพธ์ของความพยายามครั้งสุดท้ายถ้าไม่สำเร็จเลย —
+    แนบจำนวนครั้งที่ลองไว้ใน message ด้วย เผื่อ debug ว่า action นี้ flaky แค่ไหน"""
+    result: ActionResult = None
+    for attempt in range(1, _ACTION_RETRIES + 1):
+        result = await action_func(*args)
+        if result.success:
+            if attempt > 1:
+                result = ActionResult(
+                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                )
+            return result
+        if attempt < _ACTION_RETRIES:
+            await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
+    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
 
 
 # ------------------------------------------------------------
@@ -193,10 +225,13 @@ async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = 
             return ActionResult(False, f"{t}", "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)")
 
     try:
-        if t == "click":       return await click(page, cmd["index"])
-        if t == "fill":        return await fill(page, cmd["index"], cmd["text"])
-        if t == "select":      return await select_option(page, cmd["index"], cmd["label"])
-        if t == "check":       return await check(page, cmd["index"])
+        # click/fill/select/check ผ่าน retry wrapper (W5) เพราะพังบ่อยจาก DOM ยังไม่นิ่ง
+        # ไม่ใช่ index ผิดเสมอไป — scroll/goto/go_back/switch_tab/wait ไม่ retry เพราะ
+        # failure mode ต่างกัน (เช่น goto ผิด URL ก็จะผิดซ้ำทุกครั้ง ไม่ใช่เรื่อง timing)
+        if t == "click":       return await _dispatch_with_retry(click, page, cmd["index"])
+        if t == "fill":        return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+        if t == "select":      return await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
+        if t == "check":       return await _dispatch_with_retry(check, page, cmd["index"])
         if t == "scroll":      return await scroll(page, cmd.get("direction", "down"))
         if t == "goto":        return await goto(page, cmd["url"])
         if t == "go_back":     return await go_back(page)
@@ -207,7 +242,7 @@ async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = 
             # category ของ classify_action() (เช็คผ่านไปแล้วด้านบนตอนมาถึงตรงนี้) ที่จริง
             # แล้วคือคลิก element ตัวเดิม แค่ต้องขอยืนยันจาก human ก่อนเพราะเสี่ยงกว่า
             # click ธรรมดา — คืน label เดิม (เช่น "submit(2)") ไม่ใช่ "click(2)" กันสับสน
-            result = await click(page, cmd["index"])
+            result = await _dispatch_with_retry(click, page, cmd["index"])
             return ActionResult(result.success, f"{t}({cmd['index']})", result.message)
         return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
     except KeyError as e:

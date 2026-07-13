@@ -1,6 +1,8 @@
 """Agent Loop: Perceive -> Plan -> Act -> Verify.
 
-W1: skeleton only. W4: ทำ loop จริงกับเว็บง่าย 1 หน้า. W5: เพิ่ม verify/retry.
+W1: skeleton only. W4: ทำ loop จริงกับเว็บง่าย 1 หน้า.
+W5: retry action ที่ล้มเหลว (ดู actions.py::_dispatch_with_retry) + guard กัน
+finish_task(false) ก่อนเวลาอันควร (ด้านล่าง) + permission layer/human-in-the-loop
 """
 
 import asyncio
@@ -116,8 +118,10 @@ class Orchestrator:
                   ใดๆ เลย (คืนผลลัพธ์ steps=0 ทันที) ไว้กัน agent เริ่มทำอะไรที่ user ยัง
                   ไม่ได้เห็นแผนมาก่อน
 
-        W4 v1: ไม่มี retry เมื่อ action ล้มเหลว (เป็นของ W5) — ผลลัพธ์ action ที่ fail
-        จะถูกส่งกลับเข้าบทสนทนาให้ LLM เห็นแล้วตัดสินใจเองว่าจะลองทางอื่นยังไงในรอบถัดไป
+        W5: action ที่ fail จะถูก retry เงียบๆ ก่อนแล้ว (ดู actions.py::execute() ->
+        _dispatch_with_retry) เฉพาะ click/fill/select/check — ถ้ายัง fail อยู่หลัง retry
+        ครบ ผลลัพธ์สุดท้ายถึงจะถูกส่งกลับเข้าบทสนทนาให้ LLM เห็นแล้วตัดสินใจเองว่าจะลอง
+        ทางอื่นยังไงในรอบถัดไป (เช่น index ผิดจริง ไม่ใช่แค่ DOM ยังไม่นิ่ง)
         """
         is_headless = settings.browser_headless if headless is None else headless
         resolved_provider = provider or settings.llm_provider
