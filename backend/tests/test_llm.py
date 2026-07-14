@@ -62,6 +62,17 @@ def _fake_anthropic_response(content_blocks, **usage_kwargs):
     return response
 
 
+# --- tool schema: NEEDS_CONFIRMATION action types ต้องอยู่ใน enum จริง ---
+# (ก่อนหน้านี้ submit/delete/purchase/pay ไม่เคยอยู่ใน enum เลย ทำให้ permission
+# layer's NEEDS_CONFIRMATION ไม่มีทาง trigger ผ่าน agent loop จริงได้เลย)
+
+
+def test_browser_action_schema_includes_needs_confirmation_action_types():
+    type_enum = llm._BROWSER_ACTION_PARAMS["properties"]["type"]["enum"]
+    for risky_type in ("submit", "delete", "purchase", "pay"):
+        assert risky_type in type_enum
+
+
 # --- next_action() (Anthropic) — เทสต์ prompt caching wiring + parse tool_use ---
 
 

@@ -93,7 +93,7 @@ def run_query():
 
 
 
-_DEFAULT_AGENT_GOAL = "Log in as standard_user/secret_sauce, add the first product... change item... proceed to checkout"
+_DEFAULT_AGENT_GOAL = "Log in, add first product, change item to second product , and proceed to checkout"
 
 # ป้องกัน infinite spawn: process ลูกที่ถูกเปิดในหน้าต่าง console ใหม่จะมี env
 # ตัวนี้ติดมาด้วย เลยรู้ตัวว่าเป็นลูกแล้ว ไม่ต้องเปิดหน้าต่างใหม่ซ้อนอีกที

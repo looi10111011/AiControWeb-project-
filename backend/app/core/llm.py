@@ -108,6 +108,18 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 - ห้ามใช้คำสั่ง go_back ย้อนกลับไปหน้าเข้าสู่ระบบ (Login) หลังจากที่ล็อกอินและเพิ่มสินค้า
   เข้าตะกร้าสำเร็จแล้ว ให้โฟกัสเดินหน้าต่อไปยังหน้าตะกร้าสินค้าเพื่อเข้าสู่ขั้นตอน
   Checkout เท่านั้น (กัน agent วน go_back กลับไปหน้า login ซ้ำๆ จนติด infinite loop)
+- ใช้ type: "delete"/"purchase"/"pay"/"submit" เฉพาะตอนที่ป้าย (label) ของ element
+  เขียนคำที่ตรงความหมายจริงๆ เท่านั้น ห้ามเดา/คาดเดาจากความรู้สึกว่า element "ดูมีผล
+  สำคัญ" — ต้องเห็นคำในป้ายตรงๆ ก่อนถึงจะใช้: "delete" เมื่อป้ายเขียนว่า "Remove" หรือ
+  "Delete" ตรงตัว, "purchase" เมื่อป้ายเขียนว่า "Place Order" หรือ "Finish" (ปุ่มยืนยัน
+  คำสั่งซื้อขั้นสุดท้ายในหน้า checkout), "pay" เมื่อป้ายเขียนว่า "Pay" หรือ "Pay Now",
+  "submit" เมื่อป้ายเขียนคำว่า "Submit" ตรงตัว — ถ้าป้ายไม่ได้เขียนคำเหล่านี้ตรงๆ (เช่น
+  "Open Menu", "Continue Shopping", "Add to cart", ไอคอนไม่มีข้อความ) ให้ใช้ "click"
+  เสมอ ไม่ว่า element นั้นจะดูสำคัญแค่ไหนก็ตาม ห้ามใช้ 4 type นี้ "เผื่อไว้ก่อน"
+  เด็ดขาด เพราะระบบจะหยุดขอยืนยันจาก human ทุกครั้งที่เจอ ใช้พร่ำเพรื่อจะทำให้ user
+  ต้องกดอนุมัติบ่อยเกินจำเป็น
+- หากกรอกฟอร์มเข้าสู่ระบบ (Login Form) ให้กรอกข้อมูลให้ครบทั้ง Username และ Password
+  ทันที ห้ามสั่ง wait คั่นกลางหากหน้าเว็บไม่มีการเปลี่ยนแปลง
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -134,10 +146,21 @@ _BROWSER_ACTION_PARAMS = {
             "enum": [
                 "click", "fill", "select", "check",
                 "scroll", "goto", "go_back", "switch_tab", "wait",
+                # W?: permission layer (classify_action) รู้จัก type เหล่านี้เป็น
+                # NEEDS_CONFIRMATION มาตั้งแต่ W4/W5 แต่ก่อนหน้านี้ไม่เคยอยู่ใน enum
+                # ที่ LLM เรียกได้จริงเลย — human-in-the-loop เลย unreachable ผ่าน
+                # agent loop จริง (trigger ได้แค่ตอนยิง execute() ตรงๆ ใน demo/test)
+                # เพิ่มเข้ามาให้เป็น alias ของ click ที่มีความหมายชัดเจนกว่า (index
+                # เหมือนเดิม) — actions.py::execute() dispatch ให้แล้ว (เห็นได้จาก
+                # DEFAULT_NEEDS_CONFIRMATION check)
+                "submit", "delete", "purchase", "pay",
             ],
             "description": "ชนิด action",
         },
-        "index": {"type": "integer", "description": "index ของ element (click/fill/select/check)"},
+        "index": {
+            "type": "integer",
+            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay)",
+        },
         "text": {"type": "string", "description": "ข้อความที่จะกรอก (fill)"},
         "label": {"type": "string", "description": "ตัวเลือกที่จะเลือกใน dropdown (select)"},
         "direction": {"type": "string", "enum": ["up", "down"], "description": "ทิศทางเลื่อนจอ (scroll)"},

@@ -472,6 +472,254 @@
               มากขึ้น) แต่ assertion เดิม (len(chunks) == 5) ยังไม่ได้อัปเดตตาม —
               ไม่ใช่งานที่ทำรอบนี้ ปล่อยไว้ก่อน
 
+              แก้บั๊ก: Permission layer NEEDS_CONFIRMATION ต่อกับ agent loop จริง
+              ไม่ได้เลยตั้งแต่ต้น (2026-07-13):
+              user ขอให้ "เชื่อม permission layer เข้ากับ agent loop จริงใน
+              orchestrator.py" — ตรวจโค้ดแล้วพบว่าฝั่ง wiring จริงๆ ต่อกันอยู่แล้ว
+              ตั้งแต่ W4/W5 (orchestrator.py เรียก execute(page, tool_input,
+              ask_user_func=ask_user_func) ทุก step, execute() เช็ค
+              classify_action() ก่อน dispatch เสมอ) — *** แต่เจอบั๊กจริงที่ทำให้
+              wiring นี้ใช้งานไม่ได้ผลในทางปฏิบัติมาตลอด ***: DEFAULT_NEEDS_
+              CONFIRMATION = {"submit","delete","purchase","pay"} ใน
+              permission/rules.py ไม่เคยอยู่ใน enum ของ _BROWSER_ACTION_PARAMS
+              (llm.py) ที่ LLM เรียกได้จริงเลย (enum มีแค่ click/fill/select/
+              check/scroll/goto/go_back/switch_tab/wait) แปลว่า LLM ไม่มีทาง
+              เรียก type="purchase"/"delete"/ฯลฯ ได้จริง — human-in-the-loop
+              confirmation gate เลย unreachable ผ่าน agent loop จริงมาตลอด
+              trigger ได้แค่ตอนเรียก execute() ตรงๆ (เช่น run.py permission demo/
+              test_perm.py) ไม่ใช่ผ่าน LLM จริง
+
+              ถามผู้ใช้ 2 ทางแก้: (A) เพิ่ม type เหล่านี้เข้า tool schema ให้ LLM
+              เรียกจริงได้ หรือ (B) ให้ classify_action() เช็คจาก label ของปุ่ม
+              แทน (ต้องพึ่งหลายไฟล์กว่า) — เลือกทาง A
+
+              แก้: เพิ่ม "submit"/"delete"/"purchase"/"pay" เข้า enum ของ
+              _BROWSER_ACTION_PARAMS["properties"]["type"] ใน llm.py (ใช้ dict
+              เดียวกันทั้ง 3 provider — Anthropic/Groq/Gemini เห็น type ใหม่พร้อม
+              กันจากจุดแก้เดียว ไม่ต้องแก้แยกไฟล์) + เพิ่มกติกาใหม่ใน SYSTEM_PROMPT
+              สอน LLM ว่าเมื่อไหร่ควรใช้ type ไหนแทน "click" ธรรมดา (delete=ปุ่ม
+              ลบ/เอาออก, purchase=ปุ่มยืนยันคำสั่งซื้อขั้นสุดท้าย, pay=ปุ่มชำระเงิน,
+              submit=ปุ่ม submit ฟอร์มสำคัญอื่นๆ) — actions.py::execute() dispatch
+              ให้ 4 type นี้อยู่แล้วตั้งแต่ W4/W5 (เป็น alias ของ click ที่ผ่าน
+              permission check ก่อน) ไม่ต้องแก้ actions.py เลย
+
+              unit test ใหม่ 4 เคส: 1 ใน test_llm.py (ยืนยันว่า enum มีครบ 4 type)
+              + 3 ใน test_orchestrator.py เป็น integration test ตัวใหม่ที่ไม่เคยมี
+              มาก่อน (ทุก test เดิมของ orchestrator mock execute() ทิ้งไปเลย ไม่
+              เคยพิสูจน์ว่า permission layer ทำงานผ่าน loop จริงได้) — ปล่อยให้
+              execute() ตัวจริงรันกับ mock_page (AsyncMock เฉยๆ ไม่ raise) แทน:
+              purchase ที่ ask_user_func อนุมัติ -> dispatch จริงสำเร็จ, delete ที่
+              ask_user_func ปฏิเสธ -> ไม่ dispatch จริง บันทึกผลว่าถูกปฏิเสธ, goto
+              ไปโดเมนบล็อก -> ไม่เรียก ask_user_func เลยด้วยซ้ำ (ต่างจาก
+              NEEDS_CONFIRMATION ที่ต้องถาม) — รวม test suite 85 เคส ผ่าน 84
+              (เคส fail เดิมจาก manual_test.txt ด้านบน ไม่เกี่ยวกัน)
+
+              ยืนยันจริงด้วย classify_action() ตรงๆ ว่า submit/delete/purchase/pay
+              -> NEEDS_CONFIRMATION, click -> SAFE, goto โดเมนบล็อก -> BLOCKED
+              ทั้งหมดตรงตามที่คาด *** ยังไม่เคยรันจริงผ่าน LLM จริงเพื่อยืนยันว่า
+              โมเดลจะเลือกใช้ type ใหม่พวกนี้แทน "click" จริงๆ ตามกติกาใน
+              SYSTEM_PROMPT (ยึดตาม pattern เดิมของกติกาอื่นๆ ที่เพิ่มไปก่อนหน้าที่
+              ก็ยังไม่เคยเช็คจาก LLM จริงเหมือนกัน) — โมเดล compliance เป็นความ
+              เสี่ยงที่เหลืออยู่ ถ้า LLM ยังใช้ "click" กับปุ่มเสี่ยงอยู่ (ไม่ทำตาม
+              prompt) permission check ก็จะไม่ trigger เหมือนเดิม ***
+
+              เพิ่มชั้นสำรอง: เช็คคำเสี่ยงจาก label ของ element ด้วย ไม่พึ่งแค่ type
+              (2026-07-13 เช่นกัน):
+              user ชี้ว่าความเสี่ยงข้อสุดท้ายด้านบน (โมเดล compliance เลือก type ผิด)
+              เป็นเรื่องจริงที่ต้องกันไว้ก่อน — บนหน้าเว็บจริง ปุ่ม "Remove" ในตะกร้า
+              ของ saucedemo เป็นแค่ <button>Remove</button> ธรรมดา ไม่มี attribute
+              พิเศษอะไรให้สังเกตนอกจากคำในป้าย ถ้า LLM ยังเลือกส่ง type="click" (ไม่
+              ทำตามกติกาใหม่ที่สอนไว้) NEEDS_CONFIRMATION จะไม่ trigger เลย
+
+              *** สืบแล้วพบว่าไม่มีโค้ดจุดไหน "แปลง" click ของ LLM ให้กลายเป็น
+              type="delete" เอง (user เข้าใจผิดตรงนี้) — execute() ที่มีอยู่แล้ว
+              dispatch type="delete"/"submit"/"purchase"/"pay" ด้วย
+              _dispatch_with_retry(click, ...) ตัวเดียวกับ type="click" ปกติเป๊ะ
+              (ยืนยันด้วย test ที่ผ่านจริงจากรอบก่อนหน้า) ไม่มี "เครื่องมือที่ไม่มี
+              อยู่จริง" ให้เรียกพลาดตามที่ user กังวล — แต่ประเด็นเรื่อง model
+              compliance ที่ user หยิบยกมา (LLM อาจไม่ยอมใช้ type ใหม่จริงๆ) เป็น
+              เหตุผลที่สมเหตุสมผลพอที่จะเพิ่มชั้นตรวจสอบสำรอง ***
+
+              ถามผู้ใช้ว่าจะถอด enum/กติกาที่เพิ่งเพิ่มออกเลยไหม หรือเก็บไว้เป็นชั้น
+              สำรองคู่กับ label detection — เลือกเก็บไว้ทั้งคู่ (defense-in-depth)
+
+              แก้: permission/rules.py::classify_action(cmd, label="") รับ
+              parameter ใหม่ label (optional, default "") เช็คกับ
+              RISKY_LABEL_KEYWORDS = {"remove","delete","place order","finish",
+              "pay","purchase","confirm"} (case-insensitive substring match) เป็น
+              เช็คสุดท้ายก่อน return SAFE — ถ้า label ตรงคำเสี่ยง จะได้
+              NEEDS_CONFIRMATION แม้ type จะเป็นแค่ "click" ธรรมดา (คำว่า "finish"
+              เจาะจงเพราะปุ่มยืนยันคำสั่งซื้อขั้นสุดท้ายจริงบน saucedemo checkout
+              step 2 มีป้ายว่า "Finish" ไม่ใช่ "Place Order"/"Pay" อย่างที่คาดแรกๆ)
+
+              actions.py::execute() รับ parameter ใหม่ label: str = "" ส่งต่อให้
+              classify_action(cmd, label=label) — orchestrator.py per-step loop
+              เปลี่ยนจากทิ้ง elements (`_, page_text = ...`) เป็นเก็บไว้ใช้
+              (`elements, page_text = ...`) แล้วหา label ของ index ที่ LLM เลือก
+              จาก elements ของ snapshot รอบเดียวกัน (ไม่ใช่ query DOM ใหม่ทีหลัง กัน
+              ปัญหา DOM เปลี่ยนระหว่าง perceive กับ act) ส่งเข้า execute() ทุก step
+
+              unit test ใหม่ 8 เคส: 4 ใน test_perm.py (classify_action เช็ค label
+              เสี่ยง/ปกติ/case-insensitive/ไม่ส่ง label มาไม่ throw) + 2 ใน
+              test_perm.py สำหรับ execute() (type="click" ธรรมดา + label เสี่ยง
+              ต้องถามยืนยัน, label ปกติไม่ต้องถาม) + 1 ใน test_orchestrator.py
+              (integration test เต็ม: LLM ส่ง {"type":"click","index":7} กับ
+              elements ที่ index 7 มี label="Remove" -> ask_user_func ถูกเรียกจริง)
+              + แก้ test เดิม 2 เคสที่ assert exact kwargs ของ execute() ให้รวม
+              label="" ด้วย (เดิม assert แค่ ask_user_func=None เฉยๆ) — รวม test
+              suite 92 เคส ผ่าน 91 (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+              ยืนยันจริงบน saucedemo.com (ไม่ mock อะไรเลย ใช้ Playwright จริง):
+              login -> add to cart -> get_snapshot() เจอปุ่ม "Remove" จริงที่ index
+              5 -> เรียก execute() ด้วย cmd={"type":"click","index":5} (ไม่ใช่
+              "delete") พร้อม label="Remove" -> ask_user_func ถูกเรียกจริง 1 ครั้ง
+              -> อนุมัติแล้ว dispatch สำเร็จจริง ("[OK] click(5) -> คลิกสำเร็จ")
+              พิสูจน์ว่าชั้นสำรองนี้ทำงานจริงกับ DOM จริง ไม่ใช่แค่ mock
+
+              แก้บั๊ก: Gemini ส่ง type="delete" มั่วบนหน้า inventory หลัก
+              (2026-07-13 เช่นกัน):
+              user รายงานเจอ log จริงที่ Gemini ส่ง {"type":"delete","index":0} ตอน
+              อยู่หน้ารายการสินค้าหลัก (index 0 ในหน้านี้คือปุ่ม "Open Menu" ไม่ได้
+              เกี่ยวกับการลบอะไรเลย) กังวลว่ามีโค้ดฝั่ง permission/parser แปลง click
+              เป็น delete เองหรือเปล่า
+
+              สืบแล้วยืนยันด้วย grep ทั้งโปรเจกต์ว่า *** ไม่มีโค้ดจุดไหนแปลง/
+              rewrite cmd["type"] เลย *** (llm.py::_normalize_gemini_args() แปลง
+              แค่ float->int ของค่าตัวเลข ไม่แตะ string), "delete" ปรากฏแค่ 2 ที่
+              ในซอร์สจริง: enum ที่ให้ Gemini เลือกใน _BROWSER_ACTION_PARAMS กับ
+              set DEFAULT_NEEDS_CONFIRMATION/RISKY_LABEL_KEYWORDS ที่ใช้ตอน
+              classify — สรุปว่า type="delete" เป็นค่าที่ Gemini ตัดสินใจส่งมาเอง
+              จริงๆ (โมเดล misclassify) ไม่ใช่บั๊กจากโค้ดฝั่งเรา
+
+              root cause คือกติกาที่เพิ่งเพิ่มไปตอน "เชื่อม RAG..." ผิด ใช้คำกว้างไป
+              ("ปุ่มลบ/เอาออก") ทำให้โมเดลเล็ก (gemini-flash-lite-latest) ตีความ
+              กว้างเกินจริง เดา/คาดเดาจากบริบทแทนที่จะดูคำในป้ายตรงๆ — *** ตั้งใจ
+              ไม่ auto-downgrade type="delete" กลับเป็น click ตอน label ไม่ตรง
+              RISKY_LABEL_KEYWORDS เพราะจะเปิดช่องให้ action เสี่ยงจริงที่ label
+              ใช้คำนอกลิสต์ (เช่น "Discard"/"Void"/"Refund") หลุดผ่าน confirmation
+              ไปได้ — ถ้าจะแก้ต้องแก้ที่ต้นตอ (โมเดลเลือก type ให้แม่นขึ้น) ไม่ใช่
+              ลดการป้องกันฝั่ง permission ***
+
+              แก้: เขียน SYSTEM_PROMPT กติกาเรื่อง delete/purchase/pay/submit ใหม่
+              ให้เข้มงวดกว่าเดิมมาก — บังคับให้ต้องเห็นคำในป้ายตรงตัวเป๊ะๆ ก่อนถึงจะ
+              ใช้ type พวกนี้ได้ (ห้ามเดา/คาดเดาจากความรู้สึกว่า element ดูสำคัญ) พร้อม
+              ยกตัวอย่างค่าที่ไม่ควรโดน (เช่น "Open Menu") ต้องใช้ click เสมอ +
+              เตือนชัดเจนว่าใช้พร่ำเพรื่อจะทำให้ user ต้องกดอนุมัติบ่อยเกินจำเป็น
+
+              รันจริงบน saucedemo.com ผ่าน Gemini (login + add first product to
+              cart, 4 step) หลังแก้ prompt: ทุก step เลือก type ถูกหมด (fill/fill/
+              click/click) ไม่มี delete โผล่มาเลยรอบนี้ *** เป็นแค่ spot check 1
+              รอบ ไม่ได้พิสูจน์ว่าแก้ได้ 100% เพราะพฤติกรรมโมเดลเป็น stochastic —
+              ยังต้องรัน sample เยอะกว่านี้ถึงจะมั่นใจได้จริงว่า false-positive rate
+              ลดลงจริง ไม่ใช่แค่บังเอิญรอบนี้ไม่เจอ ***
+
+              ปรับ loop-detection ให้จับ pattern สลับ 2 action (ABAB) เพิ่ม
+              (2026-07-13 เช่นกัน):
+              guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS) จับได้แค่ pattern
+              คาบ 1 — action เดิมเป๊ะๆ ซ้ำติดกัน (AAAA) เท่านั้น ถ้า agent วนสลับ 2
+              action ที่ไม่เหมือนกันไปมาแทน (คาบ 2 เช่น go_back -> click -> go_back
+              -> click ซ้ำไปเรื่อยๆ — เคสที่กังวลกันไว้ตอนเพิ่มกติกากัน go_back วน
+              กลับหน้า login ก่อนหน้านี้) จะไม่ตรงเงื่อนไข "เดิมเป๊ะๆ ติดกัน" เลย
+              guard เดิมไม่เคย trigger เลยแม้จะไม่มีความคืบหน้าจริงเหมือนกัน
+
+              user ขอให้ปรับ loop-detection โดยเจาะจงว่าอยากให้จับ pattern สลับกัน
+              (A-B-A-B) เป็นหลัก (มีตัวเลือกอื่น เช่น เตือนก่อนหยุดจริง/ปรับ
+              threshold ด้วย แต่เลือกทางนี้)
+
+              แก้: เพิ่ม orchestrator.py::_is_alternating_pattern() + constant
+              _MAX_ALTERNATING_CYCLES=2 (ครบ 2 รอบ A-B-A-B รวม 4 action ถือว่าติด
+              loop) แยกเป็น guard คนละตัวกับของเดิม (คาบ 1) โดยเจตนา — ถ้า A กับ B
+              เป็นค่าเดียวกัน (นั่นคือ AAAA) จะคืน False ทันที กันสอง guard ทับซ้อน
+              กันเอง เก็บ recent_actions เป็น rolling window แค่ 4 ตัวล่าสุด (ไม่
+              เก็บ history ทั้ง task) เช็คทุก step หลัง guard คาบ 1 (เรียงลำดับ:
+              คาบ 1 ก่อน แล้วค่อยคาบ 2)
+
+              *** ตั้งใจ scope แค่คาบ 2 ตามที่ user ระบุเจาะจง ไม่ได้ทำ generic
+              period-N detection (เช่น คาบ 3 แบบ A-B-C-A-B-C จะไม่ถูกจับ) — มี unit
+              test ยืนยันว่าคาบ 3 ไม่ trigger ไว้เป็นเอกสารของ scope ปัจจุบันด้วย
+              ถ้าจะขยายรองรับคาบอื่นเป็นงานเพิ่มเติมทีหลัง ***
+
+              unit test ใหม่ 2 เคสใน test_orchestrator.py: หยุดจริงเมื่อสลับ 2
+              action ครบ 2 รอบ (go_back<->click, สกัด action ที่ 4 ก่อน execute()
+              เหมือน guard คาบ 1 ทำ) + คาบ 3 (A-B-C-A-B-C) ต้องไม่ trigger (ยืนยัน
+              ขอบเขต scope) — รวม test suite 94 เคส ผ่าน 93 (เคส fail เดิมจาก
+              manual_test.txt ไม่เกี่ยวกัน)
+
+              เพิ่ม SYSTEM_PROMPT + code-level guard กัน agent ข้าม login form ที่
+              ยังกรอกไม่ครบ (2026-07-13 เช่นกัน):
+              user ถามว่าทำไม AI ชอบสั่ง wait แล้วข้ามไปกด element อื่นทั้งที่ยังไม่ได้
+              กรอก Password — ขั้นแรกเพิ่ม SYSTEM_PROMPT rule ("กรอก Username/Password
+              ให้ครบทันที ห้าม wait คั่นกลาง") แต่เป็นแค่คำขอ ไม่การันตีว่าโมเดลเล็ก
+              (Gemini flash-lite) จะทำตาม — user ขอให้ทำต่อจนกว่าจะ "ใช้งานได้จริง"
+              จึงเพิ่ม code-level guard บังคับจริงในสเต็ปถัดมา
+
+              *** ตัดสินใจขยาย scope จากที่เสนอไว้แรกๆ (บล็อกแค่ wait) เป็นบล็อก
+              action ใดๆ ก็ตามที่ไม่ใช่ "fill" — เพราะปัญหาจริงคือ "form ถูกทิ้งไว้
+              ไม่ครบ" ไม่ใช่แค่ wait เฉยๆ ถ้าบล็อกแค่ wait โมเดลอาจแค่ข้ามไปกด login
+              โดยตรงแทน (ยังคงข้าม password อยู่ดี) ไม่ได้แก้ปัญหาจริง ***
+
+              แก้: เพิ่ม orchestrator.py::_login_form_needs_password(page) — เช็ค
+              จาก DOM จริง (page.locator('input[type="password"]:visible') +
+              input_value()) ไม่ใช้ label จาก snapshot เพราะแยกไม่ออกชัดพอระหว่าง
+              placeholder กับค่าว่างจริง — ถ้ามี password field ที่มองเห็นได้ยังว่าง
+              อยู่ และ action ที่ LLM เลือกไม่ใช่ "fill" (ไม่ว่าจะ fill ช่องไหน) ให้
+              ปฏิเสธ + เตือนกลับเข้าบทสนทนา (pattern เดียวกับ premature-false-finish
+              guard เดิม) จำกัดจำนวนครั้งด้วย _MAX_PREMATURE_LOGIN_SKIP_RETRIES=2
+              กันโมเดลที่ดื้อจริงๆ ทำให้ค้างไม่รู้จบ — เกินโควตาแล้วปล่อยผ่านไปตามที่
+              โมเดลเลือกแทน (escape valve เดียวกับ guard อื่นๆ ในไฟล์นี้)
+
+              unit test ใหม่ 2 เคสใน test_orchestrator.py (ปฏิเสธ wait ตอน password
+              ว่างแล้วปล่อยผ่านตอน fill, ปล่อยผ่านหลังเกินโควตาเตือน) + เพิ่ม autouse
+              fixture ใหม่ mock _login_form_needs_password() default False ให้ทุก
+              เทสต์อื่นในไฟล์ (กัน RuntimeWarning จาก page.locator() ที่เรียกจริงบน
+              mock_page ซึ่งเป็น AsyncMock เปล่าไม่มี Playwright locator จริง — เดิม
+              fallback เป็น False เงียบๆ อยู่แล้วเพราะครอบด้วย try/except แต่ทิ้ง
+              warning รกไว้ 13 จุด) — รวม test suite 96 เคส ผ่าน 95
+
+              ยืนยันจริงบน saucedemo.com (ไม่ mock อะไรเลย): _login_form_needs_
+              password() คืน True ก่อนกรอกอะไร, ยังคืน True หลังกรอก username
+              อย่างเดียว (password ยังว่าง), คืน False หลังกรอกครบทั้งคู่, คืน False
+              บนหน้า inventory ที่ไม่มี password field เลย — ตรงตามคาดทุกเคส รันเต็ม
+              ผ่าน Gemini จริง (login goal, auto-approve callback) จบงานสำเร็จปกติ
+              ไม่เจอ wait/ข้าม password เลยรอบนี้ (เหมือนรอบ spot check ก่อนหน้าที่
+              ปรับ prompt) — โมเดลรอบนี้ใช้ type="click" กด login (ไม่ใช่ "submit"
+              ตามกติกาใหม่ที่สอนไว้ว่าต้องเห็นคำว่า "Submit" ตรงตัว แต่ปุ่มจริงชื่อ
+              "Login" — ยืนยันอีกครั้งว่า model compliance เป็นความเสี่ยงที่เปิดอยู่
+              เสมอ ไม่ใช่แค่กับ guard ตัวนี้)
+
+              แก้ด่วน: ยกเว้น goto ออกจาก guard ทั้ง 2 จุด (2026-07-13 วันเดียวกัน):
+              user รายงานด่วนว่า guard ใหม่ (ทั้ง login-form guard ข้างบน และ
+              permission layer เดิม) อาจไปบล็อก goto ที่จำเป็นต้องใช้ก่อนถึงจะเห็น
+              ฟอร์ม login ได้เลยด้วยซ้ำ
+
+              เจอ 2 จุดจริง:
+              1) orchestrator.py::login-form guard (เพิ่งเพิ่มไปเมื่อกี้) เช็ค
+                 "action ไม่ใช่ fill" กว้างเกินไป รวม goto เข้าไปด้วยโดยไม่ตั้งใจ —
+                 ถ้า agent ต้อง goto ไปหน้าอื่นก่อน (แก้เส้นทางผิด/multi-hop กว่าจะ
+                 ถึงฟอร์ม login จริง) ระหว่างที่หน้าปัจจุบันมี password field ว่างอยู่
+                 (เช่น หน้าแรกที่เข้ามาเจอฟอร์ม login ทันที) จะโดนบล็อกไม่ให้ escape
+                 ออกจากหน้านั้นได้เลย ทั้งที่เป็น action ที่ถูกต้อง — แก้เป็นยกเว้น
+                 "goto" เพิ่ม (เงื่อนไขใหม่: ไม่ใช่ทั้ง "fill" และ "goto" ถึงจะโดน
+                 บล็อก)
+              2) permission/rules.py::classify_action() (ของเดิมตั้งแต่ W4/W5) มี
+                 ช่องโหว่แฝงที่ไม่เคยสังเกตมาก่อน: goto ที่ผ่าน domain-blocklist
+                 check แล้ว (ไม่ได้อยู่ BLOCKED_DOMAINS) ไม่เคย return SAFE ทันที —
+                 ตกไปเช็ค _label_looks_risky(label) ต่อด้านล่างเหมือน action ทั่วไป
+                 ทั้งที่ goto ไม่มี index ไม่ควรมี label มาเกี่ยวข้องเลย *** ยังไม่
+                 เคยเป็นบั๊กจริงเพราะ orchestrator.py ส่ง label="" ให้ goto เสมอ
+                 (ไม่มี index ให้จับคู่หา label) แต่เป็นช่องโหว่แฝงที่ผู้เรียก
+                 classify_action() คนอื่นในอนาคต (หรือ test) อาจส่ง label มาโดย
+                 ไม่ตั้งใจแล้วทำให้ goto ที่ปกติดันโดน NEEDS_CONFIRMATION ผิดๆ ได้ ***
+                 แก้เป็น return SAFE ทันทีหลังผ่าน domain check ไม่ตกไปเช็ค label
+                 ต่อสำหรับ goto โดยเฉพาะ
+
+              unit test ใหม่ 2 เคส: 1 ใน test_perm.py (goto ที่ผ่าน domain check
+              แล้ว ต้อง SAFE แม้ส่ง label ที่ตรงคำเสี่ยงมาด้วยจงใจ) + 1 ใน
+              test_orchestrator.py (goto ต้องผ่าน execute() ทันทีแม้
+              _login_form_needs_password() คืน True อยู่ ไม่ถูกนับเป็นการ nudge
+              เลยแม้แต่ครั้งเดียว) — รวม test suite 98 เคส ผ่าน 97 (เคส fail เดิม
+              จาก manual_test.txt ไม่เกี่ยวกัน)
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -536,8 +784,8 @@
 ================================================================
 
   W1 ┬ [A]  Finalize สถาปัตยกรรม + ตั้ง Repo/Branch
-     │      + ลง Playwright & FastAPI (skeleton)
-     ├ [B]  ลง ChromaDB + เตรียมชุดคู่มือทดสอบ + เขียน Scope/SRS
+     │      + ลง Playwright & FastAPI (skeleton) ✅ เสร็จแล้ว
+     ├ [B]  ลง ChromaDB + เตรียมชุดคู่มือทดสอบ + เขียน Scope/SRS ✅ เสร็จแล้ว
      └ [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล (ร่วมกัน)
 
   >> หมุดหมาย W1: รันโปรเจกต์เปล่าได้ทั้งคู่ + ตกลงเว็บทดสอบแล้ว
@@ -564,6 +812,10 @@
             (classify_action + execute() hook + human-in-the-loop input()/
             ask_user_func — ใช้ร่วมกับ plan confirmation gate ด้วย) ยังไม่ได้
             ต่อ RAG-based permission (ของ W7)
+            *** แก้ไข (2026-07-13): ตอนเขียนตรงนี้ครั้งแรก NEEDS_CONFIRMATION
+            (submit/delete/purchase/pay) ยังไม่เคย reachable ผ่าน agent loop จริง
+            เลย เพราะ type พวกนี้ไม่อยู่ใน tool schema enum ที่ LLM เรียกได้ —
+            แก้แล้ว ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน ***
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  🔶 เริ่มแล้ว (2026-07-13)
      │      (retry click/fill/select/check + timeout สั้นลง 3s — ยังไม่มี

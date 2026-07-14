@@ -31,6 +31,18 @@ def _no_real_sleep():
         yield mock_sleep
 
 
+# _login_form_needs_password() เรียก page.locator() จริง (sync ใน Playwright จริง)
+# แต่ mock_page เป็น AsyncMock เปล่าๆ ที่ทำให้ทุก attribute เป็น async หมด — เรียกจริง
+# จะได้ RuntimeWarning (coroutine ไม่ถูก await) แล้ว fallback เป็น False อยู่ดีเพราะ
+# ครอบด้วย try/except — mock ให้ตรงๆ แทนกันเทสต์อื่นๆ ที่ไม่ได้ตั้งใจทดสอบ guard นี้รก
+# ด้วย warning, default False (ไม่มี password field ว่างอยู่ เหมือนหน้าเว็บทั่วไป) —
+# เทสต์เฉพาะของ guard นี้ override เป็น True เองในเทสต์
+@pytest.fixture(autouse=True)
+def _no_password_field_by_default():
+    with patch("backend.app.core.orchestrator._login_form_needs_password", AsyncMock(return_value=False)):
+        yield
+
+
 def _patch_browser():
     """mock chain ให้ตรงกับของจริง:
     async_playwright() -> (sync) helper -> await .start() -> playwright
@@ -109,7 +121,7 @@ async def test_run_task_executes_action_then_finishes():
     assert result["steps"] == 1
     assert result["message"] == "เพิ่มลงตะกร้าแล้ว"
     mock_execute.assert_awaited_once_with(
-        mock_browser.new_page.return_value, {"type": "click", "index": 2}, ask_user_func=None
+        mock_browser.new_page.return_value, {"type": "click", "index": 2}, ask_user_func=None, label=""
     )
     assert result["history"] == [
         {"step": 0, "cmd": {"type": "goto", "url": "https://example.com"}, "result": str(_GOTO_OK)},
@@ -199,7 +211,7 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
     assert result["success"] is True
     assert result["steps"] == 1
     mock_execute.assert_awaited_once_with(
-        mock_browser.new_page.return_value, {"type": "click", "index": 5}, ask_user_func=None
+        mock_browser.new_page.return_value, {"type": "click", "index": 5}, ask_user_func=None, label=""
     )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
     append_tool_result_mock.assert_any_call(["m1"], "tool_f1", _PREMATURE_FALSE_FINISH_NUDGE)
@@ -426,6 +438,186 @@ async def test_run_task_loop_guard_resets_count_after_different_action():
 
 
 @pytest.mark.asyncio
+async def test_run_task_stops_on_alternating_two_action_pattern():
+    """loop-detection (คาบ 2, 2026-07-13): agent วนสลับ 2 action ที่ไม่เหมือนกันไปมา
+    (เช่น go_back <-> click) — guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS) จับได้
+    แค่ action เดิมเป๊ะๆ ซ้ำติดกัน (คาบ 1) ไม่ตรงเงื่อนไขนี้เลยไม่เคย trigger ต้องมี
+    guard ใหม่จับคาบ 2 (ABAB) แยกต่างหาก"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+    action_a = {"type": "go_back"}
+    action_b = {"type": "click", "index": 3}
+
+    next_action_calls = [
+        ("browser_action", action_a, "t1", [], llm.TokenUsage()),
+        ("browser_action", action_b, "t2", [], llm.TokenUsage()),
+        ("browser_action", action_a, "t3", [], llm.TokenUsage()),
+        ("browser_action", action_b, "t4", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is False
+    assert "สลับ" in result["message"]
+    # การสลับครั้งที่ 4 (B ตัวที่ 2) ถูกสกัดไว้ก่อน execute() เหมือน guard คาบ 1
+    assert mock_execute.await_count == 3
+    assert mock_next_action.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_run_task_loop_guard_does_not_trigger_for_three_action_cycle():
+    """guard ใหม่ตั้งใจจับแค่คาบ 2 (ABAB) ตามที่ user ระบุ — คาบ 3 (ABC-ABC) ไม่ควร
+    trigger เพราะยังไม่ได้ scope ไว้ (ถ้าจะรองรับคาบอื่นเพิ่มเป็นงานภายหลัง)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+    action_a = {"type": "click", "index": 1}
+    action_b = {"type": "click", "index": 2}
+    action_c = {"type": "click", "index": 3}
+
+    next_action_calls = [
+        ("browser_action", action_a, "t1", [], llm.TokenUsage()),
+        ("browser_action", action_b, "t2", [], llm.TokenUsage()),
+        ("browser_action", action_c, "t3", [], llm.TokenUsage()),
+        ("browser_action", action_a, "t4", [], llm.TokenUsage()),
+        ("browser_action", action_b, "t5", [], llm.TokenUsage()),
+        ("browser_action", action_c, "t6", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is True
+    assert mock_execute.await_count == 6
+
+
+# --- code-level guard: ห้ามข้าม login form ที่ยังกรอกไม่ครบ (2026-07-13) ---
+# SYSTEM_PROMPT ขอไว้แล้วว่าห้าม wait คั่นกลางตอน login แต่โมเดลเล็ก (Gemini flash-lite)
+# ไม่ทำตามเสมอไป — เจอจริงว่าสั่ง wait เฉยๆ แล้วรอบถัดไปข้ามไปกด element อื่นทั้งที่ยังไม่
+# ได้กรอก password เลย เทสต์กลุ่มนี้ patch _login_form_needs_password() ตรงๆ (ไม่ใช้ page
+# จริง) เพื่อควบคุม scenario ได้แน่นอน
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_non_fill_action_when_password_field_still_empty():
+    """ถ้า password field ยังว่างอยู่ (login form ยังกรอกไม่ครบ) ต้องปฏิเสธ action ที่
+    ไม่ใช่ fill (เช่น wait) แล้วเตือนให้กรอกก่อน — ไม่เรียก execute() เลยสำหรับ action
+    ที่ถูกปฏิเสธ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "fill(1)", "กรอกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "wait"}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "fill", "index": 1, "text": "secret_sauce"}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fill_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._login_form_needs_password", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "login goal", provider="anthropic")
+
+    assert result["success"] is True
+    # step 1 (wait) ถูกปฏิเสธ ไม่เรียก execute() เลย, step 2 (fill) ผ่านปกติ
+    assert mock_execute.await_count == 1
+    assert mock_next_action.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_task_login_form_guard_gives_up_after_max_retries():
+    """ถ้าโมเดลยืนกรานทำ action ที่ไม่ใช่ fill ต่อไปเรื่อยๆ แม้เตือนแล้ว (เช่น สั่ง wait
+    ซ้ำ) guard ต้องไม่ค้างตลอดไป — ปล่อยผ่านหลังเตือนครบ _MAX_PREMATURE_LOGIN_SKIP_RETRIES
+    ครั้ง"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    wait_result = ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
+
+    next_action_calls = [
+        ("browser_action", {"type": "wait"}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "wait"}, "t2", [], llm.TokenUsage()),
+        ("browser_action", {"type": "wait"}, "t3", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "หมดหวัง"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=wait_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._login_form_needs_password", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "login goal", provider="anthropic")
+
+    # 2 ครั้งแรกถูกปฏิเสธ (nudge), ครั้งที่ 3 ถูกปล่อยผ่านให้ execute() จริง (กัน stall
+    # ตลอดไป) แล้ว finish_task(false) หลังจากนั้นค่อยจบ
+    assert result["success"] is False
+    assert mock_execute.await_count == 1
+    assert mock_next_action.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_run_task_login_form_guard_exempts_goto():
+    """goto ต้องไม่โดน guard นี้บล็อกเด็ดขาด แม้ password field ยังว่างอยู่ — ระบบ
+    อาจจำเป็นต้อง goto ไปหน้าอื่นก่อน (แก้เส้นทาง/multi-hop กว่าจะถึงฟอร์ม login จริง)
+    ห้ามติดอยู่ที่หน้าเดิมแบบออกไปไหนไม่ได้เลย"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    goto_result = ActionResult(True, "goto", "ไปที่ url")
+
+    next_action_calls = [
+        ("browser_action", {"type": "goto", "url": "https://example.com/login"}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=goto_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._login_form_needs_password", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    # goto ต้องผ่าน execute() ทันที ไม่ถูกปฏิเสธ/นับเป็นการ nudge เลยแม้แต่ครั้งเดียว
+    assert result["success"] is True
+    assert mock_execute.await_count == 1
+    assert mock_next_action.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_result_into_next_action():
     """W6[B]: ทุก step ต้องดึงคู่มือด้วย retrieve(query=goal, page_state=page_text ปัจจุบัน,
     k=_RAG_CHUNKS_PER_STEP) แล้วเอาผลลัพธ์ (join เป็น bullet list) ส่งต่อเข้า next_action()
@@ -496,3 +688,130 @@ async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_
 
     manual_context = mock_next_action.await_args.args[-1]
     assert manual_context == ""
+
+
+# --- Permission layer connected to the real per-step loop ---
+# เทสต์กลุ่มนี้ไม่ mock backend.app.core.orchestrator.execute เหมือนเทสต์อื่นๆ ด้านบน —
+# ปล่อยให้ actions.py::execute() ตัวจริงทำงาน (รวม classify_action() + _confirm_action())
+# กับ mock_page (AsyncMock เฉยๆ ไม่ raise) เพื่อพิสูจน์ว่า permission layer ต่อเข้ากับ
+# loop จริงของ orchestrator ได้จริง ไม่ใช่แค่ต่อกับ execute() แบบแยกส่วนใน test_perm.py
+
+
+@pytest.mark.asyncio
+async def test_run_task_needs_confirmation_action_calls_ask_user_func_and_executes_when_approved():
+    """purchase/delete/pay/submit (NEEDS_CONFIRMATION) ต้องขอยืนยันจาก ask_user_func
+    ก่อนเสมอ ผ่าน execute() ตัวจริง — อนุมัติแล้วต้อง dispatch จริงต่อ (สำเร็จ)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=True)
+
+    next_action_calls = [
+        ("browser_action", {"type": "purchase", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
+        )
+
+    ask_user_func.assert_awaited_once_with({"type": "purchase", "index": 3})
+    assert result["success"] is True
+    assert result["steps"] == 1
+    # history[0] คือ goto ตอนเริ่ม task, history[1] คือ step ของ purchase ที่เพิ่งอนุมัติ
+    assert "[OK]" in result["history"][1]["result"]
+    assert "purchase(3)" in result["history"][1]["result"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_needs_confirmation_action_rejected_when_ask_user_func_declines():
+    """ถ้า ask_user_func ปฏิเสธ ต้องไม่ dispatch action จริง (ไม่กด element) และ
+    ผลลัพธ์ที่บันทึกต้องสะท้อนว่าโดนปฏิเสธ ไม่ใช่ error อื่น"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=False)
+
+    next_action_calls = [
+        ("browser_action", {"type": "delete", "index": 5}, "t1", [], llm.TokenUsage()),
+        # tool_use_id="" กัน premature-false-finish guard (W4) เตือนแล้วลองใหม่ —
+        # ไม่ใช่สิ่งที่เทสต์นี้อยากวัด (ดู test_run_task_accepts_finish_task_false_
+        # immediately_when_no_tool_use_id ด้านบนสำหรับพฤติกรรมของ guard นั้นโดยเฉพาะ)
+        ("finish_task", {"success": False, "message": "หยุดหลังโดนปฏิเสธ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
+        )
+
+    ask_user_func.assert_awaited_once_with({"type": "delete", "index": 5})
+    assert "[FAIL]" in result["history"][1]["result"]
+    assert "ปฏิเสธ" in result["history"][1]["result"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_blocked_domain_goto_never_calls_ask_user_func():
+    """BLOCKED (goto ไปโดเมนใน blocklist) ต้องถูกปฏิเสธทันทีโดยไม่ถาม human เลย —
+    ต่างจาก NEEDS_CONFIRMATION ที่ต้องถาม"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=True)
+
+    next_action_calls = [
+        ("browser_action", {"type": "goto", "url": "https://malicious.com/login"}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "โดนบล็อก"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
+        )
+
+    ask_user_func.assert_not_called()
+    assert "Blocklist" in result["history"][1]["result"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_plain_click_on_risky_labeled_element_still_asks_for_confirmation():
+    """defense-in-depth: LLM ส่ง type="click" ธรรมดา (ไม่ใช่ delete/submit/purchase/pay)
+    กับ element ที่ label ตรงคำเสี่ยง (เช่น "Remove" บน saucedemo) — orchestrator ต้อง
+    หา label จาก elements ของ snapshot รอบนั้นแล้วส่งให้ execute() เช็คด้วย ไม่ใช่พึ่ง
+    ให้ LLM เลือก type ให้ถูกเพียงอย่างเดียว"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=True)
+
+    elements = [{"index": 7, "tag": "button", "type": "", "label": "Remove"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 7}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
+        )
+
+    ask_user_func.assert_awaited_once_with({"type": "click", "index": 7})
+    assert result["success"] is True
+    assert "[OK]" in result["history"][1]["result"]
