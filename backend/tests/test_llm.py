@@ -159,6 +159,39 @@ async def test_next_action_default_manual_context_omits_section():
     assert "คู่มือ" not in user_content
 
 
+@pytest.mark.asyncio
+async def test_next_action_passes_memory_context_into_prompt():
+    """W7[A]: memory_context จาก ShortTermMemory.failed_actions_summary() ต้องโผล่ในข้อความ user turn จริง"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(
+        client, "model", "goal", "page", [], manual_context="", memory_context="- {'type': 'click'} -> [FAIL] boom"
+    )
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "[FAIL] boom" in user_content
+    assert "อย่าทำซ้ำแนวทางเดิม" in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_default_memory_context_omits_section():
+    """เรียกแบบเดิม (ไม่มี memory_context) ต้องได้ prompt แบบเดิมเป๊ะ ไม่มี section ประวัติ failure"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(client, "model", "goal", "page", [])
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "ทำซ้ำ" not in user_content
+
+
 def _fake_gemini_function_call_part(name: str, args: dict):
     part = MagicMock()
     part.function_call.name = name
@@ -356,6 +389,34 @@ async def test_next_action_groq_default_manual_context_omits_section():
     assert "คู่มือ" not in user_content
 
 
+@pytest.mark.asyncio
+async def test_next_action_groq_passes_memory_context_into_prompt():
+    tool_call = _fake_tool_call("call_7", "browser_action", '{"type": "wait"}')
+    response = _fake_response([tool_call], {"role": "assistant"})
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    await llm.next_action_groq(client, "model", "goal", "page", [], memory_context="- fail one")
+
+    _, kwargs = client.chat.completions.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "fail one" in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_groq_default_memory_context_omits_section():
+    tool_call = _fake_tool_call("call_8", "browser_action", '{"type": "wait"}')
+    response = _fake_response([tool_call], {"role": "assistant"})
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    await llm.next_action_groq(client, "model", "goal", "page", [])
+
+    _, kwargs = client.chat.completions.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "ทำซ้ำ" not in user_content
+
+
 # --- next_action_gemini() (Gemini) ---
 
 
@@ -496,7 +557,33 @@ async def test_next_action_gemini_default_manual_context_omits_section():
     assert "คู่มือ" not in user_text
 
 
-# --- _build_user_turn_text() (W6[B]) ---
+@pytest.mark.asyncio
+async def test_next_action_gemini_passes_memory_context_into_prompt():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(client, "model", "goal", "page", [], memory_context="- fail one")
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "fail one" in user_text
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_default_memory_context_omits_section():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "ทำซ้ำ" not in user_text
+
+
+# --- _build_user_turn_text() (W6[B]/W7[A]) ---
 
 
 def test_build_user_turn_text_omits_manual_section_when_empty():
@@ -511,3 +598,26 @@ def test_build_user_turn_text_includes_manual_section_when_provided():
     assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
     assert "chunk one" in result
     assert "chunk two" in result
+
+
+def test_build_user_turn_text_omits_memory_section_when_empty():
+    result = llm._build_user_turn_text("goal", "page", manual_context="", memory_context="")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_memory_section_when_provided():
+    result = llm._build_user_turn_text("goal", "page", memory_context="- {'type': 'click'} -> [FAIL] boom")
+
+    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert "[FAIL] boom" in result
+    assert "อย่าทำซ้ำแนวทางเดิม" in result
+
+
+def test_build_user_turn_text_includes_both_manual_and_memory_sections():
+    result = llm._build_user_turn_text(
+        "goal", "page", manual_context="- chunk one", memory_context="- fail one"
+    )
+
+    assert "chunk one" in result
+    assert "fail one" in result

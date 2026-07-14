@@ -127,12 +127,24 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 # เหมือนกันหมด) — ต่อ section คู่มือ (จาก retriever.retrieve() ที่ orchestrator เรียกให้
 # ทุก step) เฉพาะตอนมีผลลัพธ์จริง กัน prompt รกด้วย section เปล่าๆ ทุก step ที่หาไม่เจอ
 # ในคู่มือ (retrieve() คืน [] เงียบๆ เสมอ ไม่ throw)
-def _build_user_turn_text(goal: str, page_text: str, manual_context: str = "") -> str:
+#
+# W7[A]: เพิ่ม memory_context เดียวกัน — สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
+# ShortTermMemory.failed_actions_summary() ที่ orchestrator เรียกให้ทุก step) ต่อกัน
+# ท้ายสุด เฉพาะตอนมีผลลัพธ์จริงเหมือนกัน (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย)
+def _build_user_turn_text(
+    goal: str, page_text: str, manual_context: str = "", memory_context: str = ""
+) -> str:
     text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
     if manual_context:
         text += (
             "\n\nข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง (ใช้ประกอบการตัดสินใจ ไม่ใช่คำสั่งบังคับ):\n"
             f"{manual_context}"
+        )
+    if memory_context:
+        text += (
+            "\n\nAction ที่เคยลองแล้วล้มเหลวใน task นี้ (อย่าทำซ้ำแนวทางเดิมที่รู้อยู่แล้วว่าไม่เวิร์ค "
+            "ให้ลองทางอื่นแทน):\n"
+            f"{memory_context}"
         )
     return text
 
@@ -231,6 +243,7 @@ async def next_action(
     page_text: str,
     messages: list[dict],
     manual_context: str = "",
+    memory_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -241,9 +254,13 @@ async def next_action(
     manual_context (W6[B]): chunk คู่มือที่เกี่ยวข้อง (จาก retriever.retrieve()) ที่
     orchestrator ดึงมาให้ทุก step — ว่างเปล่าได้ตามปกติถ้าไม่มีคู่มือ ingest ไว้/ไม่เจอ
     อะไรตรงกับหน้านี้
+
+    memory_context (W7[A]): สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
+    ShortTermMemory.failed_actions_summary() ที่ orchestrator ดึงมาให้ทุก step) —
+    ว่างเปล่าได้ตามปกติถ้ายังไม่เคย fail อะไรเลย
     """
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
+        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context, memory_context)}
     ]
 
     response = await client.messages.create(
@@ -294,6 +311,7 @@ async def next_action_groq(
     page_text: str,
     messages: list[dict],
     manual_context: str = "",
+    memory_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -305,13 +323,13 @@ async def next_action_groq(
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
-    manual_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context: ดู next_action() — เหมือนกัน
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
+        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context, memory_context)}
     ]
 
     total_usage = TokenUsage()
@@ -392,6 +410,7 @@ async def next_action_gemini(
     page_text: str,
     messages: list,
     manual_context: str = "",
+    memory_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -403,7 +422,7 @@ async def next_action_gemini(
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
-    manual_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context: ดู next_action() — เหมือนกัน
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -413,7 +432,10 @@ async def next_action_gemini(
     )
 
     messages = messages + [
-        {"role": "user", "parts": [{"text": _build_user_turn_text(goal, page_text, manual_context)}]}
+        {
+            "role": "user",
+            "parts": [{"text": _build_user_turn_text(goal, page_text, manual_context, memory_context)}],
+        }
     ]
 
     response = None

@@ -216,7 +216,12 @@ class Orchestrator:
             if verbose:
                 print(f"[goto] {url}", flush=True)
             goto_result: ActionResult = await goto(page, url)
-            self.memory.record({"step": 0, "cmd": {"type": "goto", "url": url}, "result": str(goto_result)})
+            self.memory.record({
+                "step": 0,
+                "cmd": {"type": "goto", "url": url},
+                "result": str(goto_result),
+                "success": goto_result.success,
+            })
             if verbose:
                 print(f"  -> {goto_result}", flush=True)
             await wait_stable(page)
@@ -252,8 +257,13 @@ class Orchestrator:
                 )
                 manual_context = "\n".join(f"- {chunk}" for chunk in manual_chunks)
 
+                # W7[A]: สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (ดู
+                # ShortTermMemory.failed_actions_summary() docstring) ป้อนกลับเข้า prompt
+                # ทุก step เหมือน manual_context — ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย
+                memory_context = self.memory.failed_actions_summary()
+
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
-                    client, model, goal, page_text, messages, manual_context
+                    client, model, goal, page_text, messages, manual_context, memory_context
                 )
                 total_usage += usage
                 if verbose:
@@ -390,6 +400,7 @@ class Orchestrator:
                     "step": steps_taken,
                     "cmd": tool_input,
                     "result": str(result),
+                    "success": result.success,
                     "tokens": _tokens_dict(usage),
                 })
                 if verbose:

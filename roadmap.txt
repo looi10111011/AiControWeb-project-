@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-13)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-14)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -720,6 +720,60 @@
               เลยแม้แต่ครั้งเดียว) — รวม test suite 98 เคส ผ่าน 97 (เคส fail เดิม
               จาก manual_test.txt ไม่เกี่ยวกัน)
 
+  [~] W7 [A]  Memory: short-term (กันทำซ้ำ) — เริ่มแล้ว (2026-07-14)
+              ก่อนหน้านี้ ShortTermMemory (memory.py) แค่บันทึก history ไว้โชว์ตอนจบ
+              task เฉยๆ ไม่เคยถูกป้อนกลับเข้า prompt เลย (ดูบันทึกที่ W6[B] ด้านบน) —
+              ถามผู้ใช้ก่อนเริ่มเขียนโค้ดว่า scope ของ "short-term (กันทำซ้ำ)" ควรทำ
+              อะไรกันแน่ (เพราะ conversation history ในแต่ละ task run ก็มีผลลัพธ์
+              action ก่อนหน้าอยู่แล้วโดยธรรมชาติ + loop-detection guard เดิมจาก W5/
+              W6 ก็หยุด task ทันทีถ้า action เดิมซ้ำอยู่แล้ว) และ long-term memory
+              (ข้าม task) ควรทำตอนนี้เลยไหม — user เลือก (A) สร้าง summary ของ action
+              ที่ fail ไปแล้วใน task นี้ ป้อนกลับเข้า prompt ทุก step เชิงรุก (ก่อนจะไป
+              ถึงจุดที่ loop-detection ต้องหยุด task) และ (B) เลื่อน long-term memory
+              (pattern ข้าม task) ออกไปก่อนตามที่ roadmap เดิมทำเครื่องหมายไว้ว่าตัดได้
+              ถ้าเวลาไม่พอ (ดูข้อควรระวัง #4 ท้ายไฟล์)
+
+              แก้: memory.py::ShortTermMemory.failed_actions_summary(max_items=5) —
+              กรอง record ที่ "success" is False ล่าสุด max_items รายการ ประกอบเป็น
+              bullet list "{cmd} -> {result}" (record ที่ไม่มี key "success" เช่น
+              goto ก่อนหน้า W7[A] จะไม่ถูกนับเป็น failure ไม่ throw)
+
+              orchestrator.py::run_task() บันทึก "success": bool เพิ่มเข้า record()
+              ทุกจุด (ทั้ง goto ตอนเริ่ม task และทุก step หลัง execute()) แล้วเรียก
+              self.memory.failed_actions_summary() ก่อน next_action() ทุก step
+              เหมือน manual_context (W6[B]) — ส่งเข้า next_action()/next_action_groq()/
+              next_action_gemini() เป็นพารามิเตอร์ที่ 7 ใหม่ memory_context: str = ""
+              (มี default กัน backward-compat กับ test เดิมที่เรียกแบบ 6 args เดิม
+              ทั้งหมด ไม่ต้องแก้ test เดิมสักเคส) — llm.py::_build_user_turn_text()
+              ต่อ section "Action ที่เคยลองแล้วล้มเหลว" ท้าย manual_context section
+              เฉพาะตอนมีผลลัพธ์จริง (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลยใน task นี้)
+
+              *** ตั้งใจแยก guard นี้จาก loop-detection guard เดิม (คาบ 1/คาบ 2 ใน
+              W5/W6) โดยเจตนา — loop-detection เป็น hard-stop เชิงรับ (หยุด task ทันที
+              เมื่อ action ซ้ำครบจำนวนที่กำหนดแล้ว) ส่วน memory_context เป็นการเตือน
+              เชิงรุกตั้งแต่ fail ครั้งแรก และครอบคลุม action ที่ fail ซ้ำๆ แบบไม่ตรงกัน
+              เป๊ะทุกฟิลด์ด้วย (เช่น fill index เดิมด้วยข้อความคนละแบบ) ซึ่ง
+              loop-detection แยกไม่ออกว่าเป็น action ใหม่ ***
+
+              unit test ใหม่ 16 เคส: 6 ใน backend/tests/test_memory.py ใหม่ (ว่างเปล่า
+              ตอนไม่มี history, ว่างเปล่าตอนทุก step สำเร็จ, มี cmd+result ของ step ที่
+              fail, กรอง step ที่สำเร็จออกเมื่อปนกับที่ fail, cap ที่ max_items เก็บ
+              รายการล่าสุด, ไม่นับ record ที่ไม่มี key "success") + 8 ใน test_llm.py
+              (ต่อ provider ทั้ง 3 ตัวเช็คว่า memory_context โผล่ในprompt จริงเมื่อส่งมา/
+              ไม่โผล่เมื่อไม่ส่ง + _build_user_turn_text มี/ไม่มี section, ทั้งคู่พร้อมกัน
+              ได้) + 2 ใน test_orchestrator.py (memory_context ของ step ที่ 2 มี
+              failure ของ step 1 จริง ส่วน step แรกยังว่างเปล่า, ว่างเปล่าตลอดถ้าไม่มี
+              failure เลย) + แก้ test เดิม 4 เคส (2 เคสที่ index ตำแหน่ง arg สุดท้ายของ
+              next_action ต้องขยับจาก manual_context เป็น memory_context เพราะเพิ่ม
+              parameter ใหม่ต่อท้าย, 2 เคสที่ assert result["history"] แบบ exact dict
+              ต้องเพิ่ม key "success" เข้าไปด้วย) — รวม test suite 114 เคส ผ่าน 113
+              (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+              *** ยังไม่เคยรันจริงผ่าน LLM จริงเพื่อยืนยันว่า memory_context ช่วยลด
+              การ retry action ที่รู้อยู่แล้วว่า fail ได้จริงในทางปฏิบัติ (แค่ยืนยันด้วย
+              unit test ว่า wiring ถูกต้อง) — long-term memory (pattern ข้าม task)
+              ยังไม่ได้แตะตามที่ตกลงกับ user ไว้ ***
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -841,7 +895,9 @@
             (2026-07-13) — retriever.retrieve() ต่อเข้า per-step loop ของ
             orchestrator จริงแล้ว (ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
 
-  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)
+  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)  🔶 เริ่มแล้ว
+     │      (short-term เสร็จ 2026-07-14 — ดูรายละเอียดในสถานะความคืบหน้าด้านบน,
+     │      long-term ยังไม่ได้แตะตามที่ตกลงกับ user ไว้)
      └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ
 
   W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)

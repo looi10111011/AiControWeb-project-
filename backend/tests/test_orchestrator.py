@@ -89,7 +89,12 @@ async def test_run_task_stops_immediately_on_finish_task():
     assert result["message"] == "เสร็จแล้ว"
     # history มี record ของ goto เริ่มต้นเสมอ แม้ finish_task ทันทีโดยไม่มี action อื่น
     assert result["history"] == [
-        {"step": 0, "cmd": {"type": "goto", "url": "https://example.com"}, "result": str(_GOTO_OK)}
+        {
+            "step": 0,
+            "cmd": {"type": "goto", "url": "https://example.com"},
+            "result": str(_GOTO_OK),
+            "success": True,
+        }
     ]
     # token ของรอบ next_action ที่นำไปสู่ finish_task ต้องถูกนับรวมด้วย แม้ไม่มี browser action เกิดขึ้นเลย
     assert result["tokens"] == {"input": 100, "output": 20, "cache_read": 0, "cache_creation": 0}
@@ -124,11 +129,17 @@ async def test_run_task_executes_action_then_finishes():
         mock_browser.new_page.return_value, {"type": "click", "index": 2}, ask_user_func=None, label=""
     )
     assert result["history"] == [
-        {"step": 0, "cmd": {"type": "goto", "url": "https://example.com"}, "result": str(_GOTO_OK)},
+        {
+            "step": 0,
+            "cmd": {"type": "goto", "url": "https://example.com"},
+            "result": str(_GOTO_OK),
+            "success": True,
+        },
         {
             "step": 1,
             "cmd": {"type": "click", "index": 2},
             "result": str(click_result),
+            "success": True,
             "tokens": {"input": 50, "output": 10, "cache_read": 0, "cache_creation": 0},
         },
     ]
@@ -636,7 +647,7 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
     mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
-    manual_context = mock_next_action.await_args.args[-1]
+    manual_context = mock_next_action.await_args.args[-2]
     assert manual_context == "- chunk1\n- chunk2\n- chunk3"
 
 
@@ -686,8 +697,59 @@ async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    manual_context = mock_next_action.await_args.args[-1]
+    manual_context = mock_next_action.await_args.args[-2]
     assert manual_context == ""
+
+
+@pytest.mark.asyncio
+async def test_run_task_memory_context_reflects_previous_step_failure():
+    """W7[A]: action ที่ fail ใน step ก่อนหน้า ต้องโผล่ใน memory_context ที่ส่งเข้า
+    next_action() ของ step ถัดไป (ผ่าน ShortTermMemory.failed_actions_summary()) —
+    step แรก (ยังไม่มี failure ใดๆ นอกจาก goto ที่สำเร็จ) ต้องยังว่างเปล่าอยู่"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fail_result = ActionResult(False, "click", "หา element ไม่เจอ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 9}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fail_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    first_call_memory_context = mock_next_action.await_args_list[0].args[-1]
+    second_call_memory_context = mock_next_action.await_args_list[1].args[-1]
+    assert first_call_memory_context == ""
+    assert "[FAIL]" in second_call_memory_context
+    assert "หา element ไม่เจอ" in second_call_memory_context
+
+
+@pytest.mark.asyncio
+async def test_run_task_memory_context_is_empty_string_when_no_failures_yet():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    memory_context = mock_next_action.await_args.args[-1]
+    assert memory_context == ""
 
 
 # --- Permission layer connected to the real per-step loop ---
