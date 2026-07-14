@@ -865,12 +865,50 @@
   ตั้งใจ — task ยาว 29 step ทำให้ [gemini-compact] ทำงานจริง 7+ รอบตลอด 2 task run
   รวมกัน (ทุก step ที่ step boundary ผ่าน 6 อีกครั้งหลัง reset) ไม่พัง/ไม่หลุด format
   เลยสักครั้ง — เป็นการทดสอบ compaction ที่หนักกว่าที่ตั้งใจไว้ตอนแรกด้วยซ้ำ
-  *** memory-b/memory-c ยังไม่ได้รันแยกต่างหาก (ไม่อยากยิง API เพิ่มเกินจำเป็นหลัง
-  memory-a ที่มีทั้งหมด ~43 step ไปแล้ว) — memory-c ถือว่าถูก cover พอสมควรจาก
-  compaction ที่เห็นใน memory-a อยู่แล้ว แต่ยังไม่เคยเห็น log [tokens] ที่ชัดเจนเฉพาะ
-  ของ memory-c โดยตรง (ค่า input token ต่อ step ที่เห็นจริงใน memory-a คงที่แถว
-  4000-9000 ไม่โตต่อเนื่องไม่มีเพดานแล้ว ตรงกับที่ compaction ควรทำ) — memory-b
-  (จำค่าตัวเลข/ราคาข้ามรอบ) ยังไม่เคยรันจริงเลย รอ user ลองเองหรือรอบถัดไป ***
+  *** memory-c ยังไม่ได้รันแยกต่างหาก แต่ถือว่าถูก cover พอสมควรจาก compaction ที่เห็น
+  ใน memory-a อยู่แล้ว (ค่า input token ต่อ step ที่เห็นจริงคงที่แถว 4000-9000 ไม่โต
+  ต่อเนื่องไม่มีเพดานแล้ว ตรงกับที่ compaction ควรทำ) ***
+
+  แก้บั๊ก memory-b: หาราคาไม่เจอ (scroll ไร้ทิศทาง) + สับสนหน้า Cart/Checkout
+  (2026-07-14 เช่นกัน):
+  user รายงานปัญหา 2 จุดจาก memory-b (ตอนนั้นยังไม่เคยรันจริงจริงๆ แต่ user คาดการณ์/
+  สังเกตจาก design ไว้ล่วงหน้า): (1) task รอบ 1 (หาราคาสินค้า) เสี่ยง scroll หาไปเรื่อยๆ
+  แบบไม่มีทิศทางแทนที่จะคลิกเข้าหน้า product detail ตรงๆ (2) task รอบ 2 เสี่ยงสับสน
+  ระหว่างหน้า Cart (มีแค่ปุ่ม Checkout) กับหน้า checkout information (มีฟอร์มจริง) เพราะ
+  goal เดิมเขียนแค่ "go to checkout" กว้างๆ — ขอให้แก้ 2 จุดนี้ + เพิ่ม guard ห้ามรัน
+  task รอบ 2 ต่อถ้ารอบ 1 ไม่ผ่าน
+
+  แก้ 3 จุด:
+  1) SYSTEM_PROMPT (llm.py) เพิ่มกติกาใหม่ (ทั่วไป ไม่ผูกกับ demo นี้โดยเฉพาะ): ถ้า
+     goal ต้องการหาข้อมูลเฉพาะเจาะจง (ราคา/ชื่อ/รายละเอียด) ที่ยังไม่เห็นชัดในหน้า
+     ปัจจุบัน ห้าม scroll ไร้ทิศทาง ให้คลิกเข้า element ที่เจาะจงกว่า (เช่น พาไปหน้า
+     product detail) ก่อน + run.py::_TEST_CASE_B_TASK1_GOAL เขียนใหม่ให้บอกตรงๆ ว่า
+     คลิกเข้าไปที่ชื่อ/รูปสินค้าเพื่อเปิดหน้า Product Detail แทนการกวาดหาในหน้ารวม
+
+  2) run.py::run_test_case_b() เพิ่ม guard ก่อนรัน task รอบ 2: เช็คทั้ง
+     result1["success"] และ regex _PRICE_PATTERN (r"\$\s?\d") หาจริงใน
+     result1["message"] — ถ้าไม่ผ่านทั้งคู่ (fail หรือ success=true ลอยๆ ไม่มีหลักฐาน
+     ราคาจริง) print คำเตือนชัดเจนแล้ว return ทันที ไม่รัน task รอบ 2 ต่อ (กันเสีย API
+     quota เปล่าๆ เพราะรอบ 2 พึ่งข้อมูลจากรอบ 1 ผ่าน long-term memory โดยตรง)
+
+  3) run.py::_TEST_CASE_B_TASK2_GOAL เขียนใหม่ทั้งหมด แยกหน้า Cart กับหน้า checkout
+     information ออกจากกันตรงๆ ในข้อความ ("a different page from the Cart page — it
+     has First Name, Last Name, and Zip Code input fields") + บอกด้วยว่าเห็น 3 ช่องนี้
+     แล้วแปลว่าอยู่หน้าถูกแล้ว ห้าม navigate ไปซ้ำอีก (เพิ่มหลังรอบแรกที่ทดสอบพบว่า
+     agent self-correct ไปหน้าถูกได้แล้ว แต่ดัน goto ซ้ำอีกรอบจนชน alternating
+     loop-detection guard (W5/W6) โดยไม่ตั้งใจ — ไม่ใช่บั๊กของ guard เอง แค่ agent
+     ลังเลซ้ำ)
+
+  *** รันจริงยืนยัน 2 รอบผ่าน Gemini: รอบแรก (หลังแก้จุด 1-2 ก่อน) — task 1 หาราคาเจอ
+  เร็วขึ้นมาก (5 step, message ระบุ "บนหน้า Product Detail คือ $29.99" ตรงตามที่ตั้งใจ,
+  guard ปล่อยผ่านให้รัน task 2 ต่อถูกต้อง) แต่ task 2 ชน alternating loop-detection
+  guard เพราะ self-correct หน้าแล้ว goto ซ้ำอีกครั้งโดยไม่จำเป็น — แก้จุด 3 เพิ่มแล้ว
+  รันซ้ำรอบสอง: task 1 เหมือนเดิม (5 step, $29.99), task 2 สำเร็จเต็มรูปแบบ (21 step,
+  self-correct หน้า Cart/Checkout ได้เองไม่ชน guard อีก, fill Zip Code ด้วยค่า "2999"
+  — ตรงกับราคา $29.99 จาก task 1 เป๊ะๆ หลังตัด "$"/"." ตามที่ goal สั่งไว้ ("numbers
+  only, no dollar sign"), finish_task(success=true) จบที่หน้า Checkout: Overview จริง)
+  — พิสูจน์ชัดเจนว่า long-term memory ดึงค่าตัวเลข/ราคาข้ามรอบมาใช้ได้ถูกต้องจริง ไม่ใช่
+  แค่ wiring เชื่อมกันเฉยๆ (Test Case B ผ่านสมบูรณ์) ***
 
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
