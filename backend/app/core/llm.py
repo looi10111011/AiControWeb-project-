@@ -131,8 +131,17 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 # W7[A]: เพิ่ม memory_context เดียวกัน — สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
 # ShortTermMemory.failed_actions_summary() ที่ orchestrator เรียกให้ทุก step) ต่อกัน
 # ท้ายสุด เฉพาะตอนมีผลลัพธ์จริงเหมือนกัน (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย)
+#
+# W7[A] (long-term): เพิ่ม long_term_context — เหมือน manual_context ทุกประการแค่มา
+# จาก long_term_memory.recall() (จาก task run อื่นที่เคยทำมาก่อน) แทนคู่มือที่ user
+# ป้อน — คนละ section กับ memory_context (ตัวนั้นจำได้แค่ภายใน task ปัจจุบันเดียวเท่านั้น
+# ตัวนี้จำข้ามหลาย task run)
 def _build_user_turn_text(
-    goal: str, page_text: str, manual_context: str = "", memory_context: str = ""
+    goal: str,
+    page_text: str,
+    manual_context: str = "",
+    memory_context: str = "",
+    long_term_context: str = "",
 ) -> str:
     text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
     if manual_context:
@@ -145,6 +154,13 @@ def _build_user_turn_text(
             "\n\nAction ที่เคยลองแล้วล้มเหลวใน task นี้ (อย่าทำซ้ำแนวทางเดิมที่รู้อยู่แล้วว่าไม่เวิร์ค "
             "ให้ลองทางอื่นแทน):\n"
             f"{memory_context}"
+        )
+    if long_term_context:
+        text += (
+            "\n\nความจำจาก task run ก่อนหน้า (อาจมีค่าที่เคยหาเจอ เช่น ราคา/รหัส ให้ดึงมาใช้ได้ "
+            "หรือ action ที่เคยลองแล้วล้มเหลว/โดนบล็อกมาก่อน ให้เลี่ยงตั้งแต่แรก — ใช้ประกอบการ"
+            "ตัดสินใจ ไม่ใช่คำสั่งบังคับ อาจล้าสมัยได้):\n"
+            f"{long_term_context}"
         )
     return text
 
@@ -244,6 +260,7 @@ async def next_action(
     messages: list[dict],
     manual_context: str = "",
     memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -258,9 +275,15 @@ async def next_action(
     memory_context (W7[A]): สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
     ShortTermMemory.failed_actions_summary() ที่ orchestrator ดึงมาให้ทุก step) —
     ว่างเปล่าได้ตามปกติถ้ายังไม่เคย fail อะไรเลย
+
+    long_term_context (W7[A] long-term): เหมือน manual_context แต่มาจาก
+    long_term_memory.recall() (ประวัติ task run อื่นก่อนหน้า) แทนคู่มือ
     """
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context, memory_context)}
+        {
+            "role": "user",
+            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+        }
     ]
 
     response = await client.messages.create(
@@ -312,6 +335,7 @@ async def next_action_groq(
     messages: list[dict],
     manual_context: str = "",
     memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -323,13 +347,16 @@ async def next_action_groq(
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
-    manual_context/memory_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context, memory_context)}
+        {
+            "role": "user",
+            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+        }
     ]
 
     total_usage = TokenUsage()
@@ -411,6 +438,7 @@ async def next_action_gemini(
     messages: list,
     manual_context: str = "",
     memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -422,7 +450,7 @@ async def next_action_gemini(
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
-    manual_context/memory_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -434,7 +462,9 @@ async def next_action_gemini(
     messages = messages + [
         {
             "role": "user",
-            "parts": [{"text": _build_user_turn_text(goal, page_text, manual_context, memory_context)}],
+            "parts": [{
+                "text": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context)
+            }],
         }
     ]
 

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
+    chroma_long_term_collection_name: str = "long_term_memory"
 
     browser_headless: bool = True
 

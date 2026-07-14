@@ -12,6 +12,7 @@ from playwright.async_api import Page, async_playwright
 
 from backend.app.config import settings
 from backend.app.core import llm
+from backend.app.core import long_term_memory
 from backend.app.core.actions import ActionResult, AskUserFunc, execute, goto, wait_stable
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
@@ -62,6 +63,73 @@ def _is_alternating_pattern(history: list[dict]) -> bool:
 # ดึงใหม่ทุก step ตาม page_text ปัจจุบัน (ไม่ใช้กับ generate_plan ซึ่งเป็นแค่แผนคร่าวๆ
 # ครั้งเดียวก่อนเริ่ม loop จริง เก็บ scope ไว้แค่ per-step planner ตามที่คุยกันไว้)
 _RAG_CHUNKS_PER_STEP = 3
+
+# W7[A] (long-term): เหมือน _RAG_CHUNKS_PER_STEP แต่สำหรับ long_term_memory.recall()
+# (ประวัติ task run อื่นก่อนหน้า แทนคู่มือที่ user ป้อน) — ดึงใหม่ทุก step เหมือนกัน
+_LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
+
+# W7[A] (context compaction, Gemini เท่านั้น): stateless chat API ต้องส่ง messages
+# ทั้งก้อนซ้ำทุก step (ไม่มี server-side session) — แต่ละ step ของ Gemini เพิ่ม page
+# snapshot เต็มๆ + manual/memory/long-term context ทุกครั้งเข้าไปใน messages เรื่อยๆ
+# ไม่เคยหดกลับเลย ทำให้ input token ต่อ step โตขึ้นเรื่อยๆ ตามจำนวน step (ไม่ใช่แค่
+# ตามความยาว task จริง) — พอ step สะสมเกิน _GEMINI_COMPACT_AFTER_STEPS ให้ตัด step
+# เก่ากว่า _GEMINI_KEEP_RECENT_STEPS ตัวล่าสุดออกจาก messages แล้วแทนที่ด้วย digest
+# สั้นๆ (สร้างจาก ShortTermMemory.all() ที่มีข้อมูลสะอาดอยู่แล้ว ไม่ต้อง parse raw
+# Gemini Content object เอง — ดู _build_gemini_history_digest()/_compact_gemini_messages()
+# ด้านล่าง) — จำกัด scope แค่ Gemini ตามที่ user เลือก (Anthropic/Groq มี message
+# format คนละแบบ ต้องเขียนแยกทีละตัว ยังไม่ทำตอนนี้)
+_GEMINI_COMPACT_AFTER_STEPS = 6
+_GEMINI_KEEP_RECENT_STEPS = 3
+
+
+def _build_gemini_history_digest(memory: ShortTermMemory, upto_step: int) -> str:
+    """สรุป step 1..upto_step (ไม่รวม step 0 ที่เป็น goto ตอนเริ่ม task) เป็น bullet
+    list บรรทัดละ step สั้นๆ — สร้างใหม่จาก ShortTermMemory.all() ทุกครั้งที่บีบอัด
+    (ไม่ใช่สะสมจาก digest รอบก่อน) เพราะ ShortTermMemory เก็บ history แบบไม่ตัดทิ้ง
+    อยู่แล้วตลอด task จึงเป็นแหล่งความจริงที่สมบูรณ์กว่า raw messages ที่ถูกตัดไปแล้ว"""
+    entries = [h for h in memory.all() if 0 < h.get("step", 0) <= upto_step]
+    if not entries:
+        return ""
+    return "\n".join(f"- step {h['step']}: {h['cmd']} -> {h['result']}" for h in entries)
+
+
+def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> list:
+    """ตัด messages[:cut_at] ทิ้ง แล้วฝัง digest_text เข้าไปเป็นส่วนแรกของ text ใน
+    turn แรกที่เหลืออยู่ (แทนที่จะแทรก turn ใหม่แยกต่างหาก) — messages[cut_at] ต้อง
+    เป็น {"role": "user", "parts": [{"text": ...}]} เสมอ (จุดเริ่ม step ใหม่จาก
+    next_action_gemini()) เพราะ cut_at มาจาก step boundary ที่ orchestrator เก็บเอง
+    (ดู gemini_step_boundaries ใน run_task()) ไม่ใช่ตำแหน่งเดา — วิธีนี้ไม่ต้องแตะลำดับ
+    role user/model ของ Gemini เลย กันปัญหา conversation structure ผิดเพี้ยนจากการ
+    แทรก turn ใหม่ ถ้ารูปแบบไม่ตรงคาด (ผิดคาดจริงๆ) คืน messages เดิมไม่แก้อะไร
+    ไม่ throw"""
+    if cut_at <= 0 or not digest_text:
+        return messages
+    kept = messages[cut_at:]
+    if not kept:
+        return messages
+    try:
+        first = kept[0]
+        original_text = first["parts"][0]["text"]
+        new_first = {
+            "role": "user",
+            "parts": [{"text": f"[สรุป step ก่อนหน้าที่ถูกย่อไว้กันบทสนทนายาวเกินไป]\n{digest_text}\n\n{original_text}"}],
+        }
+        return [new_first] + kept[1:]
+    except (KeyError, IndexError, TypeError):
+        return messages
+
+
+def _build_nudge_message(provider: str, text: str) -> dict:
+    """ข้อความเตือนที่ต่อเข้า messages ตรงๆ (นอกเหนือจาก append_tool_result() ที่แต่ละ
+    provider มี format ของตัวเองอยู่แล้วเป็นปกติ) — ต้องปรับ shape ตาม provider เหมือนกัน
+    ไม่งั้น Gemini SDK จะ throw KeyError ตอนเจอ dict {"role","content"} แบบ Anthropic/
+    Groq ปนอยู่ใน contents (ใช้กับ guard 2 จุดด้านล่าง: premature-false-finish และ
+    premature-login-skip — เดิม hardcode format Anthropic/Groq ไว้จุดเดียวตั้งแต่ W4/W5
+    ไม่เคยมีใครสังเกตเพราะไม่เคยรัน Gemini จนชนทั้ง 2 guard นี้พร้อมกันมาก่อน จนเจอจริง
+    ตอนทดสอบ W7[A] Test Case A ผ่าน Gemini)"""
+    if provider == "gemini":
+        return {"role": "user", "parts": [{"text": text}]}
+    return {"role": "user", "content": text}
 
 # (2026-07-13) SYSTEM_PROMPT ขอไว้แล้วว่าห้าม wait คั่นกลางตอนกรอก login form แต่
 # โมเดลเล็ก (เจอกับ Gemini flash-lite) ไม่ทำตามเสมอไป — สังเกตเห็นจริงว่าสั่ง wait
@@ -211,6 +279,10 @@ class Orchestrator:
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern สลับกัน (ABAB)
+        # W7[A] (context compaction, Gemini เท่านั้น): [(absolute_step_number,
+        # len(messages) หลังจบ step นั้น), ...] — ใช้หา cut point ที่ปลอดภัย
+        # (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
+        gemini_step_boundaries: list[tuple[int, int]] = []
 
         try:
             if verbose:
@@ -262,8 +334,17 @@ class Orchestrator:
                 # ทุก step เหมือน manual_context — ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย
                 memory_context = self.memory.failed_actions_summary()
 
+                # W7[A] (long-term): ดึงประวัติ task run อื่นก่อนหน้าที่เกี่ยวข้องกับ
+                # goal+หน้าปัจจุบัน (recall() ไม่ throw เอง คืน [] เงียบๆ เหมือน
+                # retriever.retrieve()) — to_thread ด้วยเหตุผลเดียวกับ manual retrieve ด้านบน
+                long_term_chunks = await asyncio.to_thread(
+                    long_term_memory.recall,
+                    query=goal, page_state=page_text, k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
+                )
+                long_term_context = "\n".join(f"- {chunk}" for chunk in long_term_chunks)
+
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
-                    client, model, goal, page_text, messages, manual_context, memory_context
+                    client, model, goal, page_text, messages, manual_context, memory_context, long_term_context
                 )
                 total_usage += usage
                 if verbose:
@@ -298,12 +379,12 @@ class Orchestrator:
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_FALSE_FINISH_NUDGE)
 
                         # 2. ฉีด User Prompt ซ้ำเข้าไปท้ายบทสนทนา (ช่วยดึงสติโมเดลขนาดเล็กอย่าง Llama ได้ดีมาก)
-                        messages.append({
-                            "role": "user",
-                            "content": f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(false) รอบล่าสุดถูกปฏิเสธอย่างสิ้นเชิง! "
-                                       f"ตรวจพบว่าเป้าหมาย '{goal}' ยังไม่สมบูรณ์ และหน้าเว็บยังมี Elements เหลืออยู่ "
-                                       f"ห้ามกดยอมแพ้จนกว่าจะลองพยายาม Action กับส่วนที่เหลือ ดูลิสต์ใหม่อีกครั้งแล้วทำต่อ!"
-                        })
+                        messages.append(_build_nudge_message(
+                            resolved_provider,
+                            f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(false) รอบล่าสุดถูกปฏิเสธอย่างสิ้นเชิง! "
+                            f"ตรวจพบว่าเป้าหมาย '{goal}' ยังไม่สมบูรณ์ และหน้าเว็บยังมี Elements เหลืออยู่ "
+                            f"ห้ามกดยอมแพ้จนกว่าจะลองพยายาม Action กับส่วนที่เหลือ ดูลิสต์ใหม่อีกครั้งแล้วทำต่อ!",
+                        ))
                         continue
                     success = claimed_success
                     final_message = tool_input.get("message", "")
@@ -333,13 +414,13 @@ class Orchestrator:
                                 flush=True,
                             )
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_LOGIN_SKIP_NUDGE)
-                        messages.append({
-                            "role": "user",
-                            "content": "⚠️ [ระบบคำสั่งสำคัญ]: หน้านี้ยังมีช่อง Password ที่ว่างอยู่ "
-                                       "ห้ามข้ามไปทำ action อื่น (รวมถึง wait) จนกว่าจะกรอก Username "
-                                       "และ Password ให้ครบก่อน ดู indexed elements แล้วเลือก fill "
-                                       "ช่องที่ยังว่างอยู่ทันที",
-                        })
+                        messages.append(_build_nudge_message(
+                            resolved_provider,
+                            "⚠️ [ระบบคำสั่งสำคัญ]: หน้านี้ยังมีช่อง Password ที่ว่างอยู่ "
+                            "ห้ามข้ามไปทำ action อื่น (รวมถึง wait) จนกว่าจะกรอก Username "
+                            "และ Password ให้ครบก่อน ดู indexed elements แล้วเลือก fill "
+                            "ช่องที่ยังว่างอยู่ทันที",
+                        ))
                         continue
                     # เกินโควตาเตือนแล้วยังไม่ยอมกรอก ปล่อยผ่านไปตามที่โมเดลเลือกแทนที่จะ
                     # ค้างไม่รู้จบ (เหมือน escape valve ของ premature-false-finish guard)
@@ -408,12 +489,43 @@ class Orchestrator:
 
                 messages = append_tool_result(messages, tool_use_id, str(result))
 
+                # W7[A] (context compaction, Gemini เท่านั้น): เก็บ boundary ของ step
+                # นี้ แล้วเช็คว่าต้องบีบอัดหรือยัง (ดูคอมเมนต์ยาวที่ _GEMINI_COMPACT_AFTER_STEPS
+                # ด้านบนสุดของไฟล์ — เหตุผลที่ scope แค่ Gemini)
+                if resolved_provider == "gemini":
+                    gemini_step_boundaries.append((steps_taken, len(messages)))
+                    if len(gemini_step_boundaries) > _GEMINI_COMPACT_AFTER_STEPS:
+                        cut_list_index = len(gemini_step_boundaries) - _GEMINI_KEEP_RECENT_STEPS
+                        cut_step_num, cut_at = gemini_step_boundaries[cut_list_index - 1]
+                        digest = _build_gemini_history_digest(self.memory, upto_step=cut_step_num)
+                        messages = _compact_gemini_messages(messages, cut_at, digest)
+                        gemini_step_boundaries = [
+                            (s, b - cut_at) for s, b in gemini_step_boundaries[cut_list_index:]
+                        ]
+                        if verbose:
+                            print(
+                                f"[gemini-compact] ย่อ step 1..{cut_step_num} เหลือ digest เดียว "
+                                f"(เก็บ {_GEMINI_KEEP_RECENT_STEPS} step ล่าสุดแบบ raw)",
+                                flush=True,
+                            )
+
                 if tool_input.get("type") in _PAGE_CHANGING_ACTIONS:
                     await wait_stable(page)
 
                 # หน่วงท้าย step ก่อนวน next_action() รอบถัดไป กันยิง LLM API ถี่เกิน
                 # quota ต่อนาที (ดู _STEP_PACING_DELAY_SECONDS ด้านบน)
                 await asyncio.sleep(_STEP_PACING_DELAY_SECONDS)
+
+            # W7[A] (long-term): บันทึกผลลัพธ์ของ task run นี้ไว้ให้ task run ถัดไป
+            # (บน goal/หน้าเว็บที่เกี่ยวข้องกัน) recall() กลับมาใช้ได้ — เรียกครั้งเดียว
+            # ตอนจบ loop จริง (ทุก path: finish_task, loop-detected, หมด max_steps)
+            # ไม่ครอบ confirm_plan declined เพราะ return ไปก่อนถึงจุดนี้แล้ว (ไม่มี
+            # action ใดๆ เกิดขึ้นจริงเลย ไม่มีอะไรให้บันทึกเป็น pattern)
+            await asyncio.to_thread(
+                long_term_memory.record_task,
+                url=url, goal=goal, success=success, message=final_message,
+                failed_actions=self.memory.failed_actions_summary(),
+            )
 
             return {
                 "success": success,

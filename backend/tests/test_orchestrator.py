@@ -4,12 +4,19 @@ import pytest
 
 from backend.app.core import llm
 from backend.app.core.actions import ActionResult
+from backend.app.core.memory import ShortTermMemory
 from backend.app.core.orchestrator import (
     Orchestrator,
+    _GEMINI_COMPACT_AFTER_STEPS,
+    _GEMINI_KEEP_RECENT_STEPS,
+    _LONG_TERM_MEMORY_CHUNKS_PER_STEP,
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
     _PREMATURE_FALSE_FINISH_NUDGE,
     _RAG_CHUNKS_PER_STEP,
+    _build_gemini_history_digest,
+    _build_nudge_message,
+    _compact_gemini_messages,
 )
 
 # ทุกเทสต์ mock ทั้ง Playwright และ llm.next_action — ไม่เปิด browser จริง ไม่ยิง LLM API จริง
@@ -41,6 +48,19 @@ def _no_real_sleep():
 def _no_password_field_by_default():
     with patch("backend.app.core.orchestrator._login_form_needs_password", AsyncMock(return_value=False)):
         yield
+
+
+# W7[A] (long-term): long_term_memory.recall()/record_task() ทั้งคู่เป็นงาน sync ที่
+# แตะ ChromaDB จริง (disk I/O + local embedding model) — mock default ไว้ให้ทุกเทสต์
+# กันไม่ให้ pytest ไปเขียน/อ่าน collection จริงบนเครื่อง dev โดยไม่ตั้งใจ (ต่างจาก
+# retriever.retrieve ของ W6[B] ที่เทสต์เก่าบางเคสไม่ได้ mock — ตัวนั้นเป็นแค่ read
+# ส่วน record_task() เป็น write จริง ปล่อยไม่ mock จะสะสม test noise ในข้อมูลจริง)
+# เทสต์เฉพาะของ long-term memory override เป็นค่าที่ต้องการเองภายใน with patch(...)
+@pytest.fixture(autouse=True)
+def _no_real_long_term_memory():
+    with patch("backend.app.core.orchestrator.long_term_memory.recall", return_value=[]) as mock_recall, \
+         patch("backend.app.core.orchestrator.long_term_memory.record_task", return_value=None) as mock_record:
+        yield mock_recall, mock_record
 
 
 def _patch_browser():
@@ -647,7 +667,7 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
     mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
-    manual_context = mock_next_action.await_args.args[-2]
+    manual_context = mock_next_action.await_args.args[-3]
     assert manual_context == "- chunk1\n- chunk2\n- chunk3"
 
 
@@ -697,7 +717,7 @@ async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    manual_context = mock_next_action.await_args.args[-2]
+    manual_context = mock_next_action.await_args.args[-3]
     assert manual_context == ""
 
 
@@ -726,8 +746,8 @@ async def test_run_task_memory_context_reflects_previous_step_failure():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    first_call_memory_context = mock_next_action.await_args_list[0].args[-1]
-    second_call_memory_context = mock_next_action.await_args_list[1].args[-1]
+    first_call_memory_context = mock_next_action.await_args_list[0].args[-2]
+    second_call_memory_context = mock_next_action.await_args_list[1].args[-2]
     assert first_call_memory_context == ""
     assert "[FAIL]" in second_call_memory_context
     assert "หา element ไม่เจอ" in second_call_memory_context
@@ -748,8 +768,339 @@ async def test_run_task_memory_context_is_empty_string_when_no_failures_yet():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    memory_context = mock_next_action.await_args.args[-1]
+    memory_context = mock_next_action.await_args.args[-2]
     assert memory_context == ""
+
+
+@pytest.mark.asyncio
+async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_then_passes_into_next_action():
+    """W7[A] (long-term): ทุก step ต้อง recall(query=goal, page_state=page_text ปัจจุบัน,
+    k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP) แล้วเอาผลลัพธ์ (join เป็น bullet list) ส่งต่อเข้า
+    next_action() เป็น long_term_context (arg สุดท้าย)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Apply Code'"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.long_term_memory.recall",
+             return_value=["task1: เคยกด Apply Code แล้วโดนบล็อก"],
+         ) as mock_recall, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
+
+    mock_recall.assert_called_once_with(
+        query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP
+    )
+    long_term_context = mock_next_action.await_args.args[-1]
+    assert long_term_context == "- task1: เคยกด Apply Code แล้วโดนบล็อก"
+
+
+@pytest.mark.asyncio
+async def test_run_task_long_term_context_is_empty_string_when_recall_returns_no_chunks():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.long_term_memory.recall", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    long_term_context = mock_next_action.await_args.args[-1]
+    assert long_term_context == ""
+
+
+@pytest.mark.asyncio
+async def test_run_task_records_task_outcome_into_long_term_memory_at_the_end():
+    """W7[A] (long-term): record_task() ต้องถูกเรียกครั้งเดียวตอนจบ loop จริง ด้วย
+    url/goal/success/message ที่ตรงกับผลลัพธ์สุดท้าย + failed_actions จาก
+    ShortTermMemory.failed_actions_summary() ของ task นั้น"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fail_result = ActionResult(False, "click", "หา element ไม่เจอ")
+
+    # tool_use_id="" ตัวที่สอง เพื่อให้ finish_task(false) ถูกยอมรับทันที (ไม่ตกไปเจอ
+    # premature-false-finish guard ที่ต้องมี tool_use_id จริงถึงจะเตือน — ดู
+    # test_run_task_accepts_finish_task_false_immediately_when_no_tool_use_id ด้านบน)
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 9}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ทำต่อไม่ได้"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fail_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)), \
+         patch("backend.app.core.orchestrator.long_term_memory.record_task") as mock_record_task:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is False
+    mock_record_task.assert_called_once_with(
+        url="https://example.com",
+        goal="goal",
+        success=False,
+        message="ทำต่อไม่ได้",
+        failed_actions=mock_record_task.call_args.kwargs["failed_actions"],
+    )
+    assert "หา element ไม่เจอ" in mock_record_task.call_args.kwargs["failed_actions"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_record_long_term_memory_when_plan_declined():
+    """confirm_plan=True + user ปฏิเสธ -> return ก่อนถึง loop จริงเลย ไม่มี action ใดๆ
+    เกิดขึ้น -> ไม่ควรบันทึกอะไรเข้า long-term memory (ไม่มี pattern ให้จำ)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=False)
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.llm.generate_plan", AsyncMock(return_value="1. ทำ X\n2. ทำ Y")), \
+         patch("backend.app.core.orchestrator.long_term_memory.record_task") as mock_record_task:
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic",
+            confirm_plan=True, ask_user_func=ask_user_func,
+        )
+
+    assert result["steps"] == 0
+    mock_record_task.assert_not_called()
+
+
+# --- Gemini-aware nudge messages (bug found via W7[A] Test Case A live run) ---
+# ก่อนแก้: nudge message ที่ฉีดเข้า messages ตรงๆ (นอกเหนือจาก append_tool_result())
+# ของ guard 2 ตัว (premature-false-finish, premature-login-skip) hardcode เป็น
+# {"role":"user","content":...} แบบ Anthropic/Groq เสมอ — ใช้กับ provider="gemini"
+# แล้ว Gemini SDK จริงจะ throw KeyError เพราะ contents ต้องการ key "parts" ไม่ใช่
+# "content" — ไม่เคยมี unit test เดิมจับได้เพราะ next_action_gemini() ถูก mock ทั้งก้อน
+# เสมอ ไม่เคยมี test ตรวจ shape ของ nudge message ที่ฉีดกลับเข้า messages เอง
+
+
+def test_build_nudge_message_uses_gemini_shape_for_gemini_provider():
+    result = _build_nudge_message("gemini", "เตือนนะ")
+
+    assert result == {"role": "user", "parts": [{"text": "เตือนนะ"}]}
+
+
+def test_build_nudge_message_uses_content_shape_for_other_providers():
+    assert _build_nudge_message("anthropic", "เตือนนะ") == {"role": "user", "content": "เตือนนะ"}
+    assert _build_nudge_message("groq", "เตือนนะ") == {"role": "user", "content": "เตือนนะ"}
+
+
+@pytest.mark.asyncio
+async def test_run_task_premature_false_finish_nudge_uses_gemini_message_shape_for_gemini_provider():
+    """บั๊กที่เจอจริงจากการทดสอบ W7[A] Test Case A ผ่าน Gemini (ดูหมายเหตุด้านบน) —
+    nudge message ของ guard นี้ต้องเป็น {"role":"user","parts":[{"text":...}]} เมื่อ
+    provider="gemini" ไม่ใช่ {"role":"user","content":...} แบบเดิม มิฉะนั้น Gemini SDK
+    จริงจะ throw KeyError ตอนส่ง messages เข้า generate_content_async() รอบถัดไป"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    next_action_calls = [
+        ("finish_task", {"success": False, "message": "ทำต่อไม่ได้"}, "call_1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "จบแล้ว"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.llm.build_gemini_client", return_value="fake-client"), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action_gemini", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="gemini")
+
+    assert result["success"] is True
+    second_call_messages = mock_next_action.await_args_list[1].args[4]
+    user_messages = [m for m in second_call_messages if isinstance(m, dict) and m.get("role") == "user"]
+    assert user_messages  # ต้องมี nudge จริงถูกฉีดเข้าไป ไม่ใช่ list ว่างเปล่า
+    assert all("content" not in m for m in user_messages)  # ต้องไม่มี key แบบ Anthropic/Groq หลงเหลือ
+    assert any(
+        "ถูกปฏิเสธ" in part.get("text", "") for m in user_messages for part in m.get("parts", [])
+    )
+
+
+# --- Gemini context compaction (W7[A], Test Case C) ---
+
+
+def test_build_gemini_history_digest_summarizes_steps_up_to_cutoff():
+    memory = ShortTermMemory()
+    memory.record({"step": 0, "cmd": {"type": "goto", "url": "https://x"}, "result": "[OK] ไปที่ url", "success": True})
+    memory.record({"step": 1, "cmd": {"type": "fill", "index": 0}, "result": "[OK] fill(0) -> login สำเร็จ", "success": True})
+    memory.record({"step": 2, "cmd": {"type": "click", "index": 1}, "result": "[OK] click(1) -> เพิ่มสินค้า", "success": True})
+    memory.record({"step": 3, "cmd": {"type": "click", "index": 2}, "result": "[FAIL] click(2) -> พัง", "success": False})
+
+    digest = _build_gemini_history_digest(memory, upto_step=2)
+
+    assert "step 1" in digest
+    assert "login สำเร็จ" in digest
+    assert "step 2" in digest
+    assert "เพิ่มสินค้า" in digest
+    assert "step 3" not in digest  # เกิน upto_step ไม่ควรโผล่
+    assert "goto" not in digest  # step 0 ไม่นับ (ไม่ใช่ step ของ action จริง)
+
+
+def test_build_gemini_history_digest_returns_empty_string_when_no_matching_steps():
+    memory = ShortTermMemory()
+    memory.record({"step": 0, "cmd": {"type": "goto", "url": "https://x"}, "result": "[OK]", "success": True})
+
+    assert _build_gemini_history_digest(memory, upto_step=5) == ""
+
+
+def test_compact_gemini_messages_drops_old_turns_and_prepends_digest_to_kept_turn():
+    messages = [
+        {"role": "user", "parts": [{"text": "old step 1"}]},
+        {"role": "model", "parts": [{"function_call": {"name": "browser_action", "args": {}}}]},
+        {"role": "user", "parts": [{"text": "old step 2"}]},
+        {"role": "model", "parts": [{"function_call": {"name": "browser_action", "args": {}}}]},
+        {"role": "user", "parts": [{"text": "recent step 3 goal here"}]},
+        {"role": "model", "parts": [{"function_call": {"name": "browser_action", "args": {}}}]},
+    ]
+
+    result = _compact_gemini_messages(messages, cut_at=4, digest_text="- step 1: ok\n- step 2: ok")
+
+    assert len(result) == 2  # เท่ากับ len(messages) - cut_at เสมอ (แทนที่ text ไม่ตัด turn)
+    assert "step 1: ok" in result[0]["parts"][0]["text"]
+    assert "recent step 3 goal here" in result[0]["parts"][0]["text"]
+    assert result[1] == messages[5]  # turn ที่เหลือไม่ถูกแตะเลย
+
+
+def test_compact_gemini_messages_is_noop_when_cut_at_zero_or_digest_empty():
+    messages = [{"role": "user", "parts": [{"text": "x"}]}]
+
+    assert _compact_gemini_messages(messages, cut_at=0, digest_text="something") == messages
+    assert _compact_gemini_messages(messages, cut_at=1, digest_text="") == messages
+
+
+def test_compact_gemini_messages_falls_back_to_original_on_unexpected_shape():
+    """ถ้า messages[cut_at] ไม่ใช่รูปแบบ {"role":"user","parts":[{"text":...}]} ที่คาดไว้
+    (ผิดคาดจริงๆ) ต้องคืน messages เดิมไม่แก้อะไร ไม่ throw"""
+    messages = [{"role": "user", "parts": [{"function_response": {"name": "x", "response": {}}}]}]
+
+    assert _compact_gemini_messages(messages, cut_at=0, digest_text="x") == messages
+
+
+@pytest.mark.asyncio
+async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshold():
+    """W7[A] (Test Case C): เกิน _GEMINI_COMPACT_AFTER_STEPS step แล้ว messages ที่ส่ง
+    เข้า next_action_gemini() ต้องไม่โตต่อเนื่องไม่มีเพดานตามจำนวน step อีกต่อไป (ถูก
+    ตัด step เก่ากว่า _GEMINI_KEEP_RECENT_STEPS ตัวล่าสุดออก) — digest ของ step แรกๆ
+    ต้องยังโผล่อยู่ในบทสนทนาที่เหลือ (ไม่ได้หายไปเฉยๆ พิสูจน์ assertion #2 ของ Test Case C
+    ที่ต้องการให้ agent ยังจำ step แรกๆ ได้)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    total_action_steps = _GEMINI_COMPACT_AFTER_STEPS + 2  # ต้องเกิน threshold แน่ๆ
+    step_actions = [
+        ("browser_action", {"type": "click", "index": i}, f"call_{i}") for i in range(total_action_steps)
+    ]
+    step_actions.append(("finish_task", {"success": True, "message": "เสร็จ"}, ""))
+
+    captured_messages_per_call: list[list] = []
+
+    async def _next_action_side_effect(
+        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context=""
+    ):
+        captured_messages_per_call.append(messages)
+        i = len(captured_messages_per_call) - 1
+        tool_name, tool_input, tool_use_id = step_actions[i]
+        # จำลอง messages โตขึ้นจริงเหมือน implementation จริง (append 1 user ctx turn
+        # + 1 model turn ต่อ call) — ไม่งั้น mock คืนค่าคงที่จะไม่พิสูจน์อะไรเกี่ยวกับ
+        # compaction เลย
+        new_messages = messages + [
+            {"role": "user", "parts": [{"text": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text} #{i}"}]},
+            {"role": "model", "parts": [{"function_call": {"name": tool_name, "args": tool_input}}]},
+        ]
+        return tool_name, tool_input, tool_use_id, new_messages, llm.TokenUsage()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.llm.build_gemini_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.next_action_gemini", AsyncMock(side_effect=_next_action_side_effect)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="gemini", max_steps=total_action_steps + 2
+        )
+
+    assert result["success"] is True
+    assert result["steps"] == total_action_steps
+
+    # ถ้าไม่มี compaction เลย messages ของ call สุดท้าย (finish_task) จะยาว 3 ตัว/step
+    # x total_action_steps = (6+2)*3 = 24 ตัว — ต้องน้อยกว่านี้มากถ้า compaction ทำงานจริง
+    last_call_messages = captured_messages_per_call[-1]
+    uncompacted_would_be = total_action_steps * 3
+    assert len(last_call_messages) < uncompacted_would_be
+
+    # digest ของ step แรกๆ (ที่ถูกบีบอัดไปแล้ว) ต้องยังโผล่อยู่ในบทสนทนาที่เหลือ
+    all_text = " ".join(
+        part.get("text", "")
+        for msg in last_call_messages
+        for part in msg.get("parts", [])
+        if isinstance(part, dict)
+    )
+    assert "step 1" in all_text
+    assert "สรุป step ก่อนหน้า" in all_text
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_compact_for_non_gemini_provider():
+    """scope จำกัดแค่ Gemini ตามที่ user เลือก — provider อื่น (Anthropic/Groq) ต้องไม่
+    ถูกตัด messages เลยไม่ว่าจะกี่ step ก็ตาม (ยังไม่ได้ implement ให้ provider อื่น)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    total_action_steps = _GEMINI_COMPACT_AFTER_STEPS + 2
+    step_actions = [
+        ("browser_action", {"type": "click", "index": i}, f"t{i}") for i in range(total_action_steps)
+    ]
+    step_actions.append(("finish_task", {"success": True, "message": "เสร็จ"}, ""))
+
+    captured_messages_per_call: list[list] = []
+
+    async def _next_action_side_effect(
+        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context=""
+    ):
+        captured_messages_per_call.append(messages)
+        i = len(captured_messages_per_call) - 1
+        tool_name, tool_input, tool_use_id = step_actions[i]
+        new_messages = messages + [{"role": "user", "content": f"turn {i}"}]
+        return tool_name, tool_input, tool_use_id, new_messages, llm.TokenUsage()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=_next_action_side_effect)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", max_steps=total_action_steps + 2
+        )
+
+    assert result["success"] is True
+    # ทุก step เพิ่ม 2 message (1 จาก next_action mock, 1 จาก append_tool_result จริง) ไม่มี
+    # การบีบอัดใดๆ เกิดขึ้นเลย (ฟีเจอร์นี้ scope แค่ gemini) — โตเป็นเส้นตรงตามจำนวน step เป๊ะ
+    last_call_messages = captured_messages_per_call[-1]
+    assert len(last_call_messages) == total_action_steps * 2
 
 
 # --- Permission layer connected to the real per-step loop ---

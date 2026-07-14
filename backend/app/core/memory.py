@@ -16,6 +16,14 @@ class ShortTermMemory:
     def recent(self, n: int = 5) -> list[dict]:
         return self._history[-n:]
 
+    def all(self) -> list[dict]:
+        """คืน history ทั้งหมดของ task นี้ (สำเนา ไม่ใช่ reference ตรง) — ใช้โดย
+        Gemini conversation compaction ใน orchestrator.py (W7[A]) เพื่อสร้าง digest
+        ของ step ที่ถูกตัดออกจาก raw messages ไปแล้ว โดยไม่ต้อง parse raw Gemini
+        Content object เอง (recent() อย่างเดียวไม่พอเพราะต้องเลือกช่วง step ตาม
+        เกณฑ์ของตัวเอง ไม่ใช่แค่ n ตัวล่าสุด)"""
+        return list(self._history)
+
     def failed_actions_summary(self, max_items: int = 5) -> str:
         """สรุป action ที่ล้มเหลว (success is False) ใน task ปัจจุบัน (ล่าสุด
         max_items รายการ) เป็น bullet list สั้นๆ — ใช้ป้อนกลับเข้า prompt ทุก step

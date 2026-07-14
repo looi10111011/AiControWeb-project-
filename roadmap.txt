@@ -720,7 +720,7 @@
               เลยแม้แต่ครั้งเดียว) — รวม test suite 98 เคส ผ่าน 97 (เคส fail เดิม
               จาก manual_test.txt ไม่เกี่ยวกัน)
 
-  [~] W7 [A]  Memory: short-term (กันทำซ้ำ) — เริ่มแล้ว (2026-07-14)
+  [x] W7 [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern) — เสร็จแล้ว (2026-07-14)
               ก่อนหน้านี้ ShortTermMemory (memory.py) แค่บันทึก history ไว้โชว์ตอนจบ
               task เฉยๆ ไม่เคยถูกป้อนกลับเข้า prompt เลย (ดูบันทึกที่ W6[B] ด้านบน) —
               ถามผู้ใช้ก่อนเริ่มเขียนโค้ดว่า scope ของ "short-term (กันทำซ้ำ)" ควรทำ
@@ -769,10 +769,108 @@
               ต้องเพิ่ม key "success" เข้าไปด้วย) — รวม test suite 114 เคส ผ่าน 113
               (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
 
-              *** ยังไม่เคยรันจริงผ่าน LLM จริงเพื่อยืนยันว่า memory_context ช่วยลด
-              การ retry action ที่รู้อยู่แล้วว่า fail ได้จริงในทางปฏิบัติ (แค่ยืนยันด้วย
-              unit test ว่า wiring ถูกต้อง) — long-term memory (pattern ข้าม task)
-              ยังไม่ได้แตะตามที่ตกลงกับ user ไว้ ***
+              *** รันจริงยืนยันแล้ว (ดูรายละเอียดใน "long-term memory + context
+              compaction" ด้านล่าง — memory_context (short-term ใน task เดียวกัน)
+              ช่วยจริง เห็นได้จาก finish_task message ของ task รอบ 2 ที่พูดตรงๆ ว่า
+              "ได้รับคำสั่งให้ไม่พยายามซ้ำในสิ่งที่เคยล้มเหลว" ***
+
+  long-term memory + context compaction (2026-07-14):
+  user ขอให้สร้าง run.py test case ใหม่ 4 อัน (A: จำ pattern ความผิดพลาดข้าม task, B:
+  จดจำข้อมูลสำคัญข้ามรอบ, C: token/context ไม่โตเป็นเส้นตรงตามจำนวน step, D: RAG-based
+  permission จากคู่มือ) — สืบแล้วพบว่า A/B ต้องมี long-term memory (ข้าม task run) จริง
+  ที่ยังไม่เคยมี (ShortTermMemory เดิมจำได้แค่ใน 1 task run เดียว), C ต้องมีกลไก
+  conversation compaction ใหม่ทั้งหมด (ไม่มีในแผนเดิมเลย), D คือ W7[B] ที่ scope ใหญ่
+  กว่านั้นอีก — ถามผู้ใช้ก่อนเริ่มเขียนโค้ดเพราะเป็น architecture decision ที่แก้ทีหลัง
+  จะแพง: (1) long-term memory เก็บที่ไหน -> เลือก ChromaDB collection แยก (ใช้ embedding
+  infra เดิมจาก W6[B]) แทน JSON file ธรรมดา (2) Test Case B จะให้ agent "จำ" ค่าที่เจอ
+  ยังไง -> เลือก auto-store ข้อความจาก finish_task ตรงๆ (ไม่เพิ่ม tool ใหม่ให้ LLM
+  เรียก) (3) C จะทำกับ provider ไหน -> เลือก Gemini อย่างเดียวก่อน (Anthropic/Groq
+  format ต่างกันคนละแบบ ขยายทีหลังได้) (4) ต้องมี pytest คู่กับ demo ไหม -> ใช่
+  *** ระหว่างทำ user แจ้งว่าตัด D (RAG-based permission / W7[B]) ออกจาก scope รอบนี้
+  เลย — งานที่เหลือด้านล่างมีแค่ A/B/C ***
+
+  แก้: เพิ่ม backend/app/core/long_term_memory.py (function-based เหมือน
+  retriever.py ทุกประการ ไม่ใช่ class) — record_task(url, goal, success, message,
+  failed_actions="") เขียน 1 document ใหม่ทุกครั้ง (ไม่ upsert ทับเหมือน manual
+  ingestion เพราะต้องการสะสมประวัติหลายรอบ ไม่ใช่แค่ค่าล่าสุด) รวม failed_actions
+  (จาก ShortTermMemory.failed_actions_summary() ของ task นั้น) เข้าไปในเอกสารเดียวกับ
+  finish_task message ด้วย — ครอบคลุมทั้ง Test Case A (pattern ที่ fail) และ B (ค่าที่
+  เจอ) ด้วยกลไกเดียวกัน ไม่ต้องแยก 2 ระบบ, recall(query, page_state, k) รูปแบบเดียวกับ
+  retriever.retrieve() เป๊ะ (ห้าม throw, คืน [] เสมอถ้า error) — เพิ่ม
+  chroma_client.py::get_long_term_collection() + settings.chroma_long_term_collection_name
+  (collection แยกจาก "manuals" แต่ client/embedding function เดียวกัน)
+
+  orchestrator.py: เรียก long_term_memory.recall() ทุก step เหมือน retriever.retrieve()
+  (ผ่าน asyncio.to_thread เหตุผลเดียวกัน) ส่งเป็น long_term_context เข้า next_action()
+  พารามิเตอร์ที่ 8 (default "" กัน backward-compat เหมือน manual_context/memory_context
+  เดิม) + เรียก long_term_memory.record_task() ครั้งเดียวตอนจบ loop จริง (ทุก path
+  ยกเว้น confirm_plan declined ที่ไม่มี action อะไรเกิดขึ้นเลย) ด้วย
+  failed_actions=self.memory.failed_actions_summary() — ใช้ short-term summary ของ
+  W7[A] เดิมเป็น input ให้ long-term โดยตรง (สอง feature ทำงานร่วมกันแทนที่จะแยกขาด)
+  llm.py: _build_user_turn_text() รับ long_term_context เพิ่มเป็น section ที่ 3
+  (คู่มือ/short-term failure/long-term history) เหมือน manual_context ทุกประการ, thread
+  ผ่าน next_action()/next_action_groq()/next_action_gemini() ทั้ง 3 ตัว
+
+  context compaction (Gemini เท่านั้น ตามที่ตกลงกับ user): stateless chat API ต้องส่ง
+  messages ทั้งก้อนซ้ำทุก step (ไม่มี server-side session) แต่ละ step ของ Gemini เพิ่ม
+  page snapshot เต็มๆ เข้า messages เรื่อยๆ ไม่เคยหดกลับ — เพิ่ม
+  orchestrator.py::_GEMINI_COMPACT_AFTER_STEPS(=6)/_GEMINI_KEEP_RECENT_STEPS(=3):
+  เกิน 6 step แล้ว ตัด step เก่ากว่า 3 step ล่าสุดออกจาก messages แทนที่ด้วย digest
+  สั้นๆ 1 บรรทัด/step (สร้างจาก ShortTermMemory.all() ที่มีข้อมูลสะอาดอยู่แล้ว ไม่ต้อง
+  parse raw Gemini Content object เอง — เพิ่ม ShortTermMemory.all() ใหม่สำหรับงานนี้
+  โดยเฉพาะ ต่างจาก recent(n) ที่เอาแค่ n ตัวท้ายสุด) — วิธีฝัง digest: prepend เข้า
+  text ของ turn แรกที่เหลืออยู่ (_compact_gemini_messages()) แทนที่จะแทรก turn ใหม่
+  แยกต่างหาก เพื่อไม่แตะลำดับ role user/model ของ Gemini เลย (กันปัญหา conversation
+  structure ผิดเพี้ยน) เก็บ step boundary เป็น [(absolute_step_number,
+  len(messages)_หลังจบ_step)] ของตัวเองใน run_task() (ไม่เดาตำแหน่งจาก content) กัน
+  ตัดผิดจุดจนได้ history ที่ไม่ valid
+
+  *** ระหว่างรันจริงเจอบั๊กเดิมที่ไม่เคยมีใครสังเกตมาก่อน (ไม่เกี่ยวกับงานนี้โดยตรง แต่
+  บล็อกการทดสอบเลยต้องแก้): orchestrator.py มี 2 จุด (premature-false-finish guard,
+  premature-login-skip guard จาก W5/W6) ที่ฉีดข้อความเตือนเข้า messages ตรงๆ
+  (นอกเหนือจาก append_tool_result ที่แต่ละ provider มี format ของตัวเองอยู่แล้ว) โดย
+  hardcode เป็น {"role":"user","content":...} แบบ Anthropic/Groq เสมอ — ไม่เคยเป็นบั๊ก
+  จริงมาก่อนเพราะไม่เคยมีการทดสอบที่ทำให้ Gemini ชนทั้ง 2 guard นี้เลยตั้งแต่มี provider
+  Gemini (W4) แต่ Test Case A (ทำให้ action fail ซ้ำๆ โดยตั้งใจ) ไปกระตุ้นให้ guard
+  ทำงานจริงเป็นครั้งแรก — Gemini SDK จริง throw KeyError ทันทีที่เจอ dict ผิด shape
+  (ต้องการ "parts" ไม่ใช่ "content") ปนอยู่ใน contents แก้ด้วย
+  _build_nudge_message(provider, text) เลือก shape ให้ถูกตาม provider ***
+
+  unit test ใหม่รวม ~40 เคส: 11 ใน test_long_term_memory.py ใหม่ (recall()/
+  record_task() ครบทั้ง happy path/error swallowing/format), 6 ใน
+  test_orchestrator.py (recall เรียกถูก param + ผลไหลเข้า next_action, ว่างเปล่าเมื่อ
+  ไม่มี, record_task เรียกด้วย url/goal/success/message/failed_actions ถูกต้องตอนจบ
+  loop, ไม่เรียกเลยถ้า plan ถูกปฏิเสธ), 7 เคส compaction (_build_gemini_history_digest,
+  _compact_gemini_messages ทั้ง happy path/no-op/fallback, integration test เต็มผ่าน
+  run_task() พิสูจน์ messages ไม่โตไม่หยุดแต่ digest ของ step แรกๆ ยังอยู่, provider
+  อื่นไม่ถูกตัดเลย), 3 เคส nudge-shape (_build_nudge_message ต่อ provider,
+  integration test ผ่าน Gemini พิสูจน์ nudge เป็น parts ไม่ใช่ content) — รวม test
+  suite 139 เคส ผ่าน 138 (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+  เพิ่ม run.py: python run.py memory-a/memory-b/memory-c รัน Orchestrator.run_task()
+  จริงบน saucedemo.com (ไม่ mock, ต้องมี API key จริงใน .env) — memory-a รัน task
+  เดิม 2 รอบ (ask_user_func auto-reject ปุ่ม "Remove" เสมอ จำลอง action ที่ "พัง") พิมพ์
+  recall() ให้เห็นตรงๆ ก่อนเริ่มรอบ 2, memory-b รัน task หาราคาสินค้าก่อน แล้ว task ที่ 2
+  กรอกฟอร์ม checkout โดยบอกแค่ "ใช้ข้อมูลจาก task ก่อนหน้า" ไม่บอกราคาตรงๆ, memory-c
+  รัน task ยาวบังคับ provider=gemini ดู log [tokens]/[gemini-compact] ต่อ step
+
+  *** รันจริง memory-a ผ่าน Gemini ยืนยันครบทั้ง 2 เคสหลัก: (1) long-term memory
+  wiring ทำงานจริงไม่พัง — record_task() เขียนสำเร็จตอนจบ task รอบ 1 (29 step, ไม่
+  สำเร็จ, ครบ max_steps), recall() ก่อนเริ่มรอบ 2 ดึงคืนมาได้จริงครบทั้ง goal/message/
+  failed_actions ของรอบ 1 (2) หลักฐานที่ชัดว่า memory ช่วยจริง: task รอบ 2 หยุดที่
+  step 14 (เร็วกว่ารอบ 1 ที่ไป 29 step เกือบเท่าตัว) และ finish_task message รอบ 2
+  พูดตรงๆ ว่า "เนื่องจากได้รับคำสั่งให้ไม่พยายามซ้ำในสิ่งที่เคยล้มเหลว จึงไม่สามารถ
+  ดำเนินภารกิจต่อไปจนจบได้" — เป็นหลักฐานตรงๆ ว่าโมเดลอ่าน context แล้วปรับพฤติกรรมจริง
+  ไม่ใช่แค่ wiring เชื่อมกันเฉยๆ (3) context compaction ก็ถูกพิสูจน์ไปพร้อมกันโดยไม่ได้
+  ตั้งใจ — task ยาว 29 step ทำให้ [gemini-compact] ทำงานจริง 7+ รอบตลอด 2 task run
+  รวมกัน (ทุก step ที่ step boundary ผ่าน 6 อีกครั้งหลัง reset) ไม่พัง/ไม่หลุด format
+  เลยสักครั้ง — เป็นการทดสอบ compaction ที่หนักกว่าที่ตั้งใจไว้ตอนแรกด้วยซ้ำ
+  *** memory-b/memory-c ยังไม่ได้รันแยกต่างหาก (ไม่อยากยิง API เพิ่มเกินจำเป็นหลัง
+  memory-a ที่มีทั้งหมด ~43 step ไปแล้ว) — memory-c ถือว่าถูก cover พอสมควรจาก
+  compaction ที่เห็นใน memory-a อยู่แล้ว แต่ยังไม่เคยเห็น log [tokens] ที่ชัดเจนเฉพาะ
+  ของ memory-c โดยตรง (ค่า input token ต่อ step ที่เห็นจริงใน memory-a คงที่แถว
+  4000-9000 ไม่โตต่อเนื่องไม่มีเพดานแล้ว ตรงกับที่ compaction ควรทำ) — memory-b
+  (จำค่าตัวเลข/ราคาข้ามรอบ) ยังไม่เคยรันจริงเลย รอ user ลองเองหรือรอบถัดไป ***
 
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
@@ -895,10 +993,14 @@
             (2026-07-13) — retriever.retrieve() ต่อเข้า per-step loop ของ
             orchestrator จริงแล้ว (ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
 
-  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)  🔶 เริ่มแล้ว
-     │      (short-term เสร็จ 2026-07-14 — ดูรายละเอียดในสถานะความคืบหน้าด้านบน,
-     │      long-term ยังไม่ได้แตะตามที่ตกลงกับ user ไว้)
-     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ
+  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)  ✅ เสร็จแล้ว
+     │      (ทั้ง short-term และ long-term เสร็จ 2026-07-14 — long-term ผ่าน
+     │      ChromaDB collection แยก + รันจริงยืนยันแล้วว่าช่วยจริง ดูรายละเอียด
+     │      ในสถานะความคืบหน้าด้านบน "long-term memory + context compaction")
+     │      *** แถมมาด้วย: Gemini-only conversation compaction (ไม่อยู่ในแผนเดิม
+     │      user ขอเพิ่มพร้อมกัน — ดูรายละเอียดในหัวข้อเดียวกัน) ***
+     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ  ✂️ ตัดออกจาก
+            scope รอบนี้ตามที่ user สั่งชัดเจน (2026-07-14) — ยังไม่เริ่มทำ
 
   W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)
 
