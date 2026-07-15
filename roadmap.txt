@@ -13,8 +13,11 @@
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
               (server /health, /config/check, BrowserSession start/stop)
   [x] W1 [B]  ลง ChromaDB (connection) + เตรียม SRS template — เสร็จ
-  [x] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — ยังไม่เสร็จ
-              (docs/SRS.md ยังเป็น TBD ทั้งหมด — ค้างจากหมุดหมาย W1)
+  [x] W1 [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล — เสร็จแล้ว (2026-07-15)
+              (docs/SRS.md เดิมเป็น TBD ทั้งหมดค้างมาตั้งแต่ W1 — เติมเนื้อหาจริงแล้ว
+              โดยสรุปย้อนหลังจากสิ่งที่ใช้จริงตลอด W2-W8: เว็บเป้าหมาย = saucedemo.com
+              3 หน้า/flow (Login, Inventory+Product Detail, Cart→Checkout), เกณฑ์วัดผล
+              อิงจากข้อมูลจริงที่สังเกตได้ตลอดโปรเจกต์ — ดูรายละเอียดเต็มใน docs/SRS.md)
 
   [x] W2 [A]  Perception: get_snapshot() ดึง indexed elements จริงแล้ว
               (backend/app/core/perception.py — click/fill/select/scroll_by_index
@@ -24,8 +27,17 @@
               ตัดบรรทัดที่ยาวเกิน chunk_size เองด้วย กัน chunk บวมตอนเจอ PDF
               ที่ extract ออกมาไม่มี newline)
 
-  [~] W3 [A]  Browser actions เริ่มแล้วบางส่วน (dropdown/scroll + error
-              handling) — คลิก/พิมพ์/สลับ tab ยังไม่ครบ
+  [x] W3 [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab — เสร็จแล้ว
+              (ปิดจ็อบ 2026-07-15 — ตอนบันทึกครั้งแรกยังค้างว่า "คลิก/พิมพ์/สลับ tab
+              ยังไม่ครบ" และ "ยังอยู่ใน perception.py ไม่ใช่ actions.py" แต่ตรวจโค้ด
+              จริงตอนนี้พบว่าทั้งคู่ถูกแก้ไปแล้วระหว่างทำ W4/W5 (ไม่เคยย้อนมาติ๊ก
+              เครื่องหมายในนี้) — backend/app/core/actions.py มีครบทั้ง 9 action
+              จริง: click/fill/select_option/check/scroll/goto/go_back/switch_tab/
+              wait_stable แยกเป็น module ของตัวเองตามแผนเดิมแล้ว (perception.py เก็บ
+              แค่ click_by_index/fill_by_index/select_by_index/scroll_by รุ่นเก่าไว้
+              เป็น legacy สำหรับ demo() ของตัวเองเท่านั้น ไม่ใช่ path ที่
+              orchestrator.py ใช้จริง) switch_tab() ก็ dispatch ผ่าน execute() +
+              อยู่ใน enum ของ llm.py ให้ LLM เรียกได้จริงแล้วเช่นกัน)
               - select_by_index() เลือก dropdown ได้จริง: ทดสอบเรียงลำดับ
                 สินค้า saucedemo แล้วเทียบ DOM ตรง ๆ ยืนยันลำดับเปลี่ยนจริง
               - scroll_by() สั่ง scroll ได้ (ทดสอบแล้ว หน้า inventory
@@ -34,8 +46,13 @@
               - click_by_index()/fill_by_index()/select_by_index() คืนค่า
                 "[OK]" / "[FAIL] ..." แทนการ raise exception แล้ว — ทดสอบ
                 ยิง index ผิด (9999) แล้วโปรแกรมไม่ crash ทำงานต่อได้ปกติ
-              (ยังอยู่ใน perception.py ไม่ใช่ actions.py ตามแผนเดิม —
-              คงต้องย้าย/แยกให้ตรง module ทีหลัง)
+
+              *** สิ่งที่ยังขาดจริงตอนตรวจสอบ (2026-07-15): switch_tab() ไม่เคยมี
+              unit test เลยตั้งแต่เขียนมา (action อื่นทุกตัวมี test ใน
+              test_actions.py หมดยกเว้นตัวนี้) — เพิ่ม 3 เคสใหม่ (สลับ tab สำเร็จ
+              เมื่อ tab_index มีจริง, fail เมื่อ tab_index เกินจำนวน tab ที่เปิดอยู่,
+              ไม่ retry ตอน fail เหมือน goto/scroll/go_back/wait) — รวม test suite
+              163 เคส ผ่านหมด ***
   [x] W3 [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ — เสร็จ
               (backend/app/rag/ingestion.py: load_manual รองรับ 3 นามสกุล,
               collection.upsert() กัน id ชนตอน ingest ซ้ำ
@@ -1041,6 +1058,248 @@
               ให้ demo รันจบเองได้) — โชว์ log [permission] (W7[B] RAG-based) ให้เห็น
               ตรงๆ ว่าคู่มือ (ไม่ใช่ hardcoded rule) เป็นคนสั่งขออนุมัติ
 
+  [x] W8 [★]  บูรณาการรอบแรก + จูน prompt (pair กัน) — เสร็จรอบแรกแล้ว (2026-07-15)
+
+              เป้าหมาย: พิสูจน์ว่า "3 สมอง" (perception อ่านหน้าเว็บ + RAG คู่มือ +
+              memory ข้าม task) ทำงาน "พร้อมกัน" ในงานเดียวได้จริง ไม่ใช่แค่แยกทดสอบ
+              ทีละอันเหมือน Test Case A-D ก่อนหน้า — ออกแบบ goal เดียวที่บังคับพึ่งทั้ง
+              3 อย่าง: login->add to cart->เปิดตะกร้า->Checkout (หลายหน้า ต้องอ่าน
+              indexed elements ใหม่ทุก step = perception) กรอกฟอร์ม First Name/Last
+              Name/Zip Code โดย "ไม่บอกค่าตรงๆ ใน goal" บังคับให้ต้องดึงจาก RULE-03
+              ในคู่มือแทน (= RAG) แล้วรัน goal เดิมซ้ำ 2 รอบเหมือน Test Case A (=
+              memory ข้าม task ผ่าน long_term_memory.recall()/record_task())
+
+              เพิ่ม run.py: python run.py integration (alias: w8) — รัน 2 รอบ, print
+              recall() ก่อนเริ่มรอบ 2, เช็คอัตโนมัติว่า history ของแต่ละรอบมีค่าจาก
+              คู่มือครบทั้ง 3 ค่า (Siamyut/Phasida/12110) จริงไหม (ไม่ใช่แค่เชื่อ
+              finish_task message ที่ agent "อ้างว่า" ทำตามคู่มือ)
+
+              รันจริงยืนยันบน saucedemo.com ผ่าน Gemini (headless) หลายรอบ พบ 2 ประเด็น
+              ที่ต้องจูน prompt:
+
+              1) *** บั๊กพฤติกรรมที่เจอจริง: goto ซ้ำหน้าเดิมที่กำลังอยู่แล้ว ***
+                 รอบแรกที่รันก่อนแก้ prompt: agent กรอก First Name สำเร็จแล้ว สั่ง
+                 wait 2 ครั้ง แล้วสั่ง goto ไป URL เดิมที่กำลังอยู่อยู่แล้ว
+                 (checkout-step-one.html) ซึ่ง goto reload หน้าทั้งหน้าทำให้ฟอร์มที่
+                 กรอกไปแล้วหายหมด ต้องกรอกใหม่ทั้งหมด เกิดซ้ำ 2 รอบติดกันจน task ใช้
+                 17 step (จากที่ควรใช้ ~13-15) — ตรวจแล้วว่า page_text (indexed
+                 elements) ที่ส่งให้ LLM ไม่มี URL ปนอยู่เลย มีแค่ elements ล้วนๆ
+                 แปลว่า agent เห็นฟอร์มอยู่ตรงหน้าอยู่แล้วแท้ๆ แต่เลือก goto ซ้ำอยู่ดี
+                 ไม่ใช่เพราะข้อมูลไม่พอ
+
+                 แก้: เพิ่มกติกาใหม่ใน llm.py::SYSTEM_PROMPT ห้าม goto ไป URL ที่
+                 กำลังอยู่อยู่แล้ว ให้เช็คจาก indexed elements ปัจจุบันก่อนเสมอว่า
+                 element ที่ต้องการมีอยู่แล้วหรือยัง — รันซ้ำยืนยันว่าช่วยได้บางส่วน
+                 (ลด step ลง บางรอบเหลือ redundant goto แค่ 1 ครั้งแทน 2-3 ครั้ง) แต่
+                 *** ไม่หายขาด — บางรอบยังเจอ goto ซ้ำอยู่ดี (พฤติกรรมโมเดล
+                 Gemini flash-lite ไม่ persistent 100% เหมือนที่เคยบันทึกไว้กับ
+                 provider อื่นตลอดโปรเจกต์) ครั้งหนึ่งถึงขั้นวน goto<->fill สลับกัน
+                 จนชน ABAB loop-detection guard (W5/W6) ต้องหยุด task กลางคัน (แต่
+                 guard ทำงานถูกต้องตามที่ออกแบบไว้ — หยุดไม่ให้วนไม่รู้จบ ไม่ใช่บั๊ก
+                 ของ guard) ***
+
+              2) *** บั๊กพฤติกรรมที่เจอจริงอีกจุด: สับสนว่า action ที่ผ่าน
+                 human-in-the-loop ไปแล้วยังไม่ได้รับอนุมัติ ***
+                 หลังกด Checkout (ผ่าน RAG-based permission ของ W7[B], ask_user_func
+                 อนุมัติแล้วจริง ผลลัพธ์ [OK]) รอบถัดๆ ไป agent ยังเห็นข้อมูลอ้างอิง
+                 จากคู่มือ (RULE-04: Checkout ต้องขออนุมัติ) ถูกดึงมาแนบใน prompt
+                 อีกครั้ง (manual_context ดึงใหม่ทุก step ตาม page state ปัจจุบัน) —
+                 ตีความผิดว่า "ยังไม่ได้รับอนุมัติ" ทั้งที่อนุมัติไปแล้วจริงตอน step
+                 ก่อนหน้า สั่ง go_back ออกจากหน้า checkout แล้วพยายาม
+                 finish_task(success=false) อ้างว่าติดกฎ RULE-04 — โดน
+                 premature-false-finish guard (W4/W5) เตือนแล้วบังคับลองต่อ ในที่สุด
+                 ก็ goto กลับมาทำสำเร็จ แต่เสีย step ไปโดยไม่จำเป็น
+
+                 แก้: เพิ่มกติกาใหม่ใน SYSTEM_PROMPT — action ที่ผลลัพธ์เป็น [OK]
+                 แล้ว ถือว่าสำเร็จสมบูรณ์จริง แม้จะเป็น action ที่คู่มือบอกว่าต้องขอ
+                 อนุมัติก่อนก็ตาม เพราะ [OK] แปลว่า human อนุมัติไปแล้วจริง ห้ามสงสัย/
+                 go_back/หยุดงานเพราะคิดว่ายังไม่ได้รับอนุมัติ — รันซ้ำยืนยันว่า
+                 go_back-เพราะสงสัยเรื่องอนุมัติ ไม่เกิดซ้ำอีกใน 2 รอบถัดมา (แต่ยังไม่
+                 เจอซ้ำพอจะสรุปว่าหายขาด 100% เหมือนกัน)
+
+              *** สรุปรวม: ทั้ง 3 สมองทำงานร่วมกันได้จริง (พิสูจน์ด้วยค่า
+              Siamyut/Phasida/12110 ที่มาจากคู่มือปรากฏใน history จริงทุกรอบที่ทำ
+              สำเร็จ ไม่เคยเดาเอง) — long-term memory ก็ช่วยจริงแม้รอบ 1 จะไม่ราบรื่น:
+              รันคู่หนึ่งที่ทดสอบ รอบ 1 ไม่จบภายใน max_steps=20 (ติดพฤติกรรม goto ซ้ำ
+              ข้อ 1 ด้านบน) แต่ recall() ก่อนรอบ 2 ดึงบันทึกของรอบ 1 กลับมาได้ (แม้จะ
+              ล้มเหลว) และรอบ 2 สำเร็จสมบูรณ์ใน 14 step — สอดคล้องกับที่เคยพบใน Test
+              Case A ของ W7[A] ว่า memory ช่วยแม้ตอน pattern ที่จำมาคือความล้มเหลว
+              *** ทั้ง 2 บั๊กพฤติกรรมข้างต้นยังไม่หายขาด 100% เป็นความเสี่ยงที่เหลืออยู่
+              จากข้อจำกัดโมเดล (Gemini flash-lite free tier) ไม่ใช่บั๊กโค้ด — ตรงกับ
+              pattern เดิมที่บันทึกไว้ตลอดโปรเจกต์นี้ (ดู W4[A]/W5[A]/W6[B] ด้านบน) ***
+
+              unit test: ไม่มีเคสใหม่ (การเปลี่ยนแปลงจำกัดอยู่แค่ข้อความใน
+              SYSTEM_PROMPT string — test เดิมทั้งหมดที่ reference llm.SYSTEM_PROMPT
+              ผ่าน attribute ไม่ใช่ hardcoded string เลยไม่พังจากการแก้ข้อความ ยืนยัน
+              รัน test suite เต็ม 149 เคส ผ่านหมดหลังแก้ prompt ทั้ง 2 จุด)
+
+              เพิ่ม robustness ให้ loop-detection guard (2026-07-15 เช่นกัน):
+              user ดู log ของ W8 integration run แล้วถามว่า guard เดิม (จับได้แค่คาบ 1
+              "AAAA" เดิมเป๊ะๆ ติดกัน กับคาบ 2 "ABAB" สลับ 2 ค่า) รองรับ pattern ที่
+              โมเดลสลับ click/fill/scroll ไปมาเป็นคาบยาวกว่านั้น (คาบ 3+) โดยไม่ทำให้
+              หน้าเว็บเปลี่ยนสเตทจริง ได้เนียนพอหรือยัง — สืบแล้วพบว่า "click ปุ่มเดิม
+              ซ้ำๆ"/"fill ค่าเดิมซ้ำๆ" ที่ user ยกตัวอย่างมาเป็นคาบ 1 ล้วนๆ ซึ่ง guard
+              เดิมจับได้อยู่แล้ว (เช็คจาก dict ทั้งก้อนแบบ generic ไม่ได้ผูกกับ "wait"
+              โดยเฉพาะ) — แต่พบช่องโหว่จริงที่ user สังเกตถูก: คาบ 3 ขึ้นไปไม่เคยถูก
+              scope ไว้เลย (มีเทสต์เดิมชื่อ
+              test_run_task_loop_guard_does_not_trigger_for_three_action_cycle ที่
+              ยืนยันไว้ตรงๆ ว่าคาบ 3 "ยังไม่ scope ไว้" ไม่ trigger)
+
+              แก้: generalize _is_alternating_pattern() (เดิมเช็คเฉพาะคาบ 2 ตรงๆ) เป็น
+              _is_repeating_cycle(window, period) + _detect_repeating_cycle_period()
+              เช็คได้ทุกคาบตั้งแต่ 2 ถึง _MAX_CYCLE_PERIOD=4 (คาบ 1 ยังคงแยกไปใช้
+              _MAX_CONSECUTIVE_IDENTICAL_ACTIONS เดิม เพราะ threshold หลวมกว่า —
+              trigger ตั้งแต่ซ้ำครั้งที่ 3 ไม่ต้องรอครบ 2 รอบเต็มเหมือนคาบอื่น) — cap
+              ที่คาบ 4 โดยตั้งใจ เพราะคาบยาวกว่านี้ทั้งเจอได้ยากขึ้นเรื่อยๆ ในทางปฏิบัติ
+              และ window ที่ต้องสะสมก่อนยืนยัน pattern (period*2 action) ก็ยาวขึ้นตาม
+              ไม่คุ้มจะปล่อยให้เสีย step เพิ่มอีกเพื่อรอยืนยัน cycle ที่ยาวมากๆ —
+              ยืนยันด้วย distinct-value check ว่าไม่ทับซ้อนกับ guard คาบ 1 เดิม (คาบ p
+              ของ [A,A,...,A] ทั้งหมดค่าเดียวกันจะไม่ถูกนับเป็นคาบ p แยก)
+
+              unit test 3 เคส (แก้/เพิ่ม) ใน test_orchestrator.py: พลิกกลับเทสต์เดิมที่
+              ยืนยันว่าคาบ 3 "ไม่ trigger" ให้เป็น "ต้อง trigger" แทน (คาบ 3 ครบ 2 รอบ
+              เต็ม = 6 action ครั้งที่ 6 ถูกสกัดไว้ก่อน execute() เหมือน guard คาบ 1/2
+              เดิม) + เพิ่มเทสต์คาบ 4 ยืนยันว่า trigger ด้วย (ไม่ใช่จับได้แค่คาบ 3) +
+              เพิ่มเทสต์คาบ 5 ยืนยันว่ายังไม่ trigger โดยเจตนา (เอกสาร scope boundary
+              ของ guard ไว้ตรงๆ เหมือนที่เทสต์คาบ 3 เดิมเคยทำก่อนขยาย) + แก้เทสต์คาบ 2
+              เดิม 1 จุด (assert ข้อความ "สลับ" เดิมไม่มีใน error message ใหม่แล้ว
+              เปลี่ยนเป็นเช็ค "คาบ 2" แทน) — รวม test suite 151 เคส ผ่านหมด — ยืนยัน
+              เพิ่มด้วย script ตรงๆ นอก pytest ว่า cycle คาบ 3 ที่ผสม action ต่างชนิด
+              กัน (click/scroll/fill) ถูกจับได้จริง, action หลากหลายไม่ trigger, คาบ 1
+              ล้วนๆ ไม่ถูกนับซ้ำโดย checker ตัวนี้ (ให้ guard คาบ 1 เดิมจับแทน), คาบ 5
+              ไม่ trigger ตามที่ตั้งใจไว้ — ครบทุกเคสตามที่ออกแบบ
+
+              เพิ่ม Refusal Memory เข้า short-term context (2026-07-15 เช่นกัน):
+              user ขอ 2 อย่าง: (1) เมื่อบันทึก [FAIL] ที่มาจากการที่มนุษย์ปฏิเสธ action
+              (human-in-the-loop) ต้องส่งข้อมูลนี้กลับเข้า prompt ให้โมเดลรู้ทันทีในการ
+              ตัดสินใจ step ถัดไป เพื่อให้ re-routing/อธิบายเหตุผล แทนที่จะดื้อดึงลองซ้ำ
+              (2) เพิ่มกติกาใน SYSTEM_PROMPT ตรงๆ ว่าห้ามทำ action ที่ถูกปฏิเสธซ้ำใน task
+              เดียวกัน
+
+              สืบก่อนเริ่มแก้พบว่า (1) ทำงานอยู่แล้วบางส่วนตั้งแต่ W7[A]:
+              ShortTermMemory.failed_actions_summary() ป้อน memory_context เข้า prompt
+              ทุก step อยู่แล้ว รวม action ที่ fail ทุกแบบ (ไม่ได้แยกว่าเป็น refusal หรือ
+              failure ทางเทคนิค) — *** แต่มีบั๊กจริง: max_items=5 (default) ตัดรายการเก่า
+              ทิ้งเมื่อมี failure สะสมเกินนี้ ถ้า refusal เกิดก่อนแล้วมี failure ทางเทคนิค
+              อื่นตามมาอีก 5+ ครั้ง refusal เดิมจะหลุดออกจาก summary ไปเงียบๆ โมเดลอาจ
+              "ลืม" แล้วย้อนกลับไปลองซ้ำ action ที่มนุษย์เพิ่งปฏิเสธไปแล้วอีกครั้งได้ ***
+
+              แก้: actions.py เพิ่ม REJECTED_BY_USER_MESSAGE = "ผู้ใช้ปฏิเสธการทำ Action
+              นี้ (Human-in-the-loop)" เป็น constant แยก (เดิม hardcode เป็น string
+              ตรงๆ) ใช้เป็น "สัญญาณ" เดียวที่ระบุว่า failure นี้คือการถูกมนุษย์ปฏิเสธจริง
+              ไม่ใช่ failure ทางเทคนิค — memory.py::failed_actions_summary() แยก
+              rejected ออกจาก failure อื่น: rejected รวมทุกตัวเสมอไม่ตัดทิ้งด้วย
+              max_items (dedupe ตาม cmd กัน prompt บวมถ้าโมเดลยังฝ่าฝืนลองซ้ำแล้วโดน
+              ปฏิเสธซ้ำอีก) ส่วน failure ทางเทคนิคอื่นยังถูกจำกัดด้วย max_items ล่าสุด
+              เหมือนเดิม — ไม่ต้องแก้ orchestrator.py เลย เพราะ wiring (เรียก
+              failed_actions_summary() ทุก step ป้อนเป็น memory_context) มีอยู่แล้วจาก
+              W7[A] ครบทั้งสาย
+
+              (2) llm.py::SYSTEM_PROMPT เพิ่มกติกาใหม่ตรงตามที่ user ระบุ: "หาก Action
+              ใดได้รับการปฏิเสธจากมนุษย์ ห้ามพยายามทำ Action นั้นซ้ำในรอบการทำงานปัจจุบัน
+              ให้พิจารณาทางเลือกอื่นหรือยุติงานพร้อมแจ้งเหตุผล" + แก้ข้อความ section
+              memory_context ใน _build_user_turn_text() ให้ระบุตรงๆ ว่าถ้าเห็นข้อความ
+              "ผู้ใช้ปฏิเสธการทำ Action นี้" ต้องห้ามทำซ้ำเด็ดขาด (ต่างจาก failure ทาง
+              เทคนิคที่ยังลองทางอื่นได้ตามปกติ) — ย้ำกติกาทั้ง 2 จุด (SYSTEM_PROMPT แบบ
+              static + memory_context แบบ just-in-time เฉพาะตอนมี refusal จริง) เหมือน
+              รูปแบบเดิมที่ใช้กับกติกาอื่นๆ ในโปรเจกต์นี้
+
+              unit test ใหม่ 4 เคส: 3 ใน test_memory.py (rejected action ไม่ถูก evict
+              แม้มี technical failure ตามมาเกิน max_items, dedupe รายการที่โดนปฏิเสธซ้ำ
+              cmd เดิม, เก็บ rejected หลายตัวที่ cmd ต่างกันครบทุกตัว) + 1 ใน
+              test_orchestrator.py (integration เต็มสาย: ask_user_func ปฏิเสธจริงผ่าน
+              execute() ตัวจริง -> memory_context ของ step ถัดไปเห็น
+              REJECTED_BY_USER_MESSAGE จริง) + แก้ test เดิม 2 เคสใน test_llm.py (assert
+              ข้อความเดิม "อย่าทำซ้ำแนวทางเดิม" ไม่มีในข้อความใหม่แล้ว เปลี่ยนเป็นเช็ค
+              "Action ที่เคยลองแล้วล้มเหลว" แทน) — รวม test suite 155 เคส ผ่านหมด
+
+              *** รันจริงยืนยันบน saucedemo.com ผ่าน Gemini (headless, ask_user_func
+              ปฏิเสธทุก action ที่ต้องขอยืนยัน): เห็นผลตรงตามที่ตั้งใจไว้ชัดเจนสำหรับปุ่ม
+              Checkout — โดนปฏิเสธครั้งเดียว (step 7) แล้วไม่เคยลองกด click(index=5) ซ้ำ
+              อีกเลย สุดท้าย finish_task(false) พร้อมข้อความอธิบายตรงประเด็นว่า "ไม่
+              สามารถกดปุ่ม Checkout ได้เนื่องจากระบบได้รับการปฏิเสธจากมนุษย์...ตามกฎ
+              RULE-04" — ตรงตามที่ user ต้องการเป๊ะ (re-routing/อธิบายเหตุผลแทนดื้อดึง) ***
+
+              *** แต่เจอช่องโหว่จริงที่ไม่เกี่ยวกับงานนี้โดยตรงระหว่างรัน (คนละเรื่องกับ
+              refusal memory — เป็นเรื่อง permission layer เดิม): ปุ่ม Login ถูกปฏิเสธ
+              ตอนโมเดลส่ง submit(index=2) (step 3) แต่ step ถัดมาโมเดลส่ง click(index=2)
+              (index เดียวกัน เป้าหมายเดียวกัน แค่เปลี่ยน type จาก "submit" เป็น "click")
+              แล้ว "สำเร็จ" เพราะ classify_action() ไม่ยกเป็น NEEDS_CONFIRMATION ให้
+              type="click" ธรรมดา (ปุ่ม Login ไม่ตรง RISKY_LABEL_KEYWORDS ด้วย) — แปลว่า
+              รายการที่ถูกปฏิเสธ (cmd={"type":"submit","index":2}) กับ action ที่ทำสำเร็จ
+              จริง (cmd={"type":"click","index":2}) เป็นคนละ dict กัน ไม่ตรงกับกติกาใหม่
+              ("ห้ามทำ Action นั้นซ้ำ") ตามตัวอักษร แม้ผลลัพธ์จริงคือคลิกปุ่มเดียวกันก็ตาม
+              — นี่คือช่องโหว่ของ "permission layer เดิม" (W4-W7[B]) ที่ refusal memory
+              ของงานนี้ไม่ได้ตั้งใจแก้ (ไม่ได้ scope ไว้ตอน user ขอ) บันทึกไว้เป็นความเสี่ยง
+              ที่เหลืออยู่ — ถ้าจะแก้ต้องขยาย defense-in-depth ให้จับ "target เดียวกัน"
+              (เช่น index เดียวกัน) ไม่ใช่แค่ cmd dict ทั้งก้อนตรงกันเป๊ะ ***
+
+  ไล่ทวนทั้ง roadmap (W1-W8) หาสิ่งที่ยังไม่เสร็จจริง (2026-07-15):
+  user ขอให้อ่าน roadmap.txt ทั้งไฟล์อีกรอบแล้วแก้ทุกอย่างที่ยังไม่เสร็จตั้งแต่ W1-W8 —
+  ไล่ตรวจทีละหัวข้อเทียบกับโค้ดจริง (ไม่เชื่อ checkbox เดิมเฉยๆ เพราะพบว่าบางอันค้าง
+  ไม่ตรงกับโค้ดจริงแล้ว) เจอ 4 จุดที่ต้องแก้จริง:
+
+  1) W1[★] docs/SRS.md ยังเป็น TBD ทั้งหมด — ดูรายละเอียดที่บันทึกไว้แล้วด้านบน (W1[★])
+
+  2) W3[A] เนื้อหาเดิมค้างบอกว่า "คลิก/พิมพ์/สลับ tab ยังไม่ครบ" และ "ยังอยู่ใน
+     perception.py" — ตรวจโค้ดจริงพบว่าทั้งคู่ถูกแก้ไปแล้วจริงระหว่างทำ W4/W5 (ไม่มี
+     ใครย้อนมาติ๊กเครื่องหมายในนี้ตาม) มีแค่ switch_tab() ที่ขาด unit test จริง — ดู
+     รายละเอียดที่บันทึกไว้แล้วด้านบน (W3[A])
+
+  3) W5[A] เนื้อหาเดิมบอกชัดเจนว่า "ยังไม่มี verify ผล finish_task(success=true)
+     เทียบกับ DOM จริง" (มีแค่ "Retry" ไม่มี "Verify" — ทั้งที่ชื่อหมุดหมายคือ
+     "Verify + Retry") — นี่คือช่องโหว่ code จริงที่ต้องปิด ไม่ใช่แค่ bookkeeping
+     (รายละเอียดแก้ไขอยู่ด้านล่าง)
+
+  4) W6[A] เนื้อหาเดิมบอกว่า "ทำแค่ส่วนคู่มือ (=W6[B]) ส่วนความจำยังไม่ได้ทำเพิ่ม" —
+     ตรวจแล้วพบว่า "ความจำ" ที่ขาดไปตอนนั้นถูกทำครบจริงแล้วใน W7[A] (short-term +
+     long-term memory ป้อนกลับเข้า prompt ทุก step) เพียงแต่ไม่มีใครย้อนกลับมาปิด
+     checkbox ของ W6[A] ตาม — แก้ไขแค่ bookkeeping (ดู W6[A] ในตารางสรุปด้านล่าง)
+     ไม่มีโค้ดใหม่ต้องเขียนเพิ่ม เพราะ Planner prompt "รวม page state + คู่มือ +
+     ความจำ" ทั้ง 3 อย่างต่อกันจริงแล้วผ่าน _build_user_turn_text() (page_text เป็น
+     ส่วนหนึ่งของทุก user turn อยู่แล้ว, manual_context จาก W6[B], memory_context +
+     long_term_context จาก W7[A])
+
+  งานอื่นที่เหลือ (W9-W14) ยังไม่ถึงกำหนดตาม timeline เดิม (สัปดาห์ 9-14) ไม่ใช่
+  "ยังไม่เสร็จ" ในความหมายที่ค้างจากแผนที่ควรทำไปแล้ว — ไม่อยู่ใน scope ของรอบนี้
+
+  แก้ W5[A] verify (2026-07-15): เพิ่ม guard ใน orchestrator.py::run_task() symmetric
+  กับ premature-false-finish guard เดิม (W4) แต่ฝั่ง true แทน —
+  finish_task(success=true) ที่เรียกเป็น action แรกสุดของ task (steps_taken=0) จะไม่
+  ถูกยอมรับทันที เตือนกลับเข้าบทสนทนาให้ตรวจสอบอีกครั้งก่อน (ไม่ block เด็ดขาด เผื่อ
+  goal สำเร็จอยู่แล้วตั้งแต่ page แรกจริงๆ เช่น "verify ว่าอยู่หน้า login" —
+  _MAX_PREMATURE_TRUE_FINISH_RETRIES=1 ครั้งก่อนยอมรับจริง ถ้ายังยืนยัน true อีก) —
+  เหตุผลที่ threshold แค่ 1 ครั้ง (น้อยกว่า false guard ที่ 2 ครั้ง) เพราะเคสนี้เสี่ยง
+  false-positive กับ goal ที่สำเร็จจริงตั้งแต่แรกมากกว่า ไม่อยากบังคับให้ต้องพิสูจน์
+  ซ้ำหลายรอบเกินจำเป็น
+
+  เพิ่ม result["final_page_state"] ใหม่ (ทุก path ที่ return: finish_task,
+  loop-detected, หมด max_steps, confirm_plan declined) = page_text ของ
+  get_snapshot() รอบสุดท้ายก่อนจบ loop — เป็นหลักฐานจริงจาก DOM ให้ผู้ประเมิน (เช่น
+  W12[B] eval script/human review ในอนาคต) เทียบกับ "message" ที่ LLM อ้างเอง ไม่ต้อง
+  เชื่อคำเคลมลอยๆ อย่างเดียวเหมือนก่อนหน้านี้ — *** ตั้งใจไม่ทำ automated success/fail
+  scoring แบบ goal-agnostic เต็มรูปแบบ (เช่น เทียบ DOM กับ rubric อัตโนมัติ) เพราะ
+  เกณฑ์ "สำเร็จ" ผูกกับแต่ละ goal ไม่เหมือนกัน ให้แค่หลักฐานดิบไว้ตรวจสอบเอง/eval
+  script อ่านต่อ ไม่ auto-judge ให้ ***
+
+  unit test ใหม่ 5 เคสใน test_orchestrator.py: finish_task(true) ที่ steps_taken=0
+  ถูกเตือนแล้วต้องยืนยันซ้ำก่อนยอมรับจริง, ยืนกราน true อีกครั้งหลังโดนเตือนแล้วต้อง
+  ยอมรับ (ไม่บังคับลองต่อไม่มีที่สิ้นสุด), fallback (tool_use_id ว่าง) ต้องยอมรับทันที
+  ไม่เตือน, finish_task(true) หลังทำ action จริงไปแล้ว (steps_taken>0) ต้องยอมรับทันที
+  ไม่โดน guard นี้เลย, result มี final_page_state ตรงกับ page_text ของ get_snapshot()
+  รอบสุดท้ายจริง — รวม test suite 163 เคส ผ่านหมด
+
+  *** รันจริงยืนยันบน saucedemo.com ผ่าน Gemini (headless): ตั้ง goal ที่สำเร็จอยู่
+  แล้วตั้งแต่หน้าแรก ("ยืนยันว่าอยู่หน้า login เฉยๆ ไม่ต้องกด/กรอกอะไร") — เห็น guard
+  ทำงานจริง: finish_task(true) ครั้งแรกถูกปฏิเสธ (steps_taken=0) โมเดลลอง wait (โดน
+  login-form guard เดิมปฏิเสธซ้ำเพราะ password ว่างอยู่) แล้ว goto ซ้ำหน้าเดิม (นับเป็น
+  step จริง 1 step) ก่อนเรียก finish_task(true) รอบสองสำเร็จ (steps_taken=1 แล้ว ผ่าน
+  guard ไป) — สรุปว่า guard ทำงานถูกต้องตามที่ออกแบบ (ไม่ยอมรับ zero-evidence claim
+  ทันที) แม้เส้นทางที่โมเดลเลือกแก้ปัญหาจะไม่ตรงเป๊ะกับที่คาดไว้ (คาดว่าจะแค่ยืนยันซ้ำ
+  ตรงๆ แต่ไปอ้อมผ่าน wait/goto ก่อน) — ตรงกับ pattern เดิมของ model compliance ที่
+  ไม่ persistent 100% ที่บันทึกไว้ตลอดโปรเจกต์นี้ ผลลัพธ์สุดท้ายยัง success=True ถูกต้อง
+  และ final_page_state ถูกเติมค่าจริง ***
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1066,7 +1325,9 @@
   W1 ┬ [A]  Finalize สถาปัตยกรรม + ตั้ง Repo/Branch
      │      + ลง Playwright & FastAPI (skeleton) ✅ เสร็จแล้ว
      ├ [B]  ลง ChromaDB + เตรียมชุดคู่มือทดสอบ + เขียน Scope/SRS ✅ เสร็จแล้ว
-     └ [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล (ร่วมกัน)
+     └ [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล (ร่วมกัน)  ✅ เสร็จแล้ว
+            (2026-07-15 — docs/SRS.md เติมเนื้อหาจริงแล้ว: saucedemo.com 3 หน้า/flow
+            + เกณฑ์วัดผล ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
 
   >> หมุดหมาย W1: รันโปรเจกต์เปล่าได้ทั้งคู่ + ตกลงเว็บทดสอบแล้ว
 
@@ -1079,8 +1340,11 @@
      │      indexed elements  (หัวใจ! ประหยัด token)  ✅ เสร็จแล้ว
      └ [B]  ออกแบบ ChromaDB schema + pipeline chunking คู่มือ  ✅ เสร็จแล้ว
 
-  W3 ┬ [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab  🔶 เริ่มแล้ว
-     │      (dropdown/scroll/error-handling เสร็จ, tab-switch ยังไม่ทำ)
+  W3 ┬ [A]  Browser actions: คลิก/พิมพ์/เลื่อน/dropdown/สลับ tab  ✅ เสร็จแล้ว
+     │      (ปิดจ็อบ 2026-07-15 — ตรวจโค้ดจริงพบว่าครบทุก action มาตั้งแต่ W4/W5
+     │      แล้ว (แยกเป็น actions.py ตามแผนเดิม) แค่ไม่เคยย้อนมาปิด checkbox + เพิ่ม
+     │      unit test ให้ switch_tab() ที่ขาดอยู่ — ดูรายละเอียดในสถานะความคืบหน้า
+     │      ด้านบน)
      └ [B]  Manual ingestion: PDF/DOCX/TXT → chunk → embed → เก็บ  ✅ เสร็จแล้ว
 
   W4 ┬ [A]  Agent Loop v1: Perceive→Plan→Act→Verify (เว็บง่าย 1 หน้า)  ✅ เสร็จแล้ว
@@ -1097,15 +1361,18 @@
             เลย เพราะ type พวกนี้ไม่อยู่ใน tool schema enum ที่ LLM เรียกได้ —
             แก้แล้ว ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน ***
 
-  W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  🔶 เริ่มแล้ว (2026-07-13)
-     │      (retry click/fill/select/check + timeout สั้นลง 3s — ยังไม่มี
-     │      verify ผล finish_task(success=true) เทียบกับ DOM จริง)
+  W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  ✅ เสร็จแล้ว (ปิดจ็อบ 2026-07-15)
+     │      (retry click/fill/select/check + timeout สั้นลง 3s เสร็จตั้งแต่
+     │      2026-07-13 — ส่วน "Verify" ที่ขาดอยู่ (finish_task(success=true) ที่ยัง
+     │      ไม่มีหลักฐานเลย) เพิ่ม guard symmetric กับฝั่ง false แล้ว + result มี
+     │      "final_page_state" ให้หลักฐานจริงจาก DOM ดูรายละเอียดในสถานะความคืบหน้า
+     │      ด้านบน)
      ├ [B]  Permission layer (ต่อ) + Human-in-the-loop  ✅ เสร็จแล้ว (ย้ายเสร็จ
-     
+
      │      จาก W4[B] ข้างบนแล้ว เพราะ merge เข้ามาไวกว่าแผน)
-     └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย  🔶 ทำ
-            end-to-end สำเร็จแล้วหลายรอบ (ดู W4[A]) + มี permission brake
-            แล้ว — เหลือ verify/retry ให้ครบตามหมุดหมาย
+     └ [★]  หมุดหมาย: Agent ทำ task end-to-end + มีเบรกความปลอดภัย  ✅ เสร็จแล้ว
+            (end-to-end สำเร็จหลายรอบ (ดู W4[A]) + permission brake (W4[B]/W7[B])
+            + verify/retry ครบแล้ว (W5[A] ด้านบน))
 
   >> หมุดหมาย W5 (สำคัญที่สุด): ถ้าถึงตรงนี้ทันเวลา = ที่เหลือรอด
 
@@ -1114,9 +1381,11 @@
   เฟส 2 : ความรู้จากคู่มือ + ความจำ  (สัปดาห์ 6-8)
 ================================================================
 
-  W6 ┬ [A]  Planner prompt: รวม page state + คู่มือ + ความจำ  🔶 ทำแค่ส่วนคู่มือ
-     │      (=W6[B] ด้านล่าง) ส่วนความจำยังไม่ได้ทำเพิ่ม — ดูรายละเอียดในสถานะ
-     │      ความคืบหน้าด้านบน (W6[B])
+  W6 ┬ [A]  Planner prompt: รวม page state + คู่มือ + ความจำ  ✅ เสร็จแล้ว (ปิดจ็อบ
+     │      2026-07-15 — ตอนบันทึกครั้งแรกทำแค่ส่วนคู่มือ (=W6[B]) ส่วนความจำยังไม่
+     │      ได้ทำ แต่ถูกทำครบจริงแล้วใน W7[A] (short-term/long-term memory ป้อนกลับ
+     │      เข้า prompt ทุก step) แค่ไม่เคยย้อนมาปิด checkbox ตรงนี้ — ตอนนี้ทั้ง 3
+     │      อย่าง (page state/คู่มือ/ความจำ) รวมกันจริงผ่าน _build_user_turn_text())
      └ [B]  เชื่อม RAG เข้า Planner: query คู่มือทุกครั้งที่วางแผน  ✅ เสร็จแล้ว
             (2026-07-13) — retriever.retrieve() ต่อเข้า per-step loop ของ
             orchestrator จริงแล้ว (ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
@@ -1134,7 +1403,11 @@
             การกด Checkout ได้จริงโดยไม่ false-positive กับ action อื่น ดูรายละเอียด
             เต็มในสถานะความคืบหน้าด้านบน)
 
-  W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)
+  W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)  ✅ เสร็จรอบแรกแล้ว (2026-07-15
+            — python run.py integration พิสูจน์ 3 สมองทำงานร่วมกันจริง, จูน
+            SYSTEM_PROMPT แก้ 2 บั๊กพฤติกรรม (goto ซ้ำหน้าเดิม, สับสนเรื่อง
+            human-in-the-loop approval) ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน —
+            ยังไม่หายขาด 100% เพราะข้อจำกัดโมเดล ไม่ใช่บั๊กโค้ด)
 
   >> หมุดหมาย W8: AI อ่านหน้าเว็บ + ใช้คู่มือ + จำได้ = ครบ 3 สมอง
 

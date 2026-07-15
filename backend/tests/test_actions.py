@@ -108,3 +108,47 @@ async def test_execute_retries_needs_confirmation_alias_action():
     assert result.action == "submit(3)"
     assert mock_page.click.await_count == 2
     ask_user_func.assert_awaited_once()  # permission check ถามแค่ครั้งเดียว ไม่ถามซ้ำต่อ retry
+
+
+# W3[A] (ปิดจ็อบ 2026-07-15): switch_tab() implement ไว้แล้วตั้งแต่ก่อนหน้านี้ (dispatch
+# ผ่าน execute()/enum ของ llm.py ครบ) แต่ไม่เคยมี unit test เลย — เพิ่มให้ครบตาม
+# มาตรฐานเดียวกับ action อื่นในไฟล์นี้
+
+
+@pytest.mark.asyncio
+async def test_execute_switch_tab_succeeds_when_tab_exists():
+    mock_target_page = AsyncMock()
+    mock_other_page = AsyncMock()
+    mock_page = AsyncMock()
+    mock_page.context.pages = [mock_other_page, mock_target_page]
+
+    result = await execute(mock_page, {"type": "switch_tab", "tab_index": 1})
+
+    assert result.success is True
+    assert result.action == "switch_tab(1)"
+    mock_target_page.bring_to_front.assert_awaited_once()
+    mock_other_page.bring_to_front.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_switch_tab_fails_when_tab_index_out_of_range():
+    mock_page = AsyncMock()
+    mock_page.context.pages = [AsyncMock()]  # มีแค่ 1 tab (index 0)
+
+    result = await execute(mock_page, {"type": "switch_tab", "tab_index": 5})
+
+    assert result.success is False
+    assert "มีแค่ 1 tab" in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_does_not_retry_switch_tab_on_failure():
+    """switch_tab ไม่ผ่าน _dispatch_with_retry (เหมือน goto/scroll/go_back/wait) —
+    fail แล้วต้อง fail ทันทีไม่ retry"""
+    mock_page = AsyncMock()
+    mock_page.context.pages = []  # ไม่มี tab ให้สลับเลย
+
+    result = await execute(mock_page, {"type": "switch_tab", "tab_index": 0})
+
+    assert result.success is False
+    assert "มีแค่ 0 tab" in result.message
