@@ -192,6 +192,14 @@ async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
 # adapted จาก PR "permission-ab" — จุดต่างจาก PR เดิม: ask_user_func ถูกใช้งานจริง
 # (PR เดิมรับ param นี้มาแต่ไม่ได้เรียกใช้เลย ยังเรียก input() ตรงๆ เสมอ)
 # ------------------------------------------------------------
+
+# ข้อความนี้เป็น "สัญญาณ" เดียวที่บ่งบอกว่า action ถูกมนุษย์ปฏิเสธจริง (ต่างจาก failure
+# ทั่วไป เช่น timeout/index ผิด/BLOCKED) — ดึงเป็น constant แยกแทนที่จะ hardcode ข้อความ
+# ซ้ำในหลายที่ เพราะ memory.py::ShortTermMemory ต้องเช็คข้อความนี้เพื่อแยก "refusal"
+# ออกจาก failure อื่นๆ (ดู rejected_actions_summary())
+REJECTED_BY_USER_MESSAGE = "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)"
+
+
 async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc]) -> bool:
     if ask_user_func is not None:
         return bool(await ask_user_func(cmd))
@@ -241,7 +249,7 @@ async def execute(
     if risk == ActionRisk.NEEDS_CONFIRMATION:
         approved = await _confirm_action(cmd, ask_user_func)
         if not approved:
-            return ActionResult(False, f"{t}", "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)")
+            return ActionResult(False, f"{t}", REJECTED_BY_USER_MESSAGE)
 
     try:
         # click/fill/select/check ผ่าน retry wrapper (W5) เพราะพังบ่อยจาก DOM ยังไม่นิ่ง

@@ -33,6 +33,21 @@ _PREMATURE_FALSE_FINISH_NUDGE = (
     "ไม่ได้จริง ค่อยเรียก finish_task(success=false) อีกครั้ง"
 )
 
+# W5[A] "Verify" (2026-07-15): W5 เดิมทำแค่ "Retry" (actions.py::_dispatch_with_retry)
+# ไม่มี "Verify" เลย — ช่องโหว่ symmetric กับ guard ด้านบน: LLM อาจเรียก
+# finish_task(success=true) เป็น action แรกสุดโดยไม่ทำอะไรเลย (steps_taken=0) แล้ว
+# ระบบจะยอมรับทันทีโดยไม่มีการตรวจสอบใดๆ เลย (ต่างจาก false ที่มี guard คู่กันอยู่แล้ว)
+# — SYSTEM_PROMPT ขอไว้แล้วว่า finish_task(true) ต้องมีหลักฐานจาก indexed elements
+# แต่ไม่เคยมีการบังคับด้วยโค้ดเลย ไม่ block เด็ดขาด (บาง goal อาจสำเร็จอยู่แล้วตั้งแต่
+# page แรกจริงๆ เช่น "verify ว่าอยู่หน้า login") แค่ให้ยืนยันอีกครั้งก่อนเหมือนกัน
+_MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
+_PREMATURE_TRUE_FINISH_NUDGE = (
+    "การเรียก finish_task(success=true) นี้ยังไม่มี action ใดๆ เกิดขึ้นเลยใน task นี้ "
+    "(steps_taken=0) — ก่อนยืนยัน success ให้ตรวจสอบอีกครั้งว่า indexed elements ล่าสุด "
+    "มีหลักฐานชัดเจนจริงๆ ว่า goal สำเร็จแล้ว ถ้าใช่จริง เรียก finish_task(success=true) "
+    "อีกครั้งได้เลย ถ้าไม่แน่ใจ ให้ลองทำ action ที่เกี่ยวข้องกับ goal ก่อน"
+)
+
 # W5: loop-detection guard — บางโมเดล (เจอกับ Llama บน Groq) ถึงจะถูกเตือนแล้วก็ยัง
 # วนเรียก browser_action เดิมเป๊ะๆ ซ้ำๆ (dict เดียวกันทุก field) ไม่ว่าจะสำเร็จหรือ fail
 # ก็ตาม แปลว่าไม่มีความคืบหน้าจริง — กันไว้ไม่ให้เสีย step/token ไปเรื่อยๆ จนหมด max_steps
@@ -44,20 +59,50 @@ _MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
 # go_back -> click -> go_back -> click ซ้ำไปเรื่อยๆ) ซึ่งไม่ตรงเงื่อนไข "เดิมเป๊ะๆ
 # ติดกัน" ของ guard เดิมเลยไม่เคย trigger — เพิ่ม guard ใหม่จับ pattern คาบ 2 (ABAB)
 # โดยเฉพาะ แยกจาก guard เดิมที่จับคาบ 1 (AAAA) เพื่อไม่ให้ 2 เงื่อนไขทับซ้อนกันเอง
-_MAX_ALTERNATING_CYCLES = 2  # ครบ 2 รอบ A-B-A-B (รวม 4 action) ถือว่าติด loop
-_ALTERNATING_WINDOW = _MAX_ALTERNATING_CYCLES * 2
+#
+# (2026-07-15) generalize เพิ่มเติม: user ถามว่าถ้าโมเดลวนเป็นคาบ 3+ แทน (เช่น
+# click ปุ่ม A -> scroll -> fill ค่า B -> click ปุ่ม A -> scroll -> fill ค่า B ...
+# ที่ไม่ได้ทำให้หน้าเว็บเปลี่ยนสเตทจริง) guard เดิมที่เช็คแค่คาบ 2 ตรงๆ จะจับไม่ได้
+# เลย (มีเทสต์ test_run_task_loop_guard_does_not_trigger_for_three_action_cycle
+# ที่เดิมยืนยันไว้ตรงๆ ว่า "ยังไม่ scope ไว้") — generalize
+# _is_alternating_pattern (เดิมเช็คเฉพาะคาบ 2) เป็น _is_repeating_cycle(history,
+# period) เช็คได้ทุกคาบตั้งแต่ 2 ถึง _MAX_CYCLE_PERIOD แทน (คาบ 1 ยังคงแยกไปใช้
+# _MAX_CONSECUTIVE_IDENTICAL_ACTIONS เดิมเหมือนเดิม เพราะ threshold หลวมกว่า — คาบ 1
+# trigger ตั้งแต่ซ้ำครั้งที่ 3 ไม่ต้องรอครบ 2 รอบเต็มเหมือนคาบอื่น) — เลือก cap ที่ 4
+# เพราะคาบยาวกว่านี้ทั้งเจอได้ยากขึ้นเรื่อยๆ ในทางปฏิบัติ และต้องใช้ window ยาวขึ้น
+# เรื่อยๆ กว่าจะยืนยัน (period*2 action) ทำให้กว่าจะ trigger ก็เสีย step ไปเยอะแล้ว
+# ไม่คุ้มจะเสีย step ต่อไปอีกเพื่อรอยืนยัน pattern ที่ยาวขึ้น
+_MAX_CYCLE_PERIOD = 4
+_MIN_CYCLE_REPEATS = 2  # ทุกคาบ (2 ขึ้นไป) ต้องเห็นครบกี่รอบถึงจะถือว่าติด loop
+_MAX_CYCLE_WINDOW = _MAX_CYCLE_PERIOD * _MIN_CYCLE_REPEATS
 
 
-def _is_alternating_pattern(history: list[dict]) -> bool:
-    """เช็คว่า _ALTERNATING_WINDOW action ล่าสุดเป็น A-B-A-B-... สลับกันแค่ 2 ค่า
-    ไปเรื่อยๆ หรือไม่ — ไม่นับกรณี A กับ B เป็นค่าเดียวกัน (นั่นคือ AAAA ซึ่งมี
-    _MAX_CONSECUTIVE_IDENTICAL_ACTIONS ด้านบนจับแยกไปแล้ว กันสอง guard ทับซ้อนกัน)"""
-    if len(history) < _ALTERNATING_WINDOW:
+def _is_repeating_cycle(window: list[dict], period: int) -> bool:
+    """เช็คว่า window (ต้องยาวเท่ากับ period * _MIN_CYCLE_REPEATS พอดี) เป็นการวนซ้ำ
+    คาบ `period` จริงหรือไม่ (เช่น period=3: A-B-C-A-B-C) — ต้องมีอย่างน้อย 2 ค่าที่
+    ต่างกันในคาบเดียว ไม่งั้นคาบ p ของ [A, A, ..., A] จะ match ซ้ำกับคาบ 1 ที่มี guard
+    แยกจับไปแล้วด้านบน (กันสอง guard ทับซ้อนกันเหมือนที่ตั้งใจไว้กับ ABAB เดิม)"""
+    if len(window) != period * _MIN_CYCLE_REPEATS:
         return False
-    a, b = history[0], history[1]
-    if a == b:
+    cycle = window[:period]
+    distinct: list[dict] = []
+    for item in cycle:
+        if item not in distinct:
+            distinct.append(item)
+    if len(distinct) < 2:
         return False
-    return all(history[i] == (a if i % 2 == 0 else b) for i in range(_ALTERNATING_WINDOW))
+    return all(window[i] == cycle[i % period] for i in range(len(window)))
+
+
+def _detect_repeating_cycle_period(recent_actions: list[dict]) -> Optional[int]:
+    """เช็คคาบ 2 ถึง _MAX_CYCLE_PERIOD ตามลำดับ (คาบสั้นก่อน) บน recent_actions ที่
+    ตัดมาแล้ว ("recent_actions[-window:]" ต่อคาบ) คืนคาบแรกที่เจอ หรือ None ถ้าไม่มี
+    คาบไหน match เลย"""
+    for period in range(2, _MAX_CYCLE_PERIOD + 1):
+        window = period * _MIN_CYCLE_REPEATS
+        if _is_repeating_cycle(recent_actions[-window:], period):
+            return period
+    return None
 
 # W6[B]: จำนวน chunk คู่มือสูงสุดที่จะดึงมาแนบให้ LLM เห็นทุก step ของ per-step loop —
 # ดึงใหม่ทุก step ตาม page_text ปัจจุบัน (ไม่ใช้กับ generate_plan ซึ่งเป็นแค่แผนคร่าวๆ
@@ -278,6 +323,13 @@ class Orchestrator:
         _dispatch_with_retry) เฉพาะ click/fill/select/check — ถ้ายัง fail อยู่หลัง retry
         ครบ ผลลัพธ์สุดท้ายถึงจะถูกส่งกลับเข้าบทสนทนาให้ LLM เห็นแล้วตัดสินใจเองว่าจะลอง
         ทางอื่นยังไงในรอบถัดไป (เช่น index ผิดจริง ไม่ใช่แค่ DOM ยังไม่นิ่ง)
+
+        W5 (verify, 2026-07-15): finish_task(success=true) ที่เรียกโดยยังไม่ทำ action
+        ใดๆ เลย (steps_taken=0) จะไม่ถูกยอมรับทันที เตือนให้ยืนยันอีกครั้งก่อน (symmetric
+        กับ guard ที่มีอยู่แล้วสำหรับ finish_task(false) ก่อนเวลาอันควร) — ผลลัพธ์ที่คืน
+        กลับมามี key "final_page_state" เพิ่มด้วยเสมอ (page_text ของ get_snapshot() รอบ
+        สุดท้ายก่อนจบ loop) ให้หลักฐานจริงจาก DOM เทียบกับ "message" ที่ LLM อ้างได้ ไม่
+        ต้องเชื่อคำเคลมของ LLM ลอยๆ อย่างเดียว
         """
         is_headless = settings.browser_headless if headless is None else headless
         resolved_provider = provider or settings.llm_provider
@@ -292,11 +344,13 @@ class Orchestrator:
         steps_taken = 0
         total_usage = llm.TokenUsage()
         premature_false_finish_count = 0
+        premature_true_finish_count = 0
         premature_login_skip_count = 0
+        final_page_text = ""
         plan_text: Optional[str] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
-        recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern สลับกัน (ABAB)
+        recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
         # W7[A] (context compaction, Gemini เท่านั้น): [(absolute_step_number,
         # len(messages) หลังจบ step นั้น), ...] — ใช้หา cut point ที่ปลอดภัย
         # (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
@@ -332,10 +386,16 @@ class Orchestrator:
                         "history": self.memory.recent(max_steps),
                         "tokens": _tokens_dict(total_usage),
                         "plan": plan_text,
+                        "final_page_state": plan_page_text,
                     }
 
             for _ in range(max_steps):
                 elements, page_text = await get_snapshot(page)
+                # W5[A] verify: เก็บ page_text ล่าสุดไว้เป็นหลักฐานจริงจาก DOM ตอนจบ
+                # task (ทุก path — finish_task/loop-detected/หมด max_steps) แนบไปกับ
+                # result ให้ผู้ประเมิน (เช่น W12[B] eval script/human review) เทียบกับ
+                # message ที่ LLM อ้างได้เอง ไม่ต้องเชื่อคำเคลมของ LLM ลอยๆ อย่างเดียว
+                final_page_text = page_text
 
                 # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step (retrieve()
                 # ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error) — ใช้ to_thread เพราะ
@@ -404,6 +464,33 @@ class Orchestrator:
                             f"ห้ามกดยอมแพ้จนกว่าจะลองพยายาม Action กับส่วนที่เหลือ ดูลิสต์ใหม่อีกครั้งแล้วทำต่อ!",
                         ))
                         continue
+
+                    # W5[A] verify: symmetric กับ guard ด้านบนแต่ฝั่ง true — เรียก
+                    # finish_task(success=true) เป็น action แรกสุด (steps_taken=0) ยัง
+                    # ไม่มีหลักฐานว่าทำอะไรจริงเลย ให้ยืนยันอีกครั้งก่อนยอมรับ (ไม่ block
+                    # เด็ดขาด เผื่อ goal สำเร็จอยู่แล้วตั้งแต่ page แรกจริงๆ)
+                    if (
+                        claimed_success
+                        and tool_use_id
+                        and steps_taken == 0
+                        and premature_true_finish_count < _MAX_PREMATURE_TRUE_FINISH_RETRIES
+                    ):
+                        premature_true_finish_count += 1
+                        if verbose:
+                            print(
+                                f"[finish_task(true) ไม่ยอมรับทันที {premature_true_finish_count}/"
+                                f"{_MAX_PREMATURE_TRUE_FINISH_RETRIES}] message={tool_input.get('message', '')}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _PREMATURE_TRUE_FINISH_NUDGE)
+                        messages.append(_build_nudge_message(
+                            resolved_provider,
+                            f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(true) โดยยังไม่ทำ action ใดๆ เลย "
+                            f"ต้องมีหลักฐานชัดเจนจาก indexed elements ปัจจุบันว่าเป้าหมาย '{goal}' สำเร็จแล้ว "
+                            f"จริงๆ ก่อนยืนยันอีกครั้ง",
+                        ))
+                        continue
+
                     success = claimed_success
                     final_message = tool_input.get("message", "")
                     if verbose:
@@ -462,19 +549,24 @@ class Orchestrator:
                         print(f"[loop-detected] {final_message}", flush=True)
                     break
 
-                # loop-detection (2026-07-13): จับ pattern สลับ 2 action ไปมา (คาบ 2
-                # เช่น go_back -> click -> go_back -> click) ที่ guard ด้านบน (คาบ 1)
-                # จับไม่ได้เพราะ action แต่ละตัวไม่ได้ "เดิมเป๊ะๆ ติดกัน" — เก็บ history
-                # แค่ _ALTERNATING_WINDOW ตัวล่าสุดพอ ไม่ต้องเก็บทั้ง task
+                # loop-detection (2026-07-13, generalize 2026-07-15): จับ pattern วนซ้ำ
+                # เป็นคาบ (คาบ 2 เช่น go_back -> click -> go_back -> click, คาบ 3 เช่น
+                # click A -> scroll -> fill B -> click A -> scroll -> fill B, ...) ที่
+                # guard ด้านบน (คาบ 1) จับไม่ได้เพราะ action แต่ละตัวไม่ได้ "เดิมเป๊ะๆ
+                # ติดกัน" — เก็บ history แค่ _MAX_CYCLE_WINDOW ตัวล่าสุดพอ ไม่ต้องเก็บ
+                # ทั้ง task (ดู _detect_repeating_cycle_period()/_is_repeating_cycle()
+                # ด้านบนสุดของไฟล์)
                 recent_actions.append(tool_input)
-                if len(recent_actions) > _ALTERNATING_WINDOW:
+                if len(recent_actions) > _MAX_CYCLE_WINDOW:
                     recent_actions.pop(0)
 
-                if _is_alternating_pattern(recent_actions):
+                detected_period = _detect_repeating_cycle_period(recent_actions)
+                if detected_period is not None:
                     success = False
+                    cycle_desc = " -> ".join(str(a) for a in recent_actions[-detected_period:])
                     final_message = (
-                        f"หยุด task: agent วนสลับ 2 action ซ้ำๆ "
-                        f"({recent_actions[-2]} <-> {recent_actions[-1]}) โดยไม่มีความคืบหน้า"
+                        f"หยุด task: agent วน action ซ้ำเป็นคาบ {detected_period} "
+                        f"({cycle_desc}) โดยไม่มีความคืบหน้า"
                     )
                     if verbose:
                         print(f"[loop-detected] {final_message}", flush=True)
@@ -567,6 +659,7 @@ class Orchestrator:
                 "history": self.memory.recent(max_steps),
                 "tokens": _tokens_dict(total_usage),
                 "plan": plan_text,
+                "final_page_state": final_page_text,
             }
         finally:
             await browser.close()

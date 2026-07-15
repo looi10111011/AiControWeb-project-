@@ -174,7 +174,7 @@ async def test_next_action_passes_memory_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = kwargs["messages"][-1]["content"]
     assert "[FAIL] boom" in user_content
-    assert "อย่าทำซ้ำแนวทางเดิม" in user_content
+    assert "Action ที่เคยลองแล้วล้มเหลว" in user_content
 
 
 @pytest.mark.asyncio
@@ -611,7 +611,7 @@ def test_build_user_turn_text_includes_memory_section_when_provided():
 
     assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
     assert "[FAIL] boom" in result
-    assert "อย่าทำซ้ำแนวทางเดิม" in result
+    assert "Action ที่เคยลองแล้วล้มเหลว" in result
 
 
 def test_build_user_turn_text_includes_both_manual_and_memory_sections():
