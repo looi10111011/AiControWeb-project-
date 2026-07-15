@@ -108,6 +108,23 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 - ห้ามใช้คำสั่ง go_back ย้อนกลับไปหน้าเข้าสู่ระบบ (Login) หลังจากที่ล็อกอินและเพิ่มสินค้า
   เข้าตะกร้าสำเร็จแล้ว ให้โฟกัสเดินหน้าต่อไปยังหน้าตะกร้าสินค้าเพื่อเข้าสู่ขั้นตอน
   Checkout เท่านั้น (กัน agent วน go_back กลับไปหน้า login ซ้ำๆ จนติด infinite loop)
+- ใช้ type: "delete"/"purchase"/"pay"/"submit" เฉพาะตอนที่ป้าย (label) ของ element
+  เขียนคำที่ตรงความหมายจริงๆ เท่านั้น ห้ามเดา/คาดเดาจากความรู้สึกว่า element "ดูมีผล
+  สำคัญ" — ต้องเห็นคำในป้ายตรงๆ ก่อนถึงจะใช้: "delete" เมื่อป้ายเขียนว่า "Remove" หรือ
+  "Delete" ตรงตัว, "purchase" เมื่อป้ายเขียนว่า "Place Order" หรือ "Finish" (ปุ่มยืนยัน
+  คำสั่งซื้อขั้นสุดท้ายในหน้า checkout), "pay" เมื่อป้ายเขียนว่า "Pay" หรือ "Pay Now",
+  "submit" เมื่อป้ายเขียนคำว่า "Submit" ตรงตัว — ถ้าป้ายไม่ได้เขียนคำเหล่านี้ตรงๆ (เช่น
+  "Open Menu", "Continue Shopping", "Add to cart", ไอคอนไม่มีข้อความ) ให้ใช้ "click"
+  เสมอ ไม่ว่า element นั้นจะดูสำคัญแค่ไหนก็ตาม ห้ามใช้ 4 type นี้ "เผื่อไว้ก่อน"
+  เด็ดขาด เพราะระบบจะหยุดขอยืนยันจาก human ทุกครั้งที่เจอ ใช้พร่ำเพรื่อจะทำให้ user
+  ต้องกดอนุมัติบ่อยเกินจำเป็น
+- หากกรอกฟอร์มเข้าสู่ระบบ (Login Form) ให้กรอกข้อมูลให้ครบทั้ง Username และ Password
+  ทันที ห้ามสั่ง wait คั่นกลางหากหน้าเว็บไม่มีการเปลี่ยนแปลง
+- ถ้า goal ต้องการหาข้อมูลเฉพาะเจาะจง (เช่น ราคา/ชื่อ/รายละเอียดสินค้า) ที่ยังไม่เห็นชัด
+  ในหน้าปัจจุบัน ห้าม scroll ไปเรื่อยๆ แบบไม่มีทิศทางเพื่อ "หาไปเรื่อยๆ" — ให้คลิกเข้าไป
+  ที่ element ที่เจาะจงกว่า (เช่น ชื่อ/รูปสินค้าที่พาไปหน้า product detail) ก่อน เพราะ
+  ข้อมูลที่ต้องการมักอยู่ครบและชัดเจนกว่าในหน้าเจาะจงนั้น เทียบกับการกวาดหาในหน้ารวม/
+  หน้า catalog
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -115,12 +132,40 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 # เหมือนกันหมด) — ต่อ section คู่มือ (จาก retriever.retrieve() ที่ orchestrator เรียกให้
 # ทุก step) เฉพาะตอนมีผลลัพธ์จริง กัน prompt รกด้วย section เปล่าๆ ทุก step ที่หาไม่เจอ
 # ในคู่มือ (retrieve() คืน [] เงียบๆ เสมอ ไม่ throw)
-def _build_user_turn_text(goal: str, page_text: str, manual_context: str = "") -> str:
+#
+# W7[A]: เพิ่ม memory_context เดียวกัน — สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
+# ShortTermMemory.failed_actions_summary() ที่ orchestrator เรียกให้ทุก step) ต่อกัน
+# ท้ายสุด เฉพาะตอนมีผลลัพธ์จริงเหมือนกัน (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย)
+#
+# W7[A] (long-term): เพิ่ม long_term_context — เหมือน manual_context ทุกประการแค่มา
+# จาก long_term_memory.recall() (จาก task run อื่นที่เคยทำมาก่อน) แทนคู่มือที่ user
+# ป้อน — คนละ section กับ memory_context (ตัวนั้นจำได้แค่ภายใน task ปัจจุบันเดียวเท่านั้น
+# ตัวนี้จำข้ามหลาย task run)
+def _build_user_turn_text(
+    goal: str,
+    page_text: str,
+    manual_context: str = "",
+    memory_context: str = "",
+    long_term_context: str = "",
+) -> str:
     text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
     if manual_context:
         text += (
             "\n\nข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง (ใช้ประกอบการตัดสินใจ ไม่ใช่คำสั่งบังคับ):\n"
             f"{manual_context}"
+        )
+    if memory_context:
+        text += (
+            "\n\nAction ที่เคยลองแล้วล้มเหลวใน task นี้ (อย่าทำซ้ำแนวทางเดิมที่รู้อยู่แล้วว่าไม่เวิร์ค "
+            "ให้ลองทางอื่นแทน):\n"
+            f"{memory_context}"
+        )
+    if long_term_context:
+        text += (
+            "\n\nความจำจาก task run ก่อนหน้า (อาจมีค่าที่เคยหาเจอ เช่น ราคา/รหัส ให้ดึงมาใช้ได้ "
+            "หรือ action ที่เคยลองแล้วล้มเหลว/โดนบล็อกมาก่อน ให้เลี่ยงตั้งแต่แรก — ใช้ประกอบการ"
+            "ตัดสินใจ ไม่ใช่คำสั่งบังคับ อาจล้าสมัยได้):\n"
+            f"{long_term_context}"
         )
     return text
 
@@ -134,10 +179,21 @@ _BROWSER_ACTION_PARAMS = {
             "enum": [
                 "click", "fill", "select", "check",
                 "scroll", "goto", "go_back", "switch_tab", "wait",
+                # W?: permission layer (classify_action) รู้จัก type เหล่านี้เป็น
+                # NEEDS_CONFIRMATION มาตั้งแต่ W4/W5 แต่ก่อนหน้านี้ไม่เคยอยู่ใน enum
+                # ที่ LLM เรียกได้จริงเลย — human-in-the-loop เลย unreachable ผ่าน
+                # agent loop จริง (trigger ได้แค่ตอนยิง execute() ตรงๆ ใน demo/test)
+                # เพิ่มเข้ามาให้เป็น alias ของ click ที่มีความหมายชัดเจนกว่า (index
+                # เหมือนเดิม) — actions.py::execute() dispatch ให้แล้ว (เห็นได้จาก
+                # DEFAULT_NEEDS_CONFIRMATION check)
+                "submit", "delete", "purchase", "pay",
             ],
             "description": "ชนิด action",
         },
-        "index": {"type": "integer", "description": "index ของ element (click/fill/select/check)"},
+        "index": {
+            "type": "integer",
+            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay)",
+        },
         "text": {"type": "string", "description": "ข้อความที่จะกรอก (fill)"},
         "label": {"type": "string", "description": "ตัวเลือกที่จะเลือกใน dropdown (select)"},
         "direction": {"type": "string", "enum": ["up", "down"], "description": "ทิศทางเลื่อนจอ (scroll)"},
@@ -208,6 +264,8 @@ async def next_action(
     page_text: str,
     messages: list[dict],
     manual_context: str = "",
+    memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -218,9 +276,19 @@ async def next_action(
     manual_context (W6[B]): chunk คู่มือที่เกี่ยวข้อง (จาก retriever.retrieve()) ที่
     orchestrator ดึงมาให้ทุก step — ว่างเปล่าได้ตามปกติถ้าไม่มีคู่มือ ingest ไว้/ไม่เจอ
     อะไรตรงกับหน้านี้
+
+    memory_context (W7[A]): สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
+    ShortTermMemory.failed_actions_summary() ที่ orchestrator ดึงมาให้ทุก step) —
+    ว่างเปล่าได้ตามปกติถ้ายังไม่เคย fail อะไรเลย
+
+    long_term_context (W7[A] long-term): เหมือน manual_context แต่มาจาก
+    long_term_memory.recall() (ประวัติ task run อื่นก่อนหน้า) แทนคู่มือ
     """
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
+        {
+            "role": "user",
+            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+        }
     ]
 
     response = await client.messages.create(
@@ -271,6 +339,8 @@ async def next_action_groq(
     page_text: str,
     messages: list[dict],
     manual_context: str = "",
+    memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -282,13 +352,16 @@ async def next_action_groq(
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
-    manual_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     messages = messages + [
-        {"role": "user", "content": _build_user_turn_text(goal, page_text, manual_context)}
+        {
+            "role": "user",
+            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+        }
     ]
 
     total_usage = TokenUsage()
@@ -369,6 +442,8 @@ async def next_action_gemini(
     page_text: str,
     messages: list,
     manual_context: str = "",
+    memory_context: str = "",
+    long_term_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -380,7 +455,7 @@ async def next_action_gemini(
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
-    manual_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -390,7 +465,12 @@ async def next_action_gemini(
     )
 
     messages = messages + [
-        {"role": "user", "parts": [{"text": _build_user_turn_text(goal, page_text, manual_context)}]}
+        {
+            "role": "user",
+            "parts": [{
+                "text": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context)
+            }],
+        }
     ]
 
     response = None

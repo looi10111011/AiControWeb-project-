@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-13)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-15)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -472,6 +472,444 @@
               มากขึ้น) แต่ assertion เดิม (len(chunks) == 5) ยังไม่ได้อัปเดตตาม —
               ไม่ใช่งานที่ทำรอบนี้ ปล่อยไว้ก่อน
 
+              แก้บั๊ก: Permission layer NEEDS_CONFIRMATION ต่อกับ agent loop จริง
+              ไม่ได้เลยตั้งแต่ต้น (2026-07-13):
+              user ขอให้ "เชื่อม permission layer เข้ากับ agent loop จริงใน
+              orchestrator.py" — ตรวจโค้ดแล้วพบว่าฝั่ง wiring จริงๆ ต่อกันอยู่แล้ว
+              ตั้งแต่ W4/W5 (orchestrator.py เรียก execute(page, tool_input,
+              ask_user_func=ask_user_func) ทุก step, execute() เช็ค
+              classify_action() ก่อน dispatch เสมอ) — *** แต่เจอบั๊กจริงที่ทำให้
+              wiring นี้ใช้งานไม่ได้ผลในทางปฏิบัติมาตลอด ***: DEFAULT_NEEDS_
+              CONFIRMATION = {"submit","delete","purchase","pay"} ใน
+              permission/rules.py ไม่เคยอยู่ใน enum ของ _BROWSER_ACTION_PARAMS
+              (llm.py) ที่ LLM เรียกได้จริงเลย (enum มีแค่ click/fill/select/
+              check/scroll/goto/go_back/switch_tab/wait) แปลว่า LLM ไม่มีทาง
+              เรียก type="purchase"/"delete"/ฯลฯ ได้จริง — human-in-the-loop
+              confirmation gate เลย unreachable ผ่าน agent loop จริงมาตลอด
+              trigger ได้แค่ตอนเรียก execute() ตรงๆ (เช่น run.py permission demo/
+              test_perm.py) ไม่ใช่ผ่าน LLM จริง
+
+              ถามผู้ใช้ 2 ทางแก้: (A) เพิ่ม type เหล่านี้เข้า tool schema ให้ LLM
+              เรียกจริงได้ หรือ (B) ให้ classify_action() เช็คจาก label ของปุ่ม
+              แทน (ต้องพึ่งหลายไฟล์กว่า) — เลือกทาง A
+
+              แก้: เพิ่ม "submit"/"delete"/"purchase"/"pay" เข้า enum ของ
+              _BROWSER_ACTION_PARAMS["properties"]["type"] ใน llm.py (ใช้ dict
+              เดียวกันทั้ง 3 provider — Anthropic/Groq/Gemini เห็น type ใหม่พร้อม
+              กันจากจุดแก้เดียว ไม่ต้องแก้แยกไฟล์) + เพิ่มกติกาใหม่ใน SYSTEM_PROMPT
+              สอน LLM ว่าเมื่อไหร่ควรใช้ type ไหนแทน "click" ธรรมดา (delete=ปุ่ม
+              ลบ/เอาออก, purchase=ปุ่มยืนยันคำสั่งซื้อขั้นสุดท้าย, pay=ปุ่มชำระเงิน,
+              submit=ปุ่ม submit ฟอร์มสำคัญอื่นๆ) — actions.py::execute() dispatch
+              ให้ 4 type นี้อยู่แล้วตั้งแต่ W4/W5 (เป็น alias ของ click ที่ผ่าน
+              permission check ก่อน) ไม่ต้องแก้ actions.py เลย
+
+              unit test ใหม่ 4 เคส: 1 ใน test_llm.py (ยืนยันว่า enum มีครบ 4 type)
+              + 3 ใน test_orchestrator.py เป็น integration test ตัวใหม่ที่ไม่เคยมี
+              มาก่อน (ทุก test เดิมของ orchestrator mock execute() ทิ้งไปเลย ไม่
+              เคยพิสูจน์ว่า permission layer ทำงานผ่าน loop จริงได้) — ปล่อยให้
+              execute() ตัวจริงรันกับ mock_page (AsyncMock เฉยๆ ไม่ raise) แทน:
+              purchase ที่ ask_user_func อนุมัติ -> dispatch จริงสำเร็จ, delete ที่
+              ask_user_func ปฏิเสธ -> ไม่ dispatch จริง บันทึกผลว่าถูกปฏิเสธ, goto
+              ไปโดเมนบล็อก -> ไม่เรียก ask_user_func เลยด้วยซ้ำ (ต่างจาก
+              NEEDS_CONFIRMATION ที่ต้องถาม) — รวม test suite 85 เคส ผ่าน 84
+              (เคส fail เดิมจาก manual_test.txt ด้านบน ไม่เกี่ยวกัน)
+
+              ยืนยันจริงด้วย classify_action() ตรงๆ ว่า submit/delete/purchase/pay
+              -> NEEDS_CONFIRMATION, click -> SAFE, goto โดเมนบล็อก -> BLOCKED
+              ทั้งหมดตรงตามที่คาด *** ยังไม่เคยรันจริงผ่าน LLM จริงเพื่อยืนยันว่า
+              โมเดลจะเลือกใช้ type ใหม่พวกนี้แทน "click" จริงๆ ตามกติกาใน
+              SYSTEM_PROMPT (ยึดตาม pattern เดิมของกติกาอื่นๆ ที่เพิ่มไปก่อนหน้าที่
+              ก็ยังไม่เคยเช็คจาก LLM จริงเหมือนกัน) — โมเดล compliance เป็นความ
+              เสี่ยงที่เหลืออยู่ ถ้า LLM ยังใช้ "click" กับปุ่มเสี่ยงอยู่ (ไม่ทำตาม
+              prompt) permission check ก็จะไม่ trigger เหมือนเดิม ***
+
+              เพิ่มชั้นสำรอง: เช็คคำเสี่ยงจาก label ของ element ด้วย ไม่พึ่งแค่ type
+              (2026-07-13 เช่นกัน):
+              user ชี้ว่าความเสี่ยงข้อสุดท้ายด้านบน (โมเดล compliance เลือก type ผิด)
+              เป็นเรื่องจริงที่ต้องกันไว้ก่อน — บนหน้าเว็บจริง ปุ่ม "Remove" ในตะกร้า
+              ของ saucedemo เป็นแค่ <button>Remove</button> ธรรมดา ไม่มี attribute
+              พิเศษอะไรให้สังเกตนอกจากคำในป้าย ถ้า LLM ยังเลือกส่ง type="click" (ไม่
+              ทำตามกติกาใหม่ที่สอนไว้) NEEDS_CONFIRMATION จะไม่ trigger เลย
+
+              *** สืบแล้วพบว่าไม่มีโค้ดจุดไหน "แปลง" click ของ LLM ให้กลายเป็น
+              type="delete" เอง (user เข้าใจผิดตรงนี้) — execute() ที่มีอยู่แล้ว
+              dispatch type="delete"/"submit"/"purchase"/"pay" ด้วย
+              _dispatch_with_retry(click, ...) ตัวเดียวกับ type="click" ปกติเป๊ะ
+              (ยืนยันด้วย test ที่ผ่านจริงจากรอบก่อนหน้า) ไม่มี "เครื่องมือที่ไม่มี
+              อยู่จริง" ให้เรียกพลาดตามที่ user กังวล — แต่ประเด็นเรื่อง model
+              compliance ที่ user หยิบยกมา (LLM อาจไม่ยอมใช้ type ใหม่จริงๆ) เป็น
+              เหตุผลที่สมเหตุสมผลพอที่จะเพิ่มชั้นตรวจสอบสำรอง ***
+
+              ถามผู้ใช้ว่าจะถอด enum/กติกาที่เพิ่งเพิ่มออกเลยไหม หรือเก็บไว้เป็นชั้น
+              สำรองคู่กับ label detection — เลือกเก็บไว้ทั้งคู่ (defense-in-depth)
+
+              แก้: permission/rules.py::classify_action(cmd, label="") รับ
+              parameter ใหม่ label (optional, default "") เช็คกับ
+              RISKY_LABEL_KEYWORDS = {"remove","delete","place order","finish",
+              "pay","purchase","confirm"} (case-insensitive substring match) เป็น
+              เช็คสุดท้ายก่อน return SAFE — ถ้า label ตรงคำเสี่ยง จะได้
+              NEEDS_CONFIRMATION แม้ type จะเป็นแค่ "click" ธรรมดา (คำว่า "finish"
+              เจาะจงเพราะปุ่มยืนยันคำสั่งซื้อขั้นสุดท้ายจริงบน saucedemo checkout
+              step 2 มีป้ายว่า "Finish" ไม่ใช่ "Place Order"/"Pay" อย่างที่คาดแรกๆ)
+
+              actions.py::execute() รับ parameter ใหม่ label: str = "" ส่งต่อให้
+              classify_action(cmd, label=label) — orchestrator.py per-step loop
+              เปลี่ยนจากทิ้ง elements (`_, page_text = ...`) เป็นเก็บไว้ใช้
+              (`elements, page_text = ...`) แล้วหา label ของ index ที่ LLM เลือก
+              จาก elements ของ snapshot รอบเดียวกัน (ไม่ใช่ query DOM ใหม่ทีหลัง กัน
+              ปัญหา DOM เปลี่ยนระหว่าง perceive กับ act) ส่งเข้า execute() ทุก step
+
+              unit test ใหม่ 8 เคส: 4 ใน test_perm.py (classify_action เช็ค label
+              เสี่ยง/ปกติ/case-insensitive/ไม่ส่ง label มาไม่ throw) + 2 ใน
+              test_perm.py สำหรับ execute() (type="click" ธรรมดา + label เสี่ยง
+              ต้องถามยืนยัน, label ปกติไม่ต้องถาม) + 1 ใน test_orchestrator.py
+              (integration test เต็ม: LLM ส่ง {"type":"click","index":7} กับ
+              elements ที่ index 7 มี label="Remove" -> ask_user_func ถูกเรียกจริง)
+              + แก้ test เดิม 2 เคสที่ assert exact kwargs ของ execute() ให้รวม
+              label="" ด้วย (เดิม assert แค่ ask_user_func=None เฉยๆ) — รวม test
+              suite 92 เคส ผ่าน 91 (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+              ยืนยันจริงบน saucedemo.com (ไม่ mock อะไรเลย ใช้ Playwright จริง):
+              login -> add to cart -> get_snapshot() เจอปุ่ม "Remove" จริงที่ index
+              5 -> เรียก execute() ด้วย cmd={"type":"click","index":5} (ไม่ใช่
+              "delete") พร้อม label="Remove" -> ask_user_func ถูกเรียกจริง 1 ครั้ง
+              -> อนุมัติแล้ว dispatch สำเร็จจริง ("[OK] click(5) -> คลิกสำเร็จ")
+              พิสูจน์ว่าชั้นสำรองนี้ทำงานจริงกับ DOM จริง ไม่ใช่แค่ mock
+
+              แก้บั๊ก: Gemini ส่ง type="delete" มั่วบนหน้า inventory หลัก
+              (2026-07-13 เช่นกัน):
+              user รายงานเจอ log จริงที่ Gemini ส่ง {"type":"delete","index":0} ตอน
+              อยู่หน้ารายการสินค้าหลัก (index 0 ในหน้านี้คือปุ่ม "Open Menu" ไม่ได้
+              เกี่ยวกับการลบอะไรเลย) กังวลว่ามีโค้ดฝั่ง permission/parser แปลง click
+              เป็น delete เองหรือเปล่า
+
+              สืบแล้วยืนยันด้วย grep ทั้งโปรเจกต์ว่า *** ไม่มีโค้ดจุดไหนแปลง/
+              rewrite cmd["type"] เลย *** (llm.py::_normalize_gemini_args() แปลง
+              แค่ float->int ของค่าตัวเลข ไม่แตะ string), "delete" ปรากฏแค่ 2 ที่
+              ในซอร์สจริง: enum ที่ให้ Gemini เลือกใน _BROWSER_ACTION_PARAMS กับ
+              set DEFAULT_NEEDS_CONFIRMATION/RISKY_LABEL_KEYWORDS ที่ใช้ตอน
+              classify — สรุปว่า type="delete" เป็นค่าที่ Gemini ตัดสินใจส่งมาเอง
+              จริงๆ (โมเดล misclassify) ไม่ใช่บั๊กจากโค้ดฝั่งเรา
+
+              root cause คือกติกาที่เพิ่งเพิ่มไปตอน "เชื่อม RAG..." ผิด ใช้คำกว้างไป
+              ("ปุ่มลบ/เอาออก") ทำให้โมเดลเล็ก (gemini-flash-lite-latest) ตีความ
+              กว้างเกินจริง เดา/คาดเดาจากบริบทแทนที่จะดูคำในป้ายตรงๆ — *** ตั้งใจ
+              ไม่ auto-downgrade type="delete" กลับเป็น click ตอน label ไม่ตรง
+              RISKY_LABEL_KEYWORDS เพราะจะเปิดช่องให้ action เสี่ยงจริงที่ label
+              ใช้คำนอกลิสต์ (เช่น "Discard"/"Void"/"Refund") หลุดผ่าน confirmation
+              ไปได้ — ถ้าจะแก้ต้องแก้ที่ต้นตอ (โมเดลเลือก type ให้แม่นขึ้น) ไม่ใช่
+              ลดการป้องกันฝั่ง permission ***
+
+              แก้: เขียน SYSTEM_PROMPT กติกาเรื่อง delete/purchase/pay/submit ใหม่
+              ให้เข้มงวดกว่าเดิมมาก — บังคับให้ต้องเห็นคำในป้ายตรงตัวเป๊ะๆ ก่อนถึงจะ
+              ใช้ type พวกนี้ได้ (ห้ามเดา/คาดเดาจากความรู้สึกว่า element ดูสำคัญ) พร้อม
+              ยกตัวอย่างค่าที่ไม่ควรโดน (เช่น "Open Menu") ต้องใช้ click เสมอ +
+              เตือนชัดเจนว่าใช้พร่ำเพรื่อจะทำให้ user ต้องกดอนุมัติบ่อยเกินจำเป็น
+
+              รันจริงบน saucedemo.com ผ่าน Gemini (login + add first product to
+              cart, 4 step) หลังแก้ prompt: ทุก step เลือก type ถูกหมด (fill/fill/
+              click/click) ไม่มี delete โผล่มาเลยรอบนี้ *** เป็นแค่ spot check 1
+              รอบ ไม่ได้พิสูจน์ว่าแก้ได้ 100% เพราะพฤติกรรมโมเดลเป็น stochastic —
+              ยังต้องรัน sample เยอะกว่านี้ถึงจะมั่นใจได้จริงว่า false-positive rate
+              ลดลงจริง ไม่ใช่แค่บังเอิญรอบนี้ไม่เจอ ***
+
+              ปรับ loop-detection ให้จับ pattern สลับ 2 action (ABAB) เพิ่ม
+              (2026-07-13 เช่นกัน):
+              guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS) จับได้แค่ pattern
+              คาบ 1 — action เดิมเป๊ะๆ ซ้ำติดกัน (AAAA) เท่านั้น ถ้า agent วนสลับ 2
+              action ที่ไม่เหมือนกันไปมาแทน (คาบ 2 เช่น go_back -> click -> go_back
+              -> click ซ้ำไปเรื่อยๆ — เคสที่กังวลกันไว้ตอนเพิ่มกติกากัน go_back วน
+              กลับหน้า login ก่อนหน้านี้) จะไม่ตรงเงื่อนไข "เดิมเป๊ะๆ ติดกัน" เลย
+              guard เดิมไม่เคย trigger เลยแม้จะไม่มีความคืบหน้าจริงเหมือนกัน
+
+              user ขอให้ปรับ loop-detection โดยเจาะจงว่าอยากให้จับ pattern สลับกัน
+              (A-B-A-B) เป็นหลัก (มีตัวเลือกอื่น เช่น เตือนก่อนหยุดจริง/ปรับ
+              threshold ด้วย แต่เลือกทางนี้)
+
+              แก้: เพิ่ม orchestrator.py::_is_alternating_pattern() + constant
+              _MAX_ALTERNATING_CYCLES=2 (ครบ 2 รอบ A-B-A-B รวม 4 action ถือว่าติด
+              loop) แยกเป็น guard คนละตัวกับของเดิม (คาบ 1) โดยเจตนา — ถ้า A กับ B
+              เป็นค่าเดียวกัน (นั่นคือ AAAA) จะคืน False ทันที กันสอง guard ทับซ้อน
+              กันเอง เก็บ recent_actions เป็น rolling window แค่ 4 ตัวล่าสุด (ไม่
+              เก็บ history ทั้ง task) เช็คทุก step หลัง guard คาบ 1 (เรียงลำดับ:
+              คาบ 1 ก่อน แล้วค่อยคาบ 2)
+
+              *** ตั้งใจ scope แค่คาบ 2 ตามที่ user ระบุเจาะจง ไม่ได้ทำ generic
+              period-N detection (เช่น คาบ 3 แบบ A-B-C-A-B-C จะไม่ถูกจับ) — มี unit
+              test ยืนยันว่าคาบ 3 ไม่ trigger ไว้เป็นเอกสารของ scope ปัจจุบันด้วย
+              ถ้าจะขยายรองรับคาบอื่นเป็นงานเพิ่มเติมทีหลัง ***
+
+              unit test ใหม่ 2 เคสใน test_orchestrator.py: หยุดจริงเมื่อสลับ 2
+              action ครบ 2 รอบ (go_back<->click, สกัด action ที่ 4 ก่อน execute()
+              เหมือน guard คาบ 1 ทำ) + คาบ 3 (A-B-C-A-B-C) ต้องไม่ trigger (ยืนยัน
+              ขอบเขต scope) — รวม test suite 94 เคส ผ่าน 93 (เคส fail เดิมจาก
+              manual_test.txt ไม่เกี่ยวกัน)
+
+              เพิ่ม SYSTEM_PROMPT + code-level guard กัน agent ข้าม login form ที่
+              ยังกรอกไม่ครบ (2026-07-13 เช่นกัน):
+              user ถามว่าทำไม AI ชอบสั่ง wait แล้วข้ามไปกด element อื่นทั้งที่ยังไม่ได้
+              กรอก Password — ขั้นแรกเพิ่ม SYSTEM_PROMPT rule ("กรอก Username/Password
+              ให้ครบทันที ห้าม wait คั่นกลาง") แต่เป็นแค่คำขอ ไม่การันตีว่าโมเดลเล็ก
+              (Gemini flash-lite) จะทำตาม — user ขอให้ทำต่อจนกว่าจะ "ใช้งานได้จริง"
+              จึงเพิ่ม code-level guard บังคับจริงในสเต็ปถัดมา
+
+              *** ตัดสินใจขยาย scope จากที่เสนอไว้แรกๆ (บล็อกแค่ wait) เป็นบล็อก
+              action ใดๆ ก็ตามที่ไม่ใช่ "fill" — เพราะปัญหาจริงคือ "form ถูกทิ้งไว้
+              ไม่ครบ" ไม่ใช่แค่ wait เฉยๆ ถ้าบล็อกแค่ wait โมเดลอาจแค่ข้ามไปกด login
+              โดยตรงแทน (ยังคงข้าม password อยู่ดี) ไม่ได้แก้ปัญหาจริง ***
+
+              แก้: เพิ่ม orchestrator.py::_login_form_needs_password(page) — เช็ค
+              จาก DOM จริง (page.locator('input[type="password"]:visible') +
+              input_value()) ไม่ใช้ label จาก snapshot เพราะแยกไม่ออกชัดพอระหว่าง
+              placeholder กับค่าว่างจริง — ถ้ามี password field ที่มองเห็นได้ยังว่าง
+              อยู่ และ action ที่ LLM เลือกไม่ใช่ "fill" (ไม่ว่าจะ fill ช่องไหน) ให้
+              ปฏิเสธ + เตือนกลับเข้าบทสนทนา (pattern เดียวกับ premature-false-finish
+              guard เดิม) จำกัดจำนวนครั้งด้วย _MAX_PREMATURE_LOGIN_SKIP_RETRIES=2
+              กันโมเดลที่ดื้อจริงๆ ทำให้ค้างไม่รู้จบ — เกินโควตาแล้วปล่อยผ่านไปตามที่
+              โมเดลเลือกแทน (escape valve เดียวกับ guard อื่นๆ ในไฟล์นี้)
+
+              unit test ใหม่ 2 เคสใน test_orchestrator.py (ปฏิเสธ wait ตอน password
+              ว่างแล้วปล่อยผ่านตอน fill, ปล่อยผ่านหลังเกินโควตาเตือน) + เพิ่ม autouse
+              fixture ใหม่ mock _login_form_needs_password() default False ให้ทุก
+              เทสต์อื่นในไฟล์ (กัน RuntimeWarning จาก page.locator() ที่เรียกจริงบน
+              mock_page ซึ่งเป็น AsyncMock เปล่าไม่มี Playwright locator จริง — เดิม
+              fallback เป็น False เงียบๆ อยู่แล้วเพราะครอบด้วย try/except แต่ทิ้ง
+              warning รกไว้ 13 จุด) — รวม test suite 96 เคส ผ่าน 95
+
+              ยืนยันจริงบน saucedemo.com (ไม่ mock อะไรเลย): _login_form_needs_
+              password() คืน True ก่อนกรอกอะไร, ยังคืน True หลังกรอก username
+              อย่างเดียว (password ยังว่าง), คืน False หลังกรอกครบทั้งคู่, คืน False
+              บนหน้า inventory ที่ไม่มี password field เลย — ตรงตามคาดทุกเคส รันเต็ม
+              ผ่าน Gemini จริง (login goal, auto-approve callback) จบงานสำเร็จปกติ
+              ไม่เจอ wait/ข้าม password เลยรอบนี้ (เหมือนรอบ spot check ก่อนหน้าที่
+              ปรับ prompt) — โมเดลรอบนี้ใช้ type="click" กด login (ไม่ใช่ "submit"
+              ตามกติกาใหม่ที่สอนไว้ว่าต้องเห็นคำว่า "Submit" ตรงตัว แต่ปุ่มจริงชื่อ
+              "Login" — ยืนยันอีกครั้งว่า model compliance เป็นความเสี่ยงที่เปิดอยู่
+              เสมอ ไม่ใช่แค่กับ guard ตัวนี้)
+
+              แก้ด่วน: ยกเว้น goto ออกจาก guard ทั้ง 2 จุด (2026-07-13 วันเดียวกัน):
+              user รายงานด่วนว่า guard ใหม่ (ทั้ง login-form guard ข้างบน และ
+              permission layer เดิม) อาจไปบล็อก goto ที่จำเป็นต้องใช้ก่อนถึงจะเห็น
+              ฟอร์ม login ได้เลยด้วยซ้ำ
+
+              เจอ 2 จุดจริง:
+              1) orchestrator.py::login-form guard (เพิ่งเพิ่มไปเมื่อกี้) เช็ค
+                 "action ไม่ใช่ fill" กว้างเกินไป รวม goto เข้าไปด้วยโดยไม่ตั้งใจ —
+                 ถ้า agent ต้อง goto ไปหน้าอื่นก่อน (แก้เส้นทางผิด/multi-hop กว่าจะ
+                 ถึงฟอร์ม login จริง) ระหว่างที่หน้าปัจจุบันมี password field ว่างอยู่
+                 (เช่น หน้าแรกที่เข้ามาเจอฟอร์ม login ทันที) จะโดนบล็อกไม่ให้ escape
+                 ออกจากหน้านั้นได้เลย ทั้งที่เป็น action ที่ถูกต้อง — แก้เป็นยกเว้น
+                 "goto" เพิ่ม (เงื่อนไขใหม่: ไม่ใช่ทั้ง "fill" และ "goto" ถึงจะโดน
+                 บล็อก)
+              2) permission/rules.py::classify_action() (ของเดิมตั้งแต่ W4/W5) มี
+                 ช่องโหว่แฝงที่ไม่เคยสังเกตมาก่อน: goto ที่ผ่าน domain-blocklist
+                 check แล้ว (ไม่ได้อยู่ BLOCKED_DOMAINS) ไม่เคย return SAFE ทันที —
+                 ตกไปเช็ค _label_looks_risky(label) ต่อด้านล่างเหมือน action ทั่วไป
+                 ทั้งที่ goto ไม่มี index ไม่ควรมี label มาเกี่ยวข้องเลย *** ยังไม่
+                 เคยเป็นบั๊กจริงเพราะ orchestrator.py ส่ง label="" ให้ goto เสมอ
+                 (ไม่มี index ให้จับคู่หา label) แต่เป็นช่องโหว่แฝงที่ผู้เรียก
+                 classify_action() คนอื่นในอนาคต (หรือ test) อาจส่ง label มาโดย
+                 ไม่ตั้งใจแล้วทำให้ goto ที่ปกติดันโดน NEEDS_CONFIRMATION ผิดๆ ได้ ***
+                 แก้เป็น return SAFE ทันทีหลังผ่าน domain check ไม่ตกไปเช็ค label
+                 ต่อสำหรับ goto โดยเฉพาะ
+
+              unit test ใหม่ 2 เคส: 1 ใน test_perm.py (goto ที่ผ่าน domain check
+              แล้ว ต้อง SAFE แม้ส่ง label ที่ตรงคำเสี่ยงมาด้วยจงใจ) + 1 ใน
+              test_orchestrator.py (goto ต้องผ่าน execute() ทันทีแม้
+              _login_form_needs_password() คืน True อยู่ ไม่ถูกนับเป็นการ nudge
+              เลยแม้แต่ครั้งเดียว) — รวม test suite 98 เคส ผ่าน 97 (เคส fail เดิม
+              จาก manual_test.txt ไม่เกี่ยวกัน)
+
+  [x] W7 [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern) — เสร็จแล้ว (2026-07-14)
+              ก่อนหน้านี้ ShortTermMemory (memory.py) แค่บันทึก history ไว้โชว์ตอนจบ
+              task เฉยๆ ไม่เคยถูกป้อนกลับเข้า prompt เลย (ดูบันทึกที่ W6[B] ด้านบน) —
+              ถามผู้ใช้ก่อนเริ่มเขียนโค้ดว่า scope ของ "short-term (กันทำซ้ำ)" ควรทำ
+              อะไรกันแน่ (เพราะ conversation history ในแต่ละ task run ก็มีผลลัพธ์
+              action ก่อนหน้าอยู่แล้วโดยธรรมชาติ + loop-detection guard เดิมจาก W5/
+              W6 ก็หยุด task ทันทีถ้า action เดิมซ้ำอยู่แล้ว) และ long-term memory
+              (ข้าม task) ควรทำตอนนี้เลยไหม — user เลือก (A) สร้าง summary ของ action
+              ที่ fail ไปแล้วใน task นี้ ป้อนกลับเข้า prompt ทุก step เชิงรุก (ก่อนจะไป
+              ถึงจุดที่ loop-detection ต้องหยุด task) และ (B) เลื่อน long-term memory
+              (pattern ข้าม task) ออกไปก่อนตามที่ roadmap เดิมทำเครื่องหมายไว้ว่าตัดได้
+              ถ้าเวลาไม่พอ (ดูข้อควรระวัง #4 ท้ายไฟล์)
+
+              แก้: memory.py::ShortTermMemory.failed_actions_summary(max_items=5) —
+              กรอง record ที่ "success" is False ล่าสุด max_items รายการ ประกอบเป็น
+              bullet list "{cmd} -> {result}" (record ที่ไม่มี key "success" เช่น
+              goto ก่อนหน้า W7[A] จะไม่ถูกนับเป็น failure ไม่ throw)
+
+              orchestrator.py::run_task() บันทึก "success": bool เพิ่มเข้า record()
+              ทุกจุด (ทั้ง goto ตอนเริ่ม task และทุก step หลัง execute()) แล้วเรียก
+              self.memory.failed_actions_summary() ก่อน next_action() ทุก step
+              เหมือน manual_context (W6[B]) — ส่งเข้า next_action()/next_action_groq()/
+              next_action_gemini() เป็นพารามิเตอร์ที่ 7 ใหม่ memory_context: str = ""
+              (มี default กัน backward-compat กับ test เดิมที่เรียกแบบ 6 args เดิม
+              ทั้งหมด ไม่ต้องแก้ test เดิมสักเคส) — llm.py::_build_user_turn_text()
+              ต่อ section "Action ที่เคยลองแล้วล้มเหลว" ท้าย manual_context section
+              เฉพาะตอนมีผลลัพธ์จริง (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลยใน task นี้)
+
+              *** ตั้งใจแยก guard นี้จาก loop-detection guard เดิม (คาบ 1/คาบ 2 ใน
+              W5/W6) โดยเจตนา — loop-detection เป็น hard-stop เชิงรับ (หยุด task ทันที
+              เมื่อ action ซ้ำครบจำนวนที่กำหนดแล้ว) ส่วน memory_context เป็นการเตือน
+              เชิงรุกตั้งแต่ fail ครั้งแรก และครอบคลุม action ที่ fail ซ้ำๆ แบบไม่ตรงกัน
+              เป๊ะทุกฟิลด์ด้วย (เช่น fill index เดิมด้วยข้อความคนละแบบ) ซึ่ง
+              loop-detection แยกไม่ออกว่าเป็น action ใหม่ ***
+
+              unit test ใหม่ 16 เคส: 6 ใน backend/tests/test_memory.py ใหม่ (ว่างเปล่า
+              ตอนไม่มี history, ว่างเปล่าตอนทุก step สำเร็จ, มี cmd+result ของ step ที่
+              fail, กรอง step ที่สำเร็จออกเมื่อปนกับที่ fail, cap ที่ max_items เก็บ
+              รายการล่าสุด, ไม่นับ record ที่ไม่มี key "success") + 8 ใน test_llm.py
+              (ต่อ provider ทั้ง 3 ตัวเช็คว่า memory_context โผล่ในprompt จริงเมื่อส่งมา/
+              ไม่โผล่เมื่อไม่ส่ง + _build_user_turn_text มี/ไม่มี section, ทั้งคู่พร้อมกัน
+              ได้) + 2 ใน test_orchestrator.py (memory_context ของ step ที่ 2 มี
+              failure ของ step 1 จริง ส่วน step แรกยังว่างเปล่า, ว่างเปล่าตลอดถ้าไม่มี
+              failure เลย) + แก้ test เดิม 4 เคส (2 เคสที่ index ตำแหน่ง arg สุดท้ายของ
+              next_action ต้องขยับจาก manual_context เป็น memory_context เพราะเพิ่ม
+              parameter ใหม่ต่อท้าย, 2 เคสที่ assert result["history"] แบบ exact dict
+              ต้องเพิ่ม key "success" เข้าไปด้วย) — รวม test suite 114 เคส ผ่าน 113
+              (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+              *** รันจริงยืนยันแล้ว (ดูรายละเอียดใน "long-term memory + context
+              compaction" ด้านล่าง — memory_context (short-term ใน task เดียวกัน)
+              ช่วยจริง เห็นได้จาก finish_task message ของ task รอบ 2 ที่พูดตรงๆ ว่า
+              "ได้รับคำสั่งให้ไม่พยายามซ้ำในสิ่งที่เคยล้มเหลว" ***
+
+  long-term memory + context compaction (2026-07-14):
+  user ขอให้สร้าง run.py test case ใหม่ 4 อัน (A: จำ pattern ความผิดพลาดข้าม task, B:
+  จดจำข้อมูลสำคัญข้ามรอบ, C: token/context ไม่โตเป็นเส้นตรงตามจำนวน step, D: RAG-based
+  permission จากคู่มือ) — สืบแล้วพบว่า A/B ต้องมี long-term memory (ข้าม task run) จริง
+  ที่ยังไม่เคยมี (ShortTermMemory เดิมจำได้แค่ใน 1 task run เดียว), C ต้องมีกลไก
+  conversation compaction ใหม่ทั้งหมด (ไม่มีในแผนเดิมเลย), D คือ W7[B] ที่ scope ใหญ่
+  กว่านั้นอีก — ถามผู้ใช้ก่อนเริ่มเขียนโค้ดเพราะเป็น architecture decision ที่แก้ทีหลัง
+  จะแพง: (1) long-term memory เก็บที่ไหน -> เลือก ChromaDB collection แยก (ใช้ embedding
+  infra เดิมจาก W6[B]) แทน JSON file ธรรมดา (2) Test Case B จะให้ agent "จำ" ค่าที่เจอ
+  ยังไง -> เลือก auto-store ข้อความจาก finish_task ตรงๆ (ไม่เพิ่ม tool ใหม่ให้ LLM
+  เรียก) (3) C จะทำกับ provider ไหน -> เลือก Gemini อย่างเดียวก่อน (Anthropic/Groq
+  format ต่างกันคนละแบบ ขยายทีหลังได้) (4) ต้องมี pytest คู่กับ demo ไหม -> ใช่
+  *** ระหว่างทำ user แจ้งว่าตัด D (RAG-based permission / W7[B]) ออกจาก scope รอบนี้
+  เลย — งานที่เหลือด้านล่างมีแค่ A/B/C ***
+
+  แก้: เพิ่ม backend/app/core/long_term_memory.py (function-based เหมือน
+  retriever.py ทุกประการ ไม่ใช่ class) — record_task(url, goal, success, message,
+  failed_actions="") เขียน 1 document ใหม่ทุกครั้ง (ไม่ upsert ทับเหมือน manual
+  ingestion เพราะต้องการสะสมประวัติหลายรอบ ไม่ใช่แค่ค่าล่าสุด) รวม failed_actions
+  (จาก ShortTermMemory.failed_actions_summary() ของ task นั้น) เข้าไปในเอกสารเดียวกับ
+  finish_task message ด้วย — ครอบคลุมทั้ง Test Case A (pattern ที่ fail) และ B (ค่าที่
+  เจอ) ด้วยกลไกเดียวกัน ไม่ต้องแยก 2 ระบบ, recall(query, page_state, k) รูปแบบเดียวกับ
+  retriever.retrieve() เป๊ะ (ห้าม throw, คืน [] เสมอถ้า error) — เพิ่ม
+  chroma_client.py::get_long_term_collection() + settings.chroma_long_term_collection_name
+  (collection แยกจาก "manuals" แต่ client/embedding function เดียวกัน)
+
+  orchestrator.py: เรียก long_term_memory.recall() ทุก step เหมือน retriever.retrieve()
+  (ผ่าน asyncio.to_thread เหตุผลเดียวกัน) ส่งเป็น long_term_context เข้า next_action()
+  พารามิเตอร์ที่ 8 (default "" กัน backward-compat เหมือน manual_context/memory_context
+  เดิม) + เรียก long_term_memory.record_task() ครั้งเดียวตอนจบ loop จริง (ทุก path
+  ยกเว้น confirm_plan declined ที่ไม่มี action อะไรเกิดขึ้นเลย) ด้วย
+  failed_actions=self.memory.failed_actions_summary() — ใช้ short-term summary ของ
+  W7[A] เดิมเป็น input ให้ long-term โดยตรง (สอง feature ทำงานร่วมกันแทนที่จะแยกขาด)
+  llm.py: _build_user_turn_text() รับ long_term_context เพิ่มเป็น section ที่ 3
+  (คู่มือ/short-term failure/long-term history) เหมือน manual_context ทุกประการ, thread
+  ผ่าน next_action()/next_action_groq()/next_action_gemini() ทั้ง 3 ตัว
+
+  context compaction (Gemini เท่านั้น ตามที่ตกลงกับ user): stateless chat API ต้องส่ง
+  messages ทั้งก้อนซ้ำทุก step (ไม่มี server-side session) แต่ละ step ของ Gemini เพิ่ม
+  page snapshot เต็มๆ เข้า messages เรื่อยๆ ไม่เคยหดกลับ — เพิ่ม
+  orchestrator.py::_GEMINI_COMPACT_AFTER_STEPS(=6)/_GEMINI_KEEP_RECENT_STEPS(=3):
+  เกิน 6 step แล้ว ตัด step เก่ากว่า 3 step ล่าสุดออกจาก messages แทนที่ด้วย digest
+  สั้นๆ 1 บรรทัด/step (สร้างจาก ShortTermMemory.all() ที่มีข้อมูลสะอาดอยู่แล้ว ไม่ต้อง
+  parse raw Gemini Content object เอง — เพิ่ม ShortTermMemory.all() ใหม่สำหรับงานนี้
+  โดยเฉพาะ ต่างจาก recent(n) ที่เอาแค่ n ตัวท้ายสุด) — วิธีฝัง digest: prepend เข้า
+  text ของ turn แรกที่เหลืออยู่ (_compact_gemini_messages()) แทนที่จะแทรก turn ใหม่
+  แยกต่างหาก เพื่อไม่แตะลำดับ role user/model ของ Gemini เลย (กันปัญหา conversation
+  structure ผิดเพี้ยน) เก็บ step boundary เป็น [(absolute_step_number,
+  len(messages)_หลังจบ_step)] ของตัวเองใน run_task() (ไม่เดาตำแหน่งจาก content) กัน
+  ตัดผิดจุดจนได้ history ที่ไม่ valid
+
+  *** ระหว่างรันจริงเจอบั๊กเดิมที่ไม่เคยมีใครสังเกตมาก่อน (ไม่เกี่ยวกับงานนี้โดยตรง แต่
+  บล็อกการทดสอบเลยต้องแก้): orchestrator.py มี 2 จุด (premature-false-finish guard,
+  premature-login-skip guard จาก W5/W6) ที่ฉีดข้อความเตือนเข้า messages ตรงๆ
+  (นอกเหนือจาก append_tool_result ที่แต่ละ provider มี format ของตัวเองอยู่แล้ว) โดย
+  hardcode เป็น {"role":"user","content":...} แบบ Anthropic/Groq เสมอ — ไม่เคยเป็นบั๊ก
+  จริงมาก่อนเพราะไม่เคยมีการทดสอบที่ทำให้ Gemini ชนทั้ง 2 guard นี้เลยตั้งแต่มี provider
+  Gemini (W4) แต่ Test Case A (ทำให้ action fail ซ้ำๆ โดยตั้งใจ) ไปกระตุ้นให้ guard
+  ทำงานจริงเป็นครั้งแรก — Gemini SDK จริง throw KeyError ทันทีที่เจอ dict ผิด shape
+  (ต้องการ "parts" ไม่ใช่ "content") ปนอยู่ใน contents แก้ด้วย
+  _build_nudge_message(provider, text) เลือก shape ให้ถูกตาม provider ***
+
+  unit test ใหม่รวม ~40 เคส: 11 ใน test_long_term_memory.py ใหม่ (recall()/
+  record_task() ครบทั้ง happy path/error swallowing/format), 6 ใน
+  test_orchestrator.py (recall เรียกถูก param + ผลไหลเข้า next_action, ว่างเปล่าเมื่อ
+  ไม่มี, record_task เรียกด้วย url/goal/success/message/failed_actions ถูกต้องตอนจบ
+  loop, ไม่เรียกเลยถ้า plan ถูกปฏิเสธ), 7 เคส compaction (_build_gemini_history_digest,
+  _compact_gemini_messages ทั้ง happy path/no-op/fallback, integration test เต็มผ่าน
+  run_task() พิสูจน์ messages ไม่โตไม่หยุดแต่ digest ของ step แรกๆ ยังอยู่, provider
+  อื่นไม่ถูกตัดเลย), 3 เคส nudge-shape (_build_nudge_message ต่อ provider,
+  integration test ผ่าน Gemini พิสูจน์ nudge เป็น parts ไม่ใช่ content) — รวม test
+  suite 139 เคส ผ่าน 138 (เคส fail เดิมจาก manual_test.txt ไม่เกี่ยวกัน)
+
+  เพิ่ม run.py: python run.py memory-a/memory-b/memory-c รัน Orchestrator.run_task()
+  จริงบน saucedemo.com (ไม่ mock, ต้องมี API key จริงใน .env) — memory-a รัน task
+  เดิม 2 รอบ (ask_user_func auto-reject ปุ่ม "Remove" เสมอ จำลอง action ที่ "พัง") พิมพ์
+  recall() ให้เห็นตรงๆ ก่อนเริ่มรอบ 2, memory-b รัน task หาราคาสินค้าก่อน แล้ว task ที่ 2
+  กรอกฟอร์ม checkout โดยบอกแค่ "ใช้ข้อมูลจาก task ก่อนหน้า" ไม่บอกราคาตรงๆ, memory-c
+  รัน task ยาวบังคับ provider=gemini ดู log [tokens]/[gemini-compact] ต่อ step
+
+  *** รันจริง memory-a ผ่าน Gemini ยืนยันครบทั้ง 2 เคสหลัก: (1) long-term memory
+  wiring ทำงานจริงไม่พัง — record_task() เขียนสำเร็จตอนจบ task รอบ 1 (29 step, ไม่
+  สำเร็จ, ครบ max_steps), recall() ก่อนเริ่มรอบ 2 ดึงคืนมาได้จริงครบทั้ง goal/message/
+  failed_actions ของรอบ 1 (2) หลักฐานที่ชัดว่า memory ช่วยจริง: task รอบ 2 หยุดที่
+  step 14 (เร็วกว่ารอบ 1 ที่ไป 29 step เกือบเท่าตัว) และ finish_task message รอบ 2
+  พูดตรงๆ ว่า "เนื่องจากได้รับคำสั่งให้ไม่พยายามซ้ำในสิ่งที่เคยล้มเหลว จึงไม่สามารถ
+  ดำเนินภารกิจต่อไปจนจบได้" — เป็นหลักฐานตรงๆ ว่าโมเดลอ่าน context แล้วปรับพฤติกรรมจริง
+  ไม่ใช่แค่ wiring เชื่อมกันเฉยๆ (3) context compaction ก็ถูกพิสูจน์ไปพร้อมกันโดยไม่ได้
+  ตั้งใจ — task ยาว 29 step ทำให้ [gemini-compact] ทำงานจริง 7+ รอบตลอด 2 task run
+  รวมกัน (ทุก step ที่ step boundary ผ่าน 6 อีกครั้งหลัง reset) ไม่พัง/ไม่หลุด format
+  เลยสักครั้ง — เป็นการทดสอบ compaction ที่หนักกว่าที่ตั้งใจไว้ตอนแรกด้วยซ้ำ
+  *** memory-c ยังไม่ได้รันแยกต่างหาก แต่ถือว่าถูก cover พอสมควรจาก compaction ที่เห็น
+  ใน memory-a อยู่แล้ว (ค่า input token ต่อ step ที่เห็นจริงคงที่แถว 4000-9000 ไม่โต
+  ต่อเนื่องไม่มีเพดานแล้ว ตรงกับที่ compaction ควรทำ) ***
+
+  แก้บั๊ก memory-b: หาราคาไม่เจอ (scroll ไร้ทิศทาง) + สับสนหน้า Cart/Checkout
+  (2026-07-14 เช่นกัน):
+  user รายงานปัญหา 2 จุดจาก memory-b (ตอนนั้นยังไม่เคยรันจริงจริงๆ แต่ user คาดการณ์/
+  สังเกตจาก design ไว้ล่วงหน้า): (1) task รอบ 1 (หาราคาสินค้า) เสี่ยง scroll หาไปเรื่อยๆ
+  แบบไม่มีทิศทางแทนที่จะคลิกเข้าหน้า product detail ตรงๆ (2) task รอบ 2 เสี่ยงสับสน
+  ระหว่างหน้า Cart (มีแค่ปุ่ม Checkout) กับหน้า checkout information (มีฟอร์มจริง) เพราะ
+  goal เดิมเขียนแค่ "go to checkout" กว้างๆ — ขอให้แก้ 2 จุดนี้ + เพิ่ม guard ห้ามรัน
+  task รอบ 2 ต่อถ้ารอบ 1 ไม่ผ่าน
+
+  แก้ 3 จุด:
+  1) SYSTEM_PROMPT (llm.py) เพิ่มกติกาใหม่ (ทั่วไป ไม่ผูกกับ demo นี้โดยเฉพาะ): ถ้า
+     goal ต้องการหาข้อมูลเฉพาะเจาะจง (ราคา/ชื่อ/รายละเอียด) ที่ยังไม่เห็นชัดในหน้า
+     ปัจจุบัน ห้าม scroll ไร้ทิศทาง ให้คลิกเข้า element ที่เจาะจงกว่า (เช่น พาไปหน้า
+     product detail) ก่อน + run.py::_TEST_CASE_B_TASK1_GOAL เขียนใหม่ให้บอกตรงๆ ว่า
+     คลิกเข้าไปที่ชื่อ/รูปสินค้าเพื่อเปิดหน้า Product Detail แทนการกวาดหาในหน้ารวม
+
+  2) run.py::run_test_case_b() เพิ่ม guard ก่อนรัน task รอบ 2: เช็คทั้ง
+     result1["success"] และ regex _PRICE_PATTERN (r"\$\s?\d") หาจริงใน
+     result1["message"] — ถ้าไม่ผ่านทั้งคู่ (fail หรือ success=true ลอยๆ ไม่มีหลักฐาน
+     ราคาจริง) print คำเตือนชัดเจนแล้ว return ทันที ไม่รัน task รอบ 2 ต่อ (กันเสีย API
+     quota เปล่าๆ เพราะรอบ 2 พึ่งข้อมูลจากรอบ 1 ผ่าน long-term memory โดยตรง)
+
+  3) run.py::_TEST_CASE_B_TASK2_GOAL เขียนใหม่ทั้งหมด แยกหน้า Cart กับหน้า checkout
+     information ออกจากกันตรงๆ ในข้อความ ("a different page from the Cart page — it
+     has First Name, Last Name, and Zip Code input fields") + บอกด้วยว่าเห็น 3 ช่องนี้
+     แล้วแปลว่าอยู่หน้าถูกแล้ว ห้าม navigate ไปซ้ำอีก (เพิ่มหลังรอบแรกที่ทดสอบพบว่า
+     agent self-correct ไปหน้าถูกได้แล้ว แต่ดัน goto ซ้ำอีกรอบจนชน alternating
+     loop-detection guard (W5/W6) โดยไม่ตั้งใจ — ไม่ใช่บั๊กของ guard เอง แค่ agent
+     ลังเลซ้ำ)
+
+  *** รันจริงยืนยัน 2 รอบผ่าน Gemini: รอบแรก (หลังแก้จุด 1-2 ก่อน) — task 1 หาราคาเจอ
+  เร็วขึ้นมาก (5 step, message ระบุ "บนหน้า Product Detail คือ $29.99" ตรงตามที่ตั้งใจ,
+  guard ปล่อยผ่านให้รัน task 2 ต่อถูกต้อง) แต่ task 2 ชน alternating loop-detection
+  guard เพราะ self-correct หน้าแล้ว goto ซ้ำอีกครั้งโดยไม่จำเป็น — แก้จุด 3 เพิ่มแล้ว
+  รันซ้ำรอบสอง: task 1 เหมือนเดิม (5 step, $29.99), task 2 สำเร็จเต็มรูปแบบ (21 step,
+  self-correct หน้า Cart/Checkout ได้เองไม่ชน guard อีก, fill Zip Code ด้วยค่า "2999"
+  — ตรงกับราคา $29.99 จาก task 1 เป๊ะๆ หลังตัด "$"/"." ตามที่ goal สั่งไว้ ("numbers
+  only, no dollar sign"), finish_task(success=true) จบที่หน้า Checkout: Overview จริง)
+  — พิสูจน์ชัดเจนว่า long-term memory ดึงค่าตัวเลข/ราคาข้ามรอบมาใช้ได้ถูกต้องจริง ไม่ใช่
+  แค่ wiring เชื่อมกันเฉยๆ (Test Case B ผ่านสมบูรณ์) ***
+
   เพิ่มเติมนอกแผน (เตรียมล่วงหน้าให้ W6):
   - backend/app/rag/retriever.py: retrieve(query, page_state, k) implement
     จริงแล้ว รวม page_state เข้ากับ query ก่อน embed, error handling คืน []
@@ -513,6 +951,96 @@
   ไปกับ PR #10 (https://github.com/looi10111011/AiControWeb-project-/pull/10)
   — *** merge เข้า main แล้ว *** ***
 
+  [x] W7 [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ — เสร็จแล้ว
+              (2026-07-15, ก่อนหน้านี้ถูกตัดออกจาก scope ไปตอนทำ W7[A] — ดูบันทึก
+              "ตัด D (RAG-based permission / W7[B]) ออกจาก scope รอบนี้" ด้านบน)
+
+              แนวคิด: classify_action() (permission/rules.py) เดิมยก risk เป็น
+              NEEDS_CONFIRMATION ได้แค่จาก 2 แหล่ง — hardcoded type
+              (DEFAULT_NEEDS_CONFIRMATION: submit/delete/purchase/pay) กับ label
+              ของ element ที่ตรง RISKY_LABEL_KEYWORDS (เช่น "Remove") — ทั้งคู่เป็น
+              rule ที่เขียนตายตัวในโค้ด แก้ไขต้อง deploy ใหม่เสมอ เพิ่มชั้นที่ 3: ให้
+              เนื้อหาคู่มือที่ user ป้อนเอง (ingest ไว้ผ่าน W3) เป็นคนกำหนดได้ว่า
+              action ไหนต้องขออนุมัติ โดยไม่ต้องแก้โค้ด แค่แก้/เพิ่มข้อความในคู่มือ
+              แล้ว ingest ใหม่
+
+              แก้: permission/rules.py เพิ่ม MANUAL_CONFIRMATION_KEYWORDS (ทั้งไทย/
+              อังกฤษ เช่น "ต้องขออนุมัติ", "requires approval") +
+              _manual_requires_confirmation(text) สแกนหาคำพวกนี้ — เหตุผลที่ใช้
+              keyword scan ธรรมดาแทนให้ LLM ตัดสินเอง เหมือนกับ RISKY_LABEL_KEYWORDS
+              เป๊ะ: ไม่พึ่ง model compliance, deterministic, ไม่เสีย LLM call เพิ่ม
+              classify_action(cmd, label="", manual_guidance="") รับพารามิเตอร์ใหม่
+              ตัวที่ 3 — ยก NEEDS_CONFIRMATION ถ้า label เสี่ยง "หรือ" manual_guidance
+              บอกว่าต้องขออนุมัติ (goto ยังคงข้าม label check เหมือนเดิมตามเหตุผลใน
+              คอมเมนต์เดิม แต่เพิ่มเช็ค manual_guidance เข้าไปด้วยหลัง domain check
+              ผ่านแล้ว เพราะคู่มืออาจกำหนดกฎเกี่ยวกับ URL/หน้าที่จะไป เช่น "ห้ามเข้า
+              หน้า admin โดยไม่ขออนุมัติ" ซึ่งเป็นคนละเรื่องกับ label ของ element)
+              actions.py::execute() รับ manual_guidance เพิ่มแล้ว thread ต่อให้
+              classify_action()
+
+              orchestrator.py: ตอนแรกลองง่ายสุดคือ reuse manual_context ที่ดึงมาให้
+              planner อยู่แล้วทุก step (query=goal, W6[B]) ส่งต่อเป็น manual_guidance
+              เลยไม่ต้องยิง ChromaDB เพิ่ม — *** แต่รันจริงบน saucedemo.com (ผ่าน
+              Gemini) พบว่ากว้างเกินไป: goal ที่พูดถึงคำว่า "Checkout" แค่ครั้งเดียว
+              ตอนท้ายสุดของ goal string ทำให้ manual_context ดึง RULE-04 (กฎ Checkout
+              ต้องขออนุมัติ ดูด้านล่าง) ติดมาแทบทุก step ตั้งแต่ step แรก (fill
+              username) ไป human-in-the-loop ถามยืนยันตั้งแต่ step ที่ไม่เกี่ยวกับ
+              Checkout เลยสักนิด (confirmation fatigue) ***  แก้ด้วยการแยก query:
+              เพิ่ม _build_permission_query(cmd, label) ประกอบ query แคบเฉพาะ action
+              ที่กำลังจะทำ (f"{type} {label}" หรือ f"{type} {url}" สำหรับ goto) ยิง
+              retrieve() รอบใหม่ต่างหาก (ไม่ใช่ manual_context เดิม) ก่อนเรียก
+              execute() ทุกครั้งที่มี action จริง (ไม่ใช่ finish_task) — k=1
+              (_PERMISSION_RAG_CHUNKS_PER_STEP, น้อยกว่า _RAG_CHUNKS_PER_STEP=3 ของ
+              planner) เพราะรันจริงยืนยันว่า k สูงกว่านี้ยังดึง chunk ที่ไม่เกี่ยวข้อง
+              ติดมาได้ง่ายในคู่มือทดสอบขนาดเล็ก (~11 chunk) — ทดสอบเทียบ k=1 vs k=2
+              ตรงๆ กับ query หลายแบบ (label ปกติ/label ที่ควรขออนุมัติ) ยืนยันว่า k=1
+              แยกได้ชัดเจนกว่า k=2 จริง
+
+              เพิ่ม RULE-04 ใน backend/tests/manual_test.txt: "ก่อนกดปุ่ม Checkout...
+              ต้องขออนุมัติจากหัวหน้างานก่อนเสมอ (requires approval)" ไว้เทส —
+              ปุ่ม Checkout ของ saucedemo เป็นแค่ type="click" label="Checkout"
+              ธรรมดา ไม่ตรง DEFAULT_NEEDS_CONFIRMATION หรือ RISKY_LABEL_KEYWORDS เลย
+              เดิมจะเป็น SAFE เฉยๆ
+
+              unit test ใหม่ 9 เคส: 7 ใน test_perm.py (classify_action ยก
+              NEEDS_CONFIRMATION จาก manual_guidance ทั้งอังกฤษ/ไทย, SAFE เมื่อคู่มือ
+              ไม่เกี่ยวกับการขออนุมัติ, SAFE เมื่อไม่ส่ง manual_guidance มา, goto ก็เช็ค
+              manual_guidance ด้วย, execute() ถามยืนยันจริงเมื่อคู่มือสั่ง, ไม่ถามเมื่อ
+              ไม่มี manual_guidance) + 2 ใน test_orchestrator.py (manual_guidance ที่
+              execute() ได้รับมาจาก query แคบเฉพาะ action ไม่ใช่ manual_context —
+              พิสูจน์ด้วย retrieve() คืนค่าต่างกันตามลำดับการเรียกแล้วเช็คว่า execute()
+              ได้ผลลัพธ์ของ call ที่ 2 ไม่ใช่ call ที่ 1, end-to-end ผ่าน loop จริงว่า
+              click ธรรมดา label ปกติ (ไม่ตรง RISKY_LABEL_KEYWORDS) ยัง trigger
+              NEEDS_CONFIRMATION ได้จากคู่มือ) + แก้ test เดิม 3 เคส (2 เคสที่
+              mock_execute.assert_awaited_once_with(...) ต้องเพิ่ม kwarg
+              manual_guidance="" เพราะ retriever.retrieve ที่ไม่ได้ mock ไว้เดิมตอนนี้
+              คืนเนื้อหาจริงที่ไม่ใช่ [] เปล่าๆ อีกต่อไป, 1 เคส call_count ของ
+              retrieve() ต้องนับ permission-specific call เพิ่มด้วย) — รวม test
+              suite 149 เคส ผ่านหมด (เคส fail เดิมจาก manual_test.txt ก่อนหน้านี้ก็
+              แก้ไปด้วยเลย เพราะ RULE-04 ที่เพิ่มทำให้จำนวน chunk เปลี่ยนจาก 10 เป็น
+              11 — อัปเดตเลขที่ assert ให้ตรงของจริง)
+
+              รันจริงยืนยันบน saucedemo.com ผ่าน Gemini (headless): (1) เช็ค
+              retriever.retrieve() ตรงๆ นอก loop ก่อน — query="click Checkout" ดึง
+              RULE-04 ขึ้นมาอันดับ 1 จริง, classify_action() ยก NEEDS_CONFIRMATION
+              จริง ส่วน query อื่นๆ (Username/fill, Password/fill, Login/click, Add to
+              cart/click, shopping cart link/click, Continue/click, Finish/click,
+              Remove/click) ยังคง SAFE ปกติทั้งหมด ไม่ false-positive (2) รัน
+              Orchestrator.run_task() เต็ม loop จริงด้วย goal login->add to cart->
+              เปิดหน้าตะกร้า->กด Checkout พร้อม ask_user_func ที่ log ทุกครั้งที่ถูก
+              เรียก — เห็น "[permission] (W7[B] RAG-based)" ขึ้น "ครั้งเดียว" ตรง
+              step ที่กด Checkout จริง (index ปุ่ม Checkout บนหน้าตะกร้า) ไม่ขึ้นที่
+              step อื่นเลยสักครั้ง (fill username/password, click Login, click Add to
+              cart, goto cart.html) ตรงตามที่ออกแบบไว้เป๊ะ — พิสูจน์ทั้ง wiring จริง
+              และความแม่นของ query ที่แคบพอ
+
+              เพิ่ม run.py: python run.py permission-rag (Test Case D ต่อจาก A/B/C
+              ของ W7[A]) รัน Orchestrator.run_task() จริงบน saucedemo.com ให้ agent
+              login -> add to cart -> เปิดหน้าตะกร้า -> กด Checkout พร้อม
+              ask_user_func ที่ log แล้วอนุมัติเสมอ (ไม่ block ด้วย input() จริงเพื่อ
+              ให้ demo รันจบเองได้) — โชว์ log [permission] (W7[B] RAG-based) ให้เห็น
+              ตรงๆ ว่าคู่มือ (ไม่ใช่ hardcoded rule) เป็นคนสั่งขออนุมัติ
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -536,8 +1064,8 @@
 ================================================================
 
   W1 ┬ [A]  Finalize สถาปัตยกรรม + ตั้ง Repo/Branch
-     │      + ลง Playwright & FastAPI (skeleton)
-     ├ [B]  ลง ChromaDB + เตรียมชุดคู่มือทดสอบ + เขียน Scope/SRS
+     │      + ลง Playwright & FastAPI (skeleton) ✅ เสร็จแล้ว
+     ├ [B]  ลง ChromaDB + เตรียมชุดคู่มือทดสอบ + เขียน Scope/SRS ✅ เสร็จแล้ว
      └ [★]  ตกลงเว็บเป้าหมาย 2-3 หน้า + เกณฑ์วัดผล (ร่วมกัน)
 
   >> หมุดหมาย W1: รันโปรเจกต์เปล่าได้ทั้งคู่ + ตกลงเว็บทดสอบแล้ว
@@ -564,6 +1092,10 @@
             (classify_action + execute() hook + human-in-the-loop input()/
             ask_user_func — ใช้ร่วมกับ plan confirmation gate ด้วย) ยังไม่ได้
             ต่อ RAG-based permission (ของ W7)
+            *** แก้ไข (2026-07-13): ตอนเขียนตรงนี้ครั้งแรก NEEDS_CONFIRMATION
+            (submit/delete/purchase/pay) ยังไม่เคย reachable ผ่าน agent loop จริง
+            เลย เพราะ type พวกนี้ไม่อยู่ใน tool schema enum ที่ LLM เรียกได้ —
+            แก้แล้ว ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน ***
 
   W5 ┬ [A]  Verify + Retry เมื่อ action ล้มเหลว  🔶 เริ่มแล้ว (2026-07-13)
      │      (retry click/fill/select/check + timeout สั้นลง 3s — ยังไม่มี
@@ -589,8 +1121,18 @@
             (2026-07-13) — retriever.retrieve() ต่อเข้า per-step loop ของ
             orchestrator จริงแล้ว (ดูรายละเอียดในสถานะความคืบหน้าด้านบน)
 
-  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)
-     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ
+  W7 ┬ [A]  Memory: short-term (กันทำซ้ำ) + long-term (pattern)  ✅ เสร็จแล้ว
+     │      (ทั้ง short-term และ long-term เสร็จ 2026-07-14 — long-term ผ่าน
+     │      ChromaDB collection แยก + รันจริงยืนยันแล้วว่าช่วยจริง ดูรายละเอียด
+     │      ในสถานะความคืบหน้าด้านบน "long-term memory + context compaction")
+     │      *** แถมมาด้วย: Gemini-only conversation compaction (ไม่อยู่ในแผนเดิม
+     │      user ขอเพิ่มพร้อมกัน — ดูรายละเอียดในหัวข้อเดียวกัน) ***
+     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ  ✅ เสร็จแล้ว
+            (2026-07-15 — classify_action() รับ manual_guidance เพิ่ม, orchestrator
+            ยิง query แคบเฉพาะ action (ไม่ใช่ query=goal กว้างๆ) ก่อน execute() ทุก
+            step, รันจริงบน saucedemo.com ยืนยันแล้วว่าคู่มือ (RULE-04) สั่งขออนุมัติ
+            การกด Checkout ได้จริงโดยไม่ false-positive กับ action อื่น ดูรายละเอียด
+            เต็มในสถานะความคืบหน้าด้านบน)
 
   W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)
 

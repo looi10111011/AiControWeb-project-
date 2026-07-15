@@ -27,3 +27,14 @@ def get_collection() -> Collection:
         name=settings.chroma_collection_name,
         embedding_function=_embedding_function,
     )
+
+
+# W7[A]: collection แยกต่างหากจากคู่มือ (manuals) — เก็บ "ความจำ" ข้าม task run แทน
+# เนื้อหาคู่มือที่ user ป้อน ใช้ client/embedding function เดียวกัน (persist_dir เดียวกัน
+# แค่คนละ collection name) ดู backend/app/core/long_term_memory.py
+def get_long_term_collection() -> Collection:
+    client = get_client()
+    return client.get_or_create_collection(
+        name=settings.chroma_long_term_collection_name,
+        embedding_function=_embedding_function,
+    )

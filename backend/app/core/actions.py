@@ -207,7 +207,10 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc]) -> bo
 # ------------------------------------------------------------
 # ทางเข้าเดียวสำหรับ W4: agent ส่ง action มาเป็น dict แล้ว dispatch
 # ------------------------------------------------------------
-async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None) -> ActionResult:
+async def execute(
+    page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
+    manual_guidance: str = "",
+) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
         {"type": "fill",   "index": 0, "text": "standard_user"}
@@ -220,10 +223,19 @@ async def execute(page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = 
     ก่อน dispatch จริง เช็ค permission ก่อนเสมอ (classify_action จาก
     backend/app/permission/rules.py): BLOCKED -> ปฏิเสธทันทีไม่ถาม, NEEDS_CONFIRMATION ->
     ถาม user ก่อน (ผ่าน ask_user_func ถ้ามี ไม่งั้น fallback เป็น input() ทาง terminal)
+
+    label: ข้อความของ element เป้าหมาย (จาก indexed elements ตอน perceive) — ส่งต่อให้
+    classify_action() เช็คคำเสี่ยง (เช่น "Remove") เป็นชั้นสำรองนอกจาก type ล้วนๆ กัน LLM
+    ต้องเลือก type=delete/submit/purchase/pay ให้ถูกเองเพียงอย่างเดียว (ดู
+    permission/rules.py::RISKY_LABEL_KEYWORDS) ไม่ส่งมาก็ได้ (default "")
+
+    manual_guidance (W7[B]): เนื้อหาคู่มือที่เกี่ยวข้องกับ step นี้ — ส่งต่อให้
+    classify_action() เช็คว่าคู่มือระบุไว้ไหมว่า action แบบนี้ต้องขออนุมัติก่อน (ดู
+    permission/rules.py::MANUAL_CONFIRMATION_KEYWORDS) ไม่ส่งมาก็ได้ (default "")
     """
     t = cmd.get("type")
 
-    risk = classify_action(cmd)
+    risk = classify_action(cmd, label=label, manual_guidance=manual_guidance)
     if risk == ActionRisk.BLOCKED:
         return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
     if risk == ActionRisk.NEEDS_CONFIRMATION:
