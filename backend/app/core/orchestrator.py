@@ -68,6 +68,24 @@ _RAG_CHUNKS_PER_STEP = 3
 # (ประวัติ task run อื่นก่อนหน้า แทนคู่มือที่ user ป้อน) — ดึงใหม่ทุก step เหมือนกัน
 _LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
 
+# W7[B] (RAG-based permission): จำนวน chunk คู่มือที่ดึงมาเช็ค permission ของ action
+# ที่กำลังจะทำ — ตั้งใจแยก query จาก manual_context ด้านบน (query=goal) เพราะรันจริง
+# บน saucedemo.com พบว่า query ระดับ goal กว้างเกินไป: goal ที่พูดถึงคำว่า "Checkout"
+# แค่ครั้งเดียวตอนท้ายสุด ทำให้ manual_context ดึง chunk เกี่ยวกับ Checkout ติดมาแทบ
+# ทุก step (แม้แต่ตอน fill username ในหน้า login) ไม่ใช่แค่ step ที่กำลังจะกด Checkout
+# จริง — เปลี่ยนมาใช้ query แคบตาม action ปัจจุบันแทน (ดู _build_permission_query())
+# k=1 (ไม่ใช่ 3 แบบ manual_context) เพราะรันจริงยืนยันว่า k สูงกว่านี้ดึง chunk ที่
+# ไม่เกี่ยวข้องติดมาด้วยได้ง่าย (คู่มือทดสอบมีแค่ ~11 chunk สั้นๆ — similarity ของ
+# chunk อันดับ 2 อาจยังใกล้พอที่จะหลุดเข้ามาแบบผิดๆ)
+_PERMISSION_RAG_CHUNKS_PER_STEP = 1
+
+
+def _build_permission_query(cmd: dict, label: str) -> str:
+    """ประกอบ query แคบเฉพาะ action นี้ (ไม่ใช่ทั้ง goal) ไว้ค้นคู่มือว่ามีกฎเกี่ยวกับ
+    action นี้ไหม — goto ไม่มี label (ไม่มี index ให้จับคู่) ใช้ url แทน"""
+    target = label or cmd.get("url", "")
+    return f"{cmd.get('type', '')} {target}".strip()
+
 # W7[A] (context compaction, Gemini เท่านั้น): stateless chat API ต้องส่ง messages
 # ทั้งก้อนซ้ำทุก step (ไม่มี server-side session) — แต่ละ step ของ Gemini เพิ่ม page
 # snapshot เต็มๆ + manual/memory/long-term context ทุกครั้งเข้าไปใน messages เรื่อยๆ
@@ -473,8 +491,23 @@ class Orchestrator:
                     (e["label"] for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
 
+                # W7[B]: RAG-based permission — ดึงคู่มือด้วย query แคบเฉพาะ action นี้
+                # (ไม่ใช่ manual_context ด้านบนที่ query=goal กว้างทั้ง task) แล้วส่งให้
+                # execute()/classify_action() เช็คว่าคู่มือระบุไว้ไหมว่า action นี้ต้องขอ
+                # อนุมัติ (ดู _build_permission_query()/_PERMISSION_RAG_CHUNKS_PER_STEP
+                # ด้านบนสำหรับเหตุผลที่แยก query)
+                permission_query = _build_permission_query(tool_input, action_label)
+                permission_chunks = (
+                    await asyncio.to_thread(
+                        retriever.retrieve, query=permission_query, k=_PERMISSION_RAG_CHUNKS_PER_STEP
+                    )
+                    if permission_query else []
+                )
+                manual_permission_guidance = "\n".join(f"- {c}" for c in permission_chunks)
+
                 result: ActionResult = await execute(
-                    page, tool_input, ask_user_func=ask_user_func, label=action_label
+                    page, tool_input, ask_user_func=ask_user_func, label=action_label,
+                    manual_guidance=manual_permission_guidance,
                 )
                 steps_taken += 1
                 self.memory.record({

@@ -64,7 +64,10 @@ def test_chunk_text_keeps_each_paragraph_as_its_own_chunk():
 def test_chunk_text_real_manual_produces_one_chunk_per_topic():
     text = load_manual(MANUAL_TXT)
     chunks = chunk_text(text)
-    assert len(chunks) == 5
+    # manual_test.txt มี 11 หัวข้อคั่นด้วยบรรทัดว่าง (นับล่าสุด W7[B]: เพิ่ม
+    # RULE-04 เข้าไปอีก 1 หัวข้อ) — ตัวเลขนี้ค้างมาก่อนแล้ว (เคย fail จากการแก้ไฟล์
+    # ครั้งก่อนหน้าที่เพิ่ม RULE-01..03 โดยไม่ได้อัปเดตเทสต์นี้ตาม) แก้ให้ตรงของจริง
+    assert len(chunks) == 11
     assert "Facebook" in chunks[0]
     assert "Alt+F4" in chunks[1]
 

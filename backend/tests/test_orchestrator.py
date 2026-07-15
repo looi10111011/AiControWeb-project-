@@ -137,6 +137,7 @@ async def test_run_task_executes_action_then_finishes():
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[2] button 'Add to cart'"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
@@ -146,7 +147,8 @@ async def test_run_task_executes_action_then_finishes():
     assert result["steps"] == 1
     assert result["message"] == "เพิ่มลงตะกร้าแล้ว"
     mock_execute.assert_awaited_once_with(
-        mock_browser.new_page.return_value, {"type": "click", "index": 2}, ask_user_func=None, label=""
+        mock_browser.new_page.return_value, {"type": "click", "index": 2},
+        ask_user_func=None, label="", manual_guidance="",
     )
     assert result["history"] == [
         {
@@ -234,6 +236,7 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[5] button 'Add to cart'"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", append_tool_result_mock), \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
@@ -242,7 +245,8 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
     assert result["success"] is True
     assert result["steps"] == 1
     mock_execute.assert_awaited_once_with(
-        mock_browser.new_page.return_value, {"type": "click", "index": 5}, ask_user_func=None, label=""
+        mock_browser.new_page.return_value, {"type": "click", "index": 5},
+        ask_user_func=None, label="", manual_guidance="",
     )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
     append_tool_result_mock.assert_any_call(["m1"], "tool_f1", _PREMATURE_FALSE_FINISH_NUDGE)
@@ -695,8 +699,14 @@ async def test_run_task_calls_retrieve_every_step_with_that_steps_page_text():
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         await Orchestrator().run_task("https://example.com", "goal", max_steps=10, provider="anthropic")
 
-    assert mock_retrieve.call_count == 3
-    called_page_states = [c.kwargs["page_state"] for c in mock_retrieve.call_args_list]
+    # 2 calls ต่อ step ที่มี action จริง (manual_context สำหรับ planner query=goal +
+    # permission-specific query แคบเฉพาะ action — ดู _build_permission_query()) x 2
+    # step ที่เป็น browser_action + 1 call เดียวของ step สุดท้าย (finish_task ไม่ผ่าน
+    # execute() เลยไม่มี permission-specific call)
+    assert mock_retrieve.call_count == 5
+    # manual_context calls เท่านั้นที่ส่ง page_state มาด้วย (permission-specific ไม่ส่ง)
+    manual_calls = [c for c in mock_retrieve.call_args_list if "page_state" in c.kwargs]
+    called_page_states = [c.kwargs["page_state"] for c in manual_calls]
     assert called_page_states == ["[0] step1 page", "[0] step2 page", "[0] step3 page"]
 
 
@@ -1226,5 +1236,83 @@ async def test_run_task_plain_click_on_risky_labeled_element_still_asks_for_conf
         )
 
     ask_user_func.assert_awaited_once_with({"type": "click", "index": 7})
+    assert result["success"] is True
+    assert "[OK]" in result["history"][1]["result"]
+
+
+# --- W7[B]: RAG-based permission — manual_context (ดึงมาแล้วสำหรับ planner ตั้งแต่
+# W6[B]) ต้องถูกส่งต่อให้ execute() เช็คด้วยว่าคู่มือระบุไว้ไหมว่า action นี้ต้องขอ
+# อนุมัติ — ไม่ยิง retriever.retrieve() ซ้ำอีกครั้งเพื่อเช็ค permission โดยเฉพาะ
+
+
+@pytest.mark.asyncio
+async def test_run_task_passes_permission_specific_manual_guidance_into_execute():
+    """manual_guidance ที่ execute() ได้รับต้องมาจาก query แคบเฉพาะ action นี้
+    (type+label ผ่าน _build_permission_query()) ไม่ใช่ manual_context (query=goal)
+    ตัวเดียวกับที่ป้อน planner — เดิม (ก่อนแก้) reuse manual_context ตรงๆ แต่รันจริง
+    บน saucedemo.com พบว่ากว้างเกินไป (ดูคอมเมนต์ที่ _PERMISSION_RAG_CHUNKS_PER_STEP
+    ใน orchestrator.py) พิสูจน์ด้วยการให้ retrieve() คืนค่าต่างกันตามลำดับการเรียก
+    (side_effect) แล้วเช็คว่า execute() ได้รับผลลัพธ์ของ call ที่ 2 (permission-specific)
+    ไม่ใช่ call ที่ 1 (manual_context)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Some Button"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch(
+             "backend.app.core.orchestrator.retriever.retrieve",
+             # call ที่ 3 คือ manual_context ของ step ที่ 2 (finish_task) — ไม่มี
+             # permission-specific call คู่กัน เพราะ finish_task break ก่อนถึง execute()
+             side_effect=[["manual chunk for planner"], ["permission-specific chunk"], []],
+         ) as mock_retrieve, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert mock_execute.await_args.kwargs["manual_guidance"] == "- permission-specific chunk"
+    # call แรก (manual_context ของ planner) ต้อง query ด้วย goal ทั้งก้อน, call ที่สอง
+    # (permission-specific) ต้อง query แคบด้วย type+label ของ action นี้เท่านั้น
+    assert mock_retrieve.call_args_list[0].kwargs["query"] == "goal"
+    assert mock_retrieve.call_args_list[1].kwargs["query"] == "click Some Button"
+
+
+@pytest.mark.asyncio
+async def test_run_task_asks_for_confirmation_when_manual_requires_approval_for_safe_looking_action():
+    """type="click" ธรรมดา + label ปกติ (ไม่เสี่ยง) แต่คู่มือของ step นั้นบอกว่าต้องขอ
+    อนุมัติก่อน — ต้อง trigger NEEDS_CONFIRMATION ผ่าน loop จริง (execute() ตัวจริง
+    ไม่ mock) แม้ LLM จะไม่ได้เลือก type=submit/delete/purchase/pay เองเลยก็ตาม"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    ask_user_func = AsyncMock(return_value=True)
+
+    elements = [{"index": 9, "tag": "button", "type": "", "label": "Checkout"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 9}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch(
+             "backend.app.core.orchestrator.retriever.retrieve",
+             return_value=["การกด Checkout ทุกครั้ง requires approval จากหัวหน้างานก่อนเสมอ"],
+         ), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
+        )
+
+    ask_user_func.assert_awaited_once_with({"type": "click", "index": 9})
     assert result["success"] is True
     assert "[OK]" in result["history"][1]["result"]

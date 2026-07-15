@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-14)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-15)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -951,6 +951,96 @@
   ไปกับ PR #10 (https://github.com/looi10111011/AiControWeb-project-/pull/10)
   — *** merge เข้า main แล้ว *** ***
 
+  [x] W7 [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ — เสร็จแล้ว
+              (2026-07-15, ก่อนหน้านี้ถูกตัดออกจาก scope ไปตอนทำ W7[A] — ดูบันทึก
+              "ตัด D (RAG-based permission / W7[B]) ออกจาก scope รอบนี้" ด้านบน)
+
+              แนวคิด: classify_action() (permission/rules.py) เดิมยก risk เป็น
+              NEEDS_CONFIRMATION ได้แค่จาก 2 แหล่ง — hardcoded type
+              (DEFAULT_NEEDS_CONFIRMATION: submit/delete/purchase/pay) กับ label
+              ของ element ที่ตรง RISKY_LABEL_KEYWORDS (เช่น "Remove") — ทั้งคู่เป็น
+              rule ที่เขียนตายตัวในโค้ด แก้ไขต้อง deploy ใหม่เสมอ เพิ่มชั้นที่ 3: ให้
+              เนื้อหาคู่มือที่ user ป้อนเอง (ingest ไว้ผ่าน W3) เป็นคนกำหนดได้ว่า
+              action ไหนต้องขออนุมัติ โดยไม่ต้องแก้โค้ด แค่แก้/เพิ่มข้อความในคู่มือ
+              แล้ว ingest ใหม่
+
+              แก้: permission/rules.py เพิ่ม MANUAL_CONFIRMATION_KEYWORDS (ทั้งไทย/
+              อังกฤษ เช่น "ต้องขออนุมัติ", "requires approval") +
+              _manual_requires_confirmation(text) สแกนหาคำพวกนี้ — เหตุผลที่ใช้
+              keyword scan ธรรมดาแทนให้ LLM ตัดสินเอง เหมือนกับ RISKY_LABEL_KEYWORDS
+              เป๊ะ: ไม่พึ่ง model compliance, deterministic, ไม่เสีย LLM call เพิ่ม
+              classify_action(cmd, label="", manual_guidance="") รับพารามิเตอร์ใหม่
+              ตัวที่ 3 — ยก NEEDS_CONFIRMATION ถ้า label เสี่ยง "หรือ" manual_guidance
+              บอกว่าต้องขออนุมัติ (goto ยังคงข้าม label check เหมือนเดิมตามเหตุผลใน
+              คอมเมนต์เดิม แต่เพิ่มเช็ค manual_guidance เข้าไปด้วยหลัง domain check
+              ผ่านแล้ว เพราะคู่มืออาจกำหนดกฎเกี่ยวกับ URL/หน้าที่จะไป เช่น "ห้ามเข้า
+              หน้า admin โดยไม่ขออนุมัติ" ซึ่งเป็นคนละเรื่องกับ label ของ element)
+              actions.py::execute() รับ manual_guidance เพิ่มแล้ว thread ต่อให้
+              classify_action()
+
+              orchestrator.py: ตอนแรกลองง่ายสุดคือ reuse manual_context ที่ดึงมาให้
+              planner อยู่แล้วทุก step (query=goal, W6[B]) ส่งต่อเป็น manual_guidance
+              เลยไม่ต้องยิง ChromaDB เพิ่ม — *** แต่รันจริงบน saucedemo.com (ผ่าน
+              Gemini) พบว่ากว้างเกินไป: goal ที่พูดถึงคำว่า "Checkout" แค่ครั้งเดียว
+              ตอนท้ายสุดของ goal string ทำให้ manual_context ดึง RULE-04 (กฎ Checkout
+              ต้องขออนุมัติ ดูด้านล่าง) ติดมาแทบทุก step ตั้งแต่ step แรก (fill
+              username) ไป human-in-the-loop ถามยืนยันตั้งแต่ step ที่ไม่เกี่ยวกับ
+              Checkout เลยสักนิด (confirmation fatigue) ***  แก้ด้วยการแยก query:
+              เพิ่ม _build_permission_query(cmd, label) ประกอบ query แคบเฉพาะ action
+              ที่กำลังจะทำ (f"{type} {label}" หรือ f"{type} {url}" สำหรับ goto) ยิง
+              retrieve() รอบใหม่ต่างหาก (ไม่ใช่ manual_context เดิม) ก่อนเรียก
+              execute() ทุกครั้งที่มี action จริง (ไม่ใช่ finish_task) — k=1
+              (_PERMISSION_RAG_CHUNKS_PER_STEP, น้อยกว่า _RAG_CHUNKS_PER_STEP=3 ของ
+              planner) เพราะรันจริงยืนยันว่า k สูงกว่านี้ยังดึง chunk ที่ไม่เกี่ยวข้อง
+              ติดมาได้ง่ายในคู่มือทดสอบขนาดเล็ก (~11 chunk) — ทดสอบเทียบ k=1 vs k=2
+              ตรงๆ กับ query หลายแบบ (label ปกติ/label ที่ควรขออนุมัติ) ยืนยันว่า k=1
+              แยกได้ชัดเจนกว่า k=2 จริง
+
+              เพิ่ม RULE-04 ใน backend/tests/manual_test.txt: "ก่อนกดปุ่ม Checkout...
+              ต้องขออนุมัติจากหัวหน้างานก่อนเสมอ (requires approval)" ไว้เทส —
+              ปุ่ม Checkout ของ saucedemo เป็นแค่ type="click" label="Checkout"
+              ธรรมดา ไม่ตรง DEFAULT_NEEDS_CONFIRMATION หรือ RISKY_LABEL_KEYWORDS เลย
+              เดิมจะเป็น SAFE เฉยๆ
+
+              unit test ใหม่ 9 เคส: 7 ใน test_perm.py (classify_action ยก
+              NEEDS_CONFIRMATION จาก manual_guidance ทั้งอังกฤษ/ไทย, SAFE เมื่อคู่มือ
+              ไม่เกี่ยวกับการขออนุมัติ, SAFE เมื่อไม่ส่ง manual_guidance มา, goto ก็เช็ค
+              manual_guidance ด้วย, execute() ถามยืนยันจริงเมื่อคู่มือสั่ง, ไม่ถามเมื่อ
+              ไม่มี manual_guidance) + 2 ใน test_orchestrator.py (manual_guidance ที่
+              execute() ได้รับมาจาก query แคบเฉพาะ action ไม่ใช่ manual_context —
+              พิสูจน์ด้วย retrieve() คืนค่าต่างกันตามลำดับการเรียกแล้วเช็คว่า execute()
+              ได้ผลลัพธ์ของ call ที่ 2 ไม่ใช่ call ที่ 1, end-to-end ผ่าน loop จริงว่า
+              click ธรรมดา label ปกติ (ไม่ตรง RISKY_LABEL_KEYWORDS) ยัง trigger
+              NEEDS_CONFIRMATION ได้จากคู่มือ) + แก้ test เดิม 3 เคส (2 เคสที่
+              mock_execute.assert_awaited_once_with(...) ต้องเพิ่ม kwarg
+              manual_guidance="" เพราะ retriever.retrieve ที่ไม่ได้ mock ไว้เดิมตอนนี้
+              คืนเนื้อหาจริงที่ไม่ใช่ [] เปล่าๆ อีกต่อไป, 1 เคส call_count ของ
+              retrieve() ต้องนับ permission-specific call เพิ่มด้วย) — รวม test
+              suite 149 เคส ผ่านหมด (เคส fail เดิมจาก manual_test.txt ก่อนหน้านี้ก็
+              แก้ไปด้วยเลย เพราะ RULE-04 ที่เพิ่มทำให้จำนวน chunk เปลี่ยนจาก 10 เป็น
+              11 — อัปเดตเลขที่ assert ให้ตรงของจริง)
+
+              รันจริงยืนยันบน saucedemo.com ผ่าน Gemini (headless): (1) เช็ค
+              retriever.retrieve() ตรงๆ นอก loop ก่อน — query="click Checkout" ดึง
+              RULE-04 ขึ้นมาอันดับ 1 จริง, classify_action() ยก NEEDS_CONFIRMATION
+              จริง ส่วน query อื่นๆ (Username/fill, Password/fill, Login/click, Add to
+              cart/click, shopping cart link/click, Continue/click, Finish/click,
+              Remove/click) ยังคง SAFE ปกติทั้งหมด ไม่ false-positive (2) รัน
+              Orchestrator.run_task() เต็ม loop จริงด้วย goal login->add to cart->
+              เปิดหน้าตะกร้า->กด Checkout พร้อม ask_user_func ที่ log ทุกครั้งที่ถูก
+              เรียก — เห็น "[permission] (W7[B] RAG-based)" ขึ้น "ครั้งเดียว" ตรง
+              step ที่กด Checkout จริง (index ปุ่ม Checkout บนหน้าตะกร้า) ไม่ขึ้นที่
+              step อื่นเลยสักครั้ง (fill username/password, click Login, click Add to
+              cart, goto cart.html) ตรงตามที่ออกแบบไว้เป๊ะ — พิสูจน์ทั้ง wiring จริง
+              และความแม่นของ query ที่แคบพอ
+
+              เพิ่ม run.py: python run.py permission-rag (Test Case D ต่อจาก A/B/C
+              ของ W7[A]) รัน Orchestrator.run_task() จริงบน saucedemo.com ให้ agent
+              login -> add to cart -> เปิดหน้าตะกร้า -> กด Checkout พร้อม
+              ask_user_func ที่ log แล้วอนุมัติเสมอ (ไม่ block ด้วย input() จริงเพื่อ
+              ให้ demo รันจบเองได้) — โชว์ log [permission] (W7[B] RAG-based) ให้เห็น
+              ตรงๆ ว่าคู่มือ (ไม่ใช่ hardcoded rule) เป็นคนสั่งขออนุมัติ
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1037,8 +1127,12 @@
      │      ในสถานะความคืบหน้าด้านบน "long-term memory + context compaction")
      │      *** แถมมาด้วย: Gemini-only conversation compaction (ไม่อยู่ในแผนเดิม
      │      user ขอเพิ่มพร้อมกัน — ดูรายละเอียดในหัวข้อเดียวกัน) ***
-     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ  ✂️ ตัดออกจาก
-            scope รอบนี้ตามที่ user สั่งชัดเจน (2026-07-14) — ยังไม่เริ่มทำ
+     └ [B]  RAG-based permission: คู่มือกำหนด action ที่ต้องขออนุมัติ  ✅ เสร็จแล้ว
+            (2026-07-15 — classify_action() รับ manual_guidance เพิ่ม, orchestrator
+            ยิง query แคบเฉพาะ action (ไม่ใช่ query=goal กว้างๆ) ก่อน execute() ทุก
+            step, รันจริงบน saucedemo.com ยืนยันแล้วว่าคู่มือ (RULE-04) สั่งขออนุมัติ
+            การกด Checkout ได้จริงโดยไม่ false-positive กับ action อื่น ดูรายละเอียด
+            เต็มในสถานะความคืบหน้าด้านบน)
 
   W8 └ [★]  บูรณาการรอบแรก + จูน prompt (pair กัน)
 
