@@ -23,3 +23,4 @@ python-docx==1.1.2
 # Testing
 pytest==8.3.3
 pytest-asyncio==0.24.0
+httpx==0.28.1   # ให้ fastapi.testclient.TestClient ใช้ (W10[A])

@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-16)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-17)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1385,6 +1385,80 @@
               เดียว เหมือน pattern ของ run_permission_demo() เดิมที่ขับ execute()
               ตรงๆ ไม่ผ่าน Orchestrator เหมือนกัน)
 
+  [x] W10 [A]  API endpoints (FastAPI) + Browser Pool (persistent) — เสร็จแล้ว
+              (2026-07-17)
+
+              แบ่งเป็น 2 ส่วน:
+
+              1) Browser Pool (persistent) (core/browser_pool.py, ใหม่): Orchestrator.
+                 run_task() เดิม (W1-W9) เปิด/ปิด playwright + browser process ใหม่ทุก
+                 ครั้งที่เรียก (~1-2 วินาทีต่อครั้งสำหรับ launch Chromium) — โอเคสำหรับ
+                 CLI demo ที่รันทีละ task แต่ไม่เหมาะกับ API server ที่รับ request
+                 ต่อเนื่อง — BrowserPool เปิด browser process ไว้ล่วงหน้าตาม
+                 settings.browser_pool_size (default 2) ตอน API server startup แล้วให้
+                 แต่ละ task "ยืม" ผ่าน acquire() (async context manager, block เองผ่าน
+                 asyncio.Queue ถ้าทุกตัวถูกยืมหมด) แทนที่จะเปิดใหม่ทุกครั้ง — pool คุม
+                 ระดับ Browser (process) เท่านั้น แต่ละ task ที่ยืมไปยังได้ BrowserContext
+                 ของตัวเอง (session แยกกัน ไม่แชร์ cookie/localStorage ข้าม task) —
+                 Orchestrator.run_task() รับ browser param ใหม่ (Optional[Browser] =
+                 None): ไม่ส่งมา = พฤติกรรมเดิมทุกประการ (เปิด/ปิด playwright+browser
+                 เอง) ส่งมา = เปิดแค่ context ใหม่ ปิดแค่ context ตอนจบ ไม่แตะ browser
+                 ของ pool เลย (backward compatible 100% กับ CLI demo ทั้งหมดของ W1-W9)
+
+              2) API endpoints (backend/app/api/, ใหม่ — routes.py/schemas.py/
+                 task_manager.py + main.py เพิ่ม lifespan): เพิ่ม POST /tasks (submit
+                 goal+url คืน task_id ทันที status 202 ไม่ block รอ task จบ เพราะ
+                 run_task() ใช้เวลาเป็นนาที — รันเป็น background asyncio.Task ผ่าน
+                 TaskManager เก็บ state ใน memory), GET /tasks/{id} (poll สถานะ running/
+                 done/error + result/error), GET /tasks (list ทั้งหมด), GET /pool/status
+                 (size/available/in_use ของ BrowserPool) — main.py::lifespan เปิด
+                 BrowserPool ตอน server startup (ไม่ใช่ตอน request แรก) + ปิดตอน
+                 shutdown ผ่าน asynccontextmanager มาตรฐานของ FastAPI — auto_approve
+                 (default false ใน request body): ไม่มี human อยู่หน้าจอคอยตอบ
+                 permission prompt ผ่าน REST ตรงๆ เหมือน CLI ที่ถาม terminal input()
+                 ได้ เลย fail closed — action ที่ต้องขออนุมัติ (permission layer) ถูก
+                 "ปฏิเสธ" อัตโนมัติเสมอ นอกจากจะส่ง auto_approve=true มาเอง (รับผิดชอบ
+                 เองว่าไม่มี human-in-the-loop จริงระหว่างรอบนั้น)
+
+              unit test ใหม่ 27 เคส: 9 ใน test_browser_pool.py (start เปิดครบ size,
+              start ซ้ำ no-op, acquire คืน browser จริง+ลด available, acquire คืน
+              browser กลับแม้ task ข้างในพัง, acquire block จนกว่าจะมีคนคืน (สร้าง
+              contention จริงด้วย asyncio.Event ไม่ใช่ mock ฟันธง), acquire ก่อน
+              start() ต้อง raise, shutdown ปิดครบทุกตัว, shutdown ก่อน start() no-op) +
+              1 ใน test_orchestrator.py (ส่ง browser= เข้ามาเองต้องไม่เปิด
+              async_playwright()/chromium.launch() ใหม่เลย เปิดแค่ context ปิดแค่
+              context ไม่แตะ browser ของ pool) + 9 ใน test_api.py (health/pool-status
+              ทำงานได้ทั้งที่ lifespan เปิด fake pool, GET task ที่ไม่มีจริงคืน 404, list
+              ว่างตอนเริ่ม, POST /tasks คืน 202+running แล้ว poll จนได้ done+result จริง,
+              บันทึกสถานะ error ถ้า run_task() throw, auto_approve=false ปฏิเสธ action
+              เสี่ยงเสมอ/true อนุมัติให้หมด, browser จาก pool.acquire() ถูกส่งเข้า
+              run_task() จริงไม่ใช่ None) — รวม test suite 219 เคส ผ่านหมด
+
+              *** รันจริงยืนยันครบทั้ง 2 ส่วนผ่าน python run.py api-demo (ไม่ mock อะไร
+              เลย เปิด uvicorn subprocess จริง + ยิง HTTP request จริงเข้า saucedemo.com
+              ผ่าน provider=gemini):
+              - GET /pool/status ก่อนยิง task ใดๆ เลย: {"size": 2, "available": 2,
+                "in_use": 0} — พิสูจน์ว่า BrowserPool เปิด browser ไว้ล่วงหน้าจริงตอน
+                startup ไม่ต้องรอ task แรกมาสร้าง
+              - POST /tasks คืน 202 ทันทีพร้อม task_id (ไม่ block รอ task จบ)
+              - GET /pool/status ระหว่าง task กำลังรัน: {"size": 2, "available": 1,
+                "in_use": 1} — available ลดลง 1 จริง (ถูกยืมไปแล้ว)
+              - task จบจริง success=True, steps=4: login (fill username/password 2
+                step) + คลิกปุ่ม login + คลิก Add to cart ของสินค้าชิ้นแรก — final_page_
+                state ยืนยัน "[0] button 'Remove'" (ปุ่มเปลี่ยนจาก Add to cart เป็น
+                Remove จริง ไม่ใช่ LLM อ้างเฉยๆ)
+              - GET /pool/status หลัง task จบ: {"size": 2, "available": 2, "in_use": 0}
+                — available กลับมาเท่ากับ size พิสูจน์ว่า browser ถูกคืน pool จริง ไม่ได้
+                ถูกปิดทิ้งเหมือน W1-W9 (ยืนยันจุดประสงค์หลักของ "persistent" ใน task
+                นี้) ***
+
+              เพิ่ม run.py: python run.py api-demo (alias: w10) — ขับ demo ข้างบนทั้งหมด
+              อัตโนมัติ (เปิด/ปิด uvicorn subprocess เอง) + เพิ่ม settings ใหม่ใน
+              config.py: browser_pool_size (default 2) + เพิ่ม httpx==0.28.1 ใน
+              requirements.txt ตรงๆ (เดิมมีแค่ทางอ้อมผ่าน dependency ของตัวอื่น
+              จำเป็นสำหรับทั้ง fastapi.testclient.TestClient ใน test_api.py และ
+              run_w10_api_demo() เอง)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1508,9 +1582,13 @@
       │      ทั้ง 3 ส่วนบน saucedemo.com ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน)
       └ [B]  เพิ่มความหลากหลายคู่มือ/เว็บ + เก็บ edge cases
 
-  W10 ┬ [A]  API endpoints (FastAPI) + Browser Pool (persistent)
+  W10 ┬ [A]  API endpoints (FastAPI) + Browser Pool (persistent)  ✅ เสร็จแล้ว
+      │      (2026-07-17 — POST/GET /tasks + GET /pool/status (backend/app/api/) +
+      │      BrowserPool แบบเปิดล่วงหน้า/reuse ข้าม task (core/browser_pool.py) —
+      │      รันจริงยืนยันผ่าน python run.py api-demo ดูรายละเอียดเต็มในสถานะความ
+      │      คืบหน้าด้านบน)
       └ [B]  Test Console (UI): สั่งงาน + แสดง log/reasoning เรียลไทม์
-
+   
   W11 └ [★]  Integration hardening: ทดสอบ end-to-end ทุก flow (pair)
 
   >> หมุดหมาย W11: ระบบครบ ใช้ผ่าน UI ได้ พร้อมวัดผล
