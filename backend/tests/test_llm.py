@@ -583,6 +583,67 @@ async def test_next_action_gemini_default_memory_context_omits_section():
     assert "ทำซ้ำ" not in user_text
 
 
+@pytest.mark.asyncio
+async def test_next_action_gemini_passes_vision_context_into_prompt():
+    """W9[A]: vision_context (คำอธิบายจาก describe_screenshot()) ต้องโผล่ใน prompt
+    จริงเมื่อส่งมา"""
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(
+        client, "model", "goal", "page", [], vision_context="เห็น cookie banner บังปุ่มอยู่"
+    )
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "เห็น cookie banner บังปุ่มอยู่" in user_text
+
+
+@pytest.mark.asyncio
+async def test_next_action_gemini_default_vision_context_omits_section():
+    part = _fake_gemini_function_call_part("browser_action", {"type": "wait"})
+    response = _fake_gemini_response([part])
+    client, gemini_model = _fake_gemini_client(response)
+
+    await llm.next_action_gemini(client, "model", "goal", "page", [])
+
+    _, kwargs = gemini_model.generate_content_async.call_args
+    user_text = kwargs["contents"][-1]["parts"][0]["text"]
+    assert "ภาพหน้าจอ" not in user_text
+
+
+# --- describe_screenshot() (W9[A] vision fallback, Gemini เท่านั้นตอนนี้) ---
+
+
+@pytest.mark.asyncio
+async def test_describe_screenshot_returns_stripped_text():
+    response = MagicMock()
+    response.text = "  เห็น cookie banner บังปุ่ม Login อยู่ ลองปิด banner ก่อน  "
+    client, gemini_model = _fake_gemini_client(response)
+
+    result = await llm.describe_screenshot(client, "model", b"fakepngbytes", "click", 5)
+
+    assert result == "เห็น cookie banner บังปุ่ม Login อยู่ ลองปิด banner ก่อน"
+    _, kwargs = gemini_model.generate_content_async.call_args
+    parts = kwargs["contents"][0]["parts"]
+    assert parts[1] == {"mime_type": "image/png", "data": b"fakepngbytes"}
+    assert "click" in parts[0]["text"]
+    assert "5" in parts[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_describe_screenshot_returns_empty_string_on_error_without_throwing():
+    """กฎเหล็ก: ห้าม throw ออกไปเด็ดขาด (เหมือน retriever.retrieve()) ถ้า vision call
+    พังเอง (เช่น quota/network) ต้องไม่ทำให้ agent loop หลักพังตาม"""
+    client = MagicMock()
+    client.GenerativeModel = MagicMock(side_effect=Exception("quota exceeded"))
+
+    result = await llm.describe_screenshot(client, "model", b"fakepngbytes", "click", 5)
+
+    assert result == ""
+
+
 # --- _build_user_turn_text() (W6[B]/W7[A]) ---
 
 
@@ -621,3 +682,16 @@ def test_build_user_turn_text_includes_both_manual_and_memory_sections():
 
     assert "chunk one" in result
     assert "fail one" in result
+
+
+def test_build_user_turn_text_omits_vision_section_when_empty():
+    result = llm._build_user_turn_text("goal", "page", vision_context="")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_vision_section_when_provided():
+    result = llm._build_user_turn_text("goal", "page", vision_context="เห็น cookie banner บังปุ่ม Login อยู่")
+
+    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert "เห็น cookie banner บังปุ่ม Login อยู่" in result

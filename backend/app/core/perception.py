@@ -103,6 +103,24 @@ _COLLECT_JS = r"""
     if (!visible) continue;
     if (el.disabled) continue;
 
+    // W9[A]: เช็คว่า element นี้ถูก popup/modal/overlay อื่นบังอยู่จริงไหม —
+    // getBoundingClientRect()/CSS visibility ข้างบนเช็คแค่ว่า element เอง "มองเห็นได้"
+    // เฉยๆ ไม่ได้เช็คว่ามี element อื่นวางทับอยู่ข้างบน (เช่น cookie-consent banner/
+    // modal ที่มี z-index สูงคลุมทั้งหน้า) ทำให้ perception บอกว่า element "คลิกได้"
+    // ทั้งที่คลิกจริงจะโดน overlay แทน (เจอปัญหานี้บ่อยตอน action ล้มเหลวซ้ำแม้ retry
+    // ครบแล้ว ทั้งที่ index มีอยู่จริงใน DOM — ดู W9[A] vision fallback ใน llm.py/
+    // orchestrator.py ที่ใช้ marker นี้เป็นสัญญาณเสริม) — ใช้
+    // document.elementFromPoint() เช็คว่า element บนสุดตรงจุดกึ่งกลางจริงๆ คือตัวนี้
+    // (หรือเป็นลูกของมัน) ไหม ถ้าไม่ใช่ แปะ marker ไว้ในป้าย ไม่ตัดออกจากลิสต์เพราะยัง
+    // คลิกได้จริงถ้า overlay หายไปแล้วในตอนที่ action ทำงานจริง (เช่น modal ปิดไปแล้ว)
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    let obscured = false;
+    if (centerX >= 0 && centerX < window.innerWidth && centerY >= 0 && centerY < window.innerHeight) {
+      const topEl = document.elementFromPoint(centerX, centerY);
+      obscured = topEl !== null && topEl !== el && !el.contains(topEl);
+    }
+
     // ติดหมายเลขไว้บน element เพื่อให้ agent สั่งกลับได้ทีหลัง
     el.setAttribute('data-ai-index', idx);
 
@@ -144,6 +162,9 @@ _COLLECT_JS = r"""
       );
     }
     label = label.trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (obscured) {
+      label = label ? `${label} [ถูกบังอยู่]` : '[ถูกบังอยู่]';
+    }
 
     out.push({ index: idx, tag, type, label });
     idx++;

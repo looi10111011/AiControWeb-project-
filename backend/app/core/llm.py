@@ -160,12 +160,21 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 # จาก long_term_memory.recall() (จาก task run อื่นที่เคยทำมาก่อน) แทนคู่มือที่ user
 # ป้อน — คนละ section กับ memory_context (ตัวนั้นจำได้แค่ภายใน task ปัจจุบันเดียวเท่านั้น
 # ตัวนี้จำข้ามหลาย task run)
+#
+# W9[A] (vision fallback): เพิ่ม vision_context — คำอธิบายจาก Gemini vision (ดู
+# describe_screenshot() ด้านล่าง) ตอน action ที่ต้องพึ่ง element visibility (click/
+# fill/select/check) ล้มเหลวซ้ำแม้ retry ครบแล้ว ทั้งที่ index มีอยู่จริงใน DOM — สงสัย
+# ว่ามี popup/overlay บัง element ที่ perception (DOM-based ล้วนๆ) มองไม่เห็นครบ (ดู
+# marker "[ถูกบังอยู่]" ใน perception.py ที่เป็นสัญญาณเสริมอีกชั้นแบบไม่ต้องพึ่ง vision)
+# — ว่างเปล่าถ้าไม่มี action ล้มเหลวแบบนี้เกิดขึ้น หรือ provider ไม่ใช่ Gemini
+# (orchestrator.py คุมการเรียก vision ไว้ที่ Gemini เท่านั้นตอนนี้ ดูเหตุผล scope ที่นั่น)
 def _build_user_turn_text(
     goal: str,
     page_text: str,
     manual_context: str = "",
     memory_context: str = "",
     long_term_context: str = "",
+    vision_context: str = "",
 ) -> str:
     text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
     if manual_context:
@@ -187,6 +196,12 @@ def _build_user_turn_text(
             "หรือ action ที่เคยลองแล้วล้มเหลว/โดนบล็อกมาก่อน ให้เลี่ยงตั้งแต่แรก — ใช้ประกอบการ"
             "ตัดสินใจ ไม่ใช่คำสั่งบังคับ อาจล้าสมัยได้):\n"
             f"{long_term_context}"
+        )
+    if vision_context:
+        text += (
+            "\n\nสิ่งที่เห็นจากภาพหน้าจอจริง (วิเคราะห์เพราะ action ก่อนหน้าล้มเหลวซ้ำทั้งที่ "
+            "element มีอยู่จริงใน DOM — อาจมี popup/modal บังอยู่):\n"
+            f"{vision_context}"
         )
     return text
 
@@ -287,6 +302,7 @@ async def next_action(
     manual_context: str = "",
     memory_context: str = "",
     long_term_context: str = "",
+    vision_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -304,11 +320,18 @@ async def next_action(
 
     long_term_context (W7[A] long-term): เหมือน manual_context แต่มาจาก
     long_term_memory.recall() (ประวัติ task run อื่นก่อนหน้า) แทนคู่มือ
+
+    vision_context (W9[A]): คำอธิบายจาก Gemini vision ตอน action ก่อนหน้าล้มเหลวซ้ำ —
+    ดู _build_user_turn_text() ด้านบน (ปัจจุบัน orchestrator.py ยิง vision fallback
+    เฉพาะ provider=gemini เท่านั้น เลย path นี้ (Anthropic) จะได้ "" เสมอในทางปฏิบัติ
+    แต่รับ parameter ไว้เผื่อขยาย provider อื่นทีหลัง)
     """
     messages = messages + [
         {
             "role": "user",
-            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+            "content": _build_user_turn_text(
+                goal, page_text, manual_context, memory_context, long_term_context, vision_context
+            ),
         }
     ]
 
@@ -362,6 +385,7 @@ async def next_action_groq(
     manual_context: str = "",
     memory_context: str = "",
     long_term_context: str = "",
+    vision_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -373,7 +397,9 @@ async def next_action_groq(
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
-    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context/vision_context: ดู next_action() —
+    เหมือนกัน (vision_context จะเป็น "" เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน
+    scope แค่ provider=gemini)
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -381,7 +407,9 @@ async def next_action_groq(
     messages = messages + [
         {
             "role": "user",
-            "content": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context),
+            "content": _build_user_turn_text(
+                goal, page_text, manual_context, memory_context, long_term_context, vision_context
+            ),
         }
     ]
 
@@ -465,6 +493,7 @@ async def next_action_gemini(
     manual_context: str = "",
     memory_context: str = "",
     long_term_context: str = "",
+    vision_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -476,7 +505,9 @@ async def next_action_gemini(
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
-    manual_context/memory_context/long_term_context: ดู next_action() — เหมือนกัน
+    manual_context/memory_context/long_term_context/vision_context: ดู next_action() —
+    เหมือนกัน (vision_context (W9[A]) จะมีค่าจริงเฉพาะ provider นี้ — orchestrator.py
+    ยิง vision fallback (llm.describe_screenshot()) scope แค่ Gemini เท่านั้นตอนนี้)
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -489,7 +520,9 @@ async def next_action_gemini(
         {
             "role": "user",
             "parts": [{
-                "text": _build_user_turn_text(goal, page_text, manual_context, memory_context, long_term_context)
+                "text": _build_user_turn_text(
+                    goal, page_text, manual_context, memory_context, long_term_context, vision_context
+                )
             }],
         }
     ]
@@ -573,3 +606,46 @@ async def generate_plan(client, model: str, goal: str, page_text: str, provider:
         return response.text.strip()
 
     raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
+
+
+# --- W9[A] vision fallback (Gemini เท่านั้นตอนนี้) ---
+# scope แค่ Gemini ตามที่ project ทำมาตลอด (ดู context compaction ของ W7[A] ที่ scope
+# เดียวกัน) — Anthropic/Groq รองรับ vision ได้เหมือนกันในทางเทคนิค แต่ยังไม่ได้ทดสอบ
+# จริง เพิ่มทีหลังได้ถ้าต้องการ ไม่ใช่ข้อจำกัดทางสถาปัตยกรรม
+_VISION_FALLBACK_PROMPT_TEMPLATE = (
+    "Action ประเภท {action_type} (index {index}) ล้มเหลวซ้ำแม้ retry ครบแล้ว ทั้งที่ "
+    "element นี้มีอยู่จริงใน DOM ตอน perceive — อาจมี popup/modal/cookie banner บัง "
+    "element นี้อยู่จริงที่ perception (อ่านจาก DOM อย่างเดียว) ตรวจไม่พบครบ นี่คือ"
+    "ภาพหน้าจอปัจจุบันจริง ช่วยดูว่าเห็นอะไรผิดปกติไหม (เช่น popup บัง, หน้ายังโหลดไม่เสร็จ, "
+    "error message ที่ไม่ได้อยู่ใน indexed elements) แล้วแนะนำสั้นๆ ว่าควรทำอะไรต่อ "
+    "(ไม่เกิน 3 ประโยค ตอบเป็นข้อความธรรมดา ไม่ต้องมี markdown)"
+)
+
+
+async def describe_screenshot(client, model: str, screenshot_png: bytes, action_type: str, index: Any) -> str:
+    """เรียกตอน action ที่ต้องพึ่ง element visibility (click/fill/select/check และ
+    alias submit/delete/purchase/pay) ล้มเหลวซ้ำแม้ retry ครบแล้ว (actions.py::
+    _dispatch_with_retry หมดโควตา) ทั้งที่ index มีอยู่จริงใน DOM ตอน perceive — สงสัยว่า
+    มี popup/overlay บัง element ที่ perception (DOM-based ล้วนๆ ไม่เช็ค z-index/overlap
+    เต็มรูปแบบ แม้จะมี marker "[ถูกบังอยู่]" เสริมแล้วก็ตาม) ตรวจไม่เจอครบ — ส่ง
+    screenshot จริงให้ Gemini vision อธิบายสิ่งที่เห็น + คำแนะนำ ไม่ใช้ tool-use (เหมือน
+    generate_plan()) แค่ตอบข้อความธรรมดา ให้ orchestrator.py เอาไปป้อนกลับเข้า prompt
+    step ถัดไปเป็น context เสริม (vision_context ใน _build_user_turn_text())
+
+    ห้าม throw ออกไปเด็ดขาด (เหมือน retriever.retrieve()/long_term_memory.recall()) —
+    ถ้า vision call พังเอง (เช่น quota/network) ต้องไม่ทำให้ agent loop หลักพังตาม คืน ""
+    เงียบๆ แทน
+    """
+    try:
+        prompt = _VISION_FALLBACK_PROMPT_TEMPLATE.format(action_type=action_type, index=index)
+        gemini_model = client.GenerativeModel(model_name=model)
+        response = await gemini_model.generate_content_async(
+            contents=[{
+                "role": "user",
+                "parts": [{"text": prompt}, {"mime_type": "image/png", "data": screenshot_png}],
+            }],
+        )
+        return (response.text or "").strip()
+    except Exception as e:
+        print(f"⚠️ Vision fallback error: {e}", flush=True)
+        return ""

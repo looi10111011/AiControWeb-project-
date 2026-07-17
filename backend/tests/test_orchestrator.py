@@ -19,6 +19,7 @@ from backend.app.core.orchestrator import (
     _build_gemini_history_digest,
     _build_nudge_message,
     _compact_gemini_messages,
+    _make_dialog_handler,
 )
 
 # ทุกเทสต์ mock ทั้ง Playwright และ llm.next_action — ไม่เปิด browser จริง ไม่ยิง LLM API จริง
@@ -71,6 +72,12 @@ def _patch_browser():
     -> await playwright.chromium.launch() -> browser -> await browser.new_page() -> page
     """
     mock_page = AsyncMock()
+    # page.on() เป็น sync method จริงใน Playwright (ลงทะเบียน event listener เฉยๆ ไม่
+    # await) — mock_page เป็น AsyncMock เปล่าๆ ทำให้ .on() กลายเป็น async mock ไปด้วย
+    # โดยไม่ตั้งใจ (W9[A] เพิ่ม page.on("dialog", ...) ใน run_task() แล้วไม่เคย await
+    # ผลลัพธ์เพราะของจริงไม่ต้อง await) ทิ้ง RuntimeWarning ไว้ทุกเทสต์ที่ใช้ fixture นี้
+    # — แก้ให้ตรงกับพฤติกรรมจริงเหมือนที่เคยทำกับ page.locator() ใน W5/W6
+    mock_page.on = MagicMock()
     mock_browser = AsyncMock()
     mock_browser.new_page = AsyncMock(return_value=mock_page)
     mock_browser.close = AsyncMock()
@@ -85,6 +92,51 @@ def _patch_browser():
     mock_async_playwright = MagicMock(return_value=mock_p_helper)
 
     return mock_async_playwright, mock_browser, mock_playwright_instance
+
+
+# --- W9[A] "handle error states (popup)": auto-dismiss JS dialog (alert/confirm/
+# prompt/beforeunload) กันไม่ให้ dialog ที่ไม่มีใคร handle ค้างบล็อกหน้าเว็บทั้งหมด
+
+
+@pytest.mark.asyncio
+async def test_dialog_handler_dismisses_and_records_to_memory():
+    """dialog handler ต้อง dismiss() เสมอ (ไม่ accept — ปลอดภัยกว่า เพราะ confirm()
+    บางเว็บผูกกับ action ทำลายข้อมูล) + บันทึกเข้า short-term memory ให้ step ถัดไป
+    เห็นผ่าน failed_actions_summary() pipe เดิมจาก W7[A] (ไม่ต้องเพิ่ม context section
+    ใหม่)"""
+    memory = ShortTermMemory()
+    mock_dialog = AsyncMock()
+    mock_dialog.type = "confirm"
+    mock_dialog.message = "แน่ใจนะว่าจะออกจากหน้านี้?"
+
+    handler = _make_dialog_handler(memory, verbose=False)
+    await handler(mock_dialog)
+
+    mock_dialog.dismiss.assert_awaited_once()
+    mock_dialog.accept.assert_not_awaited()
+    summary = memory.failed_actions_summary()
+    assert "confirm" in summary
+    assert "แน่ใจนะว่าจะออกจากหน้านี้?" in summary
+
+
+@pytest.mark.asyncio
+async def test_run_task_registers_dialog_handler_on_page():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    mock_page.on.assert_called_once()
+    assert mock_page.on.call_args.args[0] == "dialog"
 
 
 @pytest.mark.asyncio
@@ -443,6 +495,126 @@ async def test_run_task_result_includes_final_page_state():
         result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
     assert result["final_page_state"] == "[0] button 'Order Confirmed'"
+
+
+# --- W9[A] vision fallback (Gemini เท่านั้น): action ที่ต้องพึ่ง element visibility
+# (click/fill/select/check) ล้มเหลว -> ถ่าย screenshot + เรียก describe_screenshot()
+# แล้วป้อนผลลัพธ์เข้า vision_context ของ next_action() รอบถัดไป
+
+
+@pytest.mark.asyncio
+async def test_run_task_triggers_vision_fallback_when_visible_action_fails_on_gemini():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.screenshot = AsyncMock(return_value=b"fakepngbytes")
+    fail_result = ActionResult(False, "click(5)", "หา element ไม่เจอ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 5}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fail_result)), \
+         patch("backend.app.core.llm.build_gemini_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result_gemini", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.describe_screenshot",
+             AsyncMock(return_value="เห็น cookie banner บังปุ่มอยู่"),
+         ) as mock_describe, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action_gemini", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="gemini")
+
+    mock_describe.assert_awaited_once()
+    describe_args = mock_describe.await_args.args
+    assert describe_args[2] == b"fakepngbytes"
+    assert describe_args[3] == "click"
+    assert describe_args[4] == 5
+
+    second_call_vision_context = mock_next_action.await_args_list[1].args[-1]
+    assert second_call_vision_context == "เห็น cookie banner บังปุ่มอยู่"
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_trigger_vision_fallback_for_non_gemini_provider():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fail_result = ActionResult(False, "click(5)", "หา element ไม่เจอ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 5}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fail_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.describe_screenshot") as mock_describe, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    mock_describe.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_trigger_vision_fallback_for_non_visibility_action():
+    """scroll/goto/go_back/switch_tab/wait ล้มเหลวด้วยเหตุผลอื่น ไม่เกี่ยวกับ
+    popup/overlay บัง — ไม่ต้อง trigger vision"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fail_result = ActionResult(False, "scroll(down)", "error: boom")
+
+    next_action_calls = [
+        ("browser_action", {"type": "scroll", "direction": "down"}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fail_result)), \
+         patch("backend.app.core.llm.build_gemini_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result_gemini", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.describe_screenshot") as mock_describe, \
+         patch("backend.app.core.orchestrator.llm.next_action_gemini", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="gemini")
+
+    mock_describe.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_trigger_vision_fallback_when_action_succeeds():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(5)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 5}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.llm.build_gemini_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result_gemini", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.describe_screenshot") as mock_describe, \
+         patch("backend.app.core.orchestrator.llm.next_action_gemini", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="gemini")
+
+    mock_describe.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -890,7 +1062,7 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
     mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
-    manual_context = mock_next_action.await_args.args[-3]
+    manual_context = mock_next_action.await_args.args[-4]
     assert manual_context == "- chunk1\n- chunk2\n- chunk3"
 
 
@@ -946,7 +1118,7 @@ async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    manual_context = mock_next_action.await_args.args[-3]
+    manual_context = mock_next_action.await_args.args[-4]
     assert manual_context == ""
 
 
@@ -975,8 +1147,8 @@ async def test_run_task_memory_context_reflects_previous_step_failure():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    first_call_memory_context = mock_next_action.await_args_list[0].args[-2]
-    second_call_memory_context = mock_next_action.await_args_list[1].args[-2]
+    first_call_memory_context = mock_next_action.await_args_list[0].args[-3]
+    second_call_memory_context = mock_next_action.await_args_list[1].args[-3]
     assert first_call_memory_context == ""
     assert "[FAIL]" in second_call_memory_context
     assert "หา element ไม่เจอ" in second_call_memory_context
@@ -997,7 +1169,7 @@ async def test_run_task_memory_context_is_empty_string_when_no_failures_yet():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    memory_context = mock_next_action.await_args.args[-2]
+    memory_context = mock_next_action.await_args.args[-3]
     assert memory_context == ""
 
 
@@ -1026,7 +1198,7 @@ async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_
     mock_recall.assert_called_once_with(
         query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP
     )
-    long_term_context = mock_next_action.await_args.args[-1]
+    long_term_context = mock_next_action.await_args.args[-2]
     assert long_term_context == "- task1: เคยกด Apply Code แล้วโดนบล็อก"
 
 
@@ -1046,7 +1218,7 @@ async def test_run_task_long_term_context_is_empty_string_when_recall_returns_no
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    long_term_context = mock_next_action.await_args.args[-1]
+    long_term_context = mock_next_action.await_args.args[-2]
     assert long_term_context == ""
 
 
@@ -1243,7 +1415,7 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
     captured_messages_per_call: list[list] = []
 
     async def _next_action_side_effect(
-        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context=""
+        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context="", vision_context=""
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -1305,7 +1477,7 @@ async def test_run_task_does_not_compact_for_non_gemini_provider():
     captured_messages_per_call: list[list] = []
 
     async def _next_action_side_effect(
-        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context=""
+        client, model, goal, page_text, messages, manual_context="", memory_context="", long_term_context="", vision_context=""
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -1431,9 +1603,9 @@ async def test_run_task_rejected_action_flows_into_memory_context_next_step():
         )
 
     # call แรก (สำหรับ step ของ "delete") ยังไม่มี failure ใดๆ มาก่อน
-    first_call_memory_context = mock_next_action.await_args_list[0].args[-2]
+    first_call_memory_context = mock_next_action.await_args_list[0].args[-3]
     # call ที่สอง (สำหรับ step ของ "click" ที่ตามมา) ต้องเห็นการถูกปฏิเสธของ delete แล้ว
-    second_call_memory_context = mock_next_action.await_args_list[1].args[-2]
+    second_call_memory_context = mock_next_action.await_args_list[1].args[-3]
 
     assert first_call_memory_context == ""
     assert "delete" in second_call_memory_context
