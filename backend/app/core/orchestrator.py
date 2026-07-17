@@ -113,6 +113,15 @@ _RAG_CHUNKS_PER_STEP = 3
 # (ประวัติ task run อื่นก่อนหน้า แทนคู่มือที่ user ป้อน) — ดึงใหม่ทุก step เหมือนกัน
 _LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
 
+# W9[A] vision fallback (Gemini เท่านั้นตอนนี้ — ดูเหตุผล scope ที่ llm.py::
+# describe_screenshot()): action ประเภทเหล่านี้เท่านั้นที่ต้องพึ่ง element visibility
+# จริงๆ (click/fill/select/check + alias submit/delete/purchase/pay ที่ dispatch ไป
+# click ตัวเดิม) — scroll/goto/go_back/switch_tab/wait ล้มเหลวด้วยเหตุผลอื่น ไม่เกี่ยว
+# กับ popup/overlay บัง ไม่ต้อง trigger vision
+_VISION_FALLBACK_ACTION_TYPES = {
+    "click", "fill", "select", "check", "submit", "delete", "purchase", "pay",
+}
+
 # W7[B] (RAG-based permission): จำนวน chunk คู่มือที่ดึงมาเช็ค permission ของ action
 # ที่กำลังจะทำ — ตั้งใจแยก query จาก manual_context ด้านบน (query=goal) เพราะรันจริง
 # บน saucedemo.com พบว่า query ระดับ goal กว้างเกินไป: goal ที่พูดถึงคำว่า "Checkout"
@@ -180,6 +189,31 @@ def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> l
         return [new_first] + kept[1:]
     except (KeyError, IndexError, TypeError):
         return messages
+
+
+def _make_dialog_handler(memory: ShortTermMemory, verbose: bool):
+    """W9[A] "handle error states (popup)": auto-dismiss JS dialog (alert/confirm/
+    prompt/beforeunload) — ถ้าไม่ handle เอง Playwright จะปล่อยให้ dialog ค้างบล็อก
+    หน้าเว็บทั้งหมดจนกว่าจะมีใคร accept/dismiss เอง ทำให้ action ถัดไปทุกตัว timeout
+    เงียบๆ โดยไม่มีใครรู้ว่าสาเหตุจริงคือ dialog ค้างอยู่ ไม่ใช่ DOM ยังไม่นิ่ง — เลือก
+    dismiss เสมอ (ไม่ accept) เพราะปลอดภัยกว่า: confirm()/prompt() บางเว็บใช้คู่กับ
+    action ทำลายข้อมูล (เช่น "แน่ใจนะว่าจะลบ?") การ accept ให้เองโดยไม่ถามมนุษย์ก่อนขัด
+    กับหลัก human-in-the-loop ของ permission layer ทั้งระบบ — บันทึกเข้า short-term
+    memory ด้วย (ผ่าน pipe เดียวกับ failed_actions_summary() ที่มีอยู่แล้วจาก W7[A]
+    ไม่ต้องเพิ่ม context section ใหม่) ให้ LLM step ถัดไปรู้ตัวว่าเพิ่งมี dialog โผล่มา
+    แล้วถูกปิดอัตโนมัติ เผื่อ dialog นั้นมีข้อความสำคัญ (เช่น error จากฟอร์ม)"""
+    async def _handle_dialog(dialog):
+        message = f"[POPUP] เจอ {dialog.type} dialog: '{dialog.message}' — ปิดอัตโนมัติแล้ว (dismiss)"
+        if verbose:
+            print(f"  {message}", flush=True)
+        memory.record({
+            "step": -1,  # ไม่ผูกกับ step ไหนโดยเฉพาะ (เกิดขึ้นได้ทุกเมื่อระหว่าง action)
+            "cmd": {"type": "dialog", "dialog_type": dialog.type},
+            "result": message,
+            "success": False,
+        })
+        await dialog.dismiss()
+    return _handle_dialog
 
 
 def _build_nudge_message(provider: str, text: str) -> dict:
@@ -337,6 +371,7 @@ class Orchestrator:
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(headless=is_headless)
         page = await browser.new_page()
+        page.on("dialog", _make_dialog_handler(self.memory, verbose))
 
         messages: list[dict] = []
         success = False
@@ -347,6 +382,11 @@ class Orchestrator:
         premature_true_finish_count = 0
         premature_login_skip_count = 0
         final_page_text = ""
+        # W9[A] vision fallback: คำอธิบายจาก describe_screenshot() ของ step ก่อนหน้า
+        # (ถ้ามี action ที่ต้องพึ่ง visibility ล้มเหลวซ้ำแม้ retry ครบแล้ว) — ใช้ครั้งเดียว
+        # แล้วเคลียร์ทิ้ง (ไม่ persist ข้าม step เพราะเป็น diagnostic ของสถานการณ์ตอนนั้น
+        # ไม่ใช่ fact ถาวรแบบ manual/memory context)
+        pending_vision_context = ""
         plan_text: Optional[str] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
@@ -421,8 +461,13 @@ class Orchestrator:
                 )
                 long_term_context = "\n".join(f"- {chunk}" for chunk in long_term_chunks)
 
+                # W9[A]: ใช้ vision_context ของรอบนี้แล้วเคลียร์ทิ้งทันที (one-shot —
+                # ดู pending_vision_context ด้านบนสุดของ run_task())
+                vision_context, pending_vision_context = pending_vision_context, ""
+
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
-                    client, model, goal, page_text, messages, manual_context, memory_context, long_term_context
+                    client, model, goal, page_text, messages,
+                    manual_context, memory_context, long_term_context, vision_context,
                 )
                 total_usage += usage
                 if verbose:
@@ -611,6 +656,32 @@ class Orchestrator:
                 })
                 if verbose:
                     print(f"  -> {result}", flush=True)
+
+                # W9[A] vision fallback (Gemini เท่านั้น): action ที่ต้องพึ่ง element
+                # visibility ล้มเหลวซ้ำแม้ retry ครบแล้ว (actions.py::
+                # _dispatch_with_retry หมดโควตา) ทั้งที่ index มีอยู่จริงใน DOM ตอน
+                # perceive — สงสัยว่ามี popup/overlay บัง element ที่ perception
+                # (DOM-based ล้วนๆ) ตรวจไม่เจอครบ (แม้จะมี marker "[ถูกบังอยู่]" เสริม
+                # จาก perception.py แล้วก็ตาม — ยังมีเคสที่ elementFromPoint() พลาดได้
+                # เช่น overlay ที่มี pointer-events: none) ถ่าย screenshot จริงส่งให้
+                # Gemini vision วิเคราะห์ ป้อนผลลัพธ์เข้า step ถัดไปเป็น context เสริม
+                # (pending_vision_context ด้านบนสุดของ run_task()) — ห้าม throw ออกไป
+                # กระทบ loop หลักเด็ดขาด (เหมือนทุก fallback อื่นในไฟล์นี้)
+                if (
+                    resolved_provider == "gemini"
+                    and not result.success
+                    and tool_input.get("type") in _VISION_FALLBACK_ACTION_TYPES
+                ):
+                    try:
+                        screenshot_png = await page.screenshot(type="png")
+                        pending_vision_context = await llm.describe_screenshot(
+                            client, model, screenshot_png, tool_input.get("type"), tool_input.get("index"),
+                        )
+                        if verbose and pending_vision_context:
+                            print(f"  [vision-fallback] {pending_vision_context}", flush=True)
+                    except Exception as e:
+                        if verbose:
+                            print(f"  [vision-fallback] ล้มเหลว: {e}", flush=True)
 
                 messages = append_tool_result(messages, tool_use_id, str(result))
 

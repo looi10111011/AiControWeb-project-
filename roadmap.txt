@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-15)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-16)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1300,6 +1300,91 @@
   ไม่ persistent 100% ที่บันทึกไว้ตลอดโปรเจกต์นี้ ผลลัพธ์สุดท้ายยัง success=True ถูกต้อง
   และ final_page_state ถูกเติมค่าจริง ***
 
+  [x] W9 [A]  Vision fallback + handle error states (popup/timeout) — เสร็จแล้ว
+              (2026-07-16)
+
+              แบ่งเป็น 3 ส่วน:
+
+              1) DOM-level overlay detection (perception.py, ไม่ต้องพึ่ง vision เลย
+                 เป็นชั้นตรวจจับที่ถูกกว่า): เดิม get_snapshot() เช็คแค่
+                 getBoundingClientRect()/CSS visibility ของ element เอง ไม่เคยเช็คว่า
+                 มี element อื่นวางทับอยู่จริงไหม (เช่น cookie-consent banner/modal ที่
+                 z-index สูงคลุมทั้งหน้า) ทำให้ perception บอกว่า element "คลิกได้" ทั้ง
+                 ที่คลิกจริงจะโดน overlay ดักไว้ — เพิ่ม
+                 document.elementFromPoint() เช็คที่จุดกึ่งกลางของแต่ละ element ว่า
+                 element บนสุดตรงนั้นคือตัวมันเอง (หรือลูกของมัน) จริงไหม ถ้าไม่ใช่ แปะ
+                 marker "[ถูกบังอยู่]" ต่อท้าย label (ไม่ตัดออกจากลิสต์ เพราะอาจคลิกได้
+                 จริงถ้า overlay หายไปแล้วตอน action ทำงานจริง)
+
+              2) handle error states (popup) — dialog auto-handling
+                 (orchestrator.py): JS dialog (alert/confirm/prompt/beforeunload) ถ้า
+                 ไม่มีใคร handle จะค้างบล็อกหน้าเว็บทั้งหมดจนกว่าจะมีคน accept/dismiss
+                 เอง ทำให้ action ถัดไปทุกตัว timeout เงียบๆ โดยไม่รู้สาเหตุจริง —
+                 เพิ่ม page.on("dialog", handler) ที่ dismiss() เสมอ (ไม่ accept —
+                 ปลอดภัยกว่า เพราะ confirm() บางเว็บผูกกับ action ทำลายข้อมูล accept
+                 เองโดยไม่ถามมนุษย์ขัดกับหลัก human-in-the-loop ของ permission layer
+                 ทั้งระบบ) + บันทึกเข้า short-term memory ผ่าน pipe เดียวกับ
+                 failed_actions_summary() ที่มีอยู่แล้วจาก W7[A] (ไม่ต้องเพิ่ม context
+                 section ใหม่)
+
+              3) Vision fallback (llm.py::describe_screenshot() + orchestrator.py,
+                 Gemini เท่านั้นตอนนี้ — scope แบบเดียวกับ context compaction ของ
+                 W7[A]): action ที่ต้องพึ่ง element visibility (click/fill/select/
+                 check + alias submit/delete/purchase/pay) ล้มเหลวซ้ำแม้ retry ครบแล้ว
+                 (actions.py::_dispatch_with_retry หมดโควตา) ทั้งที่ index มีอยู่จริง
+                 ใน DOM ตอน perceive — ถ่าย screenshot จริงส่งให้ Gemini vision (ไม่ใช้
+                 tool-use เหมือน generate_plan()) อธิบายสิ่งที่เห็น + คำแนะนำ ป้อนกลับ
+                 เข้า step ถัดไปเป็น context ใหม่ (vision_context, thread ผ่าน
+                 _build_user_turn_text()/next_action()/next_action_groq()/
+                 next_action_gemini() ทั้ง 3 ตัวเหมือน manual_context/memory_context/
+                 long_term_context เดิม — ตัวอื่นนอก Gemini ได้ "" เสมอในทางปฏิบัติ) —
+                 ใช้แบบ one-shot (เคลียร์ทิ้งหลังใช้ 1 ครั้ง ไม่ persist ข้าม step
+                 เพราะเป็น diagnostic ของสถานการณ์ตอนนั้น ไม่ใช่ fact ถาวร) ห้าม throw
+                 ออกไปกระทบ loop หลักเด็ดขาด (เหมือนทุก fallback อื่นในไฟล์นี้)
+
+              unit test ใหม่ 17 เคส: 1 ใน test_perception.py (element ที่ถูก overlay
+              บังจริงต้องมี marker, element ที่ไม่ถูกบังต้องไม่มี) + 2 ใน
+              test_orchestrator.py (dialog handler dismiss()+บันทึก memory จริง,
+              page.on("dialog", ...) ถูกเรียกจริงใน run_task()) + 6 ใน test_llm.py
+              (_build_user_turn_text มี/ไม่มี vision section, next_action_gemini ส่ง
+              vision_context เข้า prompt จริง/ไม่ส่งเมื่อไม่มี, describe_screenshot คืน
+              text ที่ strip แล้ว + ส่ง screenshot bytes/action_type/index ถูกต้อง, ห้าม
+              throw ออกไปเมื่อ Gemini call พังเอง) + 4 ใน test_orchestrator.py
+              (trigger vision fallback จริงเมื่อ visibility action fail บน Gemini แล้ว
+              ผลลัพธ์ไหลเข้า vision_context ของ step ถัดไป, ไม่ trigger ถ้า provider
+              ไม่ใช่ gemini, ไม่ trigger กับ action ที่ไม่ต้องพึ่ง visibility เช่น
+              scroll, ไม่ trigger ถ้า action สำเร็จ) + แก้ test เดิมหลายเคสที่ index
+              ตำแหน่ง arg ของ next_action ต้องขยับ (เพิ่ม vision_context ต่อท้าย
+              parameter ที่มีอยู่) — รวม test suite 176 เคส ผ่านหมด
+
+              *** รันจริงยืนยันครบทั้ง 3 ส่วนบน saucedemo.com ผ่าน Gemini (ไม่ mock
+              อะไรเลย ใช้ Playwright จริง):
+              - dialog handling: ฉีดปุ่มที่เรียก alert() จริงแล้วคลิก — เห็น log
+                [POPUP] ขึ้นจริง, dismiss() สำเร็จ (page ไม่ค้าง ยังตอบสนองปกติหลังจาก
+                นั้น), บันทึกเข้า memory.failed_actions_summary() จริง
+              - overlay detection + vision fallback (2 รอบ): รอบแรกฉีด overlay ที่มอง
+                ไม่เห็นด้วยตา (rgba เกือบโปร่งใสสนิท, จำลอง click-catcher ที่บางเว็บมี
+                จริง) บังปุ่ม "Add to cart" — perception ติด marker "[ถูกบังอยู่]"
+                ถูกต้อง, click จริงผ่าน actions.execute() fail จริง (Playwright
+                ตรวจจับว่า element โดน overlay ดัก pointer event ไม่ใช่ mock) ครบ 3
+                retry แล้ว, vision fallback ทำงาน: Gemini ตอบตรงไปตรงมาว่า "ไม่เห็น
+                popup ชัดเจนในภาพ" (ถูกต้องแล้ว เพราะ overlay นี้มองไม่เห็นด้วยตาจริงๆ
+                ตามที่ตั้งใจทดสอบ) พร้อมแนะนำทางแก้อื่น (scrollIntoView/เจาะจง
+                selector) — รอบสองฉีด overlay ที่มองเห็นได้จริง (จำลอง cookie-consent
+                banner คลุมครึ่งจอ มีข้อความ) แล้วทำซ้ำ: Gemini ตอบถูกต้องชัดเจนว่า
+                "มี cookie banner ปรากฏขึ้นมาบังส่วนกลางของหน้าจอ" พร้อมแนะนำให้ปิด
+                banner ก่อน — พิสูจน์ว่า vision fallback ทำงานตรงไปตรงมาจริง (ไม่
+                hallucinate เห็นสิ่งที่ไม่มี แยกแยะ "เห็นชัดเจน" กับ "ไม่เห็นอะไรผิดปกติ"
+                ได้ถูกต้องตามภาพจริงทั้ง 2 กรณี) ***
+
+              เพิ่ม run.py: python run.py vision-fallback (alias: w9) — ฉีด overlay
+              ปลอม (จำลอง cookie-consent banner) บังปุ่ม Add to cart จริงหลัง login
+              เสร็จ แล้วขับ perception/execute/describe_screenshot ตรงๆ ทีละขั้น (ไม่
+              ผ่าน Orchestrator.run_task() เพราะไม่มี hook ให้แทรก overlay ระหว่างกลาง
+              loop — ไม่อยากเพิ่ม plumbing ใหม่ใน orchestrator.py แค่เพื่อ demo อย่าง
+              เดียว เหมือน pattern ของ run_permission_demo() เดิมที่ขับ execute()
+              ตรงๆ ไม่ผ่าน Orchestrator เหมือนกัน)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1416,7 +1501,11 @@
   เฟส 3 : ความทนทาน + UI + รวมระบบ  (สัปดาห์ 9-11)
 ================================================================
 
-  W9  ┬ [A]  Vision fallback + handle error states (popup/timeout)
+  W9  ┬ [A]  Vision fallback + handle error states (popup/timeout)  ✅ เสร็จแล้ว
+      │      (2026-07-16 — overlay detection ใน perception.py (marker
+      │      "[ถูกบังอยู่]"), dialog auto-handling (popup), vision fallback ผ่าน
+      │      Gemini เมื่อ action ที่ต้องพึ่ง visibility ล้มเหลวซ้ำ — รันจริงยืนยันครบ
+      │      ทั้ง 3 ส่วนบน saucedemo.com ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน)
       └ [B]  เพิ่มความหลากหลายคู่มือ/เว็บ + เก็บ edge cases
 
   W10 ┬ [A]  API endpoints (FastAPI) + Browser Pool (persistent)

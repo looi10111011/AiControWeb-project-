@@ -175,3 +175,36 @@ async def test_get_snapshot_redirects_badge_index_to_clickable_ancestor():
     assert len(elements) == 1
     assert elements[0]["tag"] == "a"
     assert elements[0]["label"] == "shopping cart link (1)"
+
+
+# W9[A]: element ที่ "มองเห็นได้" ตาม CSS (visibility/display/opacity/ขนาดปกติ) แต่มี
+# element อื่นวางทับอยู่จริง (เช่น modal/cookie-banner ที่ z-index สูงคลุมทั้งหน้า) ต้อง
+# ถูกแปะ marker ในป้าย — getBoundingClientRect()/CSS visibility อย่างเดียวจับเคสนี้
+# ไม่ได้เพราะเช็คแค่ตัว element เอง ไม่เช็คว่ามีอะไรวางทับอยู่ข้างบน
+_HTML_WITH_OVERLAY = """
+<html><body>
+  <button id="covered-btn" style="position:absolute; top:100px; left:100px; width:100px; height:40px;">Covered Button</button>
+  <div style="position:absolute; top:80px; left:80px; width:200px; height:100px; background:white; z-index:10;"></div>
+  <button id="free-btn" style="position:absolute; top:300px; left:100px; width:100px; height:40px;">Free Button</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_element_obscured_by_overlay():
+    """element ที่ถูกบังจริง (covered-btn) ต้องมี marker '[ถูกบังอยู่]' ในป้าย —
+    element ที่ไม่ถูกบัง (free-btn) ต้องไม่มี marker นี้ปนมาด้วย"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_WITH_OVERLAY)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    covered = next(e for e in elements if "Covered Button" in e["label"])
+    free = next(e for e in elements if "Free Button" in e["label"])
+
+    assert "[ถูกบังอยู่]" in covered["label"]
+    assert "[ถูกบังอยู่]" not in free["label"]
