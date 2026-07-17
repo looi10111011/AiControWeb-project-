@@ -52,6 +52,31 @@ TEST_CASES = [
     {"query": "ดาวน์โหลดไฟล์จากเว็บ", "expect_keyword": "Save link as"},
     # negative case: คำถามที่ไม่เกี่ยวกับเนื้อหาเลย ใช้เช็คว่าไม่ดึง chunk ผิดมาแบบมั่ว
     {"query": "สูตรทำต้มยำกุ้ง", "expect_keyword": None},
+    # --- กลุ่ม A: Browser/Navigation ---
+    {"query": "เปิด tab ใหม่ใน browser ยังไง", "expect_keyword": "Ctrl+T"},
+    {"query": "ปิด tab แล้วกู้คืนได้ไหม", "expect_keyword": "Ctrl+Shift+T"},
+    {"query": "reload หน้าเว็บโดยไม่ใช้ cache", "expect_keyword": "Ctrl+Shift+R"},
+    {"query": "เปิด developer tools ดู HTML ได้ยังไง", "expect_keyword": "F12"},
+    # --- กลุ่ม B: Web Form/Interaction ---
+    {"query": "กรอกฟอร์มบนเว็บแล้วกด submit", "expect_keyword": "Submit"},
+    {"query": "upload ไฟล์บนเว็บทำยังไง", "expect_keyword": "Choose File"},
+    # --- กลุ่ม C: Security/Account ---
+    {"query": "logout ออกจาก account บนเว็บ", "expect_keyword": "Sign out"},
+    {"query": "เช็คว่าเว็บไซต์ปลอดภัยไหม", "expect_keyword": "padlock"},
+    # --- หัวข้อจากรอบแรก (ล้าง Cache, Incognito) ---
+    {"query": "ล้าง cache browser ทำยังไง", "expect_keyword": "Clear browsing data"},
+    {"query": "เปิด incognito mode", "expect_keyword": "Incognito"},
+    # negative case เพิ่มเติม
+    {"query": "วิธีทำผัดไทย", "expect_keyword": None},
+    # --- กลุ่ม D-J: Edge Cases ---
+    {"query": "มี popup บังหน้าจอคลิกไม่ได้ทำไง", "expect_keyword": "Modal"},
+    {"query": "เจอ captcha ต้องกดแก้เองไหม", "expect_keyword": "ห้าม Agent พยายามแก้ปัญหาเองเด็ดขาด"},
+    {"query": "ระบบให้กรอกบัตรเครดิต ใช้บัตรไหนได้บ้าง", "expect_keyword": "Test Credit Card"},
+    {"query": "ถ้าเว็บขึ้น 500 error ทำไงต่อ", "expect_keyword": "Alt+Left Arrow"},
+    {"query": "เจอแจ้งเตือน alert ของเบราว์เซอร์กดใน DOM ได้ไหม", "expect_keyword": "ห้ามพยายามค้นหาปุ่มเหล่านี้ใน DOM"},
+    {"query": "อัปโหลดไฟล์แต่หน้าต่าง OS เด้งขึ้นมา ต้องทำไง", "expect_keyword": 'type="file"'},
+    {"query": "ช่องนี้กด Ctrl+V ไม่ได้", "expect_keyword": "พิมพ์ข้อมูลทีละตัวอักษร"},
+    {"query": "เว็บขึ้น 429 Too Many Requests", "expect_keyword": "อย่างน้อย 60 วินาที"},
 ]
 
 
