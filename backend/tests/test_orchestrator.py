@@ -139,6 +139,52 @@ async def test_run_task_registers_dialog_handler_on_page():
     assert mock_page.on.call_args.args[0] == "dialog"
 
 
+def _patch_pooled_browser():
+    """W10[A]: mock chain สำหรับ browser ที่ยืมมาจาก BrowserPool.acquire() (ต่างจาก
+    _patch_browser() ด้านบนที่จำลอง async_playwright().start() ทั้งสาย) — ตัวนี้ไม่มี
+    playwright/chromium.launch() เกี่ยวข้องเลย เพราะ browser ถูกส่งเข้ามาสำเร็จรูปแล้ว
+    ต้องเปิดแค่ context ใหม่: await browser.new_context() -> context
+    -> await context.new_page() -> page"""
+    mock_page = AsyncMock()
+    mock_page.on = MagicMock()
+    mock_context = AsyncMock()
+    mock_context.new_page = AsyncMock(return_value=mock_page)
+    mock_context.close = AsyncMock()
+    mock_browser = AsyncMock()
+    mock_browser.new_context = AsyncMock(return_value=mock_context)
+    return mock_browser, mock_context, mock_page
+
+
+@pytest.mark.asyncio
+async def test_run_task_with_pooled_browser_uses_context_not_new_browser_process():
+    """เมื่อส่ง browser= เข้ามาเอง (จำลอง BrowserPool.acquire()) ห้ามเปิด
+    async_playwright()/chromium.launch() ใหม่เด็ดขาด (นั่นคือทั้งจุดของ pool — reuse
+    browser process เดิม) ต้องเปิดแค่ BrowserContext ใหม่แทน แล้วปิดแค่ context ตอนจบ
+    ไม่แตะ browser (ของ pool ต้องคืนกลับให้ยืมต่อได้ ไม่ถูกปิดทิ้ง)"""
+    mock_browser, mock_context, mock_page = _patch_pooled_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright") as mock_async_playwright, \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", browser=mock_browser,
+        )
+
+    assert result["success"] is True
+    mock_async_playwright.assert_not_called()
+    mock_browser.new_context.assert_awaited_once()
+    mock_context.new_page.assert_awaited_once()
+    mock_page.on.assert_called_once()
+    mock_context.close.assert_awaited_once()
+    mock_browser.close.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_run_task_stops_immediately_on_finish_task():
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
