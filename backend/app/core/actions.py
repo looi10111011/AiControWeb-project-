@@ -200,9 +200,16 @@ async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
 REJECTED_BY_USER_MESSAGE = "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)"
 
 
-async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc]) -> bool:
+async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label: str = "") -> bool:
+    """label: ชื่อ element เป้าหมายจริงบนหน้าเว็บ (เช่น "Place Order") — แนบเข้า cmd
+    สำเนา (ไม่แตะ cmd ตัวจริงที่ยังต้องใช้ dispatch ต่อ) ภายใต้ key "element_label" แยก
+    จาก key "label" เดิมของ cmd (ซึ่งมีความหมายอื่นสำหรับ action type="select" คือ
+    ตัวเลือกที่จะเลือก ไม่ใช่ชื่อ element) ให้ชั้นบน (API server -> UI) โชว์ "กดปุ่มอะไร"
+    เป็นชื่อจริงแทน index เปล่าๆ ในการ์ด permission prompt — เหมือน pattern เดียวกับที่
+    orchestrator.py แนบ "label" คู่กับ "cmd" เข้า history/event อยู่แล้ว (ดู W10[D])"""
     if ask_user_func is not None:
-        return bool(await ask_user_func(cmd))
+        confirm_cmd = dict(cmd, element_label=label) if label else cmd
+        return bool(await ask_user_func(confirm_cmd))
     print(f"\n[HUMAN-IN-THE-LOOP] Agent ต้องการเรียกใช้คำสั่งที่มีความเสี่ยง: {cmd}", flush=True)
     # ใช้ asyncio.to_thread เพื่อให้รับ input() ได้โดยไม่บล็อก async event loop หลัก
     choice = await asyncio.to_thread(input, "คุณต้องการอนุญาตให้ทำ Action นี้หรือไม่? (y/n): ")
@@ -247,7 +254,7 @@ async def execute(
     if risk == ActionRisk.BLOCKED:
         return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
     if risk == ActionRisk.NEEDS_CONFIRMATION:
-        approved = await _confirm_action(cmd, ask_user_func)
+        approved = await _confirm_action(cmd, ask_user_func, label)
         if not approved:
             return ActionResult(False, f"{t}", REJECTED_BY_USER_MESSAGE)
 

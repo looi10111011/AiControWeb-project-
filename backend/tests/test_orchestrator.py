@@ -260,6 +260,7 @@ async def test_run_task_executes_action_then_finishes():
         {
             "step": 1,
             "cmd": {"type": "click", "index": 2},
+            "label": "",  # get_snapshot() mock คืน elements=[] ในเทสต์นี้ เลยไม่มี label ให้จับคู่
             "result": str(click_result),
             "success": True,
             "tokens": {"input": 50, "output": 10, "cache_read": 0, "cache_creation": 0},
@@ -719,6 +720,40 @@ async def test_run_task_confirm_plan_proceeds_when_user_approves():
     assert result["success"] is True
     assert result["plan"] == "1. ทำ A"
     mock_next_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_task_uses_user_edited_plan_text_when_confirmed():
+    """W10[F]: user แก้ไขข้อความแผนก่อนกด Confirm (จำลองพฤติกรรมของ
+    TaskManager.resolve_approval(edited_plan=...) ที่ mutate cmd["plan"] ใน-place ก่อน
+    ask_user_func คืนค่ากลับมา) — ผลลัพธ์ต้องสะท้อนแผนที่แก้แล้ว (ไม่ใช่แผนเดิมที่ AI ร่าง)
+    ทั้งใน result["plan"] และใน goal ที่ next_action() เห็นทุก step ต่อจากนี้ (ไม่งั้นแก้
+    plan ไปก็ไม่มีผลอะไรกับพฤติกรรมจริงเลย)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    async def _ask_user_edits_the_plan(cmd: dict) -> bool:
+        # จำลอง TaskManager.resolve_approval(request_id, True, edited_plan="...")
+        cmd["plan"] = "1. แผนที่ user แก้ไขเอง"
+        return True
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.llm.generate_plan", AsyncMock(return_value="1. แผนเดิมที่ AI ร่าง")), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "some goal", provider="anthropic",
+            confirm_plan=True, ask_user_func=_ask_user_edits_the_plan,
+        )
+
+    assert result["plan"] == "1. แผนที่ user แก้ไขเอง"
+    effective_goal_seen_by_next_action = mock_next_action.await_args.args[2]
+    assert "แผนที่ user แก้ไขเอง" in effective_goal_seen_by_next_action
+    assert "แผนเดิมที่ AI ร่าง" not in effective_goal_seen_by_next_action
 
 
 @pytest.mark.asyncio
@@ -1620,19 +1655,21 @@ async def test_run_task_needs_confirmation_action_rejected_when_ask_user_func_de
 
 
 @pytest.mark.asyncio
-async def test_run_task_rejected_action_flows_into_memory_context_next_step():
-    """(2026-07-15) Refusal memory: action ที่ถูกมนุษย์ปฏิเสธจริงผ่าน execute() ตัวจริง
-    (ไม่ mock) ต้องโผล่ใน memory_context ที่ส่งเข้า next_action() ของ step ถัดไปทันที
-    (ผ่าน ShortTermMemory.failed_actions_summary() ที่แก้ไว้ให้ไม่ evict รายการที่ถูก
-    ปฏิเสธ) — พิสูจน์ wiring ทั้งสาย: ask_user_func ปฏิเสธ -> record() บันทึกด้วย
-    REJECTED_BY_USER_MESSAGE -> memory_context ของ step ถัดไปเห็นข้อความนี้จริง"""
+async def test_run_task_stops_immediately_when_action_rejected_by_human():
+    """(2026-07-17) เดิม (ก่อนแก้): action ที่ถูกมนุษย์ปฏิเสธ (ask_user_func คืน False)
+    จะถูกป้อนกลับเข้า messages แล้วปล่อยให้ LLM วน loop ลองทางอื่นต่อไปเรื่อยๆ — ผิด
+    เจตนาของ human-in-the-loop (การกด Deny ควรแปลว่า "หยุด" ไม่ใช่ "ลองทางอื่น") — ตอนนี้
+    ต้องจบ task ทันทีที่โดนปฏิเสธ ไม่เรียก next_action() รอบถัดไปอีกเลย (ต่างจาก
+    test_run_task_rejected_action_flows_into_memory_context_next_step เดิมที่ยืนยันไว้
+    ตรงข้ามกัน — พฤติกรรมเปลี่ยนไปตามที่ user ขอ)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     ask_user_func = AsyncMock(return_value=False)
 
     next_action_calls = [
         ("browser_action", {"type": "delete", "index": 5}, "t1", [], llm.TokenUsage()),
+        # ไม่ควรถูกเรียกเลย — ถ้า mock ถูก consume ตัวนี้แปลว่า loop ยังวนต่อทั้งที่ถูก
+        # ปฏิเสธไปแล้ว (บั๊กเดิมที่กำลังกันไว้)
         ("browser_action", {"type": "click", "index": 2}, "t2", [], llm.TokenUsage()),
-        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
     ]
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
@@ -1644,18 +1681,15 @@ async def test_run_task_rejected_action_flows_into_memory_context_next_step():
          patch(
              "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
          ) as mock_next_action:
-        await Orchestrator().run_task(
+        result = await Orchestrator().run_task(
             "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
         )
 
-    # call แรก (สำหรับ step ของ "delete") ยังไม่มี failure ใดๆ มาก่อน
-    first_call_memory_context = mock_next_action.await_args_list[0].args[-3]
-    # call ที่สอง (สำหรับ step ของ "click" ที่ตามมา) ต้องเห็นการถูกปฏิเสธของ delete แล้ว
-    second_call_memory_context = mock_next_action.await_args_list[1].args[-3]
-
-    assert first_call_memory_context == ""
-    assert "delete" in second_call_memory_context
-    assert "ผู้ใช้ปฏิเสธการทำ Action นี้" in second_call_memory_context
+    assert mock_next_action.await_count == 1  # ไม่มีการลองทางอื่นต่อหลังโดนปฏิเสธ
+    assert result["success"] is False
+    assert "ปฏิเสธ" in result["message"]
+    assert "[FAIL]" in result["history"][1]["result"]
+    assert "ผู้ใช้ปฏิเสธการทำ Action นี้" in result["history"][1]["result"]
 
 
 @pytest.mark.asyncio
@@ -1711,9 +1745,50 @@ async def test_run_task_plain_click_on_risky_labeled_element_still_asks_for_conf
             "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
         )
 
-    ask_user_func.assert_awaited_once_with({"type": "click", "index": 7})
+    # element_label แนบเข้าไปให้ ask_user_func เห็นชื่อ element จริงด้วย (ไม่ใช่แค่ index)
+    # — cmd ต้นฉบับที่ dispatch จริงยังไม่ถูกแตะ (ดู actions.py::_confirm_action)
+    ask_user_func.assert_awaited_once_with({"type": "click", "index": 7, "element_label": "Remove"})
     assert result["success"] is True
     assert "[OK]" in result["history"][1]["result"]
+    # W10[D]: history ต้องเก็บ label ของ element เป้าหมายไว้ด้วย (ไม่ใช่แค่ index) ให้ UI
+    # โชว์ชื่อจริง (เช่น "Remove") แทน index เปล่าๆ — ดึงจาก elements ของ snapshot รอบ
+    # เดียวกับที่ action_label ด้านบนใช้เช็ค permission อยู่แล้ว ไม่ต้องคำนวณซ้ำ
+    assert result["history"][1]["label"] == "Remove"
+
+
+@pytest.mark.asyncio
+async def test_run_task_on_event_step_includes_element_label():
+    """W10[D]: on_event() (สตรีมสดๆ ไปหน้าเว็บ W10[B]) ต้องได้ label ของ element
+    เป้าหมายเหมือนกับที่ history เก็บไว้ ไม่ใช่แค่ index เปล่าๆ — ให้ Log panel ที่ฟัง
+    stream สดๆ โชว์ชื่อปุ่ม/ช่องกรอกได้แบบ real-time เหมือนกับตอน task จบแล้ว"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    on_event = AsyncMock()
+
+    elements = [{"index": 3, "tag": "button", "type": "", "label": "Checkout"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch(
+             "backend.app.core.orchestrator.execute",
+             AsyncMock(return_value=ActionResult(True, "click(3)", "สำเร็จ")),
+         ), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event
+        )
+
+    assert result["success"] is True
+    step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "step"]
+    action_step_event = next(e for e in step_events if e.get("cmd", {}).get("type") == "click")
+    assert action_step_event["label"] == "Checkout"
 
 
 # --- W7[B]: RAG-based permission — manual_context (ดึงมาแล้วสำหรับ planner ตั้งแต่
@@ -1789,6 +1864,6 @@ async def test_run_task_asks_for_confirmation_when_manual_requires_approval_for_
             "https://example.com", "goal", provider="anthropic", ask_user_func=ask_user_func
         )
 
-    ask_user_func.assert_awaited_once_with({"type": "click", "index": 9})
+    ask_user_func.assert_awaited_once_with({"type": "click", "index": 9, "element_label": "Checkout"})
     assert result["success"] is True
     assert "[OK]" in result["history"][1]["result"]

@@ -208,3 +208,37 @@ async def test_get_snapshot_marks_element_obscured_by_overlay():
 
     assert "[ถูกบังอยู่]" in covered["label"]
     assert "[ถูกบังอยู่]" not in free["label"]
+
+
+# บั๊กที่เจอจริงระหว่างต่อ W10[D] (แสดงชื่อ element แทน index ใน Log panel): เดิม
+# data-ai-index ที่แปะไว้จาก get_snapshot() รอบก่อนไม่เคยถูกเคลียร์ — get_snapshot()
+# รอบถัดไปบนหน้าเดิม (ไม่มี navigation คั่น เช่น orchestrator.py สั่ง "fill" สองครั้ง
+# ติดกัน) เจอ element ที่มี data-ai-index ค้างอยู่แล้วจากรอบก่อน แล้วเข้าใจผิดว่า "แปะ
+# index ไปแล้วในรอบนี้" (guard ที่ตั้งใจกันแปะซ้ำ "ภายในรอบเดียวกัน" ระหว่างเช็ค
+# badge-ก่อนไปตัวพ่อ) จึง skip element นั้นออกจาก elements list ของรอบใหม่ไปเงียบๆ —
+# ทำให้ snapshot ที่สองบนหน้าเดิมได้ elements น้อยลง/ว่างเปล่า ทั้งที่ element ยังอยู่จริง
+_HTML_SIMPLE_LOGIN_FORM = """
+<html><body>
+  <input id="user" placeholder="Username">
+  <input id="pass" type="password" placeholder="Password">
+  <button id="login">Login</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_returns_same_elements_on_repeated_calls_without_navigation():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_SIMPLE_LOGIN_FORM)
+
+        elements1, _ = await get_snapshot(page)
+        elements2, _ = await get_snapshot(page)  # ไม่มี navigation คั่นกลาง — หน้าเดิม
+
+        await browser.close()
+
+    labels1 = sorted(e["label"] for e in elements1)
+    labels2 = sorted(e["label"] for e in elements2)
+    assert labels1 == ["Login", "Password", "Username"]
+    assert labels2 == labels1

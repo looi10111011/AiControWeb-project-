@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-17)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-20)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1459,6 +1459,93 @@
               จำเป็นสำหรับทั้ง fastapi.testclient.TestClient ใน test_api.py และ
               run_w10_api_demo() เอง)
 
+  [x] W10 [B]  Test Console (UI): สั่งงาน + แสดง log/reasoning เรียลไทม์ — เสร็จแล้ว
+              (2026-07-20)
+
+              เดิมมีความพยายามทำ frontend ผ่าน yii2-console (PHP/Yii2 shell ที่ยิง
+              agent_runner.py เป็น subprocess) — ตัดทิ้งทั้งโฟลเดอร์ (ไม่เคยถูก commit
+              เข้า repo อยู่แล้ว) แล้วสร้าง Test Console ใหม่เป็นหน้าเว็บ static เดียว
+              (backend/app/static/index.html, vanilla JS ไม่พึ่ง framework ใดๆ) mount
+              เข้ากับ FastAPI server ตัวเดียวกับ W10[A] ตรงๆ ผ่าน StaticFiles — ไม่ต้อง
+              รัน process แยก/ภาษาแยกอีกต่อไป
+
+              แบ่งเป็นหลายรอบสั้นๆ ตามที่ user ทยอยขอเพิ่ม:
+
+              1) Real-time streaming: เดิม POST /tasks คืนแค่ task_id ให้ poll GET
+                 /tasks/{id} เอาผลลัพธ์รวมท้าย task เดียว (ไม่เห็นความคืบหน้าระหว่างรัน
+                 เลย) — เพิ่ม GET /tasks/{id}/stream (Server-Sent Events) + on_event
+                 callback ใหม่ใน Orchestrator.run_task() ที่ยิง event "step" ออกมาทุก
+                 action จริง (goto ตอนเริ่ม + ทุก step ใน loop) ผ่าน TaskManager.
+                 push_event() (backend/app/api/task_manager.py เพิ่ม events: asyncio.
+                 Queue ต่อ task) — เจอบั๊ก double-delivery ของ event ถ้า SSE connection
+                 ใหม่ต่อเข้ามาในจังหวะที่ event เพิ่งถูก push (ทั้ง replay-on-reconnect
+                 และ queue drain ปกติส่ง event เดียวกันซ้ำ) แก้ด้วย flag "delivered"
+                 ต่อ pending request
+
+              2) Human-in-the-loop จริงบนหน้าเว็บ: เดิม (W10[A]) auto_approve=false
+                 แปลว่า action ที่ต้องขออนุมัติถูก "ปฏิเสธ" อัตโนมัติเสมอ (fail closed
+                 เพราะไม่มี human อยู่หน้าจอ) — ตอนนี้เปลี่ยนเป็นถามจริง: ask_user_func
+                 push event "approval_request" เข้า SSE stream (โชว์ปุ่ม Approve/Deny
+                 หรือ Confirm/Cancel plan บนหน้าเว็บจริง) แล้วรอ POST /tasks/{id}/
+                 respond (TaskManager.request_approval() ใช้ asyncio.Future บล็อกเฉพาะ
+                 task coroutine นั้น ไม่บล็อก event loop รวม) — เพิ่ม
+                 approval_timeout_seconds (default 300s ใน config.py): ถ้าไม่มีใครตอบ
+                 ภายในเวลานี้ (เช่น ปิดแท็บทิ้งกลางคัน) auto-deny แทนที่จะรอตลอดกาล — นี่
+                 คือ bug จริงที่เจอระหว่างทดสอบเอง: task ที่ค้างรอ human ไม่มีวันคืน
+                 browser context กลับ pool (W10[A]) ทำให้ pool โดนกัด quota ไปเรื่อยๆ
+                 จน task ใหม่ทุกตัวติดคิวรอ browser ที่ไม่มีวันว่าง (อาการที่เห็นจริง:
+                 "plan ไม่ขึ้นเลย" — สืบไปพบว่า task เดิมค้างยึด pool อยู่)
+
+              3) Stop button: เพิ่ม POST /tasks/{id}/stop (TaskManager.cancel() ส่ง
+                 asyncio.CancelledError เข้า task ที่กำลังรัน ไม่ว่าจะกำลัง await LLM/
+                 execute()/รอ human ตอบก็ตาม) — สถานะใหม่ "cancelled" แยกจาก done/error
+                 — CancelledError สืบทอดจาก BaseException ไม่ใช่ Exception ตั้งแต่
+                 Python 3.8 เลยต้อง catch แยกใน TaskManager._run() ไม่งั้น task จะค้าง
+                 "running" ตลอดไปไม่มีใครอัพเดตสถานะ
+
+              4) Visible browser window: headless=false ตรงๆ (ไม่ใช่ default) บายพาส
+                 BrowserPool ไปเลย (browser ใน pool launch แบบ headless ไว้ล่วงหน้า
+                 ตั้งแต่ startup แล้ว เปลี่ยนทีหลังไม่ได้ ต้อง launch browser ใหม่ทั้งตัว)
+                 + keep_browser_open=True (ไม่ปิดหน้าต่างตอน task จบตามที่ user ขอ
+                 "ไม่ต้องปิดจนกว่า user จะปิดเอง" — มีผลเฉพาะ browser ที่ owns_browser=True
+                 เท่านั้น context ที่ยืมจาก pool ยังต้องคืนเสมอ)
+
+              5) แสดงชื่อ element แทน index ใน log: history/step event แนบ "label" ของ
+                 element เป้าหมาย (จาก perception.py) เข้าไปด้วย ไม่ใช่แค่ index เปล่าๆ —
+                 ระหว่างทำพบบั๊กจริงใน perception.py: data-ai-index ที่แปะบน DOM จาก
+                 get_snapshot() รอบก่อนไม่เคยถูกเคลียร์ ทำให้ snapshot รอบถัดไปบนหน้า
+                 เดิม (ไม่มี navigation คั่น เช่น fill สองครั้งติดกัน) เห็น element น้อย
+                 ลงเรื่อยๆ (label หาย แม้ selector เดิมจะยังกด/กรอกได้จริงเพราะ attribute
+                 เก่ายังติดอยู่) — แก้ด้วยการเคลียร์ data-ai-index ทั้งหมดก่อนเริ่ม scan
+                 ทุกรอบ (บั๊กนี้มีมาตั้งแต่ W2 ไม่เกี่ยวกับ Test Console โดยตรง แต่ Test
+                 Console เป็นจุดแรกที่ทำให้เห็นผลกระทบชัด)
+
+              6) ปรับ layout ตามที่ user ขอเพิ่มหลายรอบ: ย้าย Plan จากแผงขวาแยกมาแสดงใน
+                 chat หลักแบบเรียลไทม์ (แทนที่จะรอ task จบถึงเห็น) + log panel เก็บไว้
+                 ใน แผงขวา แต่ค่า default ซ่อนไว้ (ปุ่ม "Show log" กดเพื่อเปิดเอง) +
+                 รวม task หลายตัวเข้า "conversation" เดียวกัน (เก็บ mapping ใน
+                 localStorage) ให้พิมพ์คำสั่งต่อได้เรื่อยๆ ในแชทเดิมโดยไม่ต้องกด
+                 "+ New session" ทุกครั้ง (แต่ละคำสั่งยังเป็น orchestrator run อิสระกัน
+                 อยู่ดี ไม่ได้ต่อ browser session เดิมจริงๆ แค่ UI ต่อเนื่องกัน)
+
+              7) แก้ plan ก่อน confirm ได้ + ปฏิเสธแล้วต้องจบทันที: เพิ่มปุ่ม Edit บน
+                 plan bubble ให้แก้ข้อความก่อนกด Confirm (POST /respond รับ edited_plan
+                 เพิ่ม — TaskManager.resolve_approval() mutate cmd["plan"] ใน-place ก่อน
+                 resolve future ให้ _confirm_plan() ใน orchestrator.py อ่านค่าที่แก้แล้ว
+                 ออกไปผนวกเข้า goal ทุก step ต่อจากนี้ ไม่ใช่แค่โชว์เฉยๆ) — แก้บั๊ก
+                 พฤติกรรมเดิม: action ที่ถูกมนุษย์ปฏิเสธ (กด Deny) เดิมถูกป้อนกลับเข้า
+                 messages แล้วปล่อยให้ LLM ลองทางอื่นต่อ (ผิดเจตนา human-in-the-loop —
+                 การปฏิเสธควรแปลว่า "หยุด" ไม่ใช่ "ลองทางอื่น") ตอนนี้ orchestrator เจอ
+                 REJECTED_BY_USER_MESSAGE แล้ว break loop ทันที
+
+              รันจริงยืนยันทุกส่วนผ่าน browser จริง (ทั้ง Playwright script ควบคุม
+              headless browser จริง และรันด้วยมือผ่าน browser จริงของ user เอง) ไม่ใช่
+              mock: submit task → เห็นแผนขึ้นในแชทสด → กด Confirm & start จริง → เห็น
+              step สตรีมสดใน log → กด Approve/Deny permission prompt จริง → login สำเร็จ
+              จริงบน saucedemo.com (คลิก "Remove" ในตะกร้าแล้วกด Deny ยืนยันว่า task จบ
+              ทันทีที่ step นั้นจริง ไม่มี step ถัดไปอีกเลย) — unit test รวม 247 เคส
+              ผ่านหมด (เพิ่มไฟล์ใหม่ backend/tests/test_task_manager.py)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1587,8 +1674,14 @@
       │      BrowserPool แบบเปิดล่วงหน้า/reuse ข้าม task (core/browser_pool.py) —
       │      รันจริงยืนยันผ่าน python run.py api-demo ดูรายละเอียดเต็มในสถานะความ
       │      คืบหน้าด้านบน)
-      └ [B]  Test Console (UI): สั่งงาน + แสดง log/reasoning เรียลไทม์
-   
+      └ [B]  Test Console (UI): สั่งงาน + แสดง log/reasoning เรียลไทม์  ✅ เสร็จแล้ว
+             (2026-07-20 — static web UI ใหม่ mount เข้า FastAPI เดียวกับ W10[A]
+             (backend/app/static/index.html แทน yii2-console เดิมที่ตัดทิ้งไป) +
+             real-time step streaming (SSE) + human-in-the-loop จริงบนหน้าเว็บ
+             (Approve/Deny, Confirm/Edit/Cancel plan) + ปุ่ม Stop + visible browser
+             mode + multi-turn chat ต่อเนื่องในหน้าเดียว ดูรายละเอียดเต็มในสถานะความ
+             คืบหน้าด้านบน)
+
   W11 └ [★]  Integration hardening: ทดสอบ end-to-end ทุก flow (pair)
 
   >> หมุดหมาย W11: ระบบครบ ใช้ผ่าน UI ได้ พร้อมวัดผล
