@@ -104,7 +104,9 @@ async def test_execute_asks_user_for_plain_click_with_risky_label():
 
     result = await execute(None, cmd, ask_user_func=ask_user_func, label="Remove")
 
-    ask_user_func.assert_awaited_once_with(cmd)
+    # element_label แนบเข้าไปให้ ask_user_func เห็นชื่อ element จริงด้วย (ไม่ใช่แค่
+    # index) — cmd ต้นฉบับที่ dispatch จริงยังไม่ถูกแตะ (ดู actions.py::_confirm_action)
+    ask_user_func.assert_awaited_once_with({**cmd, "element_label": "Remove"})
     assert result.success is False
     assert "ปฏิเสธ" in result.message
 
@@ -170,7 +172,7 @@ async def test_execute_asks_user_for_plain_click_when_manual_requires_approval()
         manual_guidance="- การกด Checkout ทุกครั้ง requires approval จากหัวหน้างาน",
     )
 
-    ask_user_func.assert_awaited_once_with(cmd)
+    ask_user_func.assert_awaited_once_with({**cmd, "element_label": "Checkout"})
     assert result.success is False
     assert "ปฏิเสธ" in result.message
 

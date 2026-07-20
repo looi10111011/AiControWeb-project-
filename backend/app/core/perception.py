@@ -77,6 +77,19 @@ _COLLECT_JS = r"""
     return text !== '' && /^\d{1,4}$/.test(text);
   };
 
+  // เคลียร์ data-ai-index ค้างจาก get_snapshot() รอบก่อนหน้าออกก่อนเสมอ — เดิมไม่เคลียร์
+  // ทำให้ element ที่เคยได้ index ไปแล้วในรอบก่อน (ยังไม่มี navigation คั่นกลาง เช่น
+  // "fill" สองครั้งติดกันบนหน้าเดิม) ถูกมองว่า "แปะ index ไปแล้ว" โดย guard ด้านล่าง
+  // (ไว้กันแปะซ้ำ "ภายในรอบเดียวกัน" ระหว่างเช็ค badge-ก่อนไปตัวพ่อ ไม่ได้ตั้งใจให้กัน
+  // ข้ามรอบ) แล้วโดน skip ออกจาก elements list ของรอบใหม่ไปเงียบๆ ทั้งที่ element ยัง
+  // อยู่จริงและมองเห็นได้อยู่ — ทำให้ snapshot รอบถัดๆ ไปบนหน้าเดิม (ไม่มี goto/reload
+  // คั่น) เห็น element น้อยลงเรื่อยๆ (label หาย แม้ selector [data-ai-index="N"] เดิม
+  // จะยังคลิก/กรอกได้จริงเพราะ attribute เก่ายังติดอยู่บน DOM) ปลอดภัยที่จะเคลียร์ตรงนี้
+  // เพราะทุก index ที่ orchestrator.py ตัดสินใจใช้ ถูก dispatch จริงภายใน loop iteration
+  // เดียวกับที่ได้ index มา เสมอ ก่อนจะเรียก get_snapshot() รอบถัดไป (ไม่มี index ค้างข้าม
+  // รอบที่ยังไม่ถูกใช้)
+  document.querySelectorAll('[data-ai-index]').forEach((el) => el.removeAttribute('data-ai-index'));
+
   const nodes = Array.from(document.querySelectorAll(selectors));
   const out = [];
   let idx = 0;

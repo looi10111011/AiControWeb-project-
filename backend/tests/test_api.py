@@ -11,12 +11,14 @@ start/shutdown/acquire) ก่อนเข้า TestClient context เสมอ
 """
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.config import settings
 from backend.app.main import app
 
 
@@ -139,18 +141,35 @@ def test_create_task_records_error_status_on_failure(client):
         assert final["result"] is None
 
 
-def test_create_task_default_denies_permission_gated_actions(client):
-    """auto_approve default = False -> ask_user_func ที่ส่งเข้า run_task() ต้องปฏิเสธ
-    เสมอ (fail closed) — เพราะไม่มี human อยู่หน้าจอคอยตอบ REST request ตรงๆ"""
-    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+def test_create_task_default_routes_permission_prompt_through_human_in_the_loop(client):
+    """W10[B]: auto_approve default = False -> ask_user_func ที่ส่งเข้า run_task() ต้อง
+    "ถาม" ผ่าน TaskManager.request_approval() (push event เข้า SSE stream + รอ POST
+    /tasks/{id}/respond) แทนที่จะ deny เองเงียบๆ ทันทีเหมือนก่อนมี human-in-the-loop UI
+    บนหน้าเว็บจริง — mock request_approval ตรงนี้ (ไม่ต้องเล่น queue/future จริงข้าม event
+    loop ของ TestClient) ดู test_task_manager.py สำหรับเทสต์กลไก request_approval จริง"""
+    with (
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+        patch(
+            "backend.app.api.task_manager.TaskManager.request_approval", new_callable=AsyncMock
+        ) as mock_request_approval,
+    ):
+        mock_request_approval.return_value = False
         mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
         MockOrchestrator.return_value.run_task = mock_run_task
 
         resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
-        _poll_until(client, resp.json()["task_id"])
+        task_id = resp.json()["task_id"]
+        _poll_until(client, task_id)
 
-    ask_user_func = mock_run_task.await_args.kwargs["ask_user_func"]
-    assert asyncio.run(ask_user_func({"type": "purchase"})) is False
+        # ต้องเรียก ask_user_func ขณะ patch ยังไม่หลุด (ไม่งั้นจะไปโดน request_approval()
+        # ตัวจริงที่ await asyncio.Future ค้างตลอดกาล เพราะไม่มีใคร resolve ให้)
+        ask_user_func = mock_run_task.await_args.kwargs["ask_user_func"]
+        assert asyncio.run(ask_user_func({"type": "purchase"})) is False
+        # W10[E]: ต้องแนบ timeout เสมอ (settings.approval_timeout_seconds) กัน task ที่
+        # ไม่มีใครตอบยึด browser จาก pool ไว้ตลอดกาล (ดู task_manager.py::request_approval)
+        mock_request_approval.assert_awaited_once_with(
+            task_id, {"type": "purchase"}, timeout=settings.approval_timeout_seconds
+        )
 
 
 def test_create_task_auto_approve_true_approves_everything(client):
@@ -178,3 +197,143 @@ def test_create_task_passes_pooled_browser_into_run_task(client):
     # browser= ที่ส่งเข้า run_task() ต้องมาจาก pool.acquire() จริง ไม่ใช่ None (ไม่งั้น
     # orchestrator จะเปิด browser process ใหม่เองแทนที่จะยืมจาก pool — ผิดจุดประสงค์ W10[A])
     assert mock_run_task.await_args.kwargs["browser"] is not None
+
+
+def test_create_task_defaults_confirm_plan_to_true(client):
+    """W10[B]: ไม่ส่ง confirm_plan มาเลย -> run_task() ต้องได้ confirm_plan=True (ค่า
+    default ของ CreateTaskRequest) ให้หน้าเว็บเห็นแผนก่อนเริ่มทำงานเสมอ เว้นแต่ผู้เรียก
+    ปิดเองตรงๆ"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        _poll_until(client, resp.json()["task_id"])
+
+    assert mock_run_task.await_args.kwargs["confirm_plan"] is True
+
+
+def test_create_task_with_headless_false_bypasses_pool_for_a_visible_browser(client):
+    """W10[C]: headless=False ตรงๆ = user ขอเห็นหน้าต่าง browser จริง ("เปิดหน้าเว็ปจริง
+    ขึ้นมารันคู่ไปด้วย") — ต้อง bypass pool ไปเลย (browser ใน pool ถูก launch แบบ headless
+    ไว้ล่วงหน้าตั้งแต่ startup แล้ว เปลี่ยนทีหลังไม่ได้) และต้องส่ง keep_browser_open=True
+    ให้ orchestrator (ไม่ปิดหน้าต่างจนกว่า user จะปิดเอง)"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "ทดสอบ", "headless": False},
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+        # pool ต้องไม่ถูกแตะเลย (available ยังเต็ม 2/2 เหมือนเดิม — ไม่มี acquire() เกิดขึ้น)
+        assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
+
+    kwargs = mock_run_task.await_args.kwargs
+    assert kwargs.get("browser") is None
+    assert kwargs["headless"] is False
+    assert kwargs["keep_browser_open"] is True
+
+
+def test_create_task_default_headless_still_uses_pool(client):
+    """headless ไม่ได้ส่งมา (None) หรือ True -> ยังใช้ pool เหมือนเดิม (ทางเร็ว/ไม่โชว์
+    หน้าต่าง) ไม่ใช่แค่ headless=False เท่านั้นที่ bypass"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        _poll_until(client, resp.json()["task_id"])
+
+    kwargs = mock_run_task.await_args.kwargs
+    assert kwargs.get("browser") is not None
+    assert "keep_browser_open" not in kwargs
+
+
+def test_stop_task_cancels_a_running_task(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        finish = asyncio.Event()
+
+        async def _never_finishes_until_stopped(**kwargs):
+            await finish.wait()
+            return _FAKE_RESULT
+
+        MockOrchestrator.return_value.run_task = _never_finishes_until_stopped
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        task_id = resp.json()["task_id"]
+
+        stop_resp = client.post(f"/tasks/{task_id}/stop")
+        assert stop_resp.status_code == 200
+        assert stop_resp.json() == {"status": "stopping"}
+
+        final = _poll_until(client, task_id)
+        assert final["status"] == "cancelled"
+        assert final["result"] is None
+
+        finish.set()  # ปลด _never_finishes_until_stopped() ที่โดน cancel ไปแล้วให้จบสนิท
+
+
+def test_stop_unknown_task_returns_404(client):
+    resp = client.post("/tasks/does-not-exist/stop")
+    assert resp.status_code == 404
+
+
+def test_stop_already_finished_task_returns_409(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        task_id = resp.json()["task_id"]
+        _poll_until(client, task_id)
+
+    resp = client.post(f"/tasks/{task_id}/stop")
+    assert resp.status_code == 409
+
+
+def test_stream_unknown_task_returns_404(client):
+    resp = client.get("/tasks/does-not-exist/stream")
+    assert resp.status_code == 404
+
+
+def test_stream_finished_task_replays_synthesized_done_event(client):
+    """W10[B]: ต่อ SSE *หลัง* task จบไปแล้ว (เช่น รีเฟรชหน้าเว็บ) ต้องไม่ hang รอ event ที่
+    ไม่มีวันมาอีก — ต้องได้ task_done สังเคราะห์จาก record.status/result ที่ยังอยู่ทันที"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        task_id = resp.json()["task_id"]
+        _poll_until(client, task_id)
+
+        stream_resp = client.get(f"/tasks/{task_id}/stream")
+        assert stream_resp.status_code == 200
+        assert stream_resp.text.startswith("data: ")
+        # json.dumps() escapes non-ASCII เป็น \uXXXX โดย default (ensure_ascii=True) —
+        # decode ผ่าน json.loads() แทนการเทียบ substring ไทยตรงๆ (frontend ใช้
+        # JSON.parse() ซึ่ง decode \uXXXX กลับเป็นข้อความเดิมให้เองอยู่แล้ว)
+        payload = json.loads(stream_resp.text.removeprefix("data: ").strip())
+        assert payload["kind"] == "task_done"
+        assert payload["status"] == "done"
+        assert payload["result"] == _FAKE_RESULT
+
+
+def test_respond_unknown_request_id_returns_404(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ทดสอบ"})
+        task_id = resp.json()["task_id"]
+        _poll_until(client, task_id)
+
+    resp = client.post(f"/tasks/{task_id}/respond", json={"request_id": "does-not-exist", "approved": True})
+    assert resp.status_code == 404
+
+
+def test_respond_unknown_task_id_returns_404(client):
+    resp = client.post("/tasks/does-not-exist/respond", json={"request_id": "x", "approved": True})
+    assert resp.status_code == 404

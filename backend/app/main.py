@@ -1,11 +1,15 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.routes import router as api_router
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
 from backend.app.core.browser_pool import BrowserPool
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -37,3 +41,8 @@ async def config_check():
         "browser_headless": settings.browser_headless,
         "browser_pool_size": settings.browser_pool_size,
     }
+
+
+# Mounted last so it never shadows the API routes above — serves the single-page
+# console UI (index.html) at "/" and any other files under backend/app/static/.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
