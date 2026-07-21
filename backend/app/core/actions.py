@@ -224,7 +224,7 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label
 # ------------------------------------------------------------
 async def execute(
     page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
-    manual_guidance: str = "",
+    manual_guidance: str = "", allowed_domains: Optional[set] = None,
 ) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
@@ -247,10 +247,15 @@ async def execute(
     manual_guidance (W7[B]): เนื้อหาคู่มือที่เกี่ยวข้องกับ step นี้ — ส่งต่อให้
     classify_action() เช็คว่าคู่มือระบุไว้ไหมว่า action แบบนี้ต้องขออนุมัติก่อน (ดู
     permission/rules.py::MANUAL_CONFIRMATION_KEYWORDS) ไม่ส่งมาก็ได้ (default "")
+
+    allowed_domains: ส่งต่อให้ classify_action() override ALLOWED_DOMAINS เฉพาะ call
+    นี้ (ดู permission/rules.py::classify_action ส่วน allowed_domains) ไม่ส่งมาก็ได้
+    (default None = พฤติกรรมเดิม ใช้ ALLOWED_DOMAINS ของ module) — ใช้ตอน orchestrator
+    ต่อ agent เข้า browser จริงของ user เพื่อจำกัด goto แค่โดเมนของ task นั้นๆ
     """
     t = cmd.get("type")
 
-    risk = classify_action(cmd, label=label, manual_guidance=manual_guidance)
+    risk = classify_action(cmd, label=label, manual_guidance=manual_guidance, allowed_domains=allowed_domains)
     if risk == ActionRisk.BLOCKED:
         return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
     if risk == ActionRisk.NEEDS_CONFIRMATION:

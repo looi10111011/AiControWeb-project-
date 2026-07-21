@@ -1,0 +1,152 @@
+{
+  "หน้าแรก Lazada > FEEDBACK": {
+    "css": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > SELL ON LAZADA": {
+    "css": "a.cyan",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[4]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > LOGIN": {
+    "css": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(7) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[7]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > SIGNUP": {
+    "css": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(8) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[8]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > SEARCH": {
+    "css": "a.search-box__button--1oH7",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[2]/div[1]/form[1]/div[1]/div[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > SHOP ALL PRODUCTS": {
+    "css": "#\\30 ",
+    "xpath": "//*[@id=\"0\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > Shop More": {
+    "css": "a.pc-custom-link.hp-mod-card-shop-all.flex.flex-row",
+    "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[5]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > appstore footer": {
+    "css": "a.pull-left.icon-appStore-footer.icon-appstore-footer",
+    "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > android footer": {
+    "css": "a.pull-left.icon-android-footer.icon-appstore-footer",
+    "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > huawei footer": {
+    "css": "a.pull-left.icon-huawei-footer",
+    "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[3]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > product selection": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div:nth-of-type(1) > p:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/section[2]/div[3]/div[1]/div[1]/div[1]/p[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > Messages": {
+    "css": "button.im-app__cont-minimize",
+    "xpath": "/html/body[1]/div[3]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Top Links Item]": {
+    "css": "#topActionCustomCare",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Swiper Slide]": {
+    "css": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(4)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Swiper Pagination Bullet]": {
+    "css": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > span:nth-of-type(2)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Pc Custom Link]": {
+    "css": "a.pc-custom-link.card-bottom-banner-li.align-left.hp-mod-card-hover",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Fs Timer Count]": {
+    "css": "div.fs-timer-count",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Customer Care]": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > ul > li:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Customer Care] Help Center": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Lazada]": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > ul > li:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Lazada] About Lazada": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Lzd Footer About]": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div:nth-of-type(3)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Lzd Footer Title Small]": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(3) > div > h4:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Lzd Footer Category Tag]": {
+    "css": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(3) > div > a:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก Lazada > [Follow Us]": {
+    "css": "a.lzd-follow-us-icon",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  }
+}

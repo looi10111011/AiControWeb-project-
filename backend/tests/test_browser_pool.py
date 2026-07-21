@@ -136,3 +136,31 @@ async def test_shutdown_closes_all_browsers_and_stops_playwright():
 async def test_shutdown_before_start_is_noop():
     pool = BrowserPool(size=1)
     await pool.shutdown()  # ไม่ throw แม้ยังไม่เคย start()
+
+
+# acquire_one()/release_one() — ตัวยืม/คืนแบบดิบๆ ไม่ผ่าน context manager ไว้ให้ resource
+# ที่ต้องมีชีวิตอยู่ข้าม request เดียว (session_registry.py::SessionRegistry) ยืมได้
+# ยาวๆ ไม่ auto-return
+
+
+@pytest.mark.asyncio
+async def test_acquire_one_and_release_one_round_trip():
+    mock_async_playwright, mock_playwright_ctx, launched = _patch_playwright()
+    with patch("backend.app.core.browser_pool.async_playwright", mock_async_playwright):
+        pool = BrowserPool(size=1)
+        await pool.start()
+
+        assert pool.available == 1
+        browser = await pool.acquire_one()
+        assert browser is launched[0]
+        assert pool.available == 0  # ยืมไปแล้ว ไม่ auto-return จนกว่าจะ release_one() เอง
+
+        await pool.release_one(browser)
+        assert pool.available == 1
+
+
+@pytest.mark.asyncio
+async def test_acquire_one_before_start_raises():
+    pool = BrowserPool(size=1)
+    with pytest.raises(RuntimeError):
+        await pool.acquire_one()

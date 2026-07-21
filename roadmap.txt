@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-20)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-21)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1546,6 +1546,215 @@
               ทันทีที่ step นั้นจริง ไม่มี step ถัดไปอีกเลย) — unit test รวม 247 เคส
               ผ่านหมด (เพิ่มไฟล์ใหม่ backend/tests/test_task_manager.py)
 
+  [x] W11 [★]  Integration hardening: ทดสอบ end-to-end ทุก flow — เสร็จแล้ว (2026-07-20)
+              รันเซิร์ฟเวอร์แยกต่างหาก (port 8001) ไม่แตะเซิร์ฟเวอร์จริงที่ user เปิดใช้
+              งานสดอยู่ที่ port 8000 (เจอ process นั้นระหว่างเช็ค netstat — มี task
+              history จริงของ user อยู่แล้วหลายอัน ไม่ใช่ mock ไม่ใช่ของทดสอบ) แล้วเขียน
+              Playwright driver script ควบคุม browser จริงคลิกผ่านหน้า Test Console จริง
+              (ไม่ใช่ยิง API ตรงๆ ข้าม UI) ครบ 6 สถานการณ์:
+
+              1) Happy path: submit → เห็น plan bubble จริง → กด "Confirm & start" →
+                 login + เปิดหน้าตะกร้าจริงบน saucedemo.com สำเร็จใน 4 step
+              2) Deny: submit → confirm plan → เจอ permission prompt "Checkout" จริง
+                 (มาจาก RAG rule ของ W7[B] ไม่ใช่ hardcode) → กด Deny → orchestrator
+                 หยุดทันทีที่ step นั้น ("ผู้ใช้ปฏิเสธ action นี้ ... ไม่ลองทำทางอื่นต่อ")
+                 ไม่มี step ถัดไป — ยืนยัน fix ของ W10[B] (REJECTED_BY_USER_MESSAGE)
+                 ซ้ำอีกครั้งด้วย session ใหม่ล้วนๆ
+              3) Stop button: submit (auto-approve) → รอ progress จริง ~10 วิ → กด Stop
+                 กลางคัน → จบด้วย "Stopped by you." ทันที
+              4) Plan edit: submit → กด Edit บน plan bubble → แก้ข้อความ → "Save &
+                 confirm" → ข้อความที่แก้ยังคงอยู่ในแชทหลัง task จบ (ไม่ใช่แผนเดิม
+                 ที่ AI ร่าง) ยืนยันว่า resolve_approval()/mutate cmd["plan"] ทำงานถูก
+              5) SSE reconnect: submit → รอ plan bubble ขึ้น (ยังไม่กด confirm) →
+                 page.reload() จำลอง user รีเฟรชแท็บกลางคัน → เลือก conversation เดิม
+                 จาก history → ปุ่ม Confirm ยังอยู่ครบ (ไม่หาย) กดยืนยันต่อได้จริง แปลว่า
+                 replay logic ใน stream_task() (เดิมมีแต่ pytest mock ยืนยัน ไม่เคยรันจริง
+                 ผ่าน browser) ทำงานถูกต้องจริงครั้งแรก
+              6) Browser pool concurrency: ยิง 3 task พร้อมกันตรงผ่าน API (auto_approve,
+                 pool size=2 default) → เห็น pool in_use ค้างที่ 2/2 จริง ตัวที่ 3 รอคิว
+                 (status ยังเป็น "running" เหมือนกันหมด — ดูหมายเหตุด้านล่าง) จนกว่า task
+                 แรกจบแล้วค่อยเริ่มจริง → ทั้ง 3 จบสำเร็จ ไม่มี deadlock/crash — ไม่เคยมี
+                 การทดสอบ concurrency จริงมาก่อนหน้านี้เลยตลอดทั้งโปรเจกต์ (มีแต่ pool
+                 เดี่ยวๆ ทีละ task)
+              7) Malformed URL: POST /tasks ด้วย url="not-a-valid-url" ตรงๆ (ไม่ผ่าน UI
+                 validation) → Playwright.goto() error ถูกจับเป็น "[FAIL]" ส่งกลับให้ LLM
+                 เห็นตามปกติ ไม่ crash ทั้ง process/task — LLM ตัดสินใจเอง (รอบนี้เลือก
+                 ลอง goto ไป saucedemo.com เองแทน) ยืนยันว่า input ที่พังไม่ทำให้ระบบพังตาม
+
+              *** ข้อสังเกตสำคัญ (ไม่ใช่บั๊กโค้ด แต่เป็นพฤติกรรมโมเดล): เจอปุ่ม Login
+              ธรรมดาโดน permission gate ถามอนุมัติเองแบบ non-deterministic (เกิดใน 2
+              จาก 5 รอบที่ทดสอบ) เพราะโมเดล (Gemini) เลือก type="submit" ให้ปุ่มนี้ ทั้งที่
+              ป้ายเขียนว่า "Login" ไม่ใช่ "Submit" ตรงตัวตามกฎที่เขียนไว้ใน SYSTEM_PROMPT
+              (llm.py บรรทัด ~111-118) สืบแล้วไม่ใช่ RAG/manual contamination (query
+              "click Login"/"submit Login" ทดสอบตรงๆ กับ retriever.retrieve() แล้วไม่ติด
+              MANUAL_CONFIRMATION_KEYWORDS เลย) เป็นแค่โมเดลไม่ทำตาม instruction
+              เป๊ะทุกครั้ง (ปัญหาเดิมที่เจอซ้ำมาตั้งแต่ W4/W8) — ตัดสินใจไม่แก้โค้ด เพราะ
+              DEFAULT_NEEDS_CONFIRMATION ที่มี "submit" อยู่แล้วเป็น design ตั้งใจ (ปุ่ม
+              submit ฟอร์มใดๆ ต้องขอยืนยันเสมอ ดู permission/rules.py) — fail-safe (ถาม
+              เกินจำเป็นบ้าง) ดีกว่าเสี่ยง fail-open และรอบทดสอบทั้งสองที่เจอ human-in-
+              the-loop UI ก็แสดง/ตอบปุ่มนี้ได้ถูกต้องจริงอยู่ดี ไม่ค้าง ***
+
+              ข้อสังเกตรอง: task ที่ "รอคิวอยู่ใน pool" (สถานการณ์ 6) กับ task ที่ "กำลัง
+              ทำงานจริง" ทั้งคู่รายงาน status="running" เหมือนกันหมดผ่าน API/UI ปัจจุบัน
+              (แยกไม่ออกจากภายนอกว่าอันไหนรอ browser ว่างอยู่) ไม่กระทบความถูกต้อง แค่เป็น
+              observability gap เล็กๆ — บันทึกไว้เป็นของที่อาจเพิ่ม status ย่อย (เช่น
+              "queued") ทีหลังถ้ามีเวลา ไม่ใช่งานเร่งด่วนของ W11
+
+              ทุกสถานการณ์ทดสอบผ่าน Playwright driver จริง ไม่ใช่ pytest (ต้องใช้ browser+
+              LLM key+เวลาเป็นนาทีต่อ scenario ไม่เหมาะกับ CI ตาม pattern เดียวกับที่ W9/
+              W10 เลือกไว้ — บันทึกผลไว้ในนี้แทน) — ไม่พบบั๊กโค้ดที่ต้องแก้เลยจากรอบทดสอบนี้
+              ยืนยันซ้ำด้วย `pytest -q` เต็ม suite หลังทดสอบเสร็จ: ยัง 247 เคสผ่านหมด
+              (ไม่มีการแก้โค้ดใดๆ ในรอบนี้ เพราะไม่เจอบั๊กจริง)
+
+  >> หมุดหมาย W11 ยืนยันแล้ว: ระบบครบ ใช้ผ่าน UI ได้จริงทุก flow หลัก (plan confirm,
+     human-in-the-loop approve/deny, stop, plan edit, multi-task ผ่าน pool พร้อมกัน,
+     graceful error handling) พร้อมเข้า W12 (evaluation) — W9[B] (เพิ่มความหลากหลาย
+     คู่มือ/เว็บ + เก็บ edge cases) ยังไม่ปิด ไม่ได้อยู่ใน scope ของรอบนี้
+
+  *** หมายเหตุช่องว่างของบันทึกนี้ (2026-07-21): W12-W18 มีอยู่จริงในโค้ด (session
+  persistence ข้ามหลาย HTTP request ผ่าน core/session_registry.py, แยกเฟส
+  generate_plan/execute_plan ต่างหากจาก POST /tasks เดิม, site_manual_context ที่ป้อน
+  เข้า prompt, ระบบ Website Learning เต็มรูปแบบใน backend/app/site_learning/ — crawl
+  หน้าเว็บอัตโนมัติ + extract โครงสร้าง + describe ด้วย LLM + auto-login bootstrap +
+  UI pattern/selector-repair) แต่ไม่เคยถูกบันทึกละเอียดไว้ในไฟล์นี้ระหว่างทางเลย — ไม่ใช่
+  scope ของรอบนี้ที่จะย้อนไปสืบ/สร้างบันทึกใหม่ทั้งหมด (ไม่มีข้อมูลวันที่/บั๊กที่เจอจริง
+  ตอนนั้นเหลืออยู่ให้เขียนได้อย่างถูกต้อง) บันทึกต่อจาก W19 ที่ทำในรอบนี้แทน ***
+
+  [x] W19  Browser Session Management: ตรวจ+กู้คืน session ที่ตายไปแล้วอัตโนมัติ —
+           เสร็จแล้ว (2026-07-21)
+           จุดเริ่ม: user รายงานว่าสั่งคำสั่งที่ 2 ในบทสนทนาเดียวกัน (session_id เดิม)
+           แล้วเจอ "Failed to generate plan: Internal Server Error" ไม่มีรายละเอียด
+           อะไรเลย — ไล่แก้เป็นชั้นๆ กว่าจะถึงสาเหตุจริง:
+
+           1) routes.py::generate_plan() ไม่มี try/except ครอบ Orchestrator().
+              generate_plan() เลย — exception ใดๆ (LLM API error, page เดิมจาก
+              session_id ถูกปิด/นำทางไปแล้วระหว่าง perceive) หลุดออกไปเป็น FastAPI
+              500 เปล่าๆ ไม่มี detail ให้เห็นฝั่ง client เลย — ห่อเป็น
+              HTTPException(500, detail=f"{type(e).__name__}: {e}") แทน + เพิ่ม
+              fallback ใน orchestrator.py::generate_plan() ถ้า get_snapshot(page)
+              ล้มเหลว (page หลุดไปแล้วจริง) ให้ log warning แล้วร่างแผนจาก goal
+              เพียวๆ ต่อ (page_text="") แทนที่จะพังทั้ง endpoint
+
+           2) เปิด error detail ออกมาแล้วเจอสาเหตุจริง: UnicodeEncodeError
+              ('charmap' codec) — backend/app/main.py (entrypoint ที่ uvicorn
+              import ตรงๆ เวลารันแบบ `uvicorn backend.app.main:app` ไม่ผ่าน
+              run.py) ไม่เคย reconfigure stdout/stderr เป็น utf-8 เลย ต่างจาก
+              run.py ที่มี fix นี้อยู่แล้วสำหรับตอนรันผ่าน CLI — print() ข้อความไทย/
+              emoji ที่มีอยู่หลายจุดในโค้ด (orchestrator.py, llm.py,
+              long_term_memory.py) เลย crash ทันทีที่ path นั้นถูกเรียกจริงบน
+              Windows console (cp1252 default) — เพิ่ม
+              sys.stdout.reconfigure(encoding="utf-8") ใน main.py ให้ครอบคลุมทั้ง
+              2 ทางที่ server ถูกรัน ยืนยันด้วยสคริปต์แยกว่า encoding เปลี่ยนเป็น
+              utf-8 จริงหลัง import
+
+           3) user ขอ spec เต็ม "Update Browser Session Management" ตรงๆ (health
+              check ก่อนใช้ session ทุกครั้ง + auto-recovery ถ้าตาย + reuse tab ที่
+              เว็บเป้าหมายเปิดอยู่แล้ว) — implement ใน core/session_registry.py:
+              - SessionRegistry.is_healthy(session): เช็ค browser.is_connected() +
+                page.is_closed() แบบ sync (ไม่ throw เด็ดขาด ถือว่าไม่ healthy ถ้า
+                เช็คเอง error)
+              - _recover(): ไล่กู้จากเบาไปหนักตามสเปค (reconnect ตรงๆ ทำไม่ได้ใน
+                Playwright เลยเริ่มที่ขั้นถัดไปแทน) — 1) เปิด page ใหม่ในบริบทเดิม
+                (context/browser เดิมถ้ายังต่ออยู่) 2) เปิด context ใหม่บน browser
+                เดิม (เฉพาะ mode="pool") 3) ปิดของเก่าทิ้ง (_best_effort_close, กลืน
+                exception ทุกจุด) แล้วเปิด browser ใหม่ทั้งชุดด้วย session_id เดิม
+              - get_or_create() เช็ค is_healthy() ก่อนคืน session ที่มีอยู่แล้วเสมอ
+                ไม่ผ่าน = กู้คืนอัตโนมัติก่อน ไม่ fail ทันทีจาก resource เดียวหลุด
+              *** เจอบั๊กจริงระหว่างเขียนเอง (ไม่ใช่แค่ตามสเปค): ห้าม
+              release_one() browser ที่ disconnect ไปแล้วกลับเข้า BrowserPool
+              เด็ดขาด — release_one() ไม่เช็คสถานะเลย (แค่ put ลง queue) ถ้าคืนตัว
+              ที่ตายแล้วกลับไป task อื่นในอนาคตที่ acquire_one() ได้ตัวนี้จะพังตาม
+              ทันที (poison ทั้ง pool) — แก้ให้ปล่อยตัวที่ตายแล้วทิ้งไปเฉยๆ (pool
+              เสียสล็อตนั้นถาวร ยอมรับได้มากกว่าทำ pool เสียหายทั้งระบบ — ตรงกับข้อ
+              จำกัดที่ W11[A] Chaos Test เคยบันทึกไว้แล้วว่า pool ไม่ self-heal) ***
+
+           4) ระหว่างตรวจโค้ดเจอบั๊กจริงอีกจุดไม่เกี่ยวกับ session recovery
+              โดยตรง: orchestrator.py::skip_initial_goto (W12) เดิมเช็คแค่
+              "page.url ว่างเปล่าไหม" ไม่เคยเทียบ domain กับ url เป้าหมายของ task
+              เลย — session ที่ reuse page ข้ามเทิร์นมา ถ้าเทิร์นใหม่สั่ง url อื่น
+              (คนละเว็บ) จะไม่ navigate ไปเว็บใหม่เลย (ค้างหน้าเก่าทั้งที่ user
+              ต้องการเว็บอื่น) — แก้เป็นเทียบ extract_domain(page.url) กับ
+              extract_domain(url) ตรงๆ match กันจริงถึงจะข้าม goto (พร้อมข้อความ
+              "Website is already open. Reusing the existing browser session."
+              ตามที่ระบุใน spec) ไม่ match = goto ตามปกติเพื่อไปเว็บเป้าหมายจริง
+
+           unit test ใหม่ 9 เคส: 8 ใน test_session_registry.py (is_healthy true/false
+           3 แบบ (connected+open, disconnected, page closed) + error ระหว่างเช็คไม่
+           throw, กู้คืนด้วย page ใหม่ในบริบทเดิมเมื่อ browser ยังต่ออยู่ (mode pool
+           และ owns), กู้คืนด้วย browser ใหม่ทั้งชุดเมื่อ browser หลุดจริง +
+           ยืนยันไม่ release_one() browser ที่ตายแล้วกลับ pool) + 1 ใน
+           test_orchestrator.py (domain ไม่ตรงกับ target ต้อง goto ไม่ข้าม) — รวม
+           suite ทั้งหมด 186 เคสผ่านหมด (ไม่นับ test_site_learning_crawler.py 1 เคส
+           ที่ fail อยู่ก่อนแล้วไม่เกี่ยวกับงานนี้)
+
+  [x] W20  Plan Memory: จำแผนที่ user confirm ไว้ใช้ซ้ำ ไม่ต้องให้ LLM ร่างใหม่ทุกครั้ง —
+           เสร็จแล้ว (2026-07-21)
+           รอบแรก (ตาม request เริ่มต้น "ให้ agent ใช้แผนที่ user แก้ไขเป็นแผนหลัก"):
+           ตรวจแล้วพบว่า approved_plan ที่ user แก้ไขถูกใช้เป็นแผนหลักของ task นั้นอยู่
+           แล้วจริง (orchestrator.py::run_task ผนวกเข้า effective_goal ทุก step) —
+           ไม่มีบั๊ก ไม่ต้องแก้อะไร
+
+           request ที่ 2 ("ให้ทับอันเดิม เผื่อเปิด agent ใหม่อีกกี่รอบก็ใช้อันที่แก้ไว้"):
+           นี่คือ requirement ใหม่จริง (persist ข้าม task/session ไม่ใช่แค่ข้าม step
+           ใน task เดียว) — implement รอบแรกเป็น core/plan_store.py: เก็บ JSON ต่อ
+           โดเมนใน data/plan_overrides/{domain}.json จับคู่ (domain, goal) แบบ exact
+           text match (strip+lowercase+ยุบช่องว่าง) บันทึกเฉพาะตอน frontend ส่ง
+           plan_edited=True มา (index.html เก็บ planOriginal คู่กับ planDraft เทียบ
+           กันตอน approve)
+
+           request ที่ 3 (spec เต็ม "Implement Plan Memory System" — semantic
+           matching, versioning, save ทุกครั้งที่ confirm ไม่ใช่แค่ตอนแก้ไข): แทนที่
+           plan_store.py ทั้งระบบด้วย core/plan_memory.py ผ่าน ChromaDB collection
+           แยกต่างหาก (chroma_plan_memory_collection_name, hnsw:space="cosine" ตั้ง
+           ตรงๆ ตอนสร้าง collection):
+           - find_matching_plan(domain, goal): semantic search หา lineage
+             (intent_key) ที่ใกล้เคียงที่สุด คืน version ล่าสุดถ้า distance อยู่ใน
+             เกณฑ์ (settings.plan_memory_max_distance) — routes.py::generate_plan
+             เช็คจุดนี้ก่อนเรียก LLM เสมอ (Plan Priority: user-approved ก่อน LLM)
+           - save_confirmed_plan(domain, goal, plan): เรียกทุกครั้งที่ execute_plan
+             (ไม่มี flag แยกแบบ plan_edited ของรอบก่อนอีกต่อไป — "Confirm" คือจุดที่
+             ถือว่า approved แล้วตามสเปค) หา lineage ที่ตรงกันก่อน เจอ = version
+             ใหม่ (ล่าสุด+1) เว้นแต่เนื้อหาเหมือน version ล่าสุดเป๊ะ (ไม่สร้างซ้ำซ้อน
+             เปล่าๆ) ไม่เจอ = intent_key ใหม่ version=1
+           - threshold คาลิเบรตจากการวัดจริง (ไม่ใช่เดา): "Login" vs "Sign in"
+             distance ~0.21, vs "log me in please" ~0.31, vs intent ไม่เกี่ยวข้อง
+             เช่น "checkout and pay" ~0.78 — ตั้ง 0.5 คั่นกลางได้ชัดเจนสำหรับภาษา
+             เดียวกัน *** แต่ "เข้าสู่ระบบ" (ไทย) วัดจริงได้ ~0.77 ใกล้เคียง intent
+             ที่ไม่เกี่ยวข้องเลย — DefaultEmbeddingFunction (all-MiniLM-L6-v2) เป็น
+             English-centric จับคู่ข้ามภาษาไทย-อังกฤษได้ไม่แม่นจริงตามที่ spec
+             ต้องการ (ตัวอย่าง "เข้าสู่ระบบ" ควรจับคู่กับ "Login" ได้) เป็นข้อจำกัดของ
+             embedding model เอง ไม่ใช่ threshold ตั้งผิด — แก้ได้ถ้าเปลี่ยน
+             embedding function เป็นตัว multilingual แต่กระทบทั้งระบบ RAG ไม่ใช่แค่
+             Plan Memory เลยไม่ได้ทำในรอบนี้ ***
+
+           *** เจอบั๊กจริงระหว่างพัฒนา 2 จุด (ไม่ใช่ตาม spec แต่พบจากการทดสอบเอง):
+           1) chromadb 1.5.9 (เวอร์ชันที่ลงจริง) ปฏิเสธ where filter แบบหลาย key
+              ตรงๆ ({"domain":..,"intent_key":..}) ต้องใช้ {"$and": [...]} ชัดเจน —
+              ยืนยันด้วยสคริปต์ทดสอบแยกก่อนเขียนโค้ดจริง ไม่ได้เดา
+           2) routes.py::generate_plan/execute_plan เรียก plan_memory ตรงๆ (ไม่ผ่าน
+              Orchestrator ที่ถูก mock ไว้ในเทสต์ส่วนใหญ่ของ test_api.py) ทำให้เทสต์
+              ที่ไม่ได้ mock plan_memory เขียนแผนจริงลง ./data/chroma (persist dir
+              จริงของ production!) แล้วเทสต์อื่นที่ใช้ domain/goal ซ้ำกันอ่านค่าที่
+              หลุดมาจากเทสต์ก่อนหน้าแทนที่จะเรียก mock ตามที่ตั้งใจ — เพิ่ม fixture
+              isolate settings.chroma_persist_dir + reset chroma_client._client
+              (cached singleton) ต่อเทสต์ใน test_api.py แล้วลบข้อมูลที่หลุดไปจริง
+              ออกจาก data/chroma production ***
+
+           migrate ข้อมูลจริงที่ user สร้างไว้แล้วผ่านระบบเดิม (plan_store.py:
+           goal="เปิดเว็ป" บน www.saucedemo.com) เข้า Plan Memory ใหม่เป็น version 1
+           ก่อนลบ core/plan_store.py + data/plan_overrides/ ทิ้ง (ไม่ใช่งานที่ยังไม่มี
+           คนใช้ — ระวังไม่ให้ของจริงหาย)
+
+           unit test ใหม่: 10 เคสใน test_plan_memory.py (find_matching_plan
+           ไม่มี/เกิน threshold/คืน version ล่าสุด/ส่ง domain filter ถูก/swallow
+           error, save_confirmed_plan lineage ใหม่/version ใหม่เมื่อเนื้อหาต่าง/ไม่
+           ซ้ำซ้อนเมื่อเหมือนเดิม/swallow error) + แก้/เพิ่ม 4 เคสใน test_api.py
+           (execute_plan บันทึกเข้า Plan Memory เสมอไม่ต้องมี flag, ไม่บันทึกถ้าไม่มี
+           plan, generate_plan คืนผลจาก Plan Memory ข้าม LLM เมื่อเจอ, fallback ไป
+           LLM เมื่อไม่เจอ) — รวม suite ทั้งหมด 416 เคสผ่านหมด (ไม่นับ
+           test_site_learning_crawler.py 1 เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับ
+           งานนี้)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
@@ -1682,9 +1891,13 @@
              mode + multi-turn chat ต่อเนื่องในหน้าเดียว ดูรายละเอียดเต็มในสถานะความ
              คืบหน้าด้านบน)
 
-  W11 └ [★]  Integration hardening: ทดสอบ end-to-end ทุก flow (pair)
+  W11 └ [★]  Integration hardening: ทดสอบ end-to-end ทุก flow (pair)  ✅ เสร็จแล้ว
+             (2026-07-20 — Playwright driver จริงคลิกผ่าน Test Console จริงครบ 6
+             สถานการณ์ (happy/deny/stop/plan-edit/SSE-reconnect/pool-concurrency) +
+             malformed URL — ไม่พบบั๊กโค้ด มีแค่ข้อสังเกตพฤติกรรมโมเดล (non-deterministic
+             submit classification บนปุ่ม Login) ดูรายละเอียดเต็มในสถานะความคืบหน้าด้านบน)
 
-  >> หมุดหมาย W11: ระบบครบ ใช้ผ่าน UI ได้ พร้อมวัดผล
+  >> หมุดหมาย W11 ยืนยันแล้ว: ระบบครบ ใช้ผ่าน UI ได้ พร้อมวัดผล (ต่อ W12 ได้)
 
 
 ================================================================

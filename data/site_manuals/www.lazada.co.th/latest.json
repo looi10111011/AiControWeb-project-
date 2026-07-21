@@ -1,0 +1,568 @@
+{
+  "website": "www.lazada.co.th",
+  "version": 3,
+  "generated_at": 1784614255.6025703,
+  "pages": [
+    {
+      "name": "หน้าแรก Lazada",
+      "url": "https://www.lazada.co.th/#?",
+      "description": "หน้าหลักของเว็บไซต์ Lazada ที่รวบรวมรายการสินค้า โปรโมชั่น และลิงก์เข้าสู่หมวดหมู่ต่างๆ เพื่อการเลือกซื้อสินค้าออนไลน์",
+      "menu_path": [
+        "หน้าแรก Lazada"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.pc-custom-link.hp-mod-card.card-platform-campaign-banner-container",
+          "xpath": "/html/body[1]/div[1]/a[1]"
+        },
+        {
+          "text": "FEEDBACK",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/a[1]"
+        },
+        {
+          "text": "SELL ON LAZADA",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.cyan",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[4]/a[1]"
+        },
+        {
+          "text": "LOGIN",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(7) > a",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[7]/a[1]"
+        },
+        {
+          "text": "SIGNUP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(8) > a",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[8]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/a[1]"
+        },
+        {
+          "text": "SEARCH",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.search-box__button--1oH7",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[2]/div[1]/form[1]/div[1]/div[2]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#topActionEWallet",
+          "xpath": "//*[@id=\"topActionEWallet\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(3) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.btn.btn-1",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/div[1]/div[2]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.btn.btn-2",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/div[1]/div[2]/a[2]"
+        },
+        {
+          "text": "SHOP ALL PRODUCTS",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#\\30 ",
+          "xpath": "//*[@id=\"0\"]"
+        },
+        {
+          "text": "Shop More",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.pc-custom-link.hp-mod-card-shop-all.flex.flex-row",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[5]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "appstore footer",
+          "selector": "a.pull-left.icon-appStore-footer.icon-appstore-footer",
+          "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "android footer",
+          "selector": "a.pull-left.icon-android-footer.icon-appstore-footer",
+          "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[2]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "huawei footer",
+          "selector": "a.pull-left.icon-huawei-footer",
+          "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/div[1]/div[3]/a[3]"
+        },
+        {
+          "text": "product selection",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div:nth-of-type(1) > p:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[2]/div[3]/div[1]/div[1]/div[1]/p[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-id",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-my",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[2]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-ph",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[3]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-sg",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[4]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-th",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[5]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.lzd-footer-country.country-vn",
+          "xpath": "/html/body[1]/section[2]/div[4]/div[1]/div[1]/div[1]/a[6]"
+        },
+        {
+          "text": "Messages",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.im-app__cont-minimize",
+          "xpath": "/html/body[1]/div[3]/div[1]/div[1]/button[1]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "q",
+          "label": "",
+          "placeholder": "Search in Lazada",
+          "required": false,
+          "input_type": "search",
+          "validation": "",
+          "selector": "#q"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Top Links Item",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [],
+          "selector": "#topActionCustomCare",
+          "item_count": 3
+        },
+        {
+          "name": "Swiper Slide",
+          "ui_type": "Card",
+          "components": [
+            "Image",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(4) > a",
+              "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[4]/a[1]"
+            }
+          ],
+          "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(4)",
+          "item_count": 5
+        },
+        {
+          "name": "Swiper Pagination Bullet",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section:nth-of-type(1) > div > div > div > div > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > span:nth-of-type(2)",
+          "item_count": 7
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image",
+            "Description"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.channel-item-v2.flex.flex-col",
+          "item_count": 3
+        },
+        {
+          "name": "Fs Timer Count",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "div.fs-timer-count",
+          "item_count": 3
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image",
+            "Title",
+            "Description"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.card-fs-content-body-unit.hp-mod-card-hover",
+          "item_count": 6
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image",
+            "Description"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.card-official-stores-box.hp-mod-card-hover",
+          "item_count": 6
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image",
+            "Title"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.card-categories-li.hp-mod-card-hover",
+          "item_count": 16
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image",
+            "Title",
+            "Rating"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.jfy-item.hp-mod-card-hover",
+          "item_count": 36
+        },
+        {
+          "name": "Pc Custom Link",
+          "ui_type": "List Item",
+          "components": [
+            "Image"
+          ],
+          "buttons": [],
+          "selector": "a.pc-custom-link.card-bottom-banner-li.align-left.hp-mod-card-hover",
+          "item_count": 3
+        },
+        {
+          "name": "Customer Care",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Help Center",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > ul > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/ul[1]/li[1]/a[1]"
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > ul > li:nth-of-type(1)",
+          "item_count": 6
+        },
+        {
+          "name": "Lazada",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "About Lazada",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/ul[1]/li[1]/a[1]"
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > ul > li:nth-of-type(1)",
+          "item_count": 9
+        },
+        {
+          "name": "Lzd Footer About",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Description"
+          ],
+          "buttons": [],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div:nth-of-type(3)",
+          "item_count": 3
+        },
+        {
+          "name": "Lzd Footer Title Small",
+          "ui_type": "List Item",
+          "components": [
+            "Title"
+          ],
+          "buttons": [],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div > h4:nth-of-type(1)",
+          "item_count": 8
+        },
+        {
+          "name": "Lzd Footer Category Tag",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div > a:nth-of-type(1)",
+          "item_count": 98
+        },
+        {
+          "name": "Lzd Footer Title Small",
+          "ui_type": "List Item",
+          "components": [
+            "Title"
+          ],
+          "buttons": [],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(3) > div > h4:nth-of-type(1)",
+          "item_count": 9
+        },
+        {
+          "name": "Lzd Footer Category Tag",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(3) > div > a:nth-of-type(1)",
+          "item_count": 84
+        },
+        {
+          "name": "Follow Us",
+          "ui_type": "List Item",
+          "components": [
+            "Image"
+          ],
+          "buttons": [],
+          "selector": "a.lzd-follow-us-icon",
+          "item_count": 7
+        }
+      ],
+      "filters": [],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    }
+  ]
+}

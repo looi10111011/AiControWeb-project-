@@ -1,0 +1,651 @@
+{
+  "website": "www.youtube.com",
+  "version": 3,
+  "generated_at": 1784625818.9065566,
+  "pages": [
+    {
+      "name": "YouTube Home",
+      "url": "https://www.youtube.com/",
+      "description": "หน้าแรกของ YouTube สำหรับค้นหาและแสดงรายการวิดีโอแนะนำสำหรับผู้ใช้งาน",
+      "menu_path": [
+        "YouTube Home"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Guide",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "YouTube Home",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a",
+          "xpath": "//*[@id=\"logo\"]"
+        },
+        {
+          "text": "Skip navigation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Skip navigation",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search",
+          "title": "Search",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSearchboxComponentSearchButton",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextText.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconOnlyDefault.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.yt-simple-endpoint.style-scope.ytd-topbar-menu-button-renderer",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-topbar-menu-button-renderer[1]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Settings",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextOutline.ytSpecButtonShapeNextCallToAction.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconLeading.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Cancel",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Allow microphone access to search with voice",
+          "title": "",
+          "role": "button",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#microphone-circle",
+          "xpath": "//*[@id=\"microphone-circle\"]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "search_query",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "input.ytSearchboxComponentInput.yt-searchbox-input.title"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a > div > ytd-logo > yt-icon > span > div > svg > g:nth-of-type(2) > path:nth-of-type(1)",
+          "item_count": 7
+        },
+        {
+          "name": "Style Scope",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Home",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "Home",
+              "title": "Home",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+              "xpath": "//*[@id=\"endpoint\"]"
+            }
+          ],
+          "selector": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+          "item_count": 4
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "#offline_no_content__a",
+          "item_count": 5
+        }
+      ],
+      "filters": [
+        "Skip navigation",
+        "Search with your voice",
+        "Sign in",
+        "Show more"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าติดตามช่อง YouTube",
+      "url": "https://www.youtube.com/feed/subscriptions",
+      "description": "หน้ารวมวิดีโอใหม่ล่าสุดจากช่องที่คุณกดติดตามไว้",
+      "menu_path": [
+        "หน้าติดตามช่อง YouTube"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Guide",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "YouTube Home",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a",
+          "xpath": "//*[@id=\"logo\"]"
+        },
+        {
+          "text": "Skip navigation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Skip navigation",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search",
+          "title": "Search",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSearchboxComponentSearchButton",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextText.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconOnlyDefault.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.yt-simple-endpoint.style-scope.ytd-topbar-menu-button-renderer",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-topbar-menu-button-renderer[1]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Settings",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]"
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > ytd-page-manager > ytd-browse > ytd-two-column-browse-results-renderer > div:nth-of-type(1) > ytd-section-list-renderer > div:nth-of-type(2) > ytd-item-section-renderer > div:nth-of-type(3) > ytd-background-promo-renderer > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/ytd-page-manager[1]/ytd-browse[1]/ytd-two-column-browse-results-renderer[1]/div[1]/ytd-section-list-renderer[1]/div[2]/ytd-item-section-renderer[1]/div[3]/ytd-background-promo-renderer[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Cancel",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Allow microphone access to search with voice",
+          "title": "",
+          "role": "button",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#microphone-circle",
+          "xpath": "//*[@id=\"microphone-circle\"]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "search_query",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "input.ytSearchboxComponentInput.yt-searchbox-input.title"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a > div > ytd-logo > yt-icon > span > div > svg > g:nth-of-type(2) > path:nth-of-type(1)",
+          "item_count": 7
+        },
+        {
+          "name": "Style Scope",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Home",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "Home",
+              "title": "Home",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+              "xpath": "//*[@id=\"endpoint\"]"
+            }
+          ],
+          "selector": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+          "item_count": 4
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "#offline_no_content__a",
+          "item_count": 5
+        }
+      ],
+      "filters": [
+        "Skip navigation",
+        "Search with your voice",
+        "Sign in",
+        "Sign in",
+        "Show more"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าประวัติการเข้าชม",
+      "url": "https://www.youtube.com/feed/you",
+      "description": "หน้ารวมวิดีโอที่คุณเคยรับชมและรายการที่บันทึกไว้ในบัญชี YouTube ของคุณ",
+      "menu_path": [
+        "หน้าประวัติการเข้าชม"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Guide",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "YouTube Home",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a",
+          "xpath": "//*[@id=\"logo\"]"
+        },
+        {
+          "text": "Skip navigation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Skip navigation",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search",
+          "title": "Search",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSearchboxComponentSearchButton",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextText.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconOnlyDefault.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.yt-simple-endpoint.style-scope.ytd-topbar-menu-button-renderer",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-topbar-menu-button-renderer[1]/div[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Settings",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+          "xpath": "//*[@id=\"button\"]"
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]"
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > ytd-page-manager > ytd-browse > ytd-two-column-browse-results-renderer > div:nth-of-type(1) > ytd-section-list-renderer > div:nth-of-type(2) > ytd-item-section-renderer > div:nth-of-type(3) > ytd-background-promo-renderer > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/ytd-page-manager[1]/ytd-browse[1]/ytd-two-column-browse-results-renderer[1]/div[1]/ytd-section-list-renderer[1]/div[2]/ytd-item-section-renderer[1]/div[3]/ytd-background-promo-renderer[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Cancel",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+          "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Allow microphone access to search with voice",
+          "title": "",
+          "role": "button",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#microphone-circle",
+          "xpath": "//*[@id=\"microphone-circle\"]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "search_query",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "input.ytSearchboxComponentInput.yt-searchbox-input.title"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a > div > ytd-logo > yt-icon > span > div > svg > g:nth-of-type(2) > path:nth-of-type(1)",
+          "item_count": 7
+        },
+        {
+          "name": "Style Scope",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Home",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "Home",
+              "title": "Home",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+              "xpath": "//*[@id=\"endpoint\"]"
+            }
+          ],
+          "selector": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+          "item_count": 4
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "#offline_no_content__a",
+          "item_count": 5
+        }
+      ],
+      "filters": [
+        "Skip navigation",
+        "Search with your voice",
+        "Sign in",
+        "Sign in",
+        "Show more"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    }
+  ]
+}

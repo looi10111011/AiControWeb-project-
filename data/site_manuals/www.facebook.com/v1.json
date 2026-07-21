@@ -1,0 +1,120 @@
+{
+  "website": "www.facebook.com",
+  "version": 1,
+  "generated_at": 1784625847.8178637,
+  "pages": [
+    {
+      "name": "Facebook Login Page",
+      "url": "https://www.facebook.com/",
+      "description": "หน้าสำหรับเข้าสู่ระบบหรือลงทะเบียนใช้งานบัญชี Facebook",
+      "menu_path": [
+        "Facebook Login Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Log in",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Log in",
+          "title": "",
+          "role": "button",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div.x1i10hfl.xjbqb8w.x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl.x972fbf.x10w94by.x1qhh985.x14e42zd.x1ypdohk.x3ct3a4.xdj266r.x14z9mp.xat24cr.x1lziwak.xexx8yu.xyri2b.x18d9i69.x1c1uobl.x16tdsg8.x1hl2dhg.xggy1nq.x1fmog5m.xu25z0z.x140muxe.xo1y3bh.x87ps6o.x1lku1pv.x1a2a7pz.x9f619.x3nfvp2.xdt5ytf.xl56j7k.x1n2onr6.xh8yej3",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/form[1]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]"
+        },
+        {
+          "text": "Forgotten password?",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "link",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(1) > div > div > div > div > div > div > div:nth-of-type(1) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div > div > div > div > div > div > div > div > div:nth-of-type(2) > form > div > div:nth-of-type(1) > div > div:nth-of-type(4) > div > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/form[1]/div[1]/div[1]/div[1]/div[4]/div[1]/a[1]"
+        },
+        {
+          "text": "Create new account",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Create new account",
+          "title": "",
+          "role": "link",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(1) > div > div > div > div > div > div > div:nth-of-type(1) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div > div > div > div > div > div > div > div > div:nth-of-type(2) > form > div > div:nth-of-type(1) > div > div:nth-of-type(5) > div > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/form[1]/div[1]/div[1]/div[1]/div[5]/div[1]/a[1]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "email",
+          "label": "Email address or mobile number",
+          "placeholder": "",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "#_R_1h6kqsqppb6amH1_"
+        },
+        {
+          "field_name": "pass",
+          "label": "Password",
+          "placeholder": "",
+          "required": false,
+          "input_type": "password",
+          "validation": "",
+          "selector": "#_R_1hmkqsqppb6amH1_"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "div:nth-of-type(1) > div > div > div > div > div > div > div:nth-of-type(1) > div > div > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div > div > div > div > div > div > div > div > div:nth-of-type(2) > form > div > div:nth-of-type(1) > div > div:nth-of-type(6) > svg > path:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "X9f619",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xeuugli.xv54qhq.xf7dkkf.x1l90r2v.xyamay9",
+          "item_count": 8
+        },
+        {
+          "name": "X9f619",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Sign up",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "link",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "div:nth-of-type(1) > div > div > div > div > div > div > div:nth-of-type(1) > div > div > div > div:nth-of-type(3) > div > div > div > div > div > div:nth-of-type(2) > div > div > div > div > div:nth-of-type(2) > div > div > div:nth-of-type(1) > span > a",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[1]/div[1]/span[1]/a[1]"
+            }
+          ],
+          "selector": "div.x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xeuugli.x1icxu4v.x25sj25.x10b6aqq.xyamay9",
+          "item_count": 24
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    }
+  ]
+}
