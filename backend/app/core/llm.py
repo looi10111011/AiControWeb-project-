@@ -175,8 +175,20 @@ def _build_user_turn_text(
     memory_context: str = "",
     long_term_context: str = "",
     vision_context: str = "",
+    site_manual_context: str = "",
 ) -> str:
     text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
+    # W14: site_manual_context มาจากคู่มือที่ crawl มาอัตโนมัติ (backend/app/site_learning/
+    # — คนละระบบสมบูรณ์จาก manual_context ด้านล่างที่มาจากคู่มือที่ user อัปโหลดเอง/ingest
+    # เข้า ChromaDB) แยก section ให้ชัดเจนไม่ปนกัน เพื่อให้ debug ง่ายว่าข้อมูลมาจากไหน —
+    # วางก่อน manual_context เพราะเป็นความรู้พื้นฐานเกี่ยวกับ "เว็บนี้คืออะไร มีหน้าไหนบ้าง"
+    # ที่ตัวเว็บเองมีมาก่อนคู่มือเชิงนโยบายของ user เสียอีก
+    if site_manual_context:
+        text += (
+            "\n\nข้อมูลจากคู่มือเว็บไซต์ที่เรียนรู้มาอัตโนมัติ (โครงสร้างหน้า/ปุ่มที่เคย"
+            "สำรวจเจอ ใช้ประกอบการตัดสินใจ ไม่ใช่คำสั่งบังคับ อาจล้าสมัยได้ถ้าเว็บเปลี่ยน):\n"
+            f"{site_manual_context}"
+        )
     if manual_context:
         text += (
             "\n\nข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง (ใช้ประกอบการตัดสินใจ ไม่ใช่คำสั่งบังคับ):\n"
@@ -303,6 +315,7 @@ async def next_action(
     memory_context: str = "",
     long_term_context: str = "",
     vision_context: str = "",
+    site_manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -325,12 +338,18 @@ async def next_action(
     ดู _build_user_turn_text() ด้านบน (ปัจจุบัน orchestrator.py ยิง vision fallback
     เฉพาะ provider=gemini เท่านั้น เลย path นี้ (Anthropic) จะได้ "" เสมอในทางปฏิบัติ
     แต่รับ parameter ไว้เผื่อขยาย provider อื่นทีหลัง)
+
+    site_manual_context (W14): เนื้อหาย่อจากคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติ (ดู
+    backend/app/site_learning/) — orchestrator ดึงมาครั้งเดียวตอนเริ่ม task (ไม่ใช่ทุก
+    step แบบ manual_context เพราะไม่ได้ผูกกับ page state ปัจจุบัน) ว่างเปล่าถ้าโดเมนนี้
+    ยังไม่เคยถูกเรียนรู้/สร้าง manual ไว้
     """
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
-                goal, page_text, manual_context, memory_context, long_term_context, vision_context
+                goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+                site_manual_context,
             ),
         }
     ]
@@ -386,6 +405,7 @@ async def next_action_groq(
     memory_context: str = "",
     long_term_context: str = "",
     vision_context: str = "",
+    site_manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -408,7 +428,8 @@ async def next_action_groq(
         {
             "role": "user",
             "content": _build_user_turn_text(
-                goal, page_text, manual_context, memory_context, long_term_context, vision_context
+                goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+                site_manual_context,
             ),
         }
     ]
@@ -494,6 +515,7 @@ async def next_action_gemini(
     memory_context: str = "",
     long_term_context: str = "",
     vision_context: str = "",
+    site_manual_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -521,7 +543,8 @@ async def next_action_gemini(
             "role": "user",
             "parts": [{
                 "text": _build_user_turn_text(
-                    goal, page_text, manual_context, memory_context, long_term_context, vision_context
+                    goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+                    site_manual_context,
                 )
             }],
         }
@@ -574,14 +597,12 @@ _PLAN_PROMPT_TEMPLATE = (
 )
 
 
-async def generate_plan(client, model: str, goal: str, page_text: str, provider: str) -> str:
-    """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
-    ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
-    ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
-    เห็นแผนมาก่อน)
-    """
-    prompt = _PLAN_PROMPT_TEMPLATE.format(goal=goal, page_text=page_text)
-
+async def generate_text(client, model: str, prompt: str, provider: str) -> str:
+    """เรียก LLM แบบ plain text call เดียว (ไม่ใช้ tool-use) — primitive ที่ใช้ร่วมกันทั้ง
+    generate_plan() ด้านล่าง (ห่อ prompt ด้วย _PLAN_PROMPT_TEMPLATE) และ
+    site_learning/crawler.py (ห่อ prompt ของตัวเองเพื่อขอ LLM เขียนชื่อ/คำอธิบายหน้า
+    สั้นๆ ตอน crawl — ไม่เกี่ยวกับ plan/goal เลย) แยกออกมาเป็น primitive กัน logic
+    per-provider ซ้ำ 2 ที่"""
     if provider == "anthropic":
         response = await client.messages.create(
             model=model,
@@ -606,6 +627,16 @@ async def generate_plan(client, model: str, goal: str, page_text: str, provider:
         return response.text.strip()
 
     raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
+
+
+async def generate_plan(client, model: str, goal: str, page_text: str, provider: str) -> str:
+    """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
+    ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
+    ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
+    เห็นแผนมาก่อน)
+    """
+    prompt = _PLAN_PROMPT_TEMPLATE.format(goal=goal, page_text=page_text)
+    return await generate_text(client, model, prompt, provider)
 
 
 # --- W9[A] vision fallback (Gemini เท่านั้นตอนนี้) ---

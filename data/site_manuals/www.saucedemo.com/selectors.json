@@ -1,0 +1,146 @@
+{
+  "หน้าเข้าสู่ระบบ > Login": {
+    "css": "[data-testid=\"login-button\"], [data-test=\"login-button\"]",
+    "xpath": "//*[@id=\"login-button\"]",
+    "aria": "",
+    "data_testid": "login-button"
+  },
+  "หน้าแสดงรายการสินค้า > Open Menu": {
+    "css": "#react-burger-menu-btn",
+    "xpath": "//*[@id=\"react-burger-menu-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการสินค้า > Close Menu": {
+    "css": "#react-burger-cross-btn",
+    "xpath": "//*[@id=\"react-burger-cross-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการสินค้า > Twitter": {
+    "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "social-twitter"
+  },
+  "หน้าแสดงรายการสินค้า > Facebook": {
+    "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": "social-facebook"
+  },
+  "หน้าแสดงรายการสินค้า > LinkedIn": {
+    "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
+    "aria": "",
+    "data_testid": "social-linkedin"
+  },
+  "หน้าแสดงรายการสินค้า > [Bm Item]": {
+    "css": "a.bm-item.menu-item",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการสินค้า > [Inventory Item]": {
+    "css": "div.inventory_item",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการสินค้า > [Inventory Item] Sauce Labs Backpack": {
+    "css": "[data-testid=\"item-4-title-link\"], [data-test=\"item-4-title-link\"]",
+    "xpath": "//*[@id=\"item_4_title_link\"]",
+    "aria": "",
+    "data_testid": "item-4-title-link"
+  },
+  "หน้าแสดงรายการสินค้า > [Inventory Item] Add to cart": {
+    "css": "[data-testid=\"add-to-cart-sauce-labs-backpack\"], [data-test=\"add-to-cart-sauce-labs-backpack\"]",
+    "xpath": "//*[@id=\"add-to-cart-sauce-labs-backpack\"]",
+    "aria": "",
+    "data_testid": "add-to-cart-sauce-labs-backpack"
+  },
+  "ตะกร้าสินค้า > Open Menu": {
+    "css": "#react-burger-menu-btn",
+    "xpath": "//*[@id=\"react-burger-menu-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ตะกร้าสินค้า > Continue Shopping": {
+    "css": "[data-testid=\"continue-shopping\"], [data-test=\"continue-shopping\"]",
+    "xpath": "//*[@id=\"continue-shopping\"]",
+    "aria": "",
+    "data_testid": "continue-shopping"
+  },
+  "ตะกร้าสินค้า > Checkout": {
+    "css": "[data-testid=\"checkout\"], [data-test=\"checkout\"]",
+    "xpath": "//*[@id=\"checkout\"]",
+    "aria": "",
+    "data_testid": "checkout"
+  },
+  "ตะกร้าสินค้า > Twitter": {
+    "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "social-twitter"
+  },
+  "ตะกร้าสินค้า > Facebook": {
+    "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": "social-facebook"
+  },
+  "ตะกร้าสินค้า > LinkedIn": {
+    "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
+    "aria": "",
+    "data_testid": "social-linkedin"
+  },
+  "ตะกร้าสินค้า > Close Menu": {
+    "css": "#react-burger-cross-btn",
+    "xpath": "//*[@id=\"react-burger-cross-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Product Detail Page > Open Menu": {
+    "css": "#react-burger-menu-btn",
+    "xpath": "//*[@id=\"react-burger-menu-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Product Detail Page > Back to products": {
+    "css": "[data-testid=\"back-to-products\"], [data-test=\"back-to-products\"]",
+    "xpath": "//*[@id=\"back-to-products\"]",
+    "aria": "",
+    "data_testid": "back-to-products"
+  },
+  "Product Detail Page > Add to cart": {
+    "css": "[data-testid=\"add-to-cart\"], [data-test=\"add-to-cart\"]",
+    "xpath": "//*[@id=\"add-to-cart\"]",
+    "aria": "",
+    "data_testid": "add-to-cart"
+  },
+  "Product Detail Page > Twitter": {
+    "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "social-twitter"
+  },
+  "Product Detail Page > Facebook": {
+    "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": "social-facebook"
+  },
+  "Product Detail Page > LinkedIn": {
+    "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
+    "aria": "",
+    "data_testid": "social-linkedin"
+  },
+  "Product Detail Page > Close Menu": {
+    "css": "#react-burger-cross-btn",
+    "xpath": "//*[@id=\"react-burger-cross-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  }
+}

@@ -1,0 +1,389 @@
+{
+  "website": "www.saucedemo.com",
+  "version": 4,
+  "generated_at": 1784604208.3965938,
+  "pages": [
+    {
+      "name": "หน้าเข้าสู่ระบบ",
+      "url": "https://www.saucedemo.com/",
+      "description": "หน้าสำหรับกรอกชื่อผู้ใช้และรหัสผ่านเพื่อเข้าใช้งานระบบ",
+      "menu_path": [
+        "หน้าเข้าสู่ระบบ"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Login",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "login-button",
+          "selector": "[data-testid=\"login-button\"], [data-test=\"login-button\"]",
+          "xpath": "//*[@id=\"login-button\"]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "user-name",
+          "label": "",
+          "placeholder": "Username",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "[data-testid=\"username\"], [data-test=\"username\"]"
+        },
+        {
+          "field_name": "password",
+          "label": "",
+          "placeholder": "Password",
+          "required": false,
+          "input_type": "password",
+          "validation": "",
+          "selector": "[data-testid=\"password\"], [data-test=\"password\"]"
+        }
+      ],
+      "tables": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าแสดงรายการสินค้า",
+      "url": "https://www.saucedemo.com/inventory.html",
+      "description": "หน้านี้เป็นหน้าหลักที่แสดงรายการสินค้าทั้งหมดเพื่อให้ผู้ใช้เลือกดูและเพิ่มลงในตะกร้าสินค้า",
+      "menu_path": [
+        "หน้าแสดงรายการสินค้า"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Open Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "selector": "#react-burger-menu-btn",
+          "xpath": "//*[@id=\"react-burger-menu-btn\"]"
+        },
+        {
+          "text": "All Items",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "inventory-sidebar-link",
+          "selector": "[data-testid=\"inventory-sidebar-link\"], [data-test=\"inventory-sidebar-link\"]",
+          "xpath": "//*[@id=\"inventory_sidebar_link\"]"
+        },
+        {
+          "text": "About",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "about-sidebar-link",
+          "selector": "[data-testid=\"about-sidebar-link\"], [data-test=\"about-sidebar-link\"]",
+          "xpath": "//*[@id=\"about_sidebar_link\"]"
+        },
+        {
+          "text": "Logout",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "logout-sidebar-link",
+          "selector": "[data-testid=\"logout-sidebar-link\"], [data-test=\"logout-sidebar-link\"]",
+          "xpath": "//*[@id=\"logout_sidebar_link\"]"
+        },
+        {
+          "text": "Reset App State",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "reset-sidebar-link",
+          "selector": "[data-testid=\"reset-sidebar-link\"], [data-test=\"reset-sidebar-link\"]",
+          "xpath": "//*[@id=\"reset_sidebar_link\"]"
+        },
+        {
+          "text": "Close Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "selector": "#react-burger-cross-btn",
+          "xpath": "//*[@id=\"react-burger-cross-btn\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "shopping-cart-link",
+          "selector": "[data-testid=\"shopping-cart-link\"], [data-test=\"shopping-cart-link\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/a[1]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-4-img-link",
+          "selector": "[data-testid=\"item-4-img-link\"], [data-test=\"item-4-img-link\"]",
+          "xpath": "//*[@id=\"item_4_img_link\"]"
+        },
+        {
+          "text": "Sauce Labs Backpack",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-4-title-link",
+          "selector": "[data-testid=\"item-4-title-link\"], [data-test=\"item-4-title-link\"]",
+          "xpath": "//*[@id=\"item_4_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-sauce-labs-backpack",
+          "selector": "[data-testid=\"add-to-cart-sauce-labs-backpack\"], [data-test=\"add-to-cart-sauce-labs-backpack\"]",
+          "xpath": "//*[@id=\"add-to-cart-sauce-labs-backpack\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-0-img-link",
+          "selector": "[data-testid=\"item-0-img-link\"], [data-test=\"item-0-img-link\"]",
+          "xpath": "//*[@id=\"item_0_img_link\"]"
+        },
+        {
+          "text": "Sauce Labs Bike Light",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-0-title-link",
+          "selector": "[data-testid=\"item-0-title-link\"], [data-test=\"item-0-title-link\"]",
+          "xpath": "//*[@id=\"item_0_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-sauce-labs-bike-light",
+          "selector": "[data-testid=\"add-to-cart-sauce-labs-bike-light\"], [data-test=\"add-to-cart-sauce-labs-bike-light\"]",
+          "xpath": "//*[@id=\"add-to-cart-sauce-labs-bike-light\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-1-img-link",
+          "selector": "[data-testid=\"item-1-img-link\"], [data-test=\"item-1-img-link\"]",
+          "xpath": "//*[@id=\"item_1_img_link\"]"
+        },
+        {
+          "text": "Sauce Labs Bolt T-Shirt",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-1-title-link",
+          "selector": "[data-testid=\"item-1-title-link\"], [data-test=\"item-1-title-link\"]",
+          "xpath": "//*[@id=\"item_1_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-sauce-labs-bolt-t-shirt",
+          "selector": "[data-testid=\"add-to-cart-sauce-labs-bolt-t-shirt\"], [data-test=\"add-to-cart-sauce-labs-bolt-t-shirt\"]",
+          "xpath": "//*[@id=\"add-to-cart-sauce-labs-bolt-t-shirt\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-5-img-link",
+          "selector": "[data-testid=\"item-5-img-link\"], [data-test=\"item-5-img-link\"]",
+          "xpath": "//*[@id=\"item_5_img_link\"]"
+        },
+        {
+          "text": "Sauce Labs Fleece Jacket",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-5-title-link",
+          "selector": "[data-testid=\"item-5-title-link\"], [data-test=\"item-5-title-link\"]",
+          "xpath": "//*[@id=\"item_5_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-sauce-labs-fleece-jacket",
+          "selector": "[data-testid=\"add-to-cart-sauce-labs-fleece-jacket\"], [data-test=\"add-to-cart-sauce-labs-fleece-jacket\"]",
+          "xpath": "//*[@id=\"add-to-cart-sauce-labs-fleece-jacket\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-2-img-link",
+          "selector": "[data-testid=\"item-2-img-link\"], [data-test=\"item-2-img-link\"]",
+          "xpath": "//*[@id=\"item_2_img_link\"]"
+        },
+        {
+          "text": "Sauce Labs Onesie",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-2-title-link",
+          "selector": "[data-testid=\"item-2-title-link\"], [data-test=\"item-2-title-link\"]",
+          "xpath": "//*[@id=\"item_2_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-sauce-labs-onesie",
+          "selector": "[data-testid=\"add-to-cart-sauce-labs-onesie\"], [data-test=\"add-to-cart-sauce-labs-onesie\"]",
+          "xpath": "//*[@id=\"add-to-cart-sauce-labs-onesie\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-3-img-link",
+          "selector": "[data-testid=\"item-3-img-link\"], [data-test=\"item-3-img-link\"]",
+          "xpath": "//*[@id=\"item_3_img_link\"]"
+        },
+        {
+          "text": "Test.allTheThings() T-Shirt (Red)",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "item-3-title-link",
+          "selector": "[data-testid=\"item-3-title-link\"], [data-test=\"item-3-title-link\"]",
+          "xpath": "//*[@id=\"item_3_title_link\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart-test.allthethings()-t-shirt-(red)",
+          "selector": "[data-testid=\"add-to-cart-test.allthethings()-t-shirt-(red)\"], [data-test=\"add-to-cart-test.allthethings()-t-shirt-(red)\"]",
+          "xpath": "//*[@id=\"add-to-cart-test.allthethings()-t-shirt-(red)\"]"
+        },
+        {
+          "text": "Twitter",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-twitter",
+          "selector": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]"
+        },
+        {
+          "text": "Facebook",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-facebook",
+          "selector": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]"
+        },
+        {
+          "text": "LinkedIn",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-linkedin",
+          "selector": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "",
+          "required": false,
+          "input_type": "select",
+          "validation": "",
+          "selector": "[data-testid=\"product-sort-container\"], [data-test=\"product-sort-container\"]"
+        }
+      ],
+      "tables": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    }
+  ]
+}

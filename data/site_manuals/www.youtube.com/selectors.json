@@ -1,0 +1,200 @@
+{
+  "YouTube Home > Guide": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Guide",
+    "data_testid": ""
+  },
+  "YouTube Home > Skip navigation": {
+    "css": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Skip navigation",
+    "data_testid": ""
+  },
+  "YouTube Home > Search": {
+    "css": "button.ytSearchboxComponentSearchButton",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]",
+    "aria": "Search",
+    "data_testid": ""
+  },
+  "YouTube Home > Search with your voice": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Search with your voice",
+    "data_testid": ""
+  },
+  "YouTube Home > Settings": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Settings",
+    "data_testid": ""
+  },
+  "YouTube Home > Sign in": {
+    "css": "a.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextOutline.ytSpecButtonShapeNextCallToAction.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconLeading.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]",
+    "aria": "Sign in",
+    "data_testid": ""
+  },
+  "YouTube Home > Cancel": {
+    "css": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Cancel",
+    "data_testid": ""
+  },
+  "YouTube Home > Allow microphone access to search with voice": {
+    "css": "#microphone-circle",
+    "xpath": "//*[@id=\"microphone-circle\"]",
+    "aria": "Allow microphone access to search with voice",
+    "data_testid": ""
+  },
+  "YouTube Home > [List Item Pattern]": {
+    "css": "#offline_no_content__a",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "YouTube Home > [Style Scope]": {
+    "css": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "YouTube Home > [Style Scope] Home": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+    "xpath": "//*[@id=\"endpoint\"]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Guide": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Guide",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Skip navigation": {
+    "css": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Skip navigation",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Search": {
+    "css": "button.ytSearchboxComponentSearchButton",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]",
+    "aria": "Search",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Search with your voice": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Search with your voice",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Settings": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Settings",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Sign in": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-page-manager > ytd-browse > ytd-two-column-browse-results-renderer > div:nth-of-type(1) > ytd-section-list-renderer > div:nth-of-type(2) > ytd-item-section-renderer > div:nth-of-type(3) > ytd-background-promo-renderer > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/ytd-page-manager[1]/ytd-browse[1]/ytd-two-column-browse-results-renderer[1]/div[1]/ytd-section-list-renderer[1]/div[2]/ytd-item-section-renderer[1]/div[3]/ytd-background-promo-renderer[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]",
+    "aria": "Sign in",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Cancel": {
+    "css": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Cancel",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > Allow microphone access to search with voice": {
+    "css": "#microphone-circle",
+    "xpath": "//*[@id=\"microphone-circle\"]",
+    "aria": "Allow microphone access to search with voice",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > [List Item Pattern]": {
+    "css": "#offline_no_content__a",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > [Style Scope]": {
+    "css": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าติดตามช่อง YouTube > [Style Scope] Home": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+    "xpath": "//*[@id=\"endpoint\"]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Guide": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Guide",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Skip navigation": {
+    "css": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Skip navigation",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Search": {
+    "css": "button.ytSearchboxComponentSearchButton",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]",
+    "aria": "Search",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Search with your voice": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(2) > div:nth-of-type(1) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Search with your voice",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Settings": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Settings",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Sign in": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-page-manager > ytd-browse > ytd-two-column-browse-results-renderer > div:nth-of-type(1) > ytd-section-list-renderer > div:nth-of-type(2) > ytd-item-section-renderer > div:nth-of-type(3) > ytd-background-promo-renderer > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > a",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/ytd-page-manager[1]/ytd-browse[1]/ytd-two-column-browse-results-renderer[1]/div[1]/ytd-section-list-renderer[1]/div[2]/ytd-item-section-renderer[1]/div[3]/ytd-background-promo-renderer[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]",
+    "aria": "Sign in",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Cancel": {
+    "css": "ytd-app > ytd-popup-container > tp-yt-paper-dialog > ytd-voice-search-dialog-renderer > div:nth-of-type(1) > div:nth-of-type(2) > ytd-button-renderer > yt-button-shape > button",
+    "xpath": "/html/body[1]/ytd-app[1]/ytd-popup-container[1]/tp-yt-paper-dialog[1]/ytd-voice-search-dialog-renderer[1]/div[1]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Cancel",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > Allow microphone access to search with voice": {
+    "css": "#microphone-circle",
+    "xpath": "//*[@id=\"microphone-circle\"]",
+    "aria": "Allow microphone access to search with voice",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > [List Item Pattern]": {
+    "css": "#offline_no_content__a",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > [Style Scope]": {
+    "css": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าประวัติการเข้าชม > [Style Scope] Home": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+    "xpath": "//*[@id=\"endpoint\"]",
+    "aria": "Home",
+    "data_testid": ""
+  }
+}

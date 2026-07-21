@@ -24,3 +24,4 @@ python-docx==1.1.2
 pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.28.1   # ให้ fastapi.testclient.TestClient ใช้ (W10[A])
+psutil==7.2.2   # W11[A]: หา/ฆ่า chromium process จริงของ BrowserPool สำหรับ chaos test

@@ -148,6 +148,29 @@
   .plan-edit-textarea{ width:100%; background:var(--surface); border:1px solid var(--border); color:var(--ink); border-radius:6px; padding:8px; font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; min-height:110px; margin-bottom:8px; }
   .plan-edit-textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
 
+  /* W14: Website Learning banner (missing manual / learning progress / done / error) */
+  .manual-banner-wrap{ flex-shrink:0; padding:10px 16px 0; }
+  .manual-banner{ border-radius:8px; padding:10px 12px; font-size:12.5px; }
+  .manual-banner.missing{ background:var(--warning-soft); border:1px solid var(--warning); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .manual-banner.missing .manual-banner-title{ color:var(--warning); font-weight:700; }
+  .manual-banner-login-fields{ display:flex; gap:6px; flex:1 1 auto; min-width:220px; }
+  .manual-banner-login-fields input{ flex:1 1 0; min-width:0; padding:5px 8px; font-size:12px; border-radius:6px; border:1px solid var(--warning); background:var(--bg); color:var(--ink); }
+  .manual-banner-cred-choice{ display:flex; gap:14px; flex:1 1 auto; min-width:220px; font-size:12px; }
+  .manual-banner-cred-choice label{ display:flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap; }
+  .manual-banner.learning{ background:var(--accent-soft); border:1px solid var(--accent); }
+  .manual-banner.learning .manual-banner-title{ color:var(--accent); font-weight:700; margin-bottom:6px; }
+  .manual-banner-current{ color:var(--muted); font-size:11.5px; margin-bottom:4px; word-break:break-all; }
+  .manual-banner-checklist{ display:flex; flex-direction:column; gap:2px; margin:4px 0; max-height:110px; overflow-y:auto; }
+  .manual-banner-checklist .item.done{ color:var(--accent); }
+  .manual-banner-checklist .item.pending{ color:var(--faint); }
+  .manual-banner-pct{ font-weight:700; margin-top:6px; }
+  .manual-banner.known{ background:var(--surface-2); border:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .manual-banner.known .manual-banner-title{ color:var(--muted); font-weight:600; }
+  .manual-banner.done{ background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); }
+  .manual-banner.error{ background:var(--critical-soft); border:1px solid var(--critical); color:var(--critical); }
+  .manual-banner-learn-btn{ flex:0 0 auto; border:none; border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--warning); color:#1a1200; }
+  .manual-banner-learn-btn:hover{ filter:brightness(1.08); }
+
   .composer{ flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:8px; }
   .composer-row{ display:flex; gap:8px; }
   .composer-row > div{ flex:1; min-width:0; }
@@ -233,11 +256,13 @@
     <div class="col chat">
       <div class="col-header"><span class="eyebrow">Chat</span><button class="log-toggle-btn" id="btnToggleLog">Show log</button></div>
       <div class="col-body" id="transcript"></div>
+      <div class="manual-banner-wrap" id="manualBanner" style="display:none;"></div>
       <div class="composer">
         <div class="composer-row">
           <div>
             <label for="url">Target URL</label>
-            <input type="url" id="url" placeholder="https://www.example.com" value="https://www.saucedemo.com/">
+            <input type="url" id="url" placeholder="https://www.example.com" value="https://www.saucedemo.com/" list="urlHistory" autocomplete="off">
+            <datalist id="urlHistory"></datalist>
           </div>
           <div style="flex:0 0 150px;">
             <label for="provider">Provider</label>
@@ -259,10 +284,19 @@
         </div>
         <div class="composer-checks">
           <label class="check-row"><input type="checkbox" id="headless"> Headless (hide the browser window) <span class="warn-hint">(unchecked: a real browser window opens and stays open until you close it)</span></label>
+          <label class="check-row"><input type="checkbox" id="useUserBrowser"> Use my browser <span class="warn-hint">(opens a new tab in your own Chrome instead of a separate window — requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup)</span></label>
+          <label class="check-row" id="tabReusePolicyRow" style="display:none;">
+            Continuing in that tab:
+            <select id="tabReusePolicy">
+              <option value="ask">Ask each time (default, safest)</option>
+              <option value="always_reuse">Always continue in the same tab (no prompts)</option>
+              <option value="always_new_tab">Always open a new tab</option>
+            </select>
+          </label>
           <label class="check-row"><input type="checkbox" id="autoApprove"> Auto-approve permission prompts <span class="warn-hint">(lets the agent act without asking)</span></label>
         </div>
         <div class="composer-send-row">
-          <button class="send-btn" id="btnRun">Run task</button>
+          <button class="send-btn" id="btnRun">Plan task</button>
           <button class="stop-btn" id="btnStop" style="display:none;">Stop</button>
           <span class="composer-error" id="composerError"></span>
         </div>
@@ -286,15 +320,29 @@ const API = "";
 let tasks = [];          // last known snapshot from GET /tasks
 let selectedConvId = null; // conversation currently shown in Chat/Log, or null = "new session"
 const liveSteps = {};        // task_id -> [{step, cmd, result, success}, ...] from SSE, real-time
-const pendingApprovals = {}; // task_id -> {request_id, cmd} — awaiting a human decision right now
-const planTexts = {};        // task_id -> plan text, known as soon as it's drafted; persists
-                              // after confirm/deny so it stays visible in the chat
-const planEditing = {};      // task_id -> true while its plan textarea is open for editing
-const planDrafts = {};       // task_id -> in-progress edited text, synced on every keystroke
-                              // so a periodic re-render (e.g. the 2.5s task poll) can't wipe
-                              // out an edit that hasn't been saved yet
+const pendingApprovals = {}; // task_id -> {request_id, cmd} — awaiting a human decision right now (permission prompts during a run)
+// W13: plan review now happens *before* any task exists — POST /api/generate_plan
+// returns the plan synchronously, the user reviews/edits/approves it locally, and only
+// then does POST /api/execute_plan actually create a task. pendingPlan holds that
+// in-review state; there is at most one at a time (the composer is disabled while one
+// is pending — see requestPlan()).
+let pendingPlan = null;      // { sessionId, url, goal, planDraft, requestParams } | null
+const runningPlans = {};     // task_id -> plan text, set right when execute_plan succeeds so the
+                              // approved plan stays visible in the chat while the task is still
+                              // running (task.result.plan only exists once it's done)
 const liveConnections = {};  // task_id -> EventSource, one live stream per running task
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
+
+// W14: Website Learning & Manual Generation — banner shown above the composer when the
+// current Target URL's site has no manual yet, plus live progress while crawling it.
+let siteManualStatus = null; // { exists, version } for the current url, or null = not checked yet
+let learnProgress = null;    // { learnId, done, total, checklist: [names], status, version?, errorMessage? } | null
+let manualCheckTimer = null; // debounce handle for checkSiteManualStatus()
+// W18: { exists } for the current url's domain, or null = not checked yet — drives the
+// "ใช้บัญชีที่บันทึกไว้ / เข้าสู่ระบบด้วยบัญชีอื่น" choice in the learn banner instead of
+// always showing blank username/password fields
+let siteCredentialsStatus = null;
+let learnUseNewAccount = false; // toggled by the radio choice — only relevant when siteCredentialsStatus.exists
 
 // ---- Conversations: the backend only knows about individual tasks (one orchestrator
 // run each), but the UI groups a sequence of them into one continuous chat thread so
@@ -311,6 +359,31 @@ try {
 
 function saveConversations() {
   try { localStorage.setItem(CONV_STORAGE_KEY, JSON.stringify(conversations)); } catch (e) {}
+}
+
+// ---- Target URL history: remembered client-side (localStorage) so it survives a page
+// reload/server restart independently of task history (which lives in the backend's
+// in-memory TaskManager and is lost on restart) — feeds the <datalist> under the
+// "Target URL" field so previously used sites show up as suggestions while typing.
+const URL_HISTORY_KEY = "agentConsoleUrlHistory";
+const URL_HISTORY_MAX = 20;
+let urlHistory = [];
+try {
+  urlHistory = JSON.parse(localStorage.getItem(URL_HISTORY_KEY) || "[]");
+} catch (e) {
+  urlHistory = [];
+}
+
+function renderUrlHistory() {
+  $("urlHistory").innerHTML = urlHistory.map((u) => `<option value="${escapeHtml(u)}"></option>`).join("");
+}
+
+function rememberUrl(url) {
+  url = (url || "").trim();
+  if (!url) return;
+  urlHistory = [url, ...urlHistory.filter((u) => u !== url)].slice(0, URL_HISTORY_MAX);
+  try { localStorage.setItem(URL_HISTORY_KEY, JSON.stringify(urlHistory)); } catch (e) {}
+  renderUrlHistory();
 }
 
 function conversationIdForTask(taskId) {
@@ -472,14 +545,11 @@ function handleStreamEvent(taskId, event) {
   if (event.kind === "step") {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push(event);
   } else if (event.kind === "approval_request") {
+    // W13: this is always a permission prompt for an action now — plan review happens
+    // before the task exists at all (see requestPlan()/approvePlan()), so a
+    // task submitted via execute_plan never emits a "confirm_plan" kind here.
     pendingApprovals[taskId] = { request_id: event.request_id, cmd: event.cmd };
-    if (event.cmd && event.cmd.type === "confirm_plan") {
-      planTexts[taskId] = event.cmd.plan || "";
-    }
   } else if (event.kind === "auto_approved") {
-    if (event.cmd && event.cmd.type === "confirm_plan") {
-      planTexts[taskId] = event.cmd.plan || "";
-    }
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push({
       step: null, cmd: event.cmd, result: "Auto-approved (auto-approve enabled)", success: true,
     });
@@ -496,19 +566,15 @@ function handleStreamEvent(taskId, event) {
   renderHistory();
 }
 
-async function respondApproval(taskId, requestId, approved, editedPlan) {
+async function respondApproval(taskId, requestId, approved) {
   delete pendingApprovals[taskId];
-  delete planEditing[taskId];
-  delete planDrafts[taskId];
   renderHistory();
   if (selectedConvId && conversationIdForTask(taskId) === selectedConvId) renderSelected();
   try {
-    const body = { request_id: requestId, approved };
-    if (editedPlan !== undefined) body.edited_plan = editedPlan;
     await fetch(`${API}/tasks/${taskId}/respond`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ request_id: requestId, approved }),
     });
   } catch (e) {}
 }
@@ -523,12 +589,22 @@ async function stopTask(taskId) {
   }
 }
 
-async function runTask() {
+// W13: plan review is 2 explicit steps now. requestPlan() asks the agent to draft a
+// plan (POST /api/generate_plan — a single fast LLM call, no browser touched) and
+// stores it as pendingPlan for local review; approvePlan() is what actually starts the
+// task (POST /api/execute_plan) once the user is happy with it; cancelPlan() throws it
+// away without ever having created anything server-side.
+async function requestPlan() {
   const url = $("url").value.trim();
   const goal = $("goal").value.trim();
   $("composerError").textContent = "";
   if (!url || !goal) {
     $("composerError").textContent = "Please provide both a target URL and a goal.";
+    return;
+  }
+  rememberUrl(url);
+  if (pendingPlan) {
+    $("composerError").textContent = "Approve or cancel the pending plan before requesting a new one.";
     return;
   }
   // Continuing an existing chat: don't let a follow-up overlap a turn that's still
@@ -542,44 +618,309 @@ async function runTask() {
       return;
     }
   }
-  const payload = {
-    url,
-    goal,
+  // W12: the session id IS the conversation id — generated client-side up front for a
+  // brand-new conversation (rather than derived from the response afterward, like
+  // before) so it can be sent to the backend and used to keep the same browser
+  // page/context alive across every follow-up command in this thread instead of
+  // reopening a fresh one each time (see core/session_registry.py). Every subsequent
+  // turn in the same thread reuses the exact same id.
+  const sessionId = selectedConvId || newSessionId();
+  const requestParams = {
     max_steps: parseInt($("maxSteps").value, 10) || 30,
     provider: $("provider").value || null,
     headless: $("headless").checked,
     auto_approve: $("autoApprove").checked,
+    use_user_browser: $("useUserBrowser").checked,
+    tab_reuse_policy: $("useUserBrowser").checked ? $("tabReusePolicy").value : null,
   };
   $("btnRun").disabled = true;
   try {
-    const r = await fetch(API + "/tasks", {
+    const r = await fetch(API + "/api/generate_plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, goal, provider: requestParams.provider, session_id: sessionId }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      $("composerError").textContent = "Failed to generate plan: " + err;
+      return;
+    }
+    const { plan } = await r.json();
+    pendingPlan = { sessionId, url, goal, planDraft: plan, requestParams, editing: false };
+    // Selecting this conversation now (even though no task exists yet) so the pending
+    // plan bubble renders in the right thread and, for a brand-new chat, so it doesn't
+    // look like nothing happened after clicking Run.
+    selectedConvId = sessionId;
+    $("goal").value = "";
+    renderHistory();
+    renderSelected();
+  } finally {
+    $("btnRun").disabled = false;
+  }
+}
+
+async function approvePlan() {
+  if (!pendingPlan) return;
+  const { sessionId, url, goal, planDraft, requestParams } = pendingPlan;
+  const payload = {
+    url,
+    goal,
+    // Confirming persists this plan into Plan Memory (backend/app/core/plan_memory.py)
+    // regardless of whether it was edited — future runs of a semantically similar goal
+    // on this domain reuse it directly instead of asking the LLM to draft again.
+    plan: planDraft,
+    session_id: sessionId,
+    max_steps: requestParams.max_steps,
+    provider: requestParams.provider,
+    headless: requestParams.headless,
+    auto_approve: requestParams.auto_approve,
+    use_user_browser: requestParams.use_user_browser,
+    tab_reuse_policy: requestParams.tab_reuse_policy,
+  };
+  try {
+    const r = await fetch(API + "/api/execute_plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     if (!r.ok) {
       const err = await r.text();
-      $("composerError").textContent = "Failed to submit task: " + err;
+      $("composerError").textContent = "Failed to start task: " + err;
       return;
     }
     const created = await r.json();
-    $("goal").value = "";
+    if (planDraft) runningPlans[created.task_id] = planDraft;
 
-    // Append to the currently open conversation (continuing the same chat) rather
-    // than always starting a new one — only start a fresh conversation if none was
-    // selected (i.e. the user was on the "New session" composer).
-    const convId = selectedConvId || ("conv-" + created.task_id);
-    if (!conversations[convId]) conversations[convId] = [];
-    conversations[convId].push(created.task_id);
+    if (!conversations[sessionId]) conversations[sessionId] = [];
+    conversations[sessionId].push(created.task_id);
     saveConversations();
-    selectedConvId = convId;
+    selectedConvId = sessionId;
+    pendingPlan = null;
 
     liveSteps[created.task_id] = [];
     openStream(created.task_id);
     await refreshTasks();
-  } finally {
-    $("btnRun").disabled = false;
+  } catch (e) {
+    $("composerError").textContent = "Failed to start task.";
   }
+}
+
+function cancelPlan() {
+  // Nothing was ever created server-side (no task, no session) — this is purely local
+  // state being thrown away.
+  pendingPlan = null;
+  renderHistory();
+  renderSelected();
+}
+
+function newSessionId() {
+  if (window.crypto && crypto.randomUUID) return "sess-" + crypto.randomUUID();
+  return "sess-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+}
+
+// ---------------- W14: Website Learning & Manual Generation ----------------
+
+function scheduleManualStatusCheck() {
+  // Debounced — fires while typing a URL, don't hammer the endpoint on every keystroke.
+  clearTimeout(manualCheckTimer);
+  manualCheckTimer = setTimeout(checkSiteManualStatus, 400);
+}
+
+async function checkSiteManualStatus() {
+  const url = $("url").value.trim();
+  if (!url || learnProgress) {
+    // Don't clobber an in-progress/just-finished learn banner with a stale "checking"
+    // pass — learnProgress's own lifecycle (startLearningSite/openLearnStream) clears
+    // itself and re-checks explicitly when it's actually done.
+    if (!url) { siteManualStatus = null; siteCredentialsStatus = null; renderManualBanner(); }
+    return;
+  }
+  learnUseNewAccount = false;  // รีเซ็ตตัวเลือกทุกครั้งที่ URL เปลี่ยน — ค่าเริ่มต้นคือ "ใช้บัญชีที่บันทึกไว้" ถ้ามี
+  try {
+    const r = await fetch(`${API}/api/site-manual/status?url=${encodeURIComponent(url)}`);
+    siteManualStatus = r.ok ? await r.json() : null;
+  } catch (e) {
+    siteManualStatus = null;
+  }
+  // W18: เช็คว่ามี credential เก็บไว้แล้วสำหรับโดเมนนี้ไหม — ขับ radio choice "ใช้บัญชีที่
+  // บันทึกไว้ / เข้าสู่ระบบด้วยบัญชีอื่น" แทนที่จะโชว์ช่องกรอกเปล่าๆ ทุกครั้ง
+  try {
+    const domain = new URL(url).hostname;
+    const cr = await fetch(`${API}/api/site-manual/${encodeURIComponent(domain)}/credentials/status`);
+    siteCredentialsStatus = cr.ok ? await cr.json() : null;
+  } catch (e) {
+    siteCredentialsStatus = null;
+  }
+  renderManualBanner();
+}
+
+// W18: ถ้ามี credential เก็บไว้แล้วสำหรับโดเมนนี้ (siteCredentialsStatus.exists) โชว์ radio
+// ให้เลือก "ใช้บัญชีที่บันทึกไว้" (ค่าเริ่มต้น — ไม่โชว์ช่องกรอกเลย ไม่ต้องกรอกซ้ำ) กับ
+// "เข้าสู่ระบบด้วยบัญชีอื่น" (เลือกแล้วค่อยโชว์ช่อง username/password ให้กรอกใหม่) ถ้ายังไม่
+// เคยมี credential เก็บไว้เลย ก็โชว์ช่องกรอกตรงๆ เหมือนเดิม (ไม่มีอะไรให้เลือก)
+function renderCredentialFieldsHtml() {
+  if (siteCredentialsStatus && siteCredentialsStatus.exists) {
+    const fieldsHtml = learnUseNewAccount ? `
+        <div class="manual-banner-login-fields">
+          <input type="text" id="learnUsername" placeholder="Username ใหม่" autocomplete="off" />
+          <input type="password" id="learnPassword" placeholder="Password ใหม่" autocomplete="off" />
+        </div>` : "";
+    return `
+      <div class="manual-banner-cred-choice">
+        <label><input type="radio" name="credChoice" data-cred-choice="saved" ${!learnUseNewAccount ? "checked" : ""} /> ใช้บัญชีที่บันทึกไว้</label>
+        <label><input type="radio" name="credChoice" data-cred-choice="new" ${learnUseNewAccount ? "checked" : ""} /> เข้าสู่ระบบด้วยบัญชีอื่น</label>
+      </div>${fieldsHtml}`;
+  }
+  return `
+        <div class="manual-banner-login-fields">
+          <input type="text" id="learnUsername" placeholder="Username (ถ้าเว็บนี้ต้อง login — ไม่บังคับ, จะจำไว้ใช้อัตโนมัติครั้งหน้า)" autocomplete="off" />
+          <input type="password" id="learnPassword" placeholder="Password (ไม่บังคับ)" autocomplete="off" />
+        </div>`;
+}
+
+function renderManualBanner() {
+  const box = $("manualBanner");
+  if (learnProgress) {
+    if (learnProgress.status === "running") {
+      const pct = learnProgress.total ? Math.min(100, Math.round((learnProgress.done / learnProgress.total) * 100)) : 0;
+      const items = learnProgress.checklist
+        .map((name) => `<div class="item done">&check; ${escapeHtml(name)}</div>`)
+        .join("");
+      // W16: บอกด้วยว่า "ตอนนี้" กำลังเดินอยู่หน้าไหน (อัปเดตจาก page_start event — มา
+      // ก่อน page_done เสมอ เพราะยิงตอนหน้าโหลดเสร็จ ก่อนรอ LLM อธิบาย) คู่กับ browser
+      // จริงที่เปิดแบบมองเห็นได้ (headless=False, ดู routes.py::learn_site()) ให้เห็นทั้ง
+      // ในหน้าต่าง browser จริงๆ และในข้อความบนหน้าเว็บนี้พร้อมกัน
+      const currentLine = learnProgress.currentUrl
+        ? `<div class="manual-banner-current">กำลังเรียนรู้ตอนนี้: ${escapeHtml(learnProgress.currentUrl)}</div>`
+        : "";
+      // W16: ถ้ากำลังไล่กดปุ่มอยู่ (button_explored event) โชว์ชื่อปุ่มด้วย — เห็นทั้งว่า
+      // "อยู่หน้าไหน" และ "กำลังลองปุ่มไหน" พร้อมกัน
+      const buttonLine = learnProgress.currentButton
+        ? `<div class="manual-banner-current">กำลังลองกดปุ่ม: ${escapeHtml(learnProgress.currentButton)}</div>`
+        : "";
+      box.innerHTML = `
+        <div class="manual-banner learning">
+          <div class="manual-banner-title">กำลังเรียนรู้เว็บไซต์...</div>
+          ${currentLine}
+          ${buttonLine}
+          <div class="manual-banner-checklist">${items}</div>
+          <div class="manual-banner-pct">${pct}%</div>
+        </div>`;
+    } else if (learnProgress.status === "done") {
+      box.innerHTML = `
+        <div class="manual-banner done">
+          <div><b>เรียนรู้เว็บไซต์เรียบร้อยแล้ว</b></div>
+          <div>Manual Version ${learnProgress.version ?? "?"} ถูกสร้างแล้ว</div>
+        </div>`;
+    } else {
+      box.innerHTML = `
+        <div class="manual-banner error">
+          เรียนรู้เว็บไซต์ไม่สำเร็จ: ${escapeHtml(learnProgress.errorMessage || "unknown error")}
+        </div>`;
+    }
+    box.style.display = "";
+    return;
+  }
+  if (siteManualStatus && siteManualStatus.exists === false) {
+    box.innerHTML = `
+      <div class="manual-banner missing">
+        <div class="manual-banner-title">เว็บไซต์นี้ยังไม่มีคู่มือ</div>
+        ${renderCredentialFieldsHtml()}
+        <button type="button" class="manual-banner-learn-btn" data-learn-site="true">เรียนรู้เว็บไซต์</button>
+      </div>`;
+    box.style.display = "";
+    return;
+  }
+  if (siteManualStatus && siteManualStatus.exists === true) {
+    // W16: เว็บไซต์อาจอัปเดตหน้าตา/โครงสร้างไปหลังจากเรียนรู้ครั้งก่อน — ให้กดเรียนรู้
+    // ใหม่ทั้งเว็บได้ตลอด ไม่ต้องรอ manual หาย/พังก่อน (ต่างจาก relearn-page ที่ซ่อมทีละ
+    // หน้าตอน selector ใช้งานไม่ได้ endpoint นี้เรียก POST /api/site-manual/learn ตัวเดิม
+    // ซ้ำ — crawl ใหม่ทั้งเว็บ + bump version เหมือนเดิมทุกประการ)
+    box.innerHTML = `
+      <div class="manual-banner known">
+        <div class="manual-banner-title">มีคู่มือเว็บไซต์นี้แล้ว (Version ${siteManualStatus.version})</div>
+        ${renderCredentialFieldsHtml()}
+        <button type="button" class="manual-banner-learn-btn relearn" data-learn-site="true">เรียนรู้ใหม่อีกรอบ</button>
+      </div>`;
+    box.style.display = "";
+    return;
+  }
+  box.style.display = "none";
+  box.innerHTML = "";
+}
+
+async function startLearningSite() {
+  const url = $("url").value.trim();
+  if (!url || learnProgress) return;
+  // W15: อ่านค่า username/password ตอนกดปุ่มเท่านั้น — ส่งไปใน request เดียวแล้วทิ้ง
+  // ไม่เก็บลง learnProgress/state ใดๆ เพื่อไม่ให้ credential ค้างอยู่ใน memory ฝั่ง UI
+  const usernameEl = document.getElementById("learnUsername");
+  const passwordEl = document.getElementById("learnPassword");
+  const username = usernameEl && usernameEl.value ? usernameEl.value : null;
+  const password = passwordEl && passwordEl.value ? passwordEl.value : null;
+  // W18: "ใช้บัญชีที่บันทึกไว้" ถูกเลือกอยู่ (ไม่ได้กดเปลี่ยนเป็นบัญชีใหม่) และมี credential
+  // เก็บไว้จริง — ส่ง flag นี้แทนตัว username/password (ซึ่งจะเป็น null ทั้งคู่อยู่แล้ว
+  // เพราะช่องกรอกไม่ได้ถูก render เลยในเคสนี้) ให้ backend ไปดึงค่าที่เก็บไว้มาใช้เอง
+  const useSavedCredentials = !!(siteCredentialsStatus && siteCredentialsStatus.exists && !learnUseNewAccount);
+  learnProgress = { learnId: null, done: 0, total: 1, checklist: [], status: "running", currentUrl: url };
+  renderManualBanner();
+  try {
+    const r = await fetch(`${API}/api/site-manual/learn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url, provider: $("provider").value || null, username, password,
+        use_saved_credentials: useSavedCredentials,
+      }),
+    });
+    if (!r.ok) {
+      learnProgress = { status: "error", errorMessage: await r.text() };
+      renderManualBanner();
+      return;
+    }
+    const created = await r.json();
+    learnProgress.learnId = created.learn_id;
+    openLearnStream(created.learn_id);
+  } catch (e) {
+    learnProgress = { status: "error", errorMessage: String(e) };
+    renderManualBanner();
+  }
+}
+
+function openLearnStream(learnId) {
+  const es = new EventSource(`${API}/api/site-manual/learn/${learnId}/stream`);
+  es.onmessage = (ev) => {
+    let event;
+    try { event = JSON.parse(ev.data); } catch (e) { return; }
+    if (!learnProgress) { es.close(); return; }
+    if (event.kind === "page_start") {
+      learnProgress.currentUrl = event.url;
+      learnProgress.currentButton = null;
+      renderManualBanner();
+    } else if (event.kind === "button_explored") {
+      // W16: crawler กำลังไล่กดปุ่มปลอดภัยบนหน้านี้อยู่ (ดู crawler.py::_explore_buttons)
+      // — โชว์ชื่อปุ่มที่กำลังลองกด คู่กับ browser จริงที่เปิดแบบมองเห็นได้
+      learnProgress.currentButton = event.button;
+      renderManualBanner();
+    } else if (event.kind === "page_done") {
+      learnProgress.done = event.done;
+      learnProgress.total = event.total;
+      learnProgress.checklist.push(event.name);
+      renderManualBanner();
+    } else if (event.kind === "learn_done") {
+      es.close();
+      if (event.status === "done") {
+        learnProgress = { status: "done", version: event.result ? event.result.version : null };
+      } else {
+        learnProgress = { status: "error", errorMessage: event.error || "" };
+      }
+      renderManualBanner();
+      // Re-check for real (not just trusting our own optimistic state) so the banner
+      // fully clears once storage confirms the manual actually exists on disk now.
+      setTimeout(() => { learnProgress = null; checkSiteManualStatus(); }, 2500);
+    }
+  };
+  es.onerror = () => { es.close(); };
 }
 
 // ---------------- Rendering ----------------
@@ -621,6 +962,10 @@ function renderHistory() {
   list.innerHTML = html;
   list.querySelectorAll(".list-item").forEach((el) => {
     el.addEventListener("click", () => {
+      if (pendingPlan && pendingPlan.sessionId !== el.dataset.convId) {
+        $("composerError").textContent = "Approve or cancel the pending plan before switching conversations.";
+        return;
+      }
       selectedConvId = el.dataset.convId;
       const latest = latestTaskInConversation(selectedConvId);
       if (latest) {
@@ -631,12 +976,17 @@ function renderHistory() {
       }
       renderHistory();
       renderSelected();
+      learnProgress = null;
+      checkSiteManualStatus();
     });
   });
 }
 
 function statusMeta(task) {
-  if (!task) return { cls: "idle", label: "Idle" };
+  if (!task) {
+    if (pendingPlan && pendingPlan.sessionId === selectedConvId) return { cls: "running", label: "Reviewing plan" };
+    return { cls: "idle", label: "Idle" };
+  }
   if (pendingApprovals[task.task_id]) return { cls: "error", label: "Needs approval" };
   const s = (task.status || "running").toLowerCase();
   if (s === "running") return { cls: "running", label: "Running" };
@@ -647,7 +997,8 @@ function statusMeta(task) {
 }
 
 function renderTopbar(convTasks) {
-  const first = convTasks.length ? convTasks[0] : null;
+  const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
+  const first = convTasks.length ? convTasks[0] : pending;
   const latest = convTasks.length ? convTasks[convTasks.length - 1] : null;
   $("sessionName").innerHTML = first
     ? `Session &mdash; <b>${escapeHtml(truncate(first.goal, 70))}</b>${convTasks.length > 1 ? ` <span class="mono" style="color:var(--faint)">(${convTasks.length} turns)</span>` : ""}`
@@ -682,62 +1033,31 @@ function renderTaskTurn(task) {
   const agentIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/></svg>`;
 
   const pending = pendingApprovals[task.task_id];
-  const planPending = !!(pending && pending.cmd && pending.cmd.type === "confirm_plan");
-  const planText = planTexts[task.task_id] || (task.result && task.result.plan) || "";
 
-  // Plan bubble: appears the moment the plan is drafted (real-time, via SSE), stays
-  // visible in the chat after it's confirmed/denied instead of disappearing. While
-  // still awaiting confirmation, the user can Edit it (in case the AI's plan is wrong
-  // or incomplete) before confirming — see planEditing/planDrafts state.
+  // W13: the plan (if any) was already reviewed and approved *before* this task was
+  // even created (see requestPlan()/approvePlan()) — this bubble is purely a record of
+  // what was approved, never an in-progress approval prompt anymore. runningPlans
+  // covers the "still running" window (task.result doesn't exist yet); task.result.plan
+  // takes over once it's done.
+  const planText = runningPlans[task.task_id] || (task.result && task.result.plan) || "";
   if (planText) {
-    let badge = "";
-    if (planPending) {
-      badge = `<span class="plan-badge fail">awaiting confirmation</span>`;
-    } else if (task.result && task.result.plan) {
-      badge = `<span class="plan-badge ${task.result.success ? "ok" : "fail"}">${task.result.success ? "succeeded" : "did not finish"}</span>`;
-    }
-    const isEditing = planPending && planEditing[task.task_id];
-    let bodyHtml;
-    if (isEditing) {
-      const draftValue = planDrafts[task.task_id] !== undefined ? planDrafts[task.task_id] : planText;
-      bodyHtml = `
-        <textarea class="plan-edit-textarea" data-task="${task.task_id}" rows="6">${escapeHtml(draftValue)}</textarea>
-        <div class="approval-actions">
-          <button class="btn-approve" data-plan-save="true" data-task="${task.task_id}" data-request="${pending.request_id}">Save &amp; confirm</button>
-          <button class="btn-deny" data-plan-edit-cancel="true" data-task="${task.task_id}">Discard edit</button>
-        </div>`;
-    } else {
-      bodyHtml = `
-        <div class="plan-bubble-text">${escapeHtml(planText)}</div>
-        ${planPending ? `
-          <div class="approval-actions">
-            <button class="btn-approve" data-task="${task.task_id}" data-request="${pending.request_id}" data-approve="true">Confirm &amp; start</button>
-            <button class="btn-edit" data-plan-edit="true" data-task="${task.task_id}">Edit</button>
-            <button class="btn-deny" data-task="${task.task_id}" data-request="${pending.request_id}" data-approve="false">Cancel</button>
-          </div>` : ``}`;
-    }
+    const badge = task.result
+      ? `<span class="plan-badge ${task.result.success ? "ok" : "fail"}">${task.result.success ? "succeeded" : "did not finish"}</span>`
+      : "";
     html += `
       <div class="msg agent">
         <div class="avatar">${agentIcon}</div>
         <div>
           <div class="bubble plan-bubble">
             <div class="plan-bubble-title">Plan${badge}</div>
-            ${bodyHtml}
+            <div class="plan-bubble-text">${escapeHtml(planText)}</div>
           </div>
-        </div>
-      </div>`;
-  } else if (task.status === "running") {
-    html += `
-      <div class="msg agent">
-        <div class="avatar">${agentIcon}</div>
-        <div>
-          <div class="bubble">Drafting a plan&hellip;</div>
         </div>
       </div>`;
   }
 
   if (task.status === "running") {
-    if (pending && pending.cmd && pending.cmd.type !== "confirm_plan") {
+    if (pending && pending.cmd) {
       html += `
         <div class="msg agent">
           <div class="avatar">${agentIcon}</div>
@@ -752,7 +1072,7 @@ function renderTaskTurn(task) {
             </div>
           </div>
         </div>`;
-    } else if (!planPending && planText) {
+    } else {
       const liveCount = (liveSteps[task.task_id] || []).length;
       const progress = liveCount ? ` &mdash; ${liveCount} step${liveCount === 1 ? "" : "s"} so far` : "";
       html += `
@@ -798,12 +1118,61 @@ function renderTaskTurn(task) {
 // replacing it — this is what lets you keep chatting without starting a new session.
 function renderTranscript(convTasks) {
   const box = $("transcript");
-  if (!convTasks.length) {
-    box.innerHTML = '<div class="transcript-empty">Set a target URL and goal below, then click "Run task" to start a new session.</div>';
+  const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
+  if (!convTasks.length && !pending) {
+    box.innerHTML = '<div class="transcript-empty">Set a target URL and goal below, then click "Plan task" to draft a plan and start a new session.</div>';
     return;
   }
-  box.innerHTML = convTasks.map(renderTaskTurn).join("");
+  let html = convTasks.map(renderTaskTurn).join("");
+  if (pending) html += renderPendingPlanTurn(pending);
+  box.innerHTML = html;
   box.scrollTop = box.scrollHeight;
+}
+
+// W13: a plan awaiting local review — not a task yet (no task_id, no backend state at
+// all), so this is driven entirely by the pendingPlan object rather than SSE/polling.
+// W20: view/edit toggle brought back (like the old task-based plan flow) — default is
+// a read-only view (.plan-bubble-text, no scrolling needed — grows to fit the whole
+// plan) with an explicit "Edit" button; clicking it swaps in a textarea sized (via
+// `rows`) to the plan's actual line count so the full text is visible without an
+// internal scrollbar either. Textarea edits already live-sync into pending.planDraft
+// via the document-level "input" listener below, so there's no separate save/discard
+// step — "Done editing" just switches the view back.
+function renderPendingPlanTurn(pending) {
+  const agentIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/></svg>`;
+  const rows = Math.max(6, pending.planDraft.split("\n").length + 1);
+  const bodyHtml = pending.editing
+    ? `
+          <textarea class="plan-edit-textarea" id="pendingPlanTextarea" rows="${rows}">${escapeHtml(pending.planDraft)}</textarea>
+          <div class="approval-actions">
+            <button class="btn-approve" data-approve-plan="true">Approve &amp; Run</button>
+            <button class="btn-edit" data-plan-edit-done="true">Done editing</button>
+            <button class="btn-deny" data-cancel-plan="true">Cancel</button>
+          </div>`
+    : `
+          <div class="plan-bubble-text">${escapeHtml(pending.planDraft)}</div>
+          <div class="approval-actions">
+            <button class="btn-approve" data-approve-plan="true">Approve &amp; Run</button>
+            <button class="btn-edit" data-plan-edit="true">Edit</button>
+            <button class="btn-deny" data-cancel-plan="true">Cancel</button>
+          </div>`;
+  return `
+    <div class="msg user">
+      <div class="avatar">You</div>
+      <div>
+        <div class="bubble">${escapeHtml(pending.goal)}</div>
+        <div class="meta-line mono">${escapeHtml(pending.url)}</div>
+      </div>
+    </div>
+    <div class="msg agent">
+      <div class="avatar">${agentIcon}</div>
+      <div>
+        <div class="bubble plan-bubble">
+          <div class="plan-bubble-title">Plan<span class="plan-badge fail">awaiting approval</span></div>
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderLogLine(h) {
@@ -851,6 +1220,10 @@ function renderSelected() {
   renderTopbar(convTasks);
   renderTranscript(convTasks);
   renderLog(latest);
+  // A plan is pending review (in this or another conversation) — block requesting a
+  // second one until it's approved or cancelled, rather than only catching it inside
+  // requestPlan() after the click.
+  $("btnRun").disabled = !!pendingPlan;
 }
 
 // ---------------- Log panel visibility (manual "Show log" toggle) ----------------
@@ -873,15 +1246,39 @@ function applyTheme(theme) {
 
 // ---------------- Wiring ----------------
 
-$("btnRun").addEventListener("click", runTask);
+// "Use my browser" bypasses headless entirely (agent connects to your already-running
+// Chrome via CDP instead of launching one) — grey out "Headless" while it's checked so
+// it's clear the setting has no effect in that mode.
+$("useUserBrowser").addEventListener("change", () => {
+  const active = $("useUserBrowser").checked;
+  $("headless").disabled = active;
+  if (active) $("headless").checked = false;
+  $("tabReusePolicyRow").style.display = active ? "" : "none";
+});
+
+$("btnRun").addEventListener("click", requestPlan);
 $("btnStop").addEventListener("click", () => {
   const taskId = $("btnStop").dataset.task;
   if (taskId) stopTask(taskId);
 });
-$("btnNewSession").addEventListener("click", () => {
+$("btnNewSession").addEventListener("click", async () => {
+  const oldSessionId = selectedConvId;
+  if (oldSessionId) {
+    // Don't close the browser resources out from under a task that's still running on
+    // them — same guard requestPlan() already uses before sending a follow-up.
+    const latest = latestTaskInConversation(oldSessionId);
+    if (latest && latest.status === "running") {
+      $("composerError").textContent = "Wait for the current step to finish (or click Stop) before starting a new session.";
+      return;
+    }
+  }
+  if (pendingPlan && pendingPlan.sessionId === oldSessionId) pendingPlan = null;
   selectedConvId = null;
   renderHistory();
   renderSelected();
+  if (oldSessionId) {
+    try { await fetch(`${API}/sessions/${oldSessionId}/close`, { method: "POST" }); } catch (e) {}
+  }
 });
 $("btnToggleLog").addEventListener("click", () => {
   logVisible = !logVisible;
@@ -892,38 +1289,55 @@ $("themeToggle").addEventListener("click", (e) => {
   if (btn) applyTheme(btn.dataset.theme);
 });
 document.addEventListener("click", (e) => {
-  const editBtn = e.target.closest("[data-plan-edit]");
-  if (editBtn) {
-    planEditing[editBtn.dataset.task] = true;
-    renderSelected();
+  if (e.target.closest("[data-approve-plan]")) {
+    approvePlan();
     return;
   }
-  const cancelEditBtn = e.target.closest("[data-plan-edit-cancel]");
-  if (cancelEditBtn) {
-    delete planEditing[cancelEditBtn.dataset.task];
-    delete planDrafts[cancelEditBtn.dataset.task];
-    renderSelected();
+  if (e.target.closest("[data-cancel-plan]")) {
+    cancelPlan();
     return;
   }
-  const saveBtn = e.target.closest("[data-plan-save]");
-  if (saveBtn) {
-    const taskId = saveBtn.dataset.task;
-    const textarea = document.querySelector(`.plan-edit-textarea[data-task="${taskId}"]`);
-    const editedPlan = textarea ? textarea.value.trim() : "";
-    planTexts[taskId] = editedPlan; // reflect the edit immediately, don't wait on the round-trip
-    respondApproval(taskId, saveBtn.dataset.request, true, editedPlan);
+  if (e.target.closest("[data-plan-edit]")) {
+    if (pendingPlan) { pendingPlan.editing = true; renderSelected(); }
+    return;
+  }
+  if (e.target.closest("[data-plan-edit-done]")) {
+    if (pendingPlan) { pendingPlan.editing = false; renderSelected(); }
+    return;
+  }
+  if (e.target.closest("[data-learn-site]")) {
+    startLearningSite();
     return;
   }
   const btn = e.target.closest("[data-approve]");
   if (!btn) return;
   respondApproval(btn.dataset.task, btn.dataset.request, btn.dataset.approve === "true");
 });
+document.addEventListener("change", (e) => {
+  const radio = e.target.closest("[data-cred-choice]");
+  if (radio) {
+    learnUseNewAccount = radio.dataset.credChoice === "new";
+    renderManualBanner();
+  }
+});
 document.addEventListener("input", (e) => {
-  const ta = e.target.closest(".plan-edit-textarea");
-  if (!ta) return;
-  // Keep the draft in sync on every keystroke so a periodic re-render (e.g. the 2.5s
-  // task poll) reconstructs the textarea with what's actually been typed, not stale text.
-  planDrafts[ta.dataset.task] = ta.value;
+  // Keep the pending plan's draft in sync on every keystroke so a periodic re-render
+  // (e.g. the 2.5s task poll) reconstructs the textarea with what's actually been
+  // typed, not stale text.
+  if (e.target.id === "pendingPlanTextarea" && pendingPlan) {
+    pendingPlan.planDraft = e.target.value;
+  }
+});
+$("url").addEventListener("input", scheduleManualStatusCheck);
+
+// Enter submits the goal (like a chat input) — Shift+Enter still inserts a newline for
+// a multi-line goal. Mirrors clicking "Plan task"; disabled while a plan is pending
+// review (same guard the button itself respects).
+$("goal").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    if (!$("btnRun").disabled) requestPlan();
+  }
 });
 
 const savedTheme = localStorage.getItem("agentConsoleTheme")
@@ -931,10 +1345,12 @@ const savedTheme = localStorage.getItem("agentConsoleTheme")
 applyTheme(savedTheme);
 
 updateLogVisibility();
+renderUrlHistory();
 renderSelected();
 checkHealth();
 refreshPool();
 refreshTasks();
+checkSiteManualStatus();
 setInterval(checkHealth, 5000);
 setInterval(refreshPool, 5000);
 setInterval(refreshTasks, 2500);

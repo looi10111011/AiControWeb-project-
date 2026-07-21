@@ -1,0 +1,330 @@
+{
+  "website": "www.saucedemo.com",
+  "version": 8,
+  "generated_at": 1784609076.362639,
+  "pages": [
+    {
+      "name": "หน้าเข้าสู่ระบบ",
+      "url": "https://www.saucedemo.com/",
+      "description": "หน้าสำหรับกรอกชื่อผู้ใช้และรหัสผ่านเพื่อเข้าใช้งานระบบ",
+      "menu_path": [
+        "หน้าเข้าสู่ระบบ"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Login",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "login-button",
+          "icon_hint": "",
+          "selector": "[data-testid=\"login-button\"], [data-test=\"login-button\"]",
+          "xpath": "//*[@id=\"login-button\"]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "user-name",
+          "label": "",
+          "placeholder": "Username",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "[data-testid=\"username\"], [data-test=\"username\"]"
+        },
+        {
+          "field_name": "password",
+          "label": "",
+          "placeholder": "Password",
+          "required": false,
+          "input_type": "password",
+          "validation": "",
+          "selector": "[data-testid=\"password\"], [data-test=\"password\"]"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าแสดงรายการสินค้า",
+      "url": "https://www.saucedemo.com/inventory.html",
+      "description": "หน้ารวมสินค้าทั้งหมดที่ให้ผู้ใช้เลือกชมและเพิ่มลงในตะกร้าสินค้า",
+      "menu_path": [
+        "หน้าแสดงรายการสินค้า"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Open Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#react-burger-menu-btn",
+          "xpath": "//*[@id=\"react-burger-menu-btn\"]"
+        },
+        {
+          "text": "Close Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#react-burger-cross-btn",
+          "xpath": "//*[@id=\"react-burger-cross-btn\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "shopping-cart-link",
+          "icon_hint": "",
+          "selector": "[data-testid=\"shopping-cart-link\"], [data-test=\"shopping-cart-link\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/a[1]"
+        },
+        {
+          "text": "Twitter",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-twitter",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]"
+        },
+        {
+          "text": "Facebook",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-facebook",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]"
+        },
+        {
+          "text": "LinkedIn",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-linkedin",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]"
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "",
+          "required": false,
+          "input_type": "select",
+          "validation": "",
+          "selector": "[data-testid=\"product-sort-container\"], [data-test=\"product-sort-container\"]"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Bm Item",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "a.bm-item.menu-item",
+          "item_count": 4
+        },
+        {
+          "name": "Inventory Item",
+          "ui_type": "Card",
+          "components": [
+            "Image",
+            "Title",
+            "Price",
+            "Badge",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "item-4-img-link",
+              "icon_hint": "",
+              "selector": "[data-testid=\"item-4-img-link\"], [data-test=\"item-4-img-link\"]",
+              "xpath": "//*[@id=\"item_4_img_link\"]"
+            },
+            {
+              "text": "Sauce Labs Backpack",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "item-4-title-link",
+              "icon_hint": "",
+              "selector": "[data-testid=\"item-4-title-link\"], [data-test=\"item-4-title-link\"]",
+              "xpath": "//*[@id=\"item_4_title_link\"]"
+            },
+            {
+              "text": "Add to cart",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "add-to-cart-sauce-labs-backpack",
+              "icon_hint": "",
+              "selector": "[data-testid=\"add-to-cart-sauce-labs-backpack\"], [data-test=\"add-to-cart-sauce-labs-backpack\"]",
+              "xpath": "//*[@id=\"add-to-cart-sauce-labs-backpack\"]"
+            }
+          ],
+          "selector": "div.inventory_item",
+          "item_count": 6
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าแสดงรายละเอียดสินค้า",
+      "url": "https://www.saucedemo.com/inventory-item.html?id=4",
+      "description": "หน้านี้ใช้สำหรับแสดงข้อมูลเชิงลึกของสินค้าแต่ละรายการพร้อมปุ่มเพิ่มสินค้าลงในตะกร้า",
+      "menu_path": [
+        "หน้าแสดงรายละเอียดสินค้า"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "Open Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#react-burger-menu-btn",
+          "xpath": "//*[@id=\"react-burger-menu-btn\"]"
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "shopping-cart-link",
+          "icon_hint": "",
+          "selector": "[data-testid=\"shopping-cart-link\"], [data-test=\"shopping-cart-link\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[3]/a[1]"
+        },
+        {
+          "text": "Back to products",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "back-to-products",
+          "icon_hint": "",
+          "selector": "[data-testid=\"back-to-products\"], [data-test=\"back-to-products\"]",
+          "xpath": "//*[@id=\"back-to-products\"]"
+        },
+        {
+          "text": "Add to cart",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "add-to-cart",
+          "icon_hint": "",
+          "selector": "[data-testid=\"add-to-cart\"], [data-test=\"add-to-cart\"]",
+          "xpath": "//*[@id=\"add-to-cart\"]"
+        },
+        {
+          "text": "Twitter",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-twitter",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]"
+        },
+        {
+          "text": "Facebook",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-facebook",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]"
+        },
+        {
+          "text": "LinkedIn",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "social-linkedin",
+          "icon_hint": "",
+          "selector": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+          "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]"
+        },
+        {
+          "text": "Close Menu",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#react-burger-cross-btn",
+          "xpath": "//*[@id=\"react-burger-cross-btn\"]"
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    }
+  ]
+}

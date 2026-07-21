@@ -24,6 +24,8 @@ from backend.app.core.actions import (
 )
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
+from backend.app.core.user_browser import connect_user_browser, resolve_target_page
+from backend.app.permission.rules import extract_domain
 from backend.app.rag import retriever
 
 # action ที่เปลี่ยนหน้า/DOM แบบมีนัยสำคัญ -> ต้องรอหน้านิ่งก่อน perceive รอบถัดไป
@@ -209,7 +211,15 @@ def _make_dialog_handler(memory: ShortTermMemory, verbose: bool):
     กับหลัก human-in-the-loop ของ permission layer ทั้งระบบ — บันทึกเข้า short-term
     memory ด้วย (ผ่าน pipe เดียวกับ failed_actions_summary() ที่มีอยู่แล้วจาก W7[A]
     ไม่ต้องเพิ่ม context section ใหม่) ให้ LLM step ถัดไปรู้ตัวว่าเพิ่งมี dialog โผล่มา
-    แล้วถูกปิดอัตโนมัติ เผื่อ dialog นั้นมีข้อความสำคัญ (เช่น error จากฟอร์ม)"""
+    แล้วถูกปิดอัตโนมัติ เผื่อ dialog นั้นมีข้อความสำคัญ (เช่น error จากฟอร์ม)
+
+    W12: page ที่มาจาก session (page= param ของ run_task()) ถูกใช้ซ้ำข้ามหลาย
+    run_task() call — handler นี้ถูก page.on("dialog", ...) ผูกเพิ่มเข้าไปใหม่ทุกครั้งที่
+    เรียก (ไม่มีทาง deregister handler ของเทิร์นก่อนหน้าได้ง่ายๆ ข้าม call แยกกัน) ทำให้
+    dialog เดียวกันอาจโดนหลาย handler (จากคนละเทิร์น คนละ ShortTermMemory) เรียกพร้อมกัน
+    — ตัวแรกที่เรียก dismiss() สำเร็จ ตัวถัดๆ ไปจะเจอ error เพราะ dialog ถูกจัดการไปแล้ว
+    (ปกติของ Playwright) ห่อด้วย try/except กันไม่ให้ handler เก่าที่ค้างอยู่พัง task
+    ปัจจุบันเงียบๆ (ไม่ใช่ error ที่ควร fail ทั้ง task)"""
     async def _handle_dialog(dialog):
         message = f"[POPUP] เจอ {dialog.type} dialog: '{dialog.message}' — ปิดอัตโนมัติแล้ว (dismiss)"
         if verbose:
@@ -220,7 +230,10 @@ def _make_dialog_handler(memory: ShortTermMemory, verbose: bool):
             "result": message,
             "success": False,
         })
-        await dialog.dismiss()
+        try:
+            await dialog.dismiss()
+        except Exception:
+            pass  # dialog ถูก handler อื่น (เทิร์นก่อนหน้าที่ยังค้าง listener อยู่) จัดการไปแล้ว
     return _handle_dialog
 
 
@@ -328,6 +341,45 @@ async def _launch_chromium(playwright: Playwright, headless: bool, channel: Opti
     return await playwright.chromium.launch(headless=headless)
 
 
+async def _maybe_auto_login(page: Page, verbose: bool) -> None:
+    """W17: เติม username/password ให้อัตโนมัติถ้ามี credential เก็บไว้สำหรับโดเมนนี้แล้ว
+    (จาก POST /api/site-manual/learn หรือ .../credentials — ดู site_learning/storage.py::
+    save_credentials) และหน้าปัจจุบัน (หลัง goto/skip_initial_goto ตอนต้น run_task())
+    เข้าข่ายเป็นหน้า login จริง (เจอ password field จริงจาก extract_page()) — ทำครั้งเดียว
+    ตอนต้น task ก่อนเข้า loop หลัก กัน agent เสียเวลา/token กรอกฟอร์ม login เองทุกครั้งที่
+    เจอเว็บเดิม ไม่เคยส่ง credential เข้า prompt/context ของ LLM เลย (fill/click ทำตรงๆ
+    ผ่าน Playwright ก่อนที่ agent จะเห็นหน้าเลยด้วยซ้ำ)
+
+    import แบบ lazy (ในฟังก์ชัน ไม่ใช่หัวไฟล์) โดยเจตนา — site_learning/crawler.py เอง
+    import core/orchestrator.py อยู่แล้ว (ใช้ Orchestrator._llm_backend()) ถ้า import จาก
+    site_learning ไว้หัวไฟล์นี้จะเกิด circular import ตอนโหลดโมดูลทันที เลื่อนมา import ตอน
+    เรียกจริง (runtime, หลังทั้งสองโมดูลโหลดเสร็จแล้ว) แก้ปัญหานี้โดยไม่ต้องแตะโครงสร้าง
+    site_learning/__init__.py เลย
+
+    ล้มเหลว/ไม่มี credential/หน้าปัจจุบันไม่ใช่หน้า login ก็แค่ปล่อยผ่านเงียบๆ ไม่ throw —
+    agent ยัง fallback ไปกรอกเองผ่าน action ปกติได้อยู่แล้วถ้า auto-login ไม่สำเร็จ"""
+    try:
+        from backend.app.site_learning import storage as site_storage
+        from backend.app.site_learning.auto_login import attempt_login, find_login_fields
+        from backend.app.site_learning.extractor import extract_page as site_extract_page
+
+        domain = extract_domain(page.url)
+        creds = site_storage.load_credentials(domain)
+        if not creds:
+            return
+        page_info, _ = await site_extract_page(page)
+        username_selector, password_selector = find_login_fields(page_info)
+        if not username_selector or not password_selector:
+            return
+        if verbose:
+            print(f"[auto-login] พบ credential ที่เก็บไว้สำหรับ {domain} — ลอง login อัตโนมัติ", flush=True)
+        did_login = await attempt_login(page, page_info, creds["username"], creds["password"])
+        if did_login:
+            await wait_stable(page)
+    except Exception:
+        pass
+
+
 def _tokens_dict(usage: llm.TokenUsage) -> dict:
     return {
         "input": usage.input_tokens,
@@ -393,6 +445,44 @@ class Orchestrator:
             )
         raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
 
+    async def generate_plan(
+        self, url: str, goal: str, provider: Optional[str] = None, page: Optional[Page] = None,
+        site_manual_context: str = "",
+    ) -> str:
+        """W13: ร่างแผนคร่าวๆ (llm.generate_plan) แยกเป็นเฟสของตัวเอง ไม่ผูกกับ
+        run_task() เลย — ต่างจาก confirm_plan=True เดิมที่ต้อง acquire/launch/connect
+        browser ก่อนแล้วค่อย goto+perceive มาร่างแผน ฟังก์ชันนี้ "ไม่เปิด/ไม่ connect
+        อะไรเองเด็ดขาด": ถ้า caller (routes.py::generate_plan endpoint) ส่ง page มาให้
+        (เช่น session ที่มี page เปิดค้างอยู่แล้วจากเทิร์นก่อนหน้า) จะ perceive หน้านั้น
+        จริงเพื่อร่างแผนที่ grounded กับสถานะปัจจุบัน — ถ้าไม่ส่งมา (None, เช่น
+        session_id ยังไม่เคยมี page เลย) จะร่างแผนจาก goal เพียวๆ (page_text="") ไม่มี
+        browser เกี่ยวข้องในฟังก์ชันนี้เลยไม่ว่ากรณีไหน
+
+        site_manual_context (W14): เนื้อหาย่อจากคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติ (ดู
+        backend/app/site_learning/) — ผู้เรียก (routes.py) ดึงมาเองจาก
+        site_learning.storage.load_knowledge_text(domain) ก่อนเรียกฟังก์ชันนี้ ถ้ามีจะ
+        แปะไว้ก่อน page_text ให้ LLM เห็นโครงสร้างเว็บที่รู้จักอยู่แล้วตอนร่างแผน (ไม่ต้อง
+        เดาจาก page_text อย่างเดียว) ว่างเปล่า (default) ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้
+
+        คืนแผนเป็น plain text — ผู้เรียกเป็นคนตัดสินใจเองว่าจะให้ user อนุมัติยังไง แล้ว
+        ค่อยส่งกลับเข้า run_task(approved_plan=...) เพื่อรันจริงทีหลัง (ดู docstring ของ
+        approved_plan ใน run_task())"""
+        resolved_provider = provider or settings.llm_provider
+        client, model, _, _ = self._llm_backend(resolved_provider)
+        page_text = ""
+        if page is not None:
+            try:
+                _, page_text = await get_snapshot(page)
+            except Exception as e:
+                # page จาก session_id เดิม (เทิร์นก่อนหน้า) อาจถูกปิด/นำทางออกไปแล้วโดย
+                # user เอง หรืออยู่ระหว่าง navigate ตอน perceive พอดี — ไม่ควรทำให้ทั้ง
+                # endpoint พังแค่เพราะ snapshot หน้าปัจจุบันไม่ได้ (เหมือนเหตุผลเดียวกับ
+                # llm.describe_screenshot()) ร่างแผนจาก goal เพียวๆ ต่อไปได้เลย
+                print(f"⚠️ generate_plan: get_snapshot ล้มเหลว ({e!r}) — ใช้ page_text ว่างแทน", flush=True)
+        if site_manual_context:
+            page_text = f"[คู่มือเว็บไซต์ที่เรียนรู้มาก่อนแล้ว]\n{site_manual_context}\n\n{page_text}".strip()
+        return await llm.generate_plan(client, model, goal, page_text, resolved_provider)
+
     async def run_task(
         self,
         url: str,
@@ -406,6 +496,13 @@ class Orchestrator:
         browser: Optional[Browser] = None,
         on_event: Optional[OnEventFunc] = None,
         keep_browser_open: bool = False,
+        connect_to_user_browser: bool = False,
+        user_browser_cdp_url: Optional[str] = None,
+        allowed_domains: Optional[set] = None,
+        tab_reuse_policy: Optional[str] = None,
+        page: Optional[Page] = None,
+        approved_plan: Optional[str] = None,
+        site_manual_context: str = "",
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
@@ -445,6 +542,64 @@ class Orchestrator:
                   browser ตัวเดียวกัน) แล้วปิดแค่ context ตอนจบ ไม่ปิด/ไม่ stop
                   playwright ของ browser ที่ยืมมา (ผู้ให้ยืม คือ BrowserPool เป็นคนคุม
                   lifecycle ของตัว browser process เอง)
+        connect_to_user_browser: ต่อเข้า Chrome จริงที่ user เปิดใช้งานอยู่แล้ว (มี
+                  cookie/login ค้างอยู่จริง เช่น mail) ผ่าน CDP (ดู core/user_browser.py)
+                  แทนที่จะ launch Chromium ว่างๆ เอง — mutually exclusive กับ param
+                  `browser` ด้านบน (ส่งมาพร้อมกันทั้งคู่จะ raise ValueError ทันที) ใช้
+                  BrowserContext เดิมของ user จริง (browser.contexts[0]) ไม่เคย
+                  new_context()/close() บน browser จริงเด็ดขาด — ปิดแค่ tab ที่ agent
+                  เปิดเอง (ถ้าเปิดจริง) ตอนจบ task เท่านั้น
+        user_browser_cdp_url: None = ใช้ settings.user_browser_cdp_url — มีผลเฉพาะตอน
+                  connect_to_user_browser=True
+        allowed_domains: จำกัด goto/navigation ให้อยู่แค่โดเมนในนี้เท่านั้น (ส่งต่อเข้า
+                  actions.execute()/classify_action() ทุก step ของ task นี้) ไม่ใช่ของ
+                  connect_to_user_browser โดยเฉพาะ (ใช้กับ owns_browser/pool ปกติได้ด้วย)
+                  แต่เป็น use case หลัก — ถ้า connect_to_user_browser=True และไม่ระบุมา
+                  (None) จะ auto-derive เป็น {extract_domain(url)} ให้เอง (default-deny
+                  ทุกโดเมนอื่นแม้ผู้เรียกลืมระบุ กันไม่ให้ agent หลุดไปแตะ session อื่นที่
+                  login ไว้ในเครื่องเดียวกัน เช่น mail) None บน owns_browser/pool ปกติ
+                  หมายถึง "ไม่จำกัด" (พฤติกรรมเดิมทุกประการ)
+        tab_reuse_policy: "ask"(default)/"always_new_tab"/"always_reuse" — มีผลเฉพาะตอน
+                  connect_to_user_browser=True (ดู core/user_browser.py::
+                  resolve_target_page) None = ใช้ settings.user_browser_tab_reuse_policy
+        page: session-managed page — ผู้เรียก (core/session_registry.py::SessionRegistry
+                  ผ่าน routes.py) resolve หน้าเว็บที่จะใช้ไว้ให้แล้วเองล่วงหน้า (อาจมาจาก
+                  pool/owns/CDP โหมดไหนก็ได้ แต่ resolve ไปแล้วครั้งเดียวตอน session ถูก
+                  สร้าง ไม่ใช่ทุกครั้งที่เรียก run_task()) — mutually exclusive กับทั้ง
+                  `browser` และ `connect_to_user_browser` (ส่งมาพร้อมกันจะ raise
+                  ValueError ทันที) เมื่อส่งมา run_task() จะไม่ acquire/launch/connect
+                  อะไรเองเลย และจะไม่ปิด/คืนอะไรตอนจบ task ด้วย (session registry เป็นคน
+                  คุม lifecycle เต็มๆ ข้ามหลาย run_task() call จนกว่า user จะปิด session
+                  เอง) — ใช้คู่กับ "detect หน้าปัจจุบัน" ด้านล่าง (skip_initial_goto)
+                  เพื่อให้ turn ถัดไปในบทสนทนาเดียวกันทำงานต่อจากหน้าที่ turn ก่อนทิ้งไว้
+                  แทนที่จะโหลดหน้าแรกซ้ำเหมือนเริ่มใหม่ทั้งหมด
+        approved_plan: W13 — แผนที่ user อนุมัติแล้ว (อาจแก้ไขข้อความมาก่อน) จากเฟส
+                  วางแผนแยกต่างหาก (ดู generate_plan() ด้านบน + routes.py::
+                  POST /api/generate_plan) — ต่างจาก confirm_plan ด้านบนตรงที่ไม่มีการ
+                  เรียก LLM ร่างแผน/รอ ask_user_func ข้างในนี้เลย (อนุมัติไปแล้วตั้งแต่
+                  ก่อนเรียก run_task()) แค่ผนวกเข้า effective_goal ทันทีแล้วเริ่ม loop
+                  จริงเลย — mutually exclusive กับ confirm_plan=True (ส่งมาพร้อมกันจะ
+                  raise ValueError ทันที เพราะเป็นคนละกลไกกันสำหรับจุดประสงค์เดียวกัน)
+                  None (default) = ไม่มีแผนที่อนุมัติมาก่อน ทำงานตาม goal เดิมตรงๆ (หรือ
+                  ตาม confirm_plan ถ้าตั้งไว้)
+        site_manual_context: W14 — เนื้อหาย่อจากคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติ (ดู
+                  backend/app/site_learning/) ส่งเข้า llm.next_action() ทุก step เป็น
+                  section แยกจาก manual_context (ที่มาจากคู่มือ user อัปโหลดเองผ่าน
+                  RAG/ChromaDB — คนละระบบกันสมบูรณ์) — ผู้เรียก (routes.py) เป็นคนดึงจาก
+                  site_learning.storage.load_knowledge_text(domain) มาเองครั้งเดียวก่อน
+                  เรียก run_task() ไม่ใช่ orchestrator.py ไปโหลดเอง (เหมือน pattern เดียว
+                  กับ page= — เก็บ orchestrator.py ให้ไม่ต้องรู้จัก storage โดยตรง) ค่า
+                  คงที่ตลอด task เดียว ไม่ re-fetch ทุก step แบบ manual_context (เพราะ
+                  ไม่ได้ผูกกับ page state ปัจจุบันที่เปลี่ยนไปเรื่อยๆ) ว่างเปล่า (default)
+                  ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้/ไม่มี manual เลย
+
+        W12: "detect หน้าปัจจุบัน" แทนการบังคับ goto(url) เสมอ — หลัง resolve page ได้
+        แล้ว (ไม่ว่าจากโหมดไหน) เช็ค page.url ตรงๆ ก่อนตัดสินใจ: ถ้ายังเป็น "about:blank"/
+        ว่างเปล่า (หน้าใหม่ที่เพิ่งเปิด ยังไม่มีอะไรให้ perceive) จะ goto(url) ตามปกติ แต่ถ้า
+        page.url มีเนื้อหาจริงอยู่แล้ว (session ที่ reuse หน้ามาจาก turn ก่อนหน้า หรือ tab
+        ที่ resolve_target_page() เลือก reuse มา) จะข้าม goto ไปเลย ปล่อยให้ agent
+        perceive หน้าปัจจุบันตรงๆ แล้วเริ่ม loop ต่อจากจุดเดิม — ถ้า agent ประเมินเองว่า
+        ต้อง navigate จริงๆ ก็มี action "goto" ให้เรียกเองได้อยู่แล้วในทุก step ปกติ
 
         W5: action ที่ fail จะถูก retry เงียบๆ ก่อนแล้ว (ดู actions.py::execute() ->
         _dispatch_with_retry) เฉพาะ click/fill/select/check — ถ้ายัง fail อยู่หลัง retry
@@ -458,6 +613,27 @@ class Orchestrator:
         สุดท้ายก่อนจบ loop) ให้หลักฐานจริงจาก DOM เทียบกับ "message" ที่ LLM อ้างได้ ไม่
         ต้องเชื่อคำเคลมของ LLM ลอยๆ อย่างเดียว
         """
+        if connect_to_user_browser and browser is not None:
+            raise ValueError(
+                "run_task() รับ connect_to_user_browser=True พร้อมกับ browser param ไม่ได้ "
+                "— ทั้งคู่เป็นคนละแหล่งของ browser (CDP ต่อเข้า Chrome จริงของ user vs. "
+                "ยืมมาจาก BrowserPool) เลือกอย่างใดอย่างหนึ่ง"
+            )
+        if page is not None and (browser is not None or connect_to_user_browser):
+            raise ValueError(
+                "run_task() รับ page= พร้อมกับ browser=/connect_to_user_browser=True "
+                "ไม่ได้ — page= หมายความว่า caller (เช่น core/session_registry.py::"
+                "SessionRegistry ผ่าน routes.py) resolve หน้าเว็บที่จะใช้ไว้ให้แล้วเอง "
+                "ไม่ต้องให้ run_task() ไป acquire/launch/connect หา browser/page เองอีก"
+            )
+        if approved_plan and confirm_plan:
+            raise ValueError(
+                "run_task() รับ approved_plan พร้อมกับ confirm_plan=True ไม่ได้ — ทั้งคู่"
+                "เป็นกลไกขออนุมัติแผนคนละแบบสำหรับจุดประสงค์เดียวกัน (approved_plan = "
+                "อนุมัติไปแล้วจากภายนอกก่อนเรียก run_task(), confirm_plan=True = ให้ "
+                "run_task() ร่างแผน+รอ ask_user_func เองข้างใน) เลือกอย่างใดอย่างหนึ่ง"
+            )
+
         is_headless = settings.browser_headless if headless is None else headless
         resolved_provider = provider or settings.llm_provider
         client, model, next_action, append_tool_result = self._llm_backend(resolved_provider)
@@ -466,13 +642,21 @@ class Orchestrator:
             if on_event is not None:
                 await on_event(event)
 
-        # W10[A]: owns_browser=True (browser ไม่ได้ถูกส่งมา) = พฤติกรรมเดิมของ W1-W9
-        # เปิด/ปิด playwright + browser process เองทั้งหมด — owns_browser=False (ยืมมา
-        # จาก BrowserPool) เปิดแค่ context ใหม่บน browser ที่มีอยู่แล้ว แล้วปิดแค่ context
-        # ตอนจบ (ดู finally ท้าย method — browser process เป็นของ pool ไม่ใช่ของ task นี้)
-        owns_browser = browser is None
+        # W10[A]: owns_browser=True (browser ไม่ได้ถูกส่งมา, ไม่ใช่โหมด user browser, ไม่ใช่
+        # โหมด session-managed) = พฤติกรรมเดิมของ W1-W9 เปิด/ปิด playwright + browser
+        # process เองทั้งหมด — owns_browser=False (ยืมมาจาก BrowserPool) เปิดแค่ context
+        # ใหม่บน browser ที่มีอยู่แล้ว แล้วปิดแค่ context ตอนจบ (ดู finally ท้าย method —
+        # browser process เป็นของ pool ไม่ใช่ของ task นี้) — connect_to_user_browser=True
+        # เป็น branch แยกต่างหาก (ดูด้านล่าง) ไม่นับเป็น owns_browser เพราะ browser จริงของ
+        # user ไม่มีวันถูกปิดจากโค้ดฝั่งนี้เด็ดขาด — managed_externally=True (page ถูกส่ง
+        # เข้ามาแล้ว) เป็น branch ที่ 4: ไม่ต้อง acquire/launch/connect อะไรเองเลย แล้วก็
+        # ไม่ปิด/คืนอะไรตอนจบด้วย (ผู้เรียกเป็นคนคุม lifecycle เต็มๆ ข้ามหลาย call)
+        managed_externally = page is not None
+        owns_browser = browser is None and not connect_to_user_browser and not managed_externally
         playwright = None
         context = None
+        opened_new_tab = False
+        effective_allowed_domains = allowed_domains
         browser_channel = _detect_default_browser_channel() if (owns_browser and not is_headless) else None
         # W11[A]: ถ้าจะเปิดหน้าต่างให้เห็น (is_headless=False) *และ* ต้องรอ user ยืนยัน
         # แผนก่อน (confirm_plan=True) — อย่าเพิ่งเปิดหน้าต่างจริงตอนนี้ ไปเปิดแบบซ่อน
@@ -482,7 +666,26 @@ class Orchestrator:
         # การ navigate ไปหน้าเว็บเป้าหมายให้ user เห็นก่อนที่ user จะกดยืนยันด้วยซ้ำ ทั้งที่
         # ในตอนนั้น user ยังไม่ได้ตกลงจะให้ agent เริ่มทำงานเลย
         defer_visible_window = owns_browser and confirm_plan and not is_headless
-        if owns_browser:
+        if managed_externally:
+            pass  # page ถูก resolve มาให้แล้ว ไม่ต้องทำอะไรเพิ่ม
+        elif connect_to_user_browser:
+            playwright = await async_playwright().start()
+            browser = await connect_user_browser(
+                playwright, user_browser_cdp_url or settings.user_browser_cdp_url,
+            )
+            # ห้าม browser.new_context() เด็ดขาด — ต้องใช้ context จริงที่มี cookie/login
+            # ของ user อยู่แล้ว (contexts[0]) ไม่ใช่ context ว่างเปล่าใหม่
+            context = browser.contexts[0]
+            resolved_tab_reuse_policy = tab_reuse_policy or settings.user_browser_tab_reuse_policy
+            page, opened_new_tab = await resolve_target_page(
+                context, url, ask_user_func, resolved_tab_reuse_policy,
+            )
+            if effective_allowed_domains is None:
+                # default-deny ทุกโดเมนอื่นนอกจาก target ของ task นี้เอง แม้ผู้เรียกลืม
+                # ระบุ allowed_domains มาเอง — กัน agent หลุดไปแตะ session อื่นที่ login
+                # ค้างไว้ในเครื่องเดียวกัน (เช่น mail) โดยไม่ตั้งใจ
+                effective_allowed_domains = {extract_domain(url)}
+        elif owns_browser:
             playwright = await async_playwright().start()
             browser = await _launch_chromium(
                 playwright, headless=(True if defer_visible_window else is_headless), channel=browser_channel,
@@ -522,25 +725,75 @@ class Orchestrator:
         # (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
         gemini_step_boundaries: list[tuple[int, int]] = []
 
+        # W12: "detect หน้าปัจจุบัน" แทนการบังคับ goto(url) เสมอ — เช็คจากสถานะจริงของ
+        # page.url ตรงๆ (ไม่ผูกกับโหมดไหนเจาะจง) แทนเดิมที่เคยเช็คแค่ connect_to_user_browser
+        # + opened_new_tab (ใช้ได้แค่โหมด CDP โหมดเดียว)
+        #
+        # W19: เดิมเช็คแค่ "page.url ว่างเปล่าไหม" (about:blank/"") — ไม่ได้เทียบกับ url
+        # เป้าหมายของ task นี้เลย ทำให้ session ที่ reuse page ข้ามเทิร์นมา (หรือ tab ที่
+        # resolve_target_page() เลือก reuse ในโหมด CDP) ถ้าเทิร์นใหม่สั่ง url อื่นที่ไม่ใช่
+        # เว็บเดิม จะไม่ถูก navigate ไปเว็บใหม่เลย (ค้างอยู่หน้าเก่าทั้งที่ user ต้องการเว็บ
+        # อื่นจริงๆ) — เทียบ domain กับ target url ตรงๆ แทน: match กัน = "เว็บเป้าหมายเปิด
+        # อยู่แล้วจริง" ปล่อยให้ agent perceive หน้าปัจจุบันต่อจากจุดเดิมเลย (เช่นสั่ง
+        # "เปิดเว็บ" สำเร็จแล้ว เทิร์นถัดมาสั่ง "sign in" บนเว็บเดิม — ต้องการให้กดปุ่ม sign
+        # in บนหน้าที่เปิดค้างไว้ ไม่ใช่เปิดหน้าใหม่เหมือนเริ่มต้นทั้งหมด) ไม่ match กัน (คนละ
+        # domain หรือ page ยังว่างเปล่าอยู่) = ต้อง goto(url) ตามปกติเพื่อไปเว็บเป้าหมายจริง
+        # ถ้า agent ประเมินเองว่าต้อง navigate เพิ่มเติมอีกก็มี action "goto" ให้เรียกเองได้
+        # อยู่แล้วในทุก step ปกติ
+        current_domain = extract_domain(page.url) if page.url not in ("about:blank", "") else ""
+        target_domain = extract_domain(url)
+        site_already_open = bool(target_domain) and current_domain == target_domain
+        skip_initial_goto = site_already_open
+
         try:
-            if verbose:
-                print(f"[goto] {url}", flush=True)
-            goto_result: ActionResult = await goto(page, url)
-            self.memory.record({
-                "step": 0,
-                "cmd": {"type": "goto", "url": url},
-                "result": str(goto_result),
-                "success": goto_result.success,
-            })
-            if verbose:
-                print(f"  -> {goto_result}", flush=True)
-            await _emit({
-                "kind": "step", "step": 0, "cmd": {"type": "goto", "url": url},
-                "result": str(goto_result), "success": goto_result.success,
-            })
+            if skip_initial_goto:
+                continue_msg = "Website is already open. Reusing the existing browser session."
+                if verbose:
+                    print(f"[continue] {continue_msg} — หน้าปัจจุบัน: {page.url}", flush=True)
+                self.memory.record({
+                    "step": 0,
+                    "cmd": {"type": "continue", "url": page.url},
+                    "result": continue_msg,
+                    "success": True,
+                })
+                await _emit({
+                    "kind": "step", "step": 0, "cmd": {"type": "continue", "url": page.url},
+                    "result": continue_msg, "success": True,
+                })
+            else:
+                if verbose:
+                    print(f"[goto] {url}", flush=True)
+                goto_result: ActionResult = await goto(page, url)
+                self.memory.record({
+                    "step": 0,
+                    "cmd": {"type": "goto", "url": url},
+                    "result": str(goto_result),
+                    "success": goto_result.success,
+                })
+                if verbose:
+                    print(f"  -> {goto_result}", flush=True)
+                await _emit({
+                    "kind": "step", "step": 0, "cmd": {"type": "goto", "url": url},
+                    "result": str(goto_result), "success": goto_result.success,
+                })
             await wait_stable(page)
 
-            if confirm_plan:
+            # W17: auto-login ครั้งเดียวตอนต้น task ก่อนวางแผน/เข้า loop หลัก — ใช้ได้ทั้ง
+            # กรณี goto สดๆ และกรณี skip_initial_goto (tab เดิมจากเทิร์นก่อนหน้าดันมาเจอ
+            # หน้า login พอดี เช่น session หลุด) ไม่มีผลอะไรถ้าหน้าปัจจุบันไม่ใช่หน้า login
+            # หรือไม่มี credential เก็บไว้สำหรับโดเมนนี้ (ดู _maybe_auto_login())
+            await _maybe_auto_login(page, verbose)
+
+            if approved_plan:
+                # W13: แผนถูกอนุมัติไปแล้วจากภายนอก (routes.py::POST /api/generate_plan
+                # -> user review -> POST /api/execute_plan) ก่อนจะเรียก run_task() ด้วย
+                # ซ้ำ — ไม่ต้องเรียก llm.generate_plan()/รอ ask_user_func ข้างในนี้เลย แค่
+                # ผนวกเข้า effective_goal ทันทีแล้วเริ่ม loop จริงต่อได้เลย (ใช้ตัวแปร
+                # effective_goal/plan_text ชุดเดียวกับที่ confirm_plan ด้านล่างใช้ ให้ผล
+                # ต่อ loop/result["plan"] เหมือนกันทุกประการ ไม่ว่าแผนจะมาจากทางไหน)
+                plan_text = approved_plan
+                effective_goal = f"{goal}\n\nFollow this confirmed plan:\n{plan_text}"
+            elif confirm_plan:
                 _, plan_page_text = await get_snapshot(page)
                 plan_text = await llm.generate_plan(client, model, goal, plan_page_text, resolved_provider)
                 if verbose:
@@ -620,6 +873,7 @@ class Orchestrator:
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
                     client, model, effective_goal, page_text, messages,
                     manual_context, memory_context, long_term_context, vision_context,
+                    site_manual_context,
                 )
                 total_usage += usage
                 if verbose:
@@ -796,7 +1050,7 @@ class Orchestrator:
 
                 result: ActionResult = await execute(
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
-                    manual_guidance=manual_permission_guidance,
+                    manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
                 )
                 steps_taken += 1
                 # W10[D]: แนบ label ของ element เป้าหมาย (ชื่อปุ่ม/ช่องกรอกจริงบนหน้าเว็บ
@@ -889,6 +1143,32 @@ class Orchestrator:
                 if tool_input.get("type") in _PAGE_CHANGING_ACTIONS:
                     await wait_stable(page)
 
+                    # domain guard: classify_action() เช็ค allowlist แค่ตอน type=="goto"
+                    # เท่านั้น — click ที่พาออกนอกโดเมน (เช่นลิงก์ "Sign in with Google"/
+                    # OAuth, โฆษณา, redirect ในหน้าเดิม) ไม่ถูกจับตอน permission check
+                    # เลย เพราะ perception.py ไม่ได้เก็บ href ของ element ไว้เช็คล่วงหน้า
+                    # — เช็คซ้ำอีกชั้นหลัง action จบแล้วจริงแทน (defense-in-depth) ถ้าหลุด
+                    # ออกนอก allowlist ให้ดึงกลับทันทีก่อนจะ perceive/ส่งให้ LLM เห็นหน้า
+                    # นอกขอบเขต — ทำงานเฉพาะตอน effective_allowed_domains ถูกตั้งไว้จริง
+                    # (ไม่ใช่ None) ไม่กระทบ task ปกติที่ไม่ได้จำกัดโดเมน
+                    if effective_allowed_domains is not None:
+                        current_domain = extract_domain(page.url)
+                        if current_domain not in effective_allowed_domains:
+                            try:
+                                await page.go_back()
+                                await wait_stable(page)
+                            except Exception:
+                                pass
+                            domain_guard_msg = (
+                                f"[BLOCKED] Action นี้พาไปยังโดเมนนอกขอบเขตที่อนุญาต "
+                                f"({current_domain!r}) — ถูกดึงกลับอัตโนมัติแล้ว โดเมนที่"
+                                f" อนุญาตสำหรับ task นี้: {sorted(effective_allowed_domains)}"
+                                " ห้ามพยายามไปโดเมนนี้ซ้ำอีก"
+                            )
+                            if verbose:
+                                print(f"  [domain-guard] {domain_guard_msg}", flush=True)
+                            messages.append(_build_nudge_message(resolved_provider, domain_guard_msg))
+
                 # หน่วงท้าย step ก่อนวน next_action() รอบถัดไป กันยิง LLM API ถี่เกิน
                 # quota ต่อนาที (ดู _STEP_PACING_DELAY_SECONDS ด้านบน)
                 await asyncio.sleep(_STEP_PACING_DELAY_SECONDS)
@@ -914,7 +1194,30 @@ class Orchestrator:
                 "final_page_state": final_page_text,
             }
         finally:
-            if owns_browser:
+            if managed_externally:
+                # page= มาจาก session registry (routes.py::create_task ผ่าน
+                # core/session_registry.py::SessionRegistry) — ผู้เรียกเป็นคนคุม
+                # lifecycle เต็มๆ ข้ามหลาย run_task() call จนกว่า user จะปิด session เอง
+                # (POST /sessions/{id}/close) ห้ามปิด/คืนอะไรที่นี่เด็ดขาดไม่ว่ากรณีใด
+                pass
+            elif connect_to_user_browser:
+                # ห้าม browser.close()/context.close()/page.close() บน browser จริงของ
+                # user เด็ดขาด ไม่ว่า tab นั้นจะเป็น tab ที่ agent เปิดเองหรือไม่ก็ตาม —
+                # เดิมเคย page.close() ตอน opened_new_tab=True แต่กลายเป็นบั๊กจริง: task/
+                # เทิร์นถัดไปในบทสนทนาเดียวกัน (เช่น follow-up command ใน Test Console)
+                # หา tab เดิมด้วย domain matching (resolve_target_page()) ไม่เจอเลยเพราะ
+                # ถูกปิดไปแล้ว เลยต้องเปิด tab ใหม่ทุกครั้ง ดูเหมือน "ทำงานต่อจากเดิมไม่ได้
+                # เปิดหน้าต่างใหม่ตลอด" ทั้งที่ resolve_target_page() ทำงานถูกอยู่แล้ว —
+                # แก้โดยปล่อย tab ไว้เสมอ (เหมือน keep_browser_open=True ของ owns_browser
+                # ด้านล่าง) ให้ทั้ง user และเทิร์นถัดไปกลับมาใช้ tab เดิมต่อได้ — user ปิด
+                # tab เองเมื่อไม่ต้องการแล้ว keep_browser_open ไม่มีผลใดๆ ในโหมดนี้เพราะ
+                # ไม่มีอะไรให้ "ปิด/ไม่ปิด" ตั้งแต่แรกอยู่แล้ว (ไม่เคยปิดอะไรเลยไม่ว่ากรณีใด)
+                #
+                # playwright.stop() แค่ตัดการเชื่อมต่อ CDP ของ driver ตัวนี้เอง ไม่ใช่การ
+                # สั่งปิด browser จริง (คนละความหมายกับ playwright.stop() ใน owns_browser
+                # ด้านล่างที่ปิด process ที่ตัวเอง launch เอง)
+                await playwright.stop()
+            elif owns_browser:
                 if not keep_browser_open:
                     await browser.close()
                     await playwright.stop()

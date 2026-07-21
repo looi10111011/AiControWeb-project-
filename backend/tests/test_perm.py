@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.app.core.actions import execute
-from backend.app.permission.rules import ActionRisk, classify_action
+from backend.app.permission.rules import ALLOWED_DOMAINS, ActionRisk, classify_action
 
 # adapted จาก PR "permission-ab" (origin/permission-ab) — ไฟล์เดิมเป็น manual script
 # (print + if __name__ == "__main__") ไม่ใช่ pytest test จริง เขียนใหม่เป็น
@@ -188,3 +188,51 @@ async def test_execute_does_not_ask_user_when_manual_guidance_not_provided():
     assert result.success is True
     mock_page.click.assert_awaited_once()
     ask_user_func.assert_not_awaited()
+
+
+# per-call allowed_domains override (real-user-browser mode, core/user_browser.py) —
+# ต้อง override ALLOWED_DOMAINS เฉพาะ call นั้นๆ โดยไม่แตะ module-level global เลย กัน
+# task อื่น/thread อื่นที่ใช้ classify_action() พร้อมกันไม่ได้รับผลกระทบ
+
+
+def test_classify_action_blocks_domain_not_in_per_call_allowed_domains():
+    cmd = {"type": "goto", "url": "https://www.saucedemo.com/"}
+    assert classify_action(cmd, allowed_domains={"mail.google.com"}) == ActionRisk.BLOCKED
+
+
+def test_classify_action_allows_domain_in_per_call_allowed_domains():
+    cmd = {"type": "goto", "url": "https://mail.google.com/mail/u/0/"}
+    assert classify_action(cmd, allowed_domains={"mail.google.com"}) == ActionRisk.SAFE
+
+
+def test_classify_action_per_call_allowed_domains_overrides_global_allowed_domains():
+    # module-level ALLOWED_DOMAINS ว่างเปล่า (อนุญาตทุกโดเมนที่ไม่ได้ blocklist) แต่
+    # per-call allowed_domains ต้อง "แคบกว่า" เดิมได้จริง ไม่ใช่แค่ขยายเพิ่ม
+    assert ALLOWED_DOMAINS == set()  # sanity check ค่า default ของ module ตอนนี้
+    cmd = {"type": "goto", "url": "https://www.saucedemo.com/"}
+    assert classify_action(cmd, allowed_domains={"mail.google.com"}) == ActionRisk.BLOCKED
+
+
+def test_classify_action_none_allowed_domains_preserves_legacy_global_behavior():
+    # allowed_domains=None (ไม่ส่งมา) = พฤติกรรมเดิมทุกประการ (ใช้ ALLOWED_DOMAINS ของ
+    # module ซึ่งว่างเปล่า = ไม่จำกัดโดเมนเลย)
+    cmd = {"type": "goto", "url": "https://www.saucedemo.com/"}
+    assert classify_action(cmd) == ActionRisk.SAFE
+    assert classify_action(cmd, allowed_domains=None) == ActionRisk.SAFE
+
+
+def test_classify_action_blocked_domains_global_still_applies_with_per_call_allowed_domains():
+    # BLOCKED_DOMAINS (module-level) ยังคงเป็น hard block เสมอ ต่อให้ per-call
+    # allowed_domains จะอนุญาตโดเมนนั้นไว้ก็ตาม
+    cmd = {"type": "goto", "url": "https://malicious.com/x"}
+    assert classify_action(cmd, allowed_domains={"malicious.com"}) == ActionRisk.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_execute_forwards_allowed_domains_to_classify_action():
+    result = await execute(
+        None, {"type": "goto", "url": "https://mail.google.com/"},
+        allowed_domains={"www.saucedemo.com"},
+    )
+    assert result.success is False
+    assert "บล็อก" in result.message

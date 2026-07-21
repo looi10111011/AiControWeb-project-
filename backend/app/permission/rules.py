@@ -62,7 +62,24 @@ def _manual_requires_confirmation(manual_guidance: str) -> bool:
     return any(keyword in lower for keyword in MANUAL_CONFIRMATION_KEYWORDS)
 
 
-def classify_action(cmd: dict, label: str = "", manual_guidance: str = "") -> ActionRisk:
+def extract_domain(url: str) -> str:
+    """แยก domain ล้วนๆ ออกจาก URL (lowercase, ตัด port ออก) — ใช้ร่วมกันทั้ง
+    classify_action() (เช็ค goto) และ core/user_browser.py (จับคู่ tab ที่เปิดอยู่กับ
+    target domain ตอนต่อเข้า browser จริงของ user) กันไม่ให้ logic parse URL ซ้ำกัน
+    2 ที่ ถ้า URL ผิดรูปแบบมากๆ คืนสตริงว่างเปล่า (ให้ผู้เรียกตัดสินใจเองว่าจะปฏิบัติ
+    ยังไงกับ domain ว่าง แทนที่จะ throw ออกไป)"""
+    try:
+        domain = urllib.parse.urlparse(url).netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        return domain
+    except Exception:
+        return ""
+
+
+def classify_action(
+    cmd: dict, label: str = "", manual_guidance: str = "", allowed_domains: "set[str] | None" = None,
+) -> ActionRisk:
     """label (optional): ข้อความของ element ที่จะโดน action นี้ (จาก indexed elements
     ตอน perceive) — ใช้เช็คคำเสี่ยงเป็นชั้นสำรองนอกจาก type ล้วนๆ (ดู RISKY_LABEL_KEYWORDS)
     ไม่ส่งมาก็ได้ (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ ไม่ throw
@@ -70,7 +87,16 @@ def classify_action(cmd: dict, label: str = "", manual_guidance: str = "") -> Ac
     manual_guidance (optional, W7[B]): เนื้อหาคู่มือที่เกี่ยวข้องกับ step นี้ (ตัวเดียว
     กับ manual_context ที่ orchestrator ดึงมาป้อน planner อยู่แล้วใน W6[B] — ไม่ยิง
     ChromaDB ซ้ำ) ใช้เช็คว่าคู่มือระบุไว้ไหมว่า action แบบนี้ต้องขออนุมัติก่อน ไม่ส่งมา
-    ก็ได้ (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ เหมือน label"""
+    ก็ได้ (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ เหมือน label
+
+    allowed_domains (optional): ชุดโดเมนที่อนุญาต override เฉพาะ call นี้ ไม่แตะ
+    module-level ALLOWED_DOMAINS เลย — ไม่ส่งมา (None, default) = พฤติกรรมเดิมทุก
+    ประการ (ใช้ ALLOWED_DOMAINS/BLOCKED_DOMAINS ของ module) ส่งมาเป็น set (แม้จะว่าง
+    เปล่า) = ใช้ set นี้แทน ALLOWED_DOMAINS เดิมทั้งหมดสำหรับ call นี้เท่านั้น (เพจ semantic
+    เดียวกับ ALLOWED_DOMAINS เดิม: ว่างเปล่า = ไม่จำกัด ไม่ใช่ deny-all) — ใช้ตอนต่อ agent
+    เข้า browser จริงของ user (core/user_browser.py) ที่ต้องจำกัดแค่โดเมนของ task นั้นๆ
+    โดยไม่กระทบ task/thread อื่นที่ใช้ classify_action() พร้อมกัน BLOCKED_DOMAINS
+    (module-level) ยังคงเป็น hard block เสมอไม่ว่าจะ override หรือไม่"""
     action_type = cmd.get("type", "")
 
     if action_type in DEFAULT_BLOCKED_ACTIONS:
@@ -81,21 +107,13 @@ def classify_action(cmd: dict, label: str = "", manual_guidance: str = "") -> Ac
 
     if action_type == "goto":
         url = cmd.get("url", "")
-        try:
-            parsed_url = urllib.parse.urlparse(url)
-            domain = parsed_url.netloc.lower()
+        domain = extract_domain(url)
 
-            # ตัด port ออกถ้ามี
-            if ":" in domain:
-                domain = domain.split(":")[0]
+        if domain in BLOCKED_DOMAINS:
+            return ActionRisk.BLOCKED
 
-            if domain in BLOCKED_DOMAINS:
-                return ActionRisk.BLOCKED
-
-            if ALLOWED_DOMAINS and domain not in ALLOWED_DOMAINS:
-                return ActionRisk.BLOCKED
-        except Exception:
-            # ถ้าระบุ URL มาผิดรูปแบบมากๆ ให้บล็อกไปก่อนเพื่อความปลอดภัย
+        effective_allowed = ALLOWED_DOMAINS if allowed_domains is None else allowed_domains
+        if effective_allowed and domain not in effective_allowed:
             return ActionRisk.BLOCKED
 
         # goto ที่ผ่าน domain check แล้ว (ไม่ได้อยู่ blocklist) ยังต้องเช็คคู่มือต่อ

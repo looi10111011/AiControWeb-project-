@@ -72,16 +72,30 @@ class BrowserPool:
         self._available = asyncio.Queue()
         self._started = False
 
+    async def acquire_one(self) -> Browser:
+        """ยืม browser ตัวหนึ่งจาก pool ตรงๆ ไม่ใช่ context manager — ต่างจาก acquire()
+        ตรงที่ผู้เรียกต้องคืนเองผ่าน release_one() (ไม่ auto-return ตอนออกจาก block ไหน)
+        ไว้ให้ resource ที่ต้องมีชีวิตอยู่ข้าม request เดียว (เช่น session_registry.py::
+        SessionRegistry ที่ถือ browser ไว้ยาวข้ามหลาย HTTP request จนกว่า session จะถูก
+        ปิดเอง) — ยืมได้ไม่จำกัดเวลา ถ้าลืม release_one() browser ตัวนั้นจะหายไปจาก pool
+        ถาวร (ผู้เรียกต้องรับผิดชอบเอง)"""
+        if not self._started:
+            raise RuntimeError("BrowserPool ยังไม่ได้ start() — เรียก start() ตอน app startup ก่อน")
+        return await self._available.get()
+
+    async def release_one(self, browser: Browser) -> None:
+        """คืน browser กลับเข้า pool — คู่กับ acquire_one()"""
+        await self._available.put(browser)
+
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[Browser]:
         """ยืม browser ตัวหนึ่งจาก pool — ถ้าทุกตัวถูกยืมไปหมด await จนกว่าจะมีตัวว่าง
         คืนกลับ (ผ่าน asyncio.Queue) คืน browser กลับเข้า pool เสมอตอนออกจาก block นี้
         (แม้ task ข้างในจะ throw ก็ตาม — finally) ไม่ปิด browser เอง (ยังใช้ต่อ task
-        อื่นได้อีก)"""
-        if not self._started:
-            raise RuntimeError("BrowserPool ยังไม่ได้ start() — เรียก start() ตอน app startup ก่อน")
-        browser = await self._available.get()
+        อื่นได้อีก) — เป็นแค่ wrapper สะดวกๆ รอบ acquire_one()/release_one() สำหรับเคส
+        ปกติที่ยืมแล้วคืนภายใน request เดียวจบ"""
+        browser = await self.acquire_one()
         try:
             yield browser
         finally:
-            await self._available.put(browser)
+            await self.release_one(browser)
