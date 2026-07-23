@@ -36,12 +36,34 @@ async def test_run_evaluation_calls_run_task_once_per_task_with_correct_args():
     assert mock_run_task.await_count == 2
     first_args, first_kwargs = mock_run_task.await_args_list[0]
     assert first_args == ("https://example.com", "goal A")
-    assert first_kwargs == {
-        "max_steps": 10, "headless": True, "auto_approve": True,
-        "confirm_plan": False, "provider": "anthropic",
-    }
+    # W12[A]: run_task() ไม่มี kwarg ชื่อ auto_approve เลย (นั่นเป็นแนวคิดของ
+    # routes.py::_make_ask_user_func เท่านั้น) — ต้องส่ง ask_user_func ที่ auto-approve
+    # เองแทน ไม่งั้น TypeError ทันที (เจอจริงตอนรัน `python run.py eval` ครั้งแรก) หรือ
+    # แย่กว่านั้นคือค้าง blocking input() ถ้าลืมส่ง ask_user_func ไปเจอ action ที่ต้อง
+    # ขออนุมัติจริง
+    assert first_kwargs["max_steps"] == 10
+    assert first_kwargs["headless"] is True
+    assert first_kwargs["confirm_plan"] is False
+    assert first_kwargs["provider"] == "anthropic"
+    assert "auto_approve" not in first_kwargs
+    assert callable(first_kwargs["ask_user_func"])
     second_args, _ = mock_run_task.await_args_list[1]
     assert second_args == ("https://example.com", "goal B")
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_ask_user_func_auto_approves_everything():
+    """ask_user_func ที่ส่งเข้า run_task() ต้อง auto-approve จริง (คืน True เสมอ) —
+    ไม่งั้น action ที่ต้องขออนุมัติ (เช่น checkout ใน BENCHMARK_TASKS) จะ fallback ไป
+    blocking input() ทาง terminal ซึ่งไม่มีคนตอบเลยในบริบท batch eval แบบนี้"""
+    with patch("backend.app.core.evaluation.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_fake_result())
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        await run_evaluation(tasks=[{"name": "x", "goal": "g"}])
+
+    ask_user_func = mock_run_task.await_args.kwargs["ask_user_func"]
+    assert await ask_user_func({"type": "purchase", "index": 1}) is True
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
 """core/evaluation.py — W12[B]: Evaluation harness แนว WebVoyager — วัด success rate,
 จำนวน step, และ token ต่อ task จริงบน saucedemo.com รันผ่าน Orchestrator.run_task() ตรงๆ
-(ไม่ผ่าน API/BrowserPool — เหมือน demo อื่นๆ ใน run.py) headless=True + auto_approve=True
-+ confirm_plan=False เสมอ ให้รันจบเป็น batch โดยไม่ต้องมีคนเฝ้าหน้าจอตอบ approve/confirm
+(ไม่ผ่าน API/BrowserPool — เหมือน demo อื่นๆ ใน run.py) headless=True + confirm_plan=
+False + ask_user_func ที่ auto-approve ทุกอย่างเสมอ ให้รันจบเป็น batch โดยไม่ต้องมีคนเฝ้า
+หน้าจอตอบ approve/confirm (ดู _auto_approve() ด้านล่าง)
 
 ชุด task benchmark (BENCHMARK_TASKS) ใช้ข้อความ goal เดิมเป๊ะที่นิยามไว้แล้วใน run.py (ไม่
 สร้างใหม่ซ้ำความหมาย) เลือกเฉพาะภารกิจที่ "ควรสำเร็จได้จริงถ้า agent ทำงานถูก" — ไม่รวมเคส
@@ -18,6 +19,15 @@ from typing import Optional
 from backend.app.core.orchestrator import Orchestrator
 
 _SAUCEDEMO_URL = "https://www.saucedemo.com/"
+
+
+async def _auto_approve(cmd: dict) -> bool:
+    """ask_user_func ที่ auto-approve ทุก action ที่ต้องขอยืนยัน (submit/delete/purchase/
+    pay ฯลฯ) เสมอ — eval รันแบบ batch ไม่มีคนเฝ้าหน้าจอตอบจริง ถ้าไม่ส่ง ask_user_func
+    เข้า run_task() เลย (ปล่อยเป็น None ค่า default) actions.py จะ fallback ไป blocking
+    input() ทาง terminal ซึ่งไม่มีคนตอบเลยในบริบทนี้ — ค้างตลอดไปเงียบๆ ไม่ error ให้เห็น
+    ด้วยซ้ำ (เจอจริงตอนรัน BENCHMARK_TASKS ที่มี action ต้องขออนุมัติ เช่น checkout)"""
+    return True
 
 # เดียวกับ run.py::_DEFAULT_AGENT_GOAL เป๊ะ
 _TASK_LOGIN_CHECKOUT = (
@@ -96,8 +106,17 @@ async def run_evaluation(
 ) -> EvaluationReport:
     """รัน task ทีละตัวตามลำดับ (ไม่ concurrent ผ่าน pool) เพราะอยากวัด step/token ต่อ task
     ให้ตรงไปตรงมา ไม่ปนกับ rate-limit/คิวรอ browser ว่างที่จะทำให้ตัวเลขต่อ task เพี้ยน —
-    ผ่าน Orchestrator.run_task() ตรงๆ (headless=True, auto_approve=True, confirm_plan=
-    False เสมอ, ไม่ผ่าน ask_user_func คน ให้รันจบเป็น batch ได้เอง)
+    ผ่าน Orchestrator.run_task() ตรงๆ (headless=True, confirm_plan=False เสมอ)
+
+    *** W12[A] (แก้จากผลรันจริงครั้งแรก): run_task() ไม่มี kwarg ชื่อ auto_approve เลย
+    (นั่นเป็นแนวคิดระดับ routes.py::_make_ask_user_func เท่านั้น — ห่อ ask_user_func ให้
+    auto-approve เอง ไม่ใช่ parameter ตรงของ Orchestrator) เดิมโค้ดนี้ส่ง
+    auto_approve=True ตรงๆ เข้า run_task() ทำให้ TypeError ทันทีทุก task (รันจริงครั้งแรก
+    เจอ 0/4 สำเร็จหมด error เดียวกัน) — อันตรายกว่านั้นคือถ้าไม่ได้ตั้งใจส่ง ask_user_func
+    เข้าไปเลย (ปล่อยเป็น None ค่า default) แล้วดันไปเจอ action ที่ต้องขออนุมัติจริง (เช่น
+    checkout/purchase ใน BENCHMARK_TASKS) จะ fallback ไป blocking input() ทาง terminal
+    ซึ่งไม่มีคนตอบเลยในบริบท batch eval แบบนี้ — ค้างตลอดไป ไม่ error ให้เห็นด้วยซ้ำ ต้อง
+    ส่ง ask_user_func ที่ auto-approve เองตรงๆ แทน ***
 
     task ไหนที่ run_task() เอง throw exception ขึ้นมาจริง (เช่น browser launch พัง, LLM
     API error ที่ไม่ถูกจับใน orchestrator) ไม่ทำให้ทั้ง batch หยุด — บันทึกเป็น
@@ -111,7 +130,8 @@ async def run_evaluation(
             result = await Orchestrator().run_task(
                 url, task["goal"],
                 max_steps=task.get("max_steps", 20),
-                headless=True, auto_approve=True, confirm_plan=False, provider=provider,
+                headless=True, confirm_plan=False, provider=provider,
+                ask_user_func=_auto_approve,
             )
             tokens = result["tokens"]
             total_tokens = tokens["input"] + tokens["output"] + tokens["cache_read"] + tokens["cache_creation"]
