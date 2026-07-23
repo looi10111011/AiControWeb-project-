@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-21)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-23)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1754,6 +1754,197 @@
            LLM เมื่อไม่เจอ) — รวม suite ทั้งหมด 416 เคสผ่านหมด (ไม่นับ
            test_site_learning_crawler.py 1 เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับ
            งานนี้)
+
+  [x] W12  Evaluation แนว WebVoyager (success rate / step / token) + bug fixing จากผล
+           eval — ปิดจ็อบแล้ว (2026-07-23, แยก branch W12-evaluation จาก W11 เพราะต้องใช้
+           ความสามารถของ agent ล่าสุดทั้งหมด — W12-W20 ยังไม่ merge เข้า main)
+
+           [B] เพิ่ม core/evaluation.py: run_evaluation(tasks, provider, url) รัน
+               BENCHMARK_TASKS ทีละตัวตามลำดับผ่าน Orchestrator.run_task() ตรงๆ (ไม่ผ่าน
+               API/BrowserPool, headless=True/confirm_plan=False เสมอ + ask_user_func ที่
+               auto-approve ทุกอย่าง — รันเป็น batch ไม่มีคนเฝ้าหน้าจอ) เก็บ
+               TaskEvalResult ต่อ task (success/
+               steps/total_tokens/message) แล้วรวมเป็น EvaluationReport ที่มี property
+               success_rate/avg_steps/avg_tokens (คืน 0.0 เมื่อไม่มี task เลย กัน
+               ZeroDivisionError) — task ไหน run_task() throw exception ขึ้นมาจริง (เช่น
+               browser launch พัง) ไม่ทำให้ batch หยุด บันทึกเป็น success=False พร้อม
+               error message แล้วรัน task ถัดไปต่อ (กฎเดียวกับ retriever.py/
+               long_term_memory.py)
+
+               ชุด BENCHMARK_TASKS ใช้ข้อความ goal เดิมเป๊ะจาก demo อื่นๆ ที่มีอยู่แล้วใน
+               run.py (ตกลงกับ user แล้วว่าไม่ต้องสร้าง goal set ใหม่) เลือก 4 ภารกิจที่
+               "ควรสำเร็จได้จริง" ครอบคลุม 3 ระดับความยาว — ไม่รวม W7[A] Test Case A (จงใจ
+               ให้ action พังเสมอ เพื่อทดสอบ memory ไม่ใช่ทดสอบความสำเร็จ) หรือ Test Case B
+               (ต้องรัน 2 รอบต่อเนื่องกัน รอบ 2 พึ่งผลจากรอบ 1):
+                 - login_checkout (สั้น, = _DEFAULT_AGENT_GOAL)
+                 - rag_permission (กลาง, = _TEST_CASE_D_GOAL — ทดสอบ RAG-based permission
+                   gate ระหว่างทางด้วย)
+                 - rag_integration (กลาง, = _W8_INTEGRATION_GOAL — บูรณาการ 3 สมอง)
+                 - long_flow (ยาว, = _TEST_CASE_C_GOAL — sort สองทิศทาง + ใส่ของ 3 ชิ้น +
+                   ลบ 1 ชิ้น + checkout เต็ม flow)
+
+               เพิ่ม `python run.py eval` (alias: evaluation, w12) ใน run.py: รันแล้วพิมพ์
+               รายงานรายภารกิจ (สำเร็จ/ไม่, step, token) + สรุปรวม (success rate, avg
+               steps, avg tokens) — provider อ่านจาก settings.llm_provider (.env) ตรงตาม
+               ที่ user ยืนยัน ไม่ต้องรันซ้ำ 3 provider เทียบกัน
+
+               unit test 8 เคสใน test_evaluation.py (mock Orchestrator ทั้งคลาส เหมือน
+               test_api.py — ไม่เปิด browser/ยิง LLM จริง)
+
+           [A] แก้บั๊กจากผลรันจริงครั้งแรก (2026-07-23): `python run.py eval` รอบแรก
+               ล้มเหลว 0/4 ทันที error เดียวกันหมด — Orchestrator.run_task() ไม่มี kwarg
+               ชื่อ auto_approve เลย (นั่นเป็นแนวคิดระดับ routes.py::_make_ask_user_func
+               เท่านั้น ไม่ใช่ parameter ตรงของ Orchestrator) — บั๊กนี้ unit test เดิมทั้ง
+               8 เคสจับไม่ได้เลยเพราะ mock ที่ระดับ Orchestrator class ทั้งก้อน (ไม่เคย
+               เรียก run_task() ตัวจริงเพื่อเช็ค signature จริง) เป็นตัวอย่างจริงของเหตุผล
+               ที่ W12[B] ต้องรันจริงอย่างน้อยครั้งหนึ่ง ไม่ใช่แค่ unit test ผ่านหมดแล้วถือว่า
+               จบงาน — อันตรายกว่านั้นคือถ้าลืมส่ง ask_user_func เข้าไปเลย (ปล่อยเป็น None
+               ค่า default) แล้วไปเจอ action ที่ต้องขออนุมัติจริงใน BENCHMARK_TASKS (เช่น
+               checkout) จะ fallback ไป blocking input() ทาง terminal ซึ่งไม่มีคนตอบเลยใน
+               บริบท batch eval — ค้างตลอดไปเงียบๆ ไม่ error ให้เห็นด้วยซ้ำ
+
+               แก้: core/evaluation.py เพิ่ม _auto_approve(cmd) -> True ส่งเป็น
+               ask_user_func= เข้า run_task() แทน auto_approve=True เดิม — แก้/เพิ่ม
+               เทสต์ 2 เคสใน test_evaluation.py (assert ไม่มี "auto_approve" key ใน
+               kwargs + assert ask_user_func เรียกแล้วคืน True จริง) รวมเป็น 9 เคส
+
+               รันจริงรอบ 2 หลังแก้บั๊ก บน saucedemo.com ผ่าน Gemini (จาก .env):
+                 Success rate : 100% (4/4)
+                 Avg steps    : 8.0
+                 Avg tokens   : 71,345
+               รายละเอียดต่อ task: login_checkout 9 step/83,136 token, rag_permission
+               3 step/19,447 token, rag_integration 7 step/68,382 token (ยืนยันดึงค่าจาก
+               คู่มือ RULE-03 มาใช้จริง: Siamyut/Phasida/12110), long_flow 13 step/
+               114,414 token — ไม่พบบั๊กเพิ่มเติมจากผลรันจริงรอบนี้ (ครบทั้ง 4 task สำเร็จ
+               ตามเป้าหมาย) — รวม suite ทั้งหมด 425 เคสผ่านหมด (ไม่นับ
+               test_site_learning_crawler.py 1 เคสเดิมที่ fail อยู่ก่อนแล้ว)
+
+  [x] W21  Plan Memory: แก้บั๊ก false-match ข้ามเจตนาสำหรับ goal ภาษาที่ embedding model
+           ไม่รองรับจริง — เสร็จแล้ว (2026-07-23)
+           เจอจากการใช้งานจริง: goal ภาษาไทย "ซื้อของทั้งหมด...จ่ายเงิน" ดันได้แผนของ goal
+           เก่าคนละเรื่องกลับมา ("ไปที่หน้าเข้าสู่ระบบ") — สืบแล้วพบว่า embedding function
+           ที่ใช้ทั่วแอป (chromadb DefaultEmbeddingFunction, English-only tokenizer) ยุบ
+           ข้อความสคริปต์ที่โมเดลไม่รู้จัก (ไทย/จีน/ญี่ปุ่น/เกาหลี/อาหรับ/ซีริลลิก ฯลฯ)
+           ให้ embedding ใกล้เคียงกันหมดไม่ว่าความหมายจริงจะต่างกันแค่ไหน (cosine distance
+           ≈ 0 ระหว่าง goal ภาษาไทยสองอันที่ไม่เกี่ยวกันเลย) ทำให้ goal สคริปต์กลุ่มนี้
+           "match" กับ lineage แรกที่เคยบันทึกไว้ในโดเมนนั้นเสมอ ไม่ว่าเจตนาจะตรงกันจริงไหม
+
+           แก้: core/plan_memory.py เพิ่ม _uses_unsupported_script()/regex ครอบสคริปต์ที่
+           ไม่รองรับ (Thai/CJK/Hiragana-Katakana/Hangul/Arabic/Cyrillic) เช็คก่อนทั้ง
+           find_matching_plan() และ save_confirmed_plan() — เจอ = ข้าม Plan Memory ไปทั้ง
+           find/save ทันที (ไม่บันทึกด้วย เพราะบันทึกไปก็ค้นไม่เจอถูกต้องอยู่ดี แถมกลาย
+           เป็น lineage ที่จะไป false-match กับ goal ภาษาเดียวกันตัวอื่นในอนาคตซ้ำอีก)
+           fallback ไปให้ LLM ร่างแผนใหม่ทุกครั้งแทน (เหมือนไม่มี Plan Memory เลยสำหรับ
+           ภาษากลุ่มนี้ — ยอมเสีย LLM call ที่ประหยัดได้ ดีกว่าเสี่ยงได้แผนผิดเจตนา)
+           *** ก่อนมี multilingual embedding model จริง (เปลี่ยนกระทบทั้งระบบ RAG ไม่ใช่
+           แค่ Plan Memory — ยังไม่ได้ทำ) นี่คือทางที่ปลอดภัยที่สุดเท่าที่ทำได้ ***
+
+           unit test เพิ่มใน test_plan_memory.py ครอบทั้ง 2 ฟังก์ชัน (ภาษาไทย/จีน/ญี่ปุ่น/
+           เกาหลี/อาหรับ/ซีริลลิกข้าม Plan Memory จริง, ภาษาอังกฤษยังทำงานปกติไม่กระทบ)
+
+  [x] W22  Context compaction: generalize จาก Gemini-only เป็นทุก provider +
+           dedupe RAG/long-term retrieval ข้าม step ที่หน้าเว็บไม่เปลี่ยน — เสร็จแล้ว
+           (2026-07-23)
+           เดิม (W7[A]) context compaction (ตัด step เก่าออกจาก messages แทนที่ด้วย
+           digest สั้นๆ กัน input token โตไม่หยุดตามจำนวน step) จำกัด scope แค่ Gemini
+           เพราะ Anthropic/Groq มี message wire format คนละแบบ — ตัว digest เอง
+           (provider-agnostic อยู่แล้วเพราะอ่านจาก ShortTermMemory ไม่ใช่ raw messages)
+           เปลี่ยนชื่อ _build_gemini_history_digest -> _build_history_digest ใช้ร่วมกัน
+           ได้ทั้ง 3 ตัว มีแค่ฟังก์ชัน splice raw messages ที่ต้องแยกตาม wire format ของ
+           แต่ละเจ้า:
+             - _compact_anthropic_messages(): user turn เป็น {"role":"user","content":
+               "<text ล้วนๆ>"} (ไม่ใช่ list of content block เหมือน tool_result/
+               assistant turn)
+             - _compact_groq_messages(): เหมือน Anthropic แต่ Groq เก็บ system prompt
+               เป็น messages[0] เอง (Anthropic/Gemini ส่ง system แยกนอก messages เสมอ) —
+               ต้องกัน messages[0] ไว้เสมอไม่ให้หลุดไปอยู่ในส่วนที่ตัดทิ้ง
+             - _compact_gemini_messages(): เดิมจาก W7[A] เปลี่ยนแค่ชื่อตัวแปรภายใน
+           ทั้ง 3 ฟังก์ชัน contract เดียวกัน (cut_at ผิดคาด/รูปแบบไม่ตรง = คืน messages
+           เดิมไม่แก้อะไร ไม่ throw) เลือกผ่าน Orchestrator._llm_backend() เพิ่ม element
+           ที่ 5 (compact_messages) เหมือน next_action/append_tool_result ที่มีอยู่แล้ว —
+           แก้ทุกจุดที่ unpack _llm_backend() (generate_plan(), relearn_page() ใน
+           routes.py, crawl_site() ใน crawler.py) ให้รับ 5 ค่าแทน 4
+
+           *** เจอบั๊กจริงระหว่างแก้ (ไม่ใช่ตาม spec): boundary bookkeeping เดิมสมมติว่า
+           compact ลด len(messages) ลงเท่า cut_at เป๊ะเสมอ — ผิด เพราะ compact_messages()
+           อาจ no-op (รูปแบบไม่ตรงคาด) หรือลดน้อยกว่า cut_at จริง (Groq กัน system message
+           ไว้เสมอ) ถ้าสมมติผิดจะได้ boundary เพี้ยนสะสม ทำให้รอบบีบอัดถัดไปตัดผิดตำแหน่ง
+           (กลางบทสนทนา ไม่ใช่ต้น turn จริง) — แก้เป็นอ้างจากความยาว messages จริงก่อน/
+           หลัง compact เสมอ (removed = len_before - len_after) แทนสมมติ ***
+
+           dedupe retrieval: เพิ่ม last_page_text_for_context/last_manual_context/
+           last_long_term_context เก็บผลของ step ล่าสุดที่ page_text เปลี่ยนจริง —
+           manual_context (RAG) และ long_term_context (W7[A] long-term memory) ทั้งคู่
+           คำนวณจาก (goal, page_text) ล้วนๆ (goal คงที่ตลอด run_task()) เลย deterministic:
+           page_text เดิมเป๊ะ (เช่น action ก่อนหน้า fail/เป็น fill ที่ไม่ navigate) =
+           ผลลัพธ์ retrieval ต้องเหมือนเดิมเป๊ะ ไม่มีประโยชน์ต้องเรียก ChromaDB ซ้ำ (ประหยัด
+           compute) หรือส่งข้อความก้อนเดิมซ้ำเข้า prompt อีกรอบ (ประหยัด token จริงๆ ลด
+           byte ที่ส่ง ไม่ใช่แค่ลดราคาแบบ cache_control ของ Anthropic) — ไม่เปลี่ยนใช้
+           marker สั้นๆ "(เหมือนกับ step ก่อนหน้า — หน้าเว็บยังไม่เปลี่ยน)" แทน
+
+           unit test แก้/เพิ่มจำนวนมากใน test_orchestrator.py (compact ทำงานครบทั้ง 3
+           provider, boundary bookkeeping ใช้ removed จริงไม่ใช่ cut_at เดา, no-op เมื่อ
+           รูปแบบไม่ตรงคาด, dedupe retrieval ข้าม step ที่ page_text ไม่เปลี่ยน + เรียกใหม่
+           เมื่อเปลี่ยนจริง)
+
+  [x] W23  Website Learning: ถาม credential กลางทาง crawl แทนต้องกรอกล่วงหน้า +
+           scope long-term memory ด้วย session_id กัน memory หลุดข้าม session — เสร็จแล้ว
+           (2026-07-23)
+
+           ส่วนที่ 1 — credentials-needed mid-crawl:
+           เดิม (W15/W18) ต้องกรอก username/password ไว้ล่วงหน้าก่อนเริ่ม crawl เท่านั้น
+           (หรือไม่กรอกเลยแล้ว crawler ข้ามหน้า login ไปเฉยๆ) — เปลี่ยนเป็น crawler เจอ
+           หน้าที่มี password field จริง (find_login_fields() เจอครบทั้งคู่) ระหว่างทางแต่
+           ไม่มี credential ให้เลย จะหยุดรอถามคนจริงผ่าน SSE event ใหม่ "credentials_needed"
+           (แนบ domain + request_id) แทนที่จะข้ามไปเงียบๆ:
+             - crawler.py::crawl_site() เพิ่มพารามิเตอร์ on_credentials_needed (callback
+               async) เรียกครั้งเดียวตลอด crawl เท่ากับ username/password เดิม
+               (login_attempted ตัวเดียวกัน) — ตอบมา (dict) = login bootstrap ต่อทันที,
+               None (ข้าม/timeout) = บันทึกหน้านั้นแล้วสำรวจต่อโดยไม่ login เหมือนไม่เคยมี
+               callback นี้เลย ไม่ใช่ error
+             - learn_manager.py เพิ่ม LearnRecord.pending + request_credentials()/
+               resolve_credentials() mirror TaskManager.request_approval()/
+               resolve_approval() เกือบทุกประการ ต่างแค่ payload ที่ resolve กลับมาเป็น
+               dict {username,password} (หรือ None) แทน bool — ยกเลิก pending request ที่
+               ยังค้างอยู่เมื่อ crawl จบ/error/ถูก stop กลางคัน (กัน Future ค้างตลอดกาล)
+             - routes.py::learn_site() ผูก callback เข้ากับ request_credentials() + assert
+               domain ที่ตอบกลับมาตรงกับ extract_domain(req.url) เท่านั้น (ป้องกัน 2 ชั้น
+               กันบันทึก/ใช้ credential ข้าม site_manuals — ชั้นแรกคือ crawler เอง generate
+               domain จาก start_url ตรงๆ อยู่แล้ว) + endpoint ใหม่ POST
+               /api/site-manual/learn/{learn_id}/credentials (คืน 404 ถ้า request_id ไม่
+               ตรง/หมดอายุ/ตอบไปแล้ว)
+             - index.html: เอาฟอร์ม username/password ที่กรอกล่วงหน้าออก เปลี่ยนเป็น
+               banner ที่โผล่กลางทางเมื่อเจอ "credentials_needed" event (ปุ่มเข้าสู่ระบบ/
+               ข้าม) — respondLearnCredentials() ยิง POST .../credentials ตอบกลับ
+
+           ส่วนที่ 2 — long-term memory scope ด้วย session_id (เจอระหว่างทดสอบส่วนที่ 1
+           คู่กับบั๊กของ W21 ข้างบน — ใช้ embedding function ตัวเดียวกันที่ยุบ text ภาษา
+           ไทยให้ใกล้เคียงกันหมด ยิ่งซ้ำเติมปัญหานี้ให้เกิดง่ายขึ้น): เดิม
+           long_term_memory collection เป็น global เดียวข้าม session/site/user ทั้งหมด
+           ไม่กรองอะไรเลย ทำให้ session หนึ่งดึงความจำ (รวม "action ที่เคย fail") ของอีก
+           session ที่ทำคนละเว็บ/คนละเจตนาไปใช้ได้ — แก้:
+             - record_task()/recall() เพิ่มพารามิเตอร์ session_id — recall() "ต้อง" มี
+               session_id ถึงจะคืนอะไรเลย (ไม่มี = คืน [] ทันทีไม่ query เลยด้วยซ้ำ
+               ปลอดภัยไว้ก่อน) กรองด้วย where={"session_id":...} ที่ ChromaDB ตรงๆ (ไม่ใช่
+               กรองทีหลังในโค้ด) การันตีว่า document ที่คืนมาเป็นของ session นี้จริงเท่านั้น
+             - orchestrator.py::run_task() เพิ่มพารามิเตอร์ session_id ส่งต่อเข้า
+               recall()/record_task() ทั้งคู่ — routes.py ส่ง req.session_id เข้าไปทุกจุด
+               ที่เรียก run_task()
+
+           unit test เพิ่ม: 8 เคสใหม่ใน test_learn_manager.py (ไฟล์ใหม่ — request/
+           resolve credentials happy path, resolve request_id ผิด/หมดอายุคืน False,
+           username/password ว่าง = ข้าม, ยกเลิก pending เมื่อ crawl จบ/error) + เคสใหม่ใน
+           test_site_learning_crawler.py (on_credentials_needed ถูกเรียกเมื่อเจอหน้า login
+           แต่ไม่มี credential, ไม่เรียกซ้ำเมื่อเรียกไปแล้ว, ข้าม login ต่อสำรวจปกติเมื่อ
+           คืน None) + เคสใหม่ใน test_long_term_memory.py (recall คืน [] ทันทีเมื่อไม่มี
+           session_id, กรองด้วย where session_id ถูกต้อง, session อื่นดึงไม่เจอ) +
+           test_api.py (session_id ไหลจาก request เข้า run_task() ถูกต้องทุก branch ใน
+           _run_with_resolved_browser())
+
+           รันจริง `pytest -q` เต็ม suite ยืนยัน: 460 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_
+           gracefully_without_submit_button 1 เคสเดิมที่ fail อยู่ก่อนแล้วตั้งแต่ก่อน
+           รอบนี้ ไม่เกี่ยวกับงานนี้)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

@@ -1,0 +1,608 @@
+{
+  "หน้าหลัก ChatGPT > Add files and more": {
+    "css": "button.wm-composer-actionButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[1]/div[1]/div[1]/form[1]/div[2]/button[1]",
+    "aria": "Add files and more",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Start dictation": {
+    "css": "button.wm-composer-dictationButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[1]/div[1]/div[1]/form[1]/div[4]/button[1]",
+    "aria": "Start dictation",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > What can I do?": {
+    "css": "button.wm-app-emptyComposerAction",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[1]/div[1]/div[1]/button[1]",
+    "aria": "What can I do?",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > ChatGPT": {
+    "css": "span.wm-app-headerWordmark.wm-app-headerProductTrigger",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/section[1]/div[1]/div[1]/div[1]/header[1]/div[1]/span[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Log in": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[2]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Sign up for free": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[2]/div[2]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Close sidebar": {
+    "css": "button.wm-sidebar-desktopToggle",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/header[1]/div[1]/button[1]",
+    "aria": "Close sidebar",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > New chat": {
+    "css": "a.wm-sidebar-chatButton.wm-sidebar-desktopChatButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/a[1]",
+    "aria": "New chat",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Search chats": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/button[1]",
+    "aria": "Search chats",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Images": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > a:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/a[1]",
+    "aria": "Images",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Plugins": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > a:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/a[2]",
+    "aria": "Plugins",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Deep research": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(1) > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/button[2]",
+    "aria": "Deep research",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > See plans and pricing": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(2) > a:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/a[1]",
+    "aria": "See plans and pricing",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Settings": {
+    "css": "button.wm-sidebar-navigationLink.wm-sidebar-desktopSettings",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/button[1]",
+    "aria": "Settings",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Help": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(2) > a:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/main[1]/div[1]/div[2]/div[1]/aside[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/a[2]",
+    "aria": "OpenAI Help",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Close": {
+    "css": "button._IXg8xG_closeButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/form[1]/button[1]",
+    "aria": "Close",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Manage": {
+    "css": "div:nth-of-type(1) > main > dialog:nth-of-type(2) > div > p > a:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/p[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > cookie policy": {
+    "css": "div:nth-of-type(1) > main > dialog:nth-of-type(2) > div > p > a:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/p[1]/a[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Accept all": {
+    "css": "button._IXg8xG_primaryButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/div[1]/form[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Reject non-essential": {
+    "css": "button._IXg8xG_secondaryButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/div[1]/form[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > Cookie preferences": {
+    "css": "a._IXg8xG_desktopManageButton",
+    "xpath": "/html/body[1]/div[1]/main[1]/dialog[2]/div[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > [Where should we begin?]": {
+    "css": "input.wm-composer-srOnly",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าหลัก ChatGPT > [List Item Pattern]": {
+    "css": "div:nth-of-type(1) > main > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > aside > div > div > div > nav > div:nth-of-type(2) > a:nth-of-type(1) > span:nth-of-type(1) > svg > path:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Skip to content": {
+    "css": "a.interactive-bg-secondary.behavior-btn.interactive-label-secondary.pointer-events-auto.rounded-2xl.px-4.py-2.text-base.print\\:hidden",
+    "xpath": "/html/body[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Open sidebar": {
+    "css": "button.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.group\\/open-sidebar.mx-2.cursor-e-resize.rtl\\:cursor-w-resize",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/span[1]/div[1]/button[1]",
+    "aria": "Open sidebar",
+    "data_testid": ""
+  },
+  "ChatGPT Images > sidebar": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/div[3]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "ChatGPT Images > Open profile menu": {
+    "css": "[data-testid=\"accounts-profile-button\"], [data-test=\"accounts-profile-button\"]",
+    "xpath": "//*[@id=\"radix-_R_3jalqcic9l35_\"]",
+    "aria": "Open profile menu",
+    "data_testid": "accounts-profile-button"
+  },
+  "ChatGPT Images > Home": {
+    "css": "a.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.not-keyboard-focused\\:hover\\:bg-transparent\\!",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/a[1]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Search chats": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(1) > div > div > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[1]",
+    "aria": "Search chats",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Close sidebar": {
+    "css": "[data-testid=\"close-sidebar-button\"], [data-test=\"close-sidebar-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[2]",
+    "aria": "Close sidebar",
+    "data_testid": "close-sidebar-button"
+  },
+  "ChatGPT Images > New chat": {
+    "css": "[data-testid=\"create-new-chat-button\"], [data-test=\"create-new-chat-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[3]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "create-new-chat-button"
+  },
+  "ChatGPT Images > Images": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "ChatGPT Images > Plugins": {
+    "css": "[data-testid=\"plugins-button\"], [data-test=\"plugins-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[4]/a[1]",
+    "aria": "",
+    "data_testid": "plugins-button"
+  },
+  "ChatGPT Images > See plans and pricing": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(7) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[7]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Log in": {
+    "css": "[data-testid=\"unsupported-nav-login\"], [data-test=\"unsupported-nav-login\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": "unsupported-nav-login"
+  },
+  "ChatGPT Images > ChatGPT": {
+    "css": "[data-testid=\"model-switcher-dropdown-button\"], [data-test=\"model-switcher-dropdown-button\"]",
+    "xpath": "//*[@id=\"radix-_R_4afelqcic9l35_\"]",
+    "aria": "Model selector",
+    "data_testid": "model-switcher-dropdown-button"
+  },
+  "ChatGPT Images > Sign up for free": {
+    "css": "[data-testid=\"unsupported-nav-signup\"], [data-test=\"unsupported-nav-signup\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": "unsupported-nav-signup"
+  },
+  "ChatGPT Images > Add files and more": {
+    "css": "[data-testid=\"composer-plus-btn\"], [data-test=\"composer-plus-btn\"]",
+    "xpath": "//*[@id=\"composer-plus-btn\"]",
+    "aria": "Add files and more",
+    "data_testid": "composer-plus-btn"
+  },
+  "ChatGPT Images > Start dictation": {
+    "css": "button.composer-btn.h-9.min-h-9.w-9.min-w-9",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[2]/div[1]/div[3]/div[1]/button[1]",
+    "aria": "Start dictation",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Next page": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > div:nth-of-type(2) > div:nth-of-type(3) > section:nth-of-type(3) > div:nth-of-type(1) > div:nth-of-type(2) > div > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[2]/div[3]/section[3]/div[1]/div[2]/div[1]/button[2]",
+    "aria": "Next page",
+    "data_testid": ""
+  },
+  "ChatGPT Images > Previous page": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > div:nth-of-type(2) > div:nth-of-type(3) > section:nth-of-type(3) > div:nth-of-type(1) > div:nth-of-type(2) > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[2]/div[3]/section[3]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "Previous page",
+    "data_testid": ""
+  },
+  "ChatGPT Images > [List Item Pattern]": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(3) > ul > li:nth-of-type(1) > a > div:nth-of-type(2) > div > kbd:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Images > [Transition Discrete]": {
+    "css": "div.transition-discrete.motion-safe\\:transition-opacity.starting\\:opacity-0.shrink-0.basis-24.md\\:flex-none.md\\:basis-\\[calc\\(\\(100\\%-\\(var\\(--spacing\\)\\*12\\)\\)\\/5\\)\\]",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Images > [Transition Discrete] Handwritten style": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > div:nth-of-type(2) > div:nth-of-type(3) > section:nth-of-type(3) > div:nth-of-type(2) > div > div:nth-of-type(1) > button",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[2]/div[3]/section[3]/div[2]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Skip to content": {
+    "css": "a.interactive-bg-secondary.behavior-btn.interactive-label-secondary.pointer-events-auto.rounded-2xl.px-4.py-2.text-base.print\\:hidden",
+    "xpath": "/html/body[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Open sidebar": {
+    "css": "button.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.group\\/open-sidebar.mx-2.cursor-e-resize.rtl\\:cursor-w-resize",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/span[1]/div[1]/button[1]",
+    "aria": "Open sidebar",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > sidebar": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/div[3]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Open profile menu": {
+    "css": "[data-testid=\"accounts-profile-button\"], [data-test=\"accounts-profile-button\"]",
+    "xpath": "//*[@id=\"radix-_R_sqlic9l35_\"]",
+    "aria": "Open profile menu",
+    "data_testid": "accounts-profile-button"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Home": {
+    "css": "a.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.not-keyboard-focused\\:hover\\:bg-transparent\\!",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/a[1]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Search chats": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(1) > div > div > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[1]",
+    "aria": "Search chats",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Close sidebar": {
+    "css": "[data-testid=\"close-sidebar-button\"], [data-test=\"close-sidebar-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[2]",
+    "aria": "Close sidebar",
+    "data_testid": "close-sidebar-button"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > New chat": {
+    "css": "[data-testid=\"create-new-chat-button\"], [data-test=\"create-new-chat-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[3]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "create-new-chat-button"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Images": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Plugins": {
+    "css": "[data-testid=\"plugins-button\"], [data-test=\"plugins-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[4]/a[1]",
+    "aria": "",
+    "data_testid": "plugins-button"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > See plans and pricing": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(7) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[7]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Log in": {
+    "css": "[data-testid=\"unsupported-nav-login\"], [data-test=\"unsupported-nav-login\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": "unsupported-nav-login"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > Sign up for free": {
+    "css": "[data-testid=\"unsupported-nav-signup\"], [data-test=\"unsupported-nav-signup\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": "unsupported-nav-signup"
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid]": {
+    "css": "section.grid",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Featured": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(1) > div > div > h2 > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[1]/div[1]/div[1]/h2[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open Data Analytics": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[1]/a[1]",
+    "aria": "Open Data Analytics",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open GitHub": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[2]/a[1]",
+    "aria": "Open GitHub",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open Investment Banking": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(3) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[3]/a[1]",
+    "aria": "Open Investment Banking",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open Public Equity Investing": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(4) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[4]/a[1]",
+    "aria": "Open Public Equity Investing",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open Sales": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(5) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[5]/a[1]",
+    "aria": "Open Sales",
+    "data_testid": ""
+  },
+  "หน้าแสดงรายการปลั๊กอิน > [Grid] Open Google Drive": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(1) > main > div > div > section:nth-of-type(1) > div:nth-of-type(2) > article:nth-of-type(6) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/section[1]/div[2]/article[6]/a[1]",
+    "aria": "Open Google Drive",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > Skip to content": {
+    "css": "a.interactive-bg-secondary.behavior-btn.interactive-label-secondary.pointer-events-auto.rounded-2xl.px-4.py-2.text-base.print\\:hidden",
+    "xpath": "/html/body[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > Open sidebar": {
+    "css": "button.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.group\\/open-sidebar.mx-2.cursor-e-resize.rtl\\:cursor-w-resize",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/span[1]/div[1]/button[1]",
+    "aria": "Open sidebar",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > sidebar": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/div[3]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Open profile menu": {
+    "css": "[data-testid=\"accounts-profile-button\"], [data-test=\"accounts-profile-button\"]",
+    "xpath": "//*[@id=\"radix-_r_ac_\"]",
+    "aria": "Open profile menu",
+    "data_testid": "accounts-profile-button"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Home": {
+    "css": "a.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.not-keyboard-focused\\:hover\\:bg-transparent\\!",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/a[1]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > Search chats": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(1) > div > div > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[1]",
+    "aria": "Search chats",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > Close sidebar": {
+    "css": "[data-testid=\"close-sidebar-button\"], [data-test=\"close-sidebar-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[2]",
+    "aria": "Close sidebar",
+    "data_testid": "close-sidebar-button"
+  },
+  "หน้าปลั๊กอิน ChatGPT > New chat": {
+    "css": "[data-testid=\"create-new-chat-button\"], [data-test=\"create-new-chat-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[3]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "create-new-chat-button"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Images": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Plugins": {
+    "css": "a.text-token-text-primary.inline-flex.min-h-\\[36px\\].cursor-pointer.items-center.gap-1.rounded-full.ps-2.pe-3.text-\\[14px\\].leading-5.transition-opacity.hover\\:opacity-80",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/header[1]/div[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > See plans and pricing": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(7) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[7]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > Log in": {
+    "css": "[data-testid=\"unsupported-nav-login\"], [data-test=\"unsupported-nav-login\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": "unsupported-nav-login"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Sign up for free": {
+    "css": "[data-testid=\"unsupported-nav-signup\"], [data-test=\"unsupported-nav-signup\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": "unsupported-nav-signup"
+  },
+  "หน้าปลั๊กอิน ChatGPT > Install plugin": {
+    "css": "button.btn.relative.group-focus-within\\/dialog\\:focus-visible\\:\\[outline-width\\:1\\.5px\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-offset\\:2\\.5px\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-style\\:solid\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-color\\:var\\(--text-primary\\)\\].btn-primary.sm\\:btn-medium.px-4\\!.select-none.cursor-pointer.disabled\\:cursor-not-allowed",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[1]/div[1]/div[2]/div[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > 7 more": {
+    "css": "button.border-token-border-default.text-token-text-primary.flex.h-9.items-center.gap-1.rounded-full.border.ps-2.pe-3.text-sm.leading-\\[18px\\].hover\\:bg-token-bg-secondary.focus-visible\\:outline-token-border-default.cursor-pointer.transition-colors.focus-visible\\:outline-2.focus-visible\\:outline-offset-2",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[5]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > [Flex]": {
+    "css": "div.flex.h-\\[66px\\].items-center.gap-2",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > [Grid]": {
+    "css": "div.grid.grid-cols-\\[146px_minmax\\(0\\,1fr\\)\\].gap-4.py-3",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > @GitHub Inspect PRs, triage issues, debug failing checks, and prepare code changes for review": {
+    "css": "button.flex.max-w-\\[calc\\(100\\%-4px\\)\\].items-center.rounded-\\[16px\\].border.border-white\\/55.bg-white\\/75.p-4.text-start.text-sm.leading-5.text-gray-950\\/90.shadow-\\[0_11\\.56px_32\\.38px_0_rgba\\(0\\,0\\,0\\,0\\.08\\)\\].backdrop-blur-\\[23\\.13px\\].sm\\:max-w-\\[556px\\].md\\:rounded-full.focus-visible\\:outline-token-border-default.cursor-pointer.gap-3.transition-\\[max-width\\,gap\\,background-color\\,box-shadow\\].duration-200.ease-out.hover\\:max-w-full.hover\\:gap-4.hover\\:bg-white\\/80.focus-visible\\:outline-2.focus-visible\\:outline-offset-2.sm\\:hover\\:max-w-\\[560px\\].md\\:py-2.md\\:ps-4.md\\:pe-2",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าปลั๊กอิน ChatGPT > 15 more": {
+    "css": "button.border-token-border-default.text-token-text-primary.flex.h-9.items-center.gap-1.rounded-full.border.ps-2.pe-3.text-sm.leading-\\[18px\\].hover\\:bg-token-bg-secondary.focus-visible\\:outline-token-border-default.cursor-pointer.transition-colors.focus-visible\\:outline-2.focus-visible\\:outline-offset-2",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[5]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > Skip to content": {
+    "css": "a.interactive-bg-secondary.behavior-btn.interactive-label-secondary.pointer-events-auto.rounded-2xl.px-4.py-2.text-base.print\\:hidden",
+    "xpath": "/html/body[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > Open sidebar": {
+    "css": "button.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.group\\/open-sidebar.mx-2.cursor-e-resize.rtl\\:cursor-w-resize",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/span[1]/div[1]/button[1]",
+    "aria": "Open sidebar",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > sidebar": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[2]/div[3]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "ChatGPT Plugins Directory > Open profile menu": {
+    "css": "[data-testid=\"accounts-profile-button\"], [data-test=\"accounts-profile-button\"]",
+    "xpath": "//*[@id=\"radix-_r_89_\"]",
+    "aria": "Open profile menu",
+    "data_testid": "accounts-profile-button"
+  },
+  "ChatGPT Plugins Directory > Home": {
+    "css": "a.text-token-text-primary.contrast-high\\:not-dark\\:keyboard-focused\\:focus-ring.no-draggable.hover\\:bg-token-surface-hover.keyboard-focused\\:bg-token-surface-hover.touch\\:h-10.touch\\:w-10.flex.h-9.w-9.items-center.justify-center.rounded-lg.outline-none.disabled\\:opacity-50.not-keyboard-focused\\:hover\\:bg-transparent\\!",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/a[1]",
+    "aria": "Home",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > Search chats": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(1) > div > div > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[1]",
+    "aria": "Search chats",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > Close sidebar": {
+    "css": "[data-testid=\"close-sidebar-button\"], [data-test=\"close-sidebar-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[1]/div[1]/div[1]/div[1]/button[2]",
+    "aria": "Close sidebar",
+    "data_testid": "close-sidebar-button"
+  },
+  "ChatGPT Plugins Directory > New chat": {
+    "css": "[data-testid=\"create-new-chat-button\"], [data-test=\"create-new-chat-button\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[3]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "create-new-chat-button"
+  },
+  "ChatGPT Plugins Directory > Images": {
+    "css": "[data-testid=\"sidebar-item-library\"], [data-test=\"sidebar-item-library\"]",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/a[1]",
+    "aria": "",
+    "data_testid": "sidebar-item-library"
+  },
+  "ChatGPT Plugins Directory > Plugins": {
+    "css": "a.text-token-text-primary.inline-flex.min-h-\\[36px\\].cursor-pointer.items-center.gap-1.rounded-full.ps-2.pe-3.text-\\[14px\\].leading-5.transition-opacity.hover\\:opacity-80",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/header[1]/div[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > See plans and pricing": {
+    "css": "div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div > div > nav > div:nth-of-type(7) > a",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[1]/nav[1]/div[7]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > Log in": {
+    "css": "[data-testid=\"unsupported-nav-login\"], [data-test=\"unsupported-nav-login\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": "unsupported-nav-login"
+  },
+  "ChatGPT Plugins Directory > Sign up for free": {
+    "css": "[data-testid=\"unsupported-nav-signup\"], [data-test=\"unsupported-nav-signup\"]",
+    "xpath": "/html/body[1]/div[6]/div[1]/div[1]/div[1]/div[2]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": "unsupported-nav-signup"
+  },
+  "ChatGPT Plugins Directory > Install plugin": {
+    "css": "button.btn.relative.group-focus-within\\/dialog\\:focus-visible\\:\\[outline-width\\:1\\.5px\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-offset\\:2\\.5px\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-style\\:solid\\].group-focus-within\\/dialog\\:focus-visible\\:\\[outline-color\\:var\\(--text-primary\\)\\].btn-primary.sm\\:btn-medium.px-4\\!.select-none.cursor-pointer.disabled\\:cursor-not-allowed",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[1]/div[1]/div[2]/div[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > 12 more": {
+    "css": "button.border-token-border-default.text-token-text-primary.flex.h-9.items-center.gap-1.rounded-full.border.ps-2.pe-3.text-sm.leading-\\[18px\\].hover\\:bg-token-bg-secondary.focus-visible\\:outline-token-border-default.cursor-pointer.transition-colors.focus-visible\\:outline-2.focus-visible\\:outline-offset-2",
+    "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/div[1]/div[1]/main[1]/div[1]/div[1]/div[1]/section[5]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > [Flex]": {
+    "css": "div.flex.h-\\[66px\\].items-center.gap-2",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "ChatGPT Plugins Directory > [Grid]": {
+    "css": "div.grid.grid-cols-\\[146px_minmax\\(0\\,1fr\\)\\].gap-4.py-3",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  }
+}

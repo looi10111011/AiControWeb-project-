@@ -37,12 +37,16 @@ from backend.app.config import settings
 from backend.app.core import llm
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.permission.rules import extract_domain
-from backend.app.site_learning.auto_login import attempt_login
+from backend.app.site_learning.auto_login import attempt_login, find_login_fields
 from backend.app.site_learning.extractor import extract_page
 from backend.app.site_learning.safety import is_crawl_safe, is_safe_nav_link
 from backend.app.site_learning.schema import PageInfo, SiteManual
 
 OnProgressFunc = Callable[[dict], Awaitable[None]]
+# W23: เรียกตอนเจอหน้าที่มี password field จริง แต่ยังไม่มี username/password ให้ใช้เลย
+# (ไม่ได้ส่งมาตอนเริ่ม crawl) — รับ domain (ของเว็บที่กำลัง crawl อยู่นี้เท่านั้น) คืน
+# {"username":..., "password":...} ถ้า user กรอกจริง หรือ None ถ้า user เลือกข้าม/หมดเวลา
+OnCredentialsNeededFunc = Callable[[str], Awaitable[Optional[dict]]]
 
 _DESCRIBE_PROMPT_TEMPLATE = (
     "นี่คือโครงสร้างของหน้าเว็บหน้าหนึ่ง สกัดจาก DOM จริงล้วนๆ (ไม่ใช่จินตนาการ):\n"
@@ -146,6 +150,7 @@ async def crawl_site(
     on_progress: Optional[OnProgressFunc] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
+    on_credentials_needed: Optional[OnCredentialsNeededFunc] = None,
 ) -> SiteManual:
     """BFS deterministic crawl เริ่มจาก start_url — เดินเฉพาะลิงก์ same-origin ที่เจอใน
     nav/menu (ดู extractor.py::extract_page) ทีละหน้า กรองด้วย
@@ -157,7 +162,18 @@ async def crawl_site(
     username/password (W15, optional): ถ้าให้มาทั้งคู่ และหน้าแรกที่เจอมี password
     field จริง จะลองกรอก+กด sign in ครั้งเดียว (ดู auto_login.py::attempt_login()) ก่อนสำรวจต่อ —
     จำเป็นเพราะเว็บส่วนใหญ่ไม่มี nav link ให้เดินต่อเลยจนกว่าจะ login (หน้า login มีแค่
-    ฟอร์ม) ไม่ระบุมา (None ทั้งคู่ ค่า default) = พฤติกรรมเดิม ไม่แตะฟอร์มใดๆ เลย
+    ฟอร์ม)
+
+    on_credentials_needed (W23, optional): ถ้าไม่ได้ให้ username/password มาเลยตอนเริ่ม
+    crawl (ทั้งคู่ None) แต่ crawler เจอหน้าที่มี password field จริง (find_login_fields()
+    เจอครบทั้งคู่) ระหว่างทาง จะเรียก callback นี้ (ส่ง domain ของเว็บนี้ไปด้วย) แล้ว "หยุด
+    รอ" (await) จน user ตอบกลับผ่าน UI จริง (ดู routes.py::learn_site() ที่ผูก callback นี้
+    เข้ากับ LearnManager.request_credentials()) — ได้ dict {username, password} กลับมา =
+    ใช้ login bootstrap ต่อทันที, ได้ None กลับมา (user เลือกข้าม/หมดเวลา) = บันทึกหน้านี้
+    ตามปกติแล้วสำรวจต่อโดยไม่ login (เหมือนไม่เคยมี callback นี้เลย) ถามแค่ครั้งเดียวตลอด
+    ทั้ง crawl เท่ากับ username/password (login_attempted ตัวเดียวกัน) ไม่ระบุอะไรเลย (ทั้ง
+    username/password และ callback นี้เป็น None หมด) = พฤติกรรมเดิมทุกประการ ไม่แตะฟอร์ม
+    ใดๆ เลย ไม่ถามใคร
 
     W16: นอกจากเดิน nav link แล้ว ทุกหน้าที่บันทึก (ผ่าน _record_page) จะถูกไล่กดปุ่ม
     "ปลอดภัย" ด้วย (ดู _explore_buttons/is_crawl_safe) เพื่อสำรวจ path ที่ nav link เดิน
@@ -166,7 +182,7 @@ async def crawl_site(
     crawl ที่ settings.site_learning_max_pages (ตัวเดียวกับที่คุม nav-link BFS)"""
     domain = extract_domain(start_url)
     resolved_provider = provider or settings.llm_provider
-    client, model, _, _ = Orchestrator._llm_backend(resolved_provider)
+    client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
     effective_max_pages = max_pages or settings.site_learning_max_pages
 
     context = await browser.new_context()
@@ -304,6 +320,26 @@ async def crawl_site(
                     except Exception:
                         pass
 
+        async def _login_and_continue(
+            login_username: str, login_password: str, page_info: PageInfo, nav_links: list[dict],
+        ) -> None:
+            """บันทึกหน้า login เอง (มีประโยชน์ต่อ manual) แล้วลอง attempt_login() —
+            สำเร็จ (did_login=True — แค่แปลว่ากด submit ได้จริง ไม่ได้การันตีว่า login
+            ผ่าน) ก็ extract+บันทึกหน้าถัดจาก login ต่อด้วยเลย ใช้ร่วมกันทั้ง 2 เส้นทางที่มี
+            username/password มาใช้ได้ (ส่งมาตั้งแต่ต้น crawl กับได้จาก
+            on_credentials_needed ระหว่างทาง — ดู docstring ของ crawl_site())"""
+            await _record_page(page_info, nav_links)
+            did_login = await attempt_login(page, page_info, login_username, login_password)
+            if did_login:
+                post_login_url = _normalize_url(page.url)
+                if post_login_url not in visited:
+                    visited.add(post_login_url)
+                    await page.bring_to_front()
+                    if on_progress:
+                        await on_progress({"kind": "page_start", "url": page.url})
+                    post_page_info, post_nav_links = await extract_page(page)
+                    await _record_page(post_page_info, post_nav_links)
+
         while queue and len(pages) < effective_max_pages:
             url = queue.pop(0)
             normalized = _normalize_url(url)
@@ -332,21 +368,29 @@ async def crawl_site(
             # W15: login bootstrap — ลองแค่ครั้งเดียวตลอดทั้ง crawl (login_attempted)
             # ตรงหน้าแรกที่เจอ password field จริงเท่านั้น ไม่ใช่ทุกหน้าที่มี password
             # field (เช่น หน้า "เปลี่ยนรหัสผ่าน" หลัง login ไปแล้วไม่ควรลอง submit ซ้ำ)
-            if username and password and not login_attempted:
+            if not login_attempted and username and password:
                 login_attempted = True
-                await _record_page(page_info, nav_links)  # บันทึกหน้า login เองไว้ด้วย (มีประโยชน์ต่อ manual)
-
-                did_login = await attempt_login(page, page_info, username, password)
-                if did_login:
-                    post_login_url = _normalize_url(page.url)
-                    if post_login_url not in visited:
-                        visited.add(post_login_url)
-                        await page.bring_to_front()
-                        if on_progress:
-                            await on_progress({"kind": "page_start", "url": page.url})
-                        post_page_info, post_nav_links = await extract_page(page)
-                        await _record_page(post_page_info, post_nav_links)
+                await _login_and_continue(username, password, page_info, nav_links)
                 continue
+
+            # W23: ไม่มี username/password ให้มาตั้งแต่ต้นเลย แต่มี on_credentials_needed
+            # ให้ "ถามคนจริง" ได้ — เช็คว่าหน้านี้เข้าข่ายหน้า login จริงก่อน
+            # (find_login_fields เจอทั้ง username+password field ครบ) ค่อยเรียก ไม่งั้นจะ
+            # ถามทุกครั้งที่ยังไม่เคย login แม้หน้านั้นไม่ใช่หน้า login เลยก็ตาม (ถามครั้ง
+            # เดียวตลอด crawl เหมือนกับ username/password ด้านบน — login_attempted ตัว
+            # เดียวกัน กันถามซ้ำถ้า user เพิ่งเลือกข้ามไปแล้ว)
+            if (
+                not login_attempted
+                and on_credentials_needed is not None
+                and find_login_fields(page_info) != (None, None)
+            ):
+                login_attempted = True
+                creds = await on_credentials_needed(domain)
+                if creds and creds.get("username") and creds.get("password"):
+                    await _login_and_continue(creds["username"], creds["password"], page_info, nav_links)
+                    continue
+                # user เลือกข้าม/หมดเวลา — บันทึกหน้านี้ตามปกติแล้วสำรวจต่อโดยไม่ login
+                # (เหมือนไม่เคยมี callback นี้เลย ไม่ใช่ error)
 
             await _record_page(page_info, nav_links)
     finally:

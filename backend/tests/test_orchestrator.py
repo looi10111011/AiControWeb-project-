@@ -7,8 +7,8 @@ from backend.app.core.actions import ActionResult
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.orchestrator import (
     Orchestrator,
-    _GEMINI_COMPACT_AFTER_STEPS,
-    _GEMINI_KEEP_RECENT_STEPS,
+    _COMPACT_AFTER_STEPS,
+    _KEEP_RECENT_STEPS,
     _LONG_TERM_MEMORY_CHUNKS_PER_STEP,
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
@@ -16,9 +16,11 @@ from backend.app.core.orchestrator import (
     _PREMATURE_FALSE_FINISH_NUDGE,
     _PREMATURE_TRUE_FINISH_NUDGE,
     _RAG_CHUNKS_PER_STEP,
-    _build_gemini_history_digest,
+    _build_history_digest,
     _build_nudge_message,
+    _compact_anthropic_messages,
     _compact_gemini_messages,
+    _compact_groq_messages,
     _make_dialog_handler,
 )
 
@@ -1808,7 +1810,8 @@ async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
     mock_recall.assert_called_once_with(
-        query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP
+        query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
+        session_id="",
     )
     # W14: args[-1] เป็น site_manual_context ตัวใหม่ — long_term_context ขยับไป args[-3]
     long_term_context = mock_next_action.await_args.args[-3]
@@ -1870,8 +1873,36 @@ async def test_run_task_records_task_outcome_into_long_term_memory_at_the_end():
         success=False,
         message="ทำต่อไม่ได้",
         failed_actions=mock_record_task.call_args.kwargs["failed_actions"],
+        session_id="",
     )
     assert "หา element ไม่เจอ" in mock_record_task.call_args.kwargs["failed_actions"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_threads_session_id_into_long_term_memory_recall_and_record():
+    """W23: session_id ที่ run_task() รับมาต้องถูกส่งต่อเข้าทั้ง recall() (ทุก step) และ
+    record_task() (ท้าย task) ตรงๆ — นี่คือกลไกจริงที่ทำให้ session หนึ่งดึงความจำของอีก
+    session มาปนกันไม่ได้ (ดู core/long_term_memory.py — recall() ปฏิเสธ query ถ้าไม่มี
+    session_id)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.long_term_memory.recall", return_value=[]) as mock_recall, \
+         patch("backend.app.core.orchestrator.long_term_memory.record_task") as mock_record_task, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ):
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", session_id="session-abc-123",
+        )
+
+    assert mock_recall.call_args.kwargs["session_id"] == "session-abc-123"
+    assert mock_record_task.call_args.kwargs["session_id"] == "session-abc-123"
 
 
 @pytest.mark.asyncio
@@ -1953,14 +1984,14 @@ async def test_run_task_premature_false_finish_nudge_uses_gemini_message_shape_f
 # --- Gemini context compaction (W7[A], Test Case C) ---
 
 
-def test_build_gemini_history_digest_summarizes_steps_up_to_cutoff():
+def test_build_history_digest_summarizes_steps_up_to_cutoff():
     memory = ShortTermMemory()
     memory.record({"step": 0, "cmd": {"type": "goto", "url": "https://x"}, "result": "[OK] ไปที่ url", "success": True})
     memory.record({"step": 1, "cmd": {"type": "fill", "index": 0}, "result": "[OK] fill(0) -> login สำเร็จ", "success": True})
     memory.record({"step": 2, "cmd": {"type": "click", "index": 1}, "result": "[OK] click(1) -> เพิ่มสินค้า", "success": True})
     memory.record({"step": 3, "cmd": {"type": "click", "index": 2}, "result": "[FAIL] click(2) -> พัง", "success": False})
 
-    digest = _build_gemini_history_digest(memory, upto_step=2)
+    digest = _build_history_digest(memory, upto_step=2)
 
     assert "step 1" in digest
     assert "login สำเร็จ" in digest
@@ -1970,11 +2001,11 @@ def test_build_gemini_history_digest_summarizes_steps_up_to_cutoff():
     assert "goto" not in digest  # step 0 ไม่นับ (ไม่ใช่ step ของ action จริง)
 
 
-def test_build_gemini_history_digest_returns_empty_string_when_no_matching_steps():
+def test_build_history_digest_returns_empty_string_when_no_matching_steps():
     memory = ShortTermMemory()
     memory.record({"step": 0, "cmd": {"type": "goto", "url": "https://x"}, "result": "[OK]", "success": True})
 
-    assert _build_gemini_history_digest(memory, upto_step=5) == ""
+    assert _build_history_digest(memory, upto_step=5) == ""
 
 
 def test_compact_gemini_messages_drops_old_turns_and_prepends_digest_to_kept_turn():
@@ -2010,17 +2041,91 @@ def test_compact_gemini_messages_falls_back_to_original_on_unexpected_shape():
     assert _compact_gemini_messages(messages, cut_at=0, digest_text="x") == messages
 
 
+# --- W22: generalize compaction ไปทุก provider (Anthropic/Groq) ---
+
+
+def test_compact_anthropic_messages_drops_old_turns_and_prepends_digest_to_kept_turn():
+    messages = [
+        {"role": "user", "content": "old step 1"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "browser_action", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "[OK]"}]},
+        {"role": "user", "content": "old step 2"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "browser_action", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "[OK]"}]},
+        {"role": "user", "content": "recent step 3 goal here"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t3", "name": "browser_action", "input": {}}]},
+    ]
+
+    result = _compact_anthropic_messages(messages, cut_at=6, digest_text="- step 1: ok\n- step 2: ok")
+
+    assert len(result) == 2  # เท่ากับ len(messages) - cut_at เสมอ (แทนที่ text ไม่ตัด turn)
+    assert "step 1: ok" in result[0]["content"]
+    assert "recent step 3 goal here" in result[0]["content"]
+    assert result[1] == messages[7]  # turn ที่เหลือไม่ถูกแตะเลย
+
+
+def test_compact_anthropic_messages_is_noop_when_cut_at_zero_or_digest_empty():
+    messages = [{"role": "user", "content": "x"}]
+
+    assert _compact_anthropic_messages(messages, cut_at=0, digest_text="something") == messages
+    assert _compact_anthropic_messages(messages, cut_at=1, digest_text="") == messages
+
+
+def test_compact_anthropic_messages_falls_back_to_original_on_unexpected_shape():
+    """ถ้า messages[cut_at] ไม่ใช่ user turn แบบ content เป็น string ล้วนๆ (เช่นโดน
+    tool_result turn ซึ่ง content เป็น list มาอยู่ตำแหน่งนี้แทน — ผิดคาดจริงๆ) ต้องคืน
+    messages เดิมไม่แก้อะไร ไม่ throw"""
+    messages = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "[OK]"}]}]
+
+    assert _compact_anthropic_messages(messages, cut_at=0, digest_text="x") == messages
+
+
+def test_compact_groq_messages_drops_old_turns_but_keeps_leading_system_message():
+    """Groq เก็บ system prompt เป็น messages[0] เอง (ต่างจาก Anthropic/Gemini ที่ส่ง
+    system แยกนอก messages) — ต้องกัน messages[0] ไว้เสมอ ไม่ให้หลุดไปอยู่ในส่วนที่ตัดทิ้ง"""
+    messages = [
+        {"role": "system", "content": "SYSTEM_PROMPT"},
+        {"role": "user", "content": "old step 1"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t1", "function": {"name": "browser_action", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "[OK]"},
+        {"role": "user", "content": "recent step 2 goal here"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t2", "function": {"name": "browser_action", "arguments": "{}"}}]},
+    ]
+
+    result = _compact_groq_messages(messages, cut_at=4, digest_text="- step 1: ok")
+
+    assert result[0] == {"role": "system", "content": "SYSTEM_PROMPT"}  # ไม่ถูกตัดทิ้งไปด้วย
+    assert "step 1: ok" in result[1]["content"]
+    assert "recent step 2 goal here" in result[1]["content"]
+    assert result[2] == messages[5]
+
+
+def test_compact_groq_messages_is_noop_when_no_leading_system_message():
+    """ถ้า messages[0] ไม่ใช่ system message (ผิดคาดจริงๆ — next_action_groq() ควร
+    ใส่ไว้เสมอตั้งแต่ call แรก) ต้องไม่กล้าตัดอะไรเลย เพราะเดา system message ไม่ได้"""
+    messages = [{"role": "user", "content": "old step 1"}, {"role": "user", "content": "step 2"}]
+
+    assert _compact_groq_messages(messages, cut_at=1, digest_text="x") == messages
+
+
+def test_compact_groq_messages_is_noop_when_cut_at_zero_or_digest_empty():
+    messages = [{"role": "system", "content": "SYSTEM_PROMPT"}, {"role": "user", "content": "x"}]
+
+    assert _compact_groq_messages(messages, cut_at=0, digest_text="something") == messages
+    assert _compact_groq_messages(messages, cut_at=1, digest_text="") == messages
+
+
 @pytest.mark.asyncio
 async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshold():
-    """W7[A] (Test Case C): เกิน _GEMINI_COMPACT_AFTER_STEPS step แล้ว messages ที่ส่ง
+    """W7[A] (Test Case C): เกิน _COMPACT_AFTER_STEPS step แล้ว messages ที่ส่ง
     เข้า next_action_gemini() ต้องไม่โตต่อเนื่องไม่มีเพดานตามจำนวน step อีกต่อไป (ถูก
-    ตัด step เก่ากว่า _GEMINI_KEEP_RECENT_STEPS ตัวล่าสุดออก) — digest ของ step แรกๆ
+    ตัด step เก่ากว่า _KEEP_RECENT_STEPS ตัวล่าสุดออก) — digest ของ step แรกๆ
     ต้องยังโผล่อยู่ในบทสนทนาที่เหลือ (ไม่ได้หายไปเฉยๆ พิสูจน์ assertion #2 ของ Test Case C
     ที่ต้องการให้ agent ยังจำ step แรกๆ ได้)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     click_result = ActionResult(True, "click", "สำเร็จ")
 
-    total_action_steps = _GEMINI_COMPACT_AFTER_STEPS + 2  # ต้องเกิน threshold แน่ๆ
+    total_action_steps = _COMPACT_AFTER_STEPS + 2  # ต้องเกิน threshold แน่ๆ
     step_actions = [
         ("browser_action", {"type": "click", "index": i}, f"call_{i}") for i in range(total_action_steps)
     ]
@@ -2077,15 +2182,16 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
 
 
 @pytest.mark.asyncio
-async def test_run_task_does_not_compact_for_non_gemini_provider():
-    """scope จำกัดแค่ Gemini ตามที่ user เลือก — provider อื่น (Anthropic/Groq) ต้องไม่
-    ถูกตัด messages เลยไม่ว่าจะกี่ step ก็ตาม (ยังไม่ได้ implement ให้ provider อื่น)"""
+async def test_run_task_compacts_anthropic_history_once_step_count_exceeds_threshold():
+    """W22: generalize context compaction จาก Gemini-only ไปทุก provider — Anthropic
+    ต้องบีบอัด history เหมือน Gemini ทุกประการ (คู่กับ
+    test_run_task_compacts_gemini_history_once_step_count_exceeds_threshold ด้านบน)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     click_result = ActionResult(True, "click", "สำเร็จ")
 
-    total_action_steps = _GEMINI_COMPACT_AFTER_STEPS + 2
+    total_action_steps = _COMPACT_AFTER_STEPS + 2
     step_actions = [
-        ("browser_action", {"type": "click", "index": i}, f"t{i}") for i in range(total_action_steps)
+        ("browser_action", {"type": "click", "index": i}, f"call_{i}") for i in range(total_action_steps)
     ]
     step_actions.append(("finish_task", {"success": True, "message": "เสร็จ"}, ""))
 
@@ -2098,7 +2204,13 @@ async def test_run_task_does_not_compact_for_non_gemini_provider():
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
         tool_name, tool_input, tool_use_id = step_actions[i]
-        new_messages = messages + [{"role": "user", "content": f"turn {i}"}]
+        # จำลอง messages โตขึ้นจริงเหมือน implementation จริง (append 1 user turn +
+        # 1 assistant turn ต่อ call, shape เดียวกับ llm.next_action() ตัวจริง) —
+        # append_tool_result ตัวจริง (ไม่ mock) จะเพิ่มอีก 1 tool_result turn ต่อ step
+        new_messages = messages + [
+            {"role": "user", "content": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text} #{i}"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": tool_use_id, "name": tool_name, "input": tool_input}]},
+        ]
         return tool_name, tool_input, tool_use_id, new_messages, llm.TokenUsage()
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
@@ -2107,17 +2219,88 @@ async def test_run_task_does_not_compact_for_non_gemini_provider():
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
-         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.llm.build_client", return_value="fake-client"), \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=_next_action_side_effect)):
         result = await Orchestrator().run_task(
             "https://example.com", "goal", provider="anthropic", max_steps=total_action_steps + 2
         )
 
     assert result["success"] is True
-    # ทุก step เพิ่ม 2 message (1 จาก next_action mock, 1 จาก append_tool_result จริง) ไม่มี
-    # การบีบอัดใดๆ เกิดขึ้นเลย (ฟีเจอร์นี้ scope แค่ gemini) — โตเป็นเส้นตรงตามจำนวน step เป๊ะ
+    assert result["steps"] == total_action_steps
+
+    # ถ้าไม่มี compaction เลย messages ของ call สุดท้าย (finish_task) จะยาว 3 ตัว/step x
+    # total_action_steps — ต้องน้อยกว่านี้มากถ้า compaction ทำงานจริง
     last_call_messages = captured_messages_per_call[-1]
-    assert len(last_call_messages) == total_action_steps * 2
+    uncompacted_would_be = total_action_steps * 3
+    assert len(last_call_messages) < uncompacted_would_be
+
+    # digest ของ step แรกๆ (ที่ถูกบีบอัดไปแล้ว) ต้องยังโผล่อยู่ในบทสนทนาที่เหลือ
+    all_text = " ".join(
+        msg["content"] for msg in last_call_messages if isinstance(msg.get("content"), str)
+    )
+    assert "step 1" in all_text
+    assert "สรุป step ก่อนหน้า" in all_text
+
+
+@pytest.mark.asyncio
+async def test_run_task_compacts_groq_history_and_preserves_leading_system_message():
+    """W22: Groq ก็ต้องบีบอัดเหมือนกัน — จุดที่ต่างจาก Anthropic/Gemini คือ Groq เก็บ
+    system prompt เป็น messages[0] เอง ต้องรอดจากการบีบอัดทุกรอบ ไม่ใช่แค่ compaction
+    ทำงาน (ดู test_compact_groq_messages_drops_old_turns_but_keeps_leading_system_message
+    สำหรับ unit test แยกของฟังก์ชัน splice เอง — อันนี้พิสูจน์ผ่าน run_task() เต็มๆ)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    total_action_steps = _COMPACT_AFTER_STEPS + 2
+    step_actions = [
+        ("browser_action", {"type": "click", "index": i}, f"call_{i}") for i in range(total_action_steps)
+    ]
+    step_actions.append(("finish_task", {"success": True, "message": "เสร็จ"}, ""))
+
+    captured_messages_per_call: list[list] = []
+
+    async def _next_action_side_effect(
+        client, model, goal, page_text, messages, manual_context="", memory_context="",
+        long_term_context="", vision_context="", site_manual_context="",
+    ):
+        captured_messages_per_call.append(messages)
+        i = len(captured_messages_per_call) - 1
+        tool_name, tool_input, tool_use_id = step_actions[i]
+        if not messages:
+            messages = [{"role": "system", "content": "SYSTEM_PROMPT"}]
+        new_messages = messages + [
+            {"role": "user", "content": f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text} #{i}"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": tool_use_id, "function": {"name": tool_name, "arguments": "{}"}}
+            ]},
+        ]
+        return tool_name, tool_input, tool_use_id, new_messages, llm.TokenUsage()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.llm.build_groq_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.next_action_groq", AsyncMock(side_effect=_next_action_side_effect)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="groq", max_steps=total_action_steps + 2
+        )
+
+    assert result["success"] is True
+    assert result["steps"] == total_action_steps
+
+    last_call_messages = captured_messages_per_call[-1]
+    uncompacted_would_be = total_action_steps * 3 + 1  # +1 สำหรับ system message ตัวเดียว
+    assert len(last_call_messages) < uncompacted_would_be
+    assert last_call_messages[0] == {"role": "system", "content": "SYSTEM_PROMPT"}
+
+    all_text = " ".join(
+        msg["content"] for msg in last_call_messages if isinstance(msg.get("content"), str)
+    )
+    assert "step 1" in all_text
+    assert "สรุป step ก่อนหน้า" in all_text
 
 
 # --- Permission layer connected to the real per-step loop ---

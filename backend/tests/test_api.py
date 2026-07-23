@@ -988,6 +988,44 @@ def test_learn_site_explicit_credentials_take_priority_over_saved_ones(client, i
     assert storage.load_credentials("example.com") == {"username": "new-user", "password": "new-pass"}
 
 
+# ---------------- W23: ถามคนจริงกลางคัน crawl แทนบังคับกรอกไว้ล่วงหน้า ----------------
+
+
+def test_learn_site_passes_on_credentials_needed_callback_to_crawl_site(client, isolated_manuals_dir):
+    """learn_site() ต้องผูก on_credentials_needed เข้ากับ crawl_site() เสมอ (แม้ตอนที่
+    ผู้ใช้ไม่ได้กรอก username/password มาเลยตั้งแต่ต้น) ให้ crawler เรียกถามผ่าน SSE ได้ถ้า
+    เจอหน้า login กลางคัน — เทสต์นี้เช็คแค่การผูก (wiring) ตรงๆ ผ่าน mock ไม่ได้เล่น
+    concurrency จริงข้าม event loop (ดู test_learn_manager.py สำหรับพฤติกรรม request/
+    resolve_credentials() เต็มๆ)"""
+    from backend.app.site_learning.schema import PageInfo, SiteManual
+
+    fake_manual = SiteManual(website="example.com", pages=[PageInfo(name="Home", url="https://example.com/")])
+
+    with patch("backend.app.api.routes.async_playwright", return_value=_fake_learn_playwright()), \
+         patch("backend.app.api.routes.crawl_site", AsyncMock(return_value=fake_manual)) as mock_crawl:
+        resp = client.post("/api/site-manual/learn", json={"url": "https://example.com/"})
+        learn_id = resp.json()["learn_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            stream_resp = client.get(f"/api/site-manual/learn/{learn_id}/stream")
+            if "learn_done" in stream_resp.text:
+                break
+            time.sleep(0.02)
+
+    call_kwargs = mock_crawl.await_args.kwargs
+    assert callable(call_kwargs.get("on_credentials_needed"))
+
+
+def test_respond_learn_credentials_returns_404_for_unknown_request_id(client):
+    resp = client.post(
+        "/api/site-manual/learn/does-not-exist/credentials",
+        json={"request_id": "req-1", "username": "alice", "password": "s3cr3t"},
+    )
+    assert resp.status_code == 404
+
+
 def test_save_site_credentials_endpoint_persists_and_status_reflects_it(client, isolated_manuals_dir):
     from backend.app.site_learning import storage
 

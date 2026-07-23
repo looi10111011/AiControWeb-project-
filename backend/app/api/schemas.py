@@ -154,6 +154,21 @@ class LearnCreatedResponse(BaseModel):
     status: str
 
 
+class LearnCredentialsRequest(BaseModel):
+    """W23: body ของ POST /api/site-manual/learn/{learn_id}/credentials — ตอบ
+    "credentials_needed" event ที่ได้จาก GET /api/site-manual/learn/{learn_id}/stream
+    (crawl เจอหน้า login ระหว่างเรียนรู้เว็บไซต์ แต่ยังไม่มี credential เก็บไว้ก่อนเลย —
+    ดู site_learning/crawler.py::crawl_site() พารามิเตอร์ on_credentials_needed)
+
+    request_id ต้องตรงกับที่ event ส่งมา ไม่งั้นถือว่าหมดอายุ/ตอบไปแล้ว (ดู
+    LearnManager.resolve_credentials()) — username/password ปล่อยว่างทั้งคู่ (None) =
+    ผู้ใช้เลือกข้าม ("ไม่ต้อง login") ให้ crawl สำรวจต่อโดยไม่ผ่านหน้านี้แทนที่จะรอตลอดไป"""
+
+    request_id: str
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 class RelearnPageRequest(BaseModel):
     """W14: body ของ POST /api/site-manual/{domain}/relearn-page — selector-repair:
     สำรวจเฉพาะหน้าเดียว (url) ใหม่แทนที่จะ crawl ทั้งเว็บซ้ำ"""
