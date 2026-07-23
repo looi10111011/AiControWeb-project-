@@ -1946,6 +1946,98 @@
            gracefully_without_submit_button 1 เคสเดิมที่ fail อยู่ก่อนแล้วตั้งแต่ก่อน
            รอบนี้ ไม่เกี่ยวกับงานนี้)
 
+  [x] W24  Website Learning: ทำให้ "เรียนรู้เว็บไซต์" เป็น contract ที่ชัดเจน+ตรวจสอบได้ —
+           เสร็จแล้ว (2026-07-23)
+           user ขอปรับปรุง self-learning ตามเช็คลิสต์ยาว (Login/สำรวจทุกเมนู/คลิกทุกหน้า/
+           อ่านข้อมูล/บันทึก/จบเมื่อ queue ว่างเท่านั้น, queue-based crawler, SPA support,
+           หาเมนูให้ครบไม่ใช่แค่ <a>, ไม่ปิด browser ก่อนเวลา, error handling+retry, finish
+           condition, ตรวจ session หลัง login, logging, ตรวจ config ที่จำกัดการสำรวจ,
+           dynamic content (infinite scroll/lazy load/modal/dropdown/tab), กันเรียนรู้ซ้ำ)
+           — เช็คลิสต์เขียนในเชิง "LLM agent ที่ตัดสินใจเองจาก prompt" แต่ระบบจริงเป็น
+           deterministic crawler (BFS+DFS ล้วนๆ ตามที่ user ยืนยันไว้ตั้งแต่ W14 เพื่อลด
+           token cost ไม่ให้ LLM ตัดสินใจ navigate เอง) — แจ้ง user ตรงๆ แล้วแปล requirement
+           แต่ละข้อเป็นการบังคับ+ตรวจสอบ "ขั้นตอน" ในโค้ดจริงแทนที่จะเขียนเป็น prompt ให้ตีความ
+           (รายละเอียดเหตุผลเต็มอยู่ใน docstring หัวไฟล์ site_learning/crawler.py หัวข้อ
+           "W24" — สรุปตามข้อ):
+
+           1/2/7/12 (contract หลัก + queue + finish condition + กันซ้ำ): ของเดิมมีอยู่แล้ว
+           เกือบทั้งหมดตั้งแต่ W14/W16 (queue/visited/queued set, while queue and len(pages)
+           < max) ไม่ต้องแก้โครงสร้าง — ตรวจสอบยืนยันซ้ำว่า loop ไม่จบทันทีหลัง login/เข้า
+           dashboard จริง (เดินตาม queue ต่อเสมอ)
+
+           3 (SPA): เพิ่ม _wait_for_dom_stable() (poll ความยาว document.body.innerHTML จน
+           นิ่งติดกัน N ครั้ง) เรียกคู่กับ wait_for_load_state("networkidle") เดิมทุกจุดที่
+           navigate/click แล้ว — เดิมพึ่ง networkidle อย่างเดียวซึ่งไม่พอสำหรับ client-side
+           routing ที่ไม่ยิง network request ใหม่เลย (route จาก cache/state ล้วนๆ)
+
+           4 (เมนูที่ไม่ใช่ <a>): extractor.py เพิ่ม role=menuitem/role=tab/router-link เข้า
+           BUTTON_SELECTOR + ธง is_nav_menu_item ใหม่ใน ButtonInfo (คำนวณจาก isNavMenuItem()
+           — อยู่ใน nav container หรือแมตช์ selector ใหม่พวกนี้) — element ที่ธงนี้ true จะถูก
+           _explore_buttons() ไล่กดแบบ default-allow (safety.is_safe_nav_link — เหมือน nav
+           link ปกติ) แทนที่จะต้องผ่าน safety.is_crawl_safe() default-deny เข้มแบบปุ่มทั่วไป
+           (ดู crawler.py::_is_explorable) *** เจอ safety regression ระหว่างเขียนเอง (ไม่ใช่
+           ตาม spec): ตอนแรกให้ <a href> ใน nav container ได้ is_nav_menu_item=true ด้วย ทำให้
+           _explore_buttons() ไป "คลิก" ลิงก์ nav ซ้ำ (นอกจากเดินผ่าน BFS href เดิม) ซึ่งคลิก
+           จริงทำให้ browser navigate ไปก่อนรู้ปลายทาง ต่างจาก BFS ที่เช็ค same-origin จาก
+           href ได้ก่อน navigate เสมอ — เสี่ยงคลิกหลุดไปเว็บนอกโดเมนจริงระหว่าง "เรียนรู้
+           เว็บไซต์" ทั้งที่ตั้งใจจำกัดขอบเขตไว้แค่โดเมนเดียว แก้โดยให้ <a href="..."> ที่มี
+           ปลายทางจริง (ไม่ใช่ "#fragment"/"javascript:") ไม่ถือเป็น nav menu item เด็ดขาด
+           (ยังเดินผ่าน BFS href เดิมอย่างเดียว) ***
+
+           5 (ไม่ปิด browser ก่อนเวลา): ตรวจโค้ดแล้ว — context.close()/browser.close() (ทั้ง
+           crawler.py และ routes.py::learn_site) อยู่ใน finally หลัง crawl loop จบสมบูรณ์
+           เท่านั้นอยู่แล้ว ไม่มีจุดไหนปิดกลางคัน ไม่ต้องแก้
+
+           6/9 (error handling + logging): page.goto()/page.click() เดิมไม่มี retry เลย (fail
+           ครั้งเดียว = ข้ามเงียบๆ ทันที ไม่มีร่องรอยว่าพังตรงไหน) — เพิ่ม
+           _goto_with_retry()/_click_with_retry() (จำนวนครั้งจาก settings.site_learning_
+           goto_retries/click_retries) แล้วบันทึกลง SiteManual.errors (field ใหม่ list[dict])
+           + ยิง progress event ใหม่ "page_error"/"button_click_failed"/"login_result" แทนการ
+           กลืน exception เงียบๆ เหมือนเดิม — crawl_scan_done เพิ่ม errors_found เข้าไปด้วย
+
+           8 (ตรวจ session หลัง login): attempt_login() เดิมคืนแค่ "กด submit ได้จริงไหม" ไม่
+           รู้ว่า login ผ่านจริง — เพิ่มเช็คใน _login_and_continue(): URL เปลี่ยนจริงไหม + ยัง
+           เจอฟอร์ม login อยู่ไหม (find_login_fields) เป็นตัวตัดสิน pass/fail จริง ส่วนจำนวน
+           cookie/มี localStorage-sessionStorage token ไหม เป็นแค่สัญญาณ informational แนบไป
+           กับ event "login_result" เท่านั้น *** ตั้งใจไม่ใช้ cookie เป็นเงื่อนไขบังคับ เพราะ
+           เว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย (fixture ทดสอบในโปรเจกต์เองก็ไม่มี
+           server จริงตั้ง cookie ให้ — ถ้าบังคับด้วย cookie จะ false-negative ทุกเว็บที่ไม่ใช้
+           cookie ทันที) ***
+
+           10 (config): ย้าย retry count/scroll count จาก magic number เป็น settings.
+           site_learning_goto_retries/click_retries/retry_backoff_ms/max_scroll_attempts/
+           scroll_wait_ms ปรับได้จาก .env พร้อมคอมเมนต์อธิบายว่า "ตั้งน้อยเกินไปจะหยุดเร็ว"
+
+           11 (dynamic content): เพิ่ม _reveal_dynamic_content() (เลื่อนจอลงจน scrollHeight
+           นิ่ง — รองรับ infinite scroll/lazy loading ซึ่งเดิมไม่มีการ scroll เลยระหว่าง crawl)
+           เรียกก่อน extract ทุกจุด — ส่วน modal/dropdown/accordion/tab ที่เปิดจากปุ่มโดยไม่
+           navigate มีกลไก merge เข้า page เดิมอยู่แล้วตั้งแต่ W16 แต่เดิมไม่เคยไล่กด element ที่
+           เพิ่ง "โผล่มา" จากการเปิดนั้นต่อ (ถูกซ่อนด้วย display:none ตอน extract ครั้งแรก มอง
+           ไม่เห็นเลย) — เพิ่ม newly-revealed pass ความลึกจำกัด 1 ชั้น (รีเคิร์ส
+           _explore_buttons() ผ่าน PageInfo สังเคราะห์ที่มีแค่ element ใหม่ กัน dropdown ซ้อน
+           กันไม่รู้จบ) ให้ dropdown/accordion ที่เพิ่งเปิดถูกไล่กดต่อได้จริง
+
+           unit test ใหม่ 15 เคสใน test_site_learning_crawler.py (retry helper สำเร็จ/กู้คืน
+           จาก transient failure/ยอมแพ้หลัง retry ครบทั้ง goto และ click, DOM-stable helper
+           รอจนนิ่งจริง/ไม่ throw ตอน evaluate ล้มเหลว, scroll-reveal helper หยุดเมื่อความสูง
+           นิ่ง/ไม่ throw, เมนู role=menuitem แม้ label ทั่วไปก็ยังถูกไล่กด, nav <a href> ไม่ถูก
+           DFS-click ซ้ำ, login_result event ทั้งเคสสำเร็จ/ไม่สำเร็จ, goto error ถูกบันทึกลง
+           manual.errors+event แทนกลืนเงียบๆ) + 6 เคสใหม่ใน test_site_learning_extractor.py
+           (is_nav_menu_item ถูกต้องครบทุก pattern: role=menuitem/tab, อยู่ใน nav container,
+           class router-link, href จริงต้องเป็น false, fragment href ยังเป็น true ได้,
+           ปุ่มธรรมดาเป็น false) + 2 เคสใหม่ใน test_site_learning_storage.py (SiteManual.errors
+           round-trip ผ่าน save/load, manual เก่าที่ไม่มี key "errors" เลยโหลดได้ default []
+           ไม่ throw) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 482 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button 1 เคสเดิมที่ fail อยู่ก่อนแล้วตั้งแต่ก่อนรอบนี้มาก — สืบสาเหตุ
+           จริงระหว่างทำรอบนี้แล้วพบว่าไม่ใช่บั๊ก: ปุ่ม "Continue" ของ fixture ตรงกับคำใน
+           safety.ALLOWED_CRAWL_KEYWORDS (เพิ่มเข้ามาตั้งแต่ W20 สำหรับ multi-step
+           form/wizard) ทำให้ _explore_buttons() ไล่กดมันเป็นปุ่ม "ไปหน้าถัดไปของ flow" อิสระ
+           จาก logic login เอง — ไม่ใช่ auto_login.py ผิดพลาด สมมติฐานเดิมของเทสต์ (ต้องเหลือ
+           แค่ 1 หน้า) ล้าสมัยกว่ากติกา ALLOWED_CRAWL_KEYWORDS ปัจจุบัน ปล่อยไว้ตามที่บันทึกซ้ำ
+           มาแล้วหลายรอบ (W12/W20) ว่าไม่ใช่ scope ของงานที่ทำอยู่ ไม่ใช่ regression ใหม่จากรอบ
+           นี้)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

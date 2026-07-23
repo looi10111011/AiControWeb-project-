@@ -190,6 +190,7 @@
   .manual-banner-checklist .item.done{ color:var(--accent); }
   .manual-banner-checklist .item.pending{ color:var(--faint); }
   .manual-banner-pct{ font-weight:700; margin-top:6px; }
+  .manual-banner-errors{ color:var(--warning); font-size:11.5px; margin-top:6px; word-break:break-all; }
   .manual-banner.done{ background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); }
   .manual-banner.error{ background:var(--critical-soft); border:1px solid var(--critical); color:var(--critical); }
   .manual-banner-learn-btn{ flex:0 0 auto; border:none; border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--warning); color:#1a1200; }
@@ -896,6 +897,7 @@ function renderManualBanner() {
           ${buttonLine}
           <div class="manual-banner-checklist">${items}</div>
           <div class="manual-banner-pct">${pct}%</div>
+          ${learnProgress.errorCount ? `<div class="manual-banner-errors">พบปัญหาระหว่างเรียนรู้ ${learnProgress.errorCount} รายการ${learnProgress.lastError ? ` (ล่าสุด: ${escapeHtml(learnProgress.lastError)})` : ""}</div>` : ""}
           ${credRequestHtml}
         </div>`;
     } else if (learnProgress.status === "done") {
@@ -903,6 +905,7 @@ function renderManualBanner() {
         <div class="manual-banner done">
           <div><b>เรียนรู้เว็บไซต์เรียบร้อยแล้ว</b></div>
           <div>Manual Version ${learnProgress.version ?? "?"} ถูกสร้างแล้ว</div>
+          ${learnProgress.errorsCount ? `<div class="manual-banner-errors">พบปัญหาระหว่างทาง ${learnProgress.errorsCount} รายการ (บางหน้า/ปุ่มอาจไม่ถูกสำรวจ)</div>` : ""}
         </div>`;
     } else {
       box.innerHTML = `
@@ -920,7 +923,12 @@ function renderManualBanner() {
 async function startLearningSite() {
   const url = $("url").value.trim();
   if (!url || learnProgress) return;
-  learnProgress = { learnId: null, done: 0, total: 1, checklist: [], status: "running", currentUrl: url, credentialsRequest: null };
+  // W24: errorCount/lastError ติดตามปัญหาที่เจอระหว่าง crawl (goto/click retry ครบแล้วยัง
+  // ล้ม, login ที่ดูเหมือนไม่ผ่าน) — โชว์ในแบนเนอร์แทนการซ่อนไว้เงียบๆ (ดู renderManualBanner)
+  learnProgress = {
+    learnId: null, done: 0, total: 1, checklist: [], status: "running", currentUrl: url,
+    credentialsRequest: null, errorCount: 0, lastError: null,
+  };
   renderManualBanner();
   try {
     const r = await fetch(`${API}/api/site-manual/learn`, {
@@ -962,6 +970,19 @@ function openLearnStream(learnId) {
       learnProgress.total = event.total;
       learnProgress.checklist.push(event.name);
       renderManualBanner();
+    } else if (event.kind === "login_result") {
+      // W24: crawler ลอง login เสร็จแล้ว (ไม่ว่าจะผ่านหรือไม่) — โชว์ผลจริงแทนที่จะเงียบไป
+      if (!event.success) {
+        learnProgress.errorCount += 1;
+        learnProgress.lastError = `Login ไม่สำเร็จ: ${event.reason || "ไม่ทราบสาเหตุ"}`;
+      }
+      renderManualBanner();
+    } else if (event.kind === "page_error" || event.kind === "button_click_failed") {
+      // W24: goto/click ที่ retry ครบแล้วยังล้ม — นับรวมไว้โชว์เป็นสรุปจำนวน ไม่ทำให้ crawl
+      // หยุด (ดู core crawler.py — ข้ามหน้า/ปุ่มนั้นแล้วไปต่อ)
+      learnProgress.errorCount += 1;
+      learnProgress.lastError = event.error || "";
+      renderManualBanner();
     } else if (event.kind === "credentials_needed") {
       // W23: crawler เจอหน้า login ที่ยังไม่มี username/password ให้เลย — หยุดรอ user
       // ตอบผ่าน respondLearnCredentials() ด้านล่าง (POST .../credentials) ก่อนไปต่อ
@@ -975,7 +996,11 @@ function openLearnStream(learnId) {
     } else if (event.kind === "learn_done") {
       es.close();
       if (event.status === "done") {
-        learnProgress = { status: "done", version: event.result ? event.result.version : null };
+        learnProgress = {
+          status: "done",
+          version: event.result ? event.result.version : null,
+          errorsCount: event.result ? (event.result.errors_count || 0) : 0,
+        };
       } else {
         learnProgress = { status: "error", errorMessage: event.error || "" };
       }

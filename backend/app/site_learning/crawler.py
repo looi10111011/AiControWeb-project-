@@ -23,6 +23,56 @@ safety.is_crawl_safe — allowlist เดิม ไม่แตะ Delete/Submit
 จริง) การเดินจึงจบเองได้แน่นอนด้วย visited-set (ไม่เดินซ้ำหน้าที่เคยเจอ) +
 settings.site_learning_max_pages (เพดานรวมทั้ง crawl) + settings.site_learning_max_buttons_per_page
 (เพดานต่อหน้า กันหน้าที่มีปุ่มเยอะผิดปกติทำให้ตันช้าเกินไป)
+
+W24 — ปรับปรุงตามข้อร้องขอชุด "แก้ไข self learning" (ทำให้ contract ของการ "เรียนรู้เว็บไซต์"
+ชัดเจน+ตรวจสอบได้ แทนคำสั่งกว้างๆ แบบ "เข้าเว็บและเรียนรู้" — ระบบนี้เป็น deterministic
+crawler ไม่ใช่ LLM agent ที่ตัดสินใจเองจาก prompt ตามที่ W14 ตั้งใจไว้ตั้งแต่ต้น ดู
+docstring บรรทัดแรกของไฟล์นี้ — เลยแปล requirement เป็นการบังคับ+ตรวจสอบ "ขั้นตอน" ในโค้ด
+ตรงๆ แทนที่จะเขียนเป็นข้อความ prompt ให้ LLM ตีความเอง) ครบทุกขั้นตอนที่ระบุ:
+  1. Login -> สำรวจทุกเมนู -> คลิกทุกหน้าที่เข้าถึงได้ -> อ่านข้อมูลทุกหน้า -> บันทึกข้อมูล
+     -> จบเมื่อ queue ว่าง+retry ครบเท่านั้น (ของเดิมมีอยู่แล้วเกือบทั้งหมด ยกเว้นจุดที่ระบุ
+     ด้านล่าง — ไม่ใช่จบทันทีหลัง login/เข้า dashboard เพราะ loop หลักเดินตาม queue ต่อเสมอ)
+  2. Queue-based BFS (มีอยู่แล้วตั้งแต่ W14 — queue/queued/visited ด้านล่าง)
+  3. SPA support: เดิมพึ่ง wait_for_load_state("networkidle") อย่างเดียว ซึ่งไม่พอสำหรับ
+     client-side routing ที่ไม่ยิง network request ใหม่เลย (route เปลี่ยนจาก cache/state
+     ล้วนๆ) — เพิ่ม _wait_for_dom_stable() (poll ความยาว DOM จนนิ่ง) เรียกคู่กับ
+     networkidle ทุกจุดที่ navigate/click แล้ว
+  4. เมนูที่ไม่ใช่ <a>: extractor.py เพิ่ม role=menuitem/role=tab/router-link เข้า
+     BUTTON_SELECTOR + ธง is_nav_menu_item — ปุ่ม/element ที่ธงนี้ true จะถูกไล่กดแบบ
+     default-allow (เหมือน nav link ปกติ ดู _is_explorable ด้านล่าง) แทนที่จะต้องผ่าน
+     keyword allowlist เข้มแบบปุ่มทั่วไป — ครอบคลุม sidebar/dropdown/tab ที่ไม่ได้ทำเป็น
+     <a href> จริง (<a href="..."> ที่มีปลายทางจริงไม่นับเป็น nav menu item ในความหมายนี้
+     — ยังเดินผ่าน BFS href เดิมที่เช็ค same-origin ได้ก่อน navigate เท่านั้น กัน
+     _explore_buttons() คลิกลิงก์เดิมซ้ำแล้วเสี่ยงหลุดไปนอกโดเมนก่อนรู้ปลายทาง — ดู
+     extractor.py::isNavMenuItem() สำหรับเหตุผลเต็ม)
+  5. ไม่ปิด browser ก่อนเวลา: ตรวจสอบแล้ว — context.close()/browser.close() (routes.py)
+     อยู่ใน finally หลัง crawl loop จบสมบูรณ์เท่านั้น ไม่มีจุดไหนปิดกลางคัน (ไม่ต้องแก้)
+  6. Error handling: page.goto()/page.click() เดิมไม่มี retry เลย (fail ครั้งเดียว = ข้าม
+     เงียบๆ ทันที) — เพิ่ม _goto_with_retry()/_click_with_retry() (จำนวนครั้งปรับได้จาก
+     settings.site_learning_goto_retries/click_retries) + บันทึกลง SiteManual.errors +
+     ยิง progress event "page_error"/"button_click_failed" แทนการกลืน exception เงียบๆ
+  7. Finish condition: มีอยู่แล้ว (while queue and len(pages) < max — ดู main loop) แค่เพิ่ม
+     "ลอง retry ครบแล้ว" เป็นเงื่อนไขที่ทำให้ "ข้าม" หน้านั้น (ไม่ใช่ทำให้ crawl ทั้งหมดจบ)
+  8. ตรวจ session หลัง login: เดิมไม่เช็คอะไรเลยนอกจาก "กด submit ได้ไหม" (attempt_login()
+     คืนแค่นั้น ไม่รู้ว่า login ผ่านจริงหรือไม่) — เพิ่มการตรวจใน _login_and_continue():
+     URL เปลี่ยนจริงไหม, ยังเจอฟอร์ม login อยู่ไหม (find_login_fields), จำนวน cookie,
+     มี localStorage/sessionStorage token ไหม — ยิงเป็น event "login_result" (ดูเหตุผลที่
+     cookie/token เป็นแค่สัญญาณ informational ไม่ใช่เงื่อนไขบังคับ ในคอมเมนต์ของ
+     _login_and_continue เอง — เว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย)
+  9. Logging: progress event เดิมมีแค่ page_start/page_done/button_explored/
+     crawl_scan_done — เพิ่ม login_result/page_error/button_click_failed ครบตามที่ระบุ
+     (login สำเร็จไหม, error อะไรเกิดขึ้น) ส่วน "พบเมนู/หน้ากี่รายการ" มีอยู่แล้วใน
+     page_done (done/total) + crawl_scan_done (pages_found) เดิม เพิ่ม errors_found เข้าไป
+     ด้วย
+ 10. Config: ย้าย retry/scroll count จาก magic number เป็น settings.site_learning_*
+     ปรับได้จาก .env (ดู config.py) พร้อมคอมเมนต์อธิบายว่าทำไม "ตั้งน้อยเกินไปจะหยุดเร็ว"
+ 11. Dynamic content: เพิ่ม _reveal_dynamic_content() (เลื่อนจอจน scroll height นิ่ง — รองรับ
+     infinite scroll/lazy loading) เรียกก่อน extract ทุกจุด — modal/popup/accordion/
+     dropdown/tab ที่เปิดจากปุ่มมีอยู่แล้ว (ดู _explore_buttons ฝั่ง "ไม่เปลี่ยน URL") แต่
+     เดิมไม่ไล่กด element ที่เพิ่ง "โผล่มา" จากการเปิดนั้นต่อ (ถูกซ่อนด้วย display:none ตอน
+     extract ครั้งแรก มองไม่เห็นเลย) — เพิ่ม newly-revealed pass ความลึกจำกัด 1 ชั้น (ดู
+     _MAX_REVEAL_DEPTH) ให้ dropdown/accordion ที่เพิ่งเปิดถูกไล่กดต่อได้จริง
+ 12. กันเรียนรู้ซ้ำ: มีอยู่แล้ว (visited/queued set ทั้ง BFS และ DFS ปุ่ม — ไม่ต้องแก้)
 """
 
 import json
@@ -142,6 +192,102 @@ def _normalize_url(url: str) -> str:
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
 
 
+# W24: ไล่กดปุ่มที่เพิ่งโผล่มาจาก modal/dropdown/accordion อีกแค่ 1 ชั้นเท่านั้น (ไม่
+# recurse ไม่จำกัด) กันเปิด/ปิด dropdown ซ้อนกันไม่รู้จบ — ดู _explore_buttons()
+_MAX_REVEAL_DEPTH = 1
+
+
+async def _wait_for_dom_stable(
+    page: Page, checks: int = 3, interval_ms: Optional[int] = None, max_iterations: int = 12,
+) -> None:
+    """W24: SPA (React/Vue/Next.js/Angular) ที่ navigate ด้วย client-side routing มักไม่
+    ยิง network request ใหม่เลย (ข้อมูล prefetch/cache ไว้แล้ว) ทำให้
+    wait_for_load_state("networkidle") อย่างเดียวผ่านเร็วเกินไปทั้งที่ DOM ยังเรนเดอร์ไม่
+    เสร็จ — poll ความยาวของ document.body.innerHTML จนนิ่ง (เท่ากัน `checks` ครั้งติดกัน)
+    หรือครบ max_iterations ก่อน ไม่ throw ออกไปเลย (best-effort — หน้าที่ evaluate ไม่ได้/
+    ปิดไปแล้วก็แค่ข้าม ไม่ควรทำทั้ง crawl ล้มเพราะจุดนี้จุดเดียว)"""
+    interval = settings.site_learning_retry_backoff_ms // 3 if interval_ms is None else interval_ms
+    interval = max(interval, 50)
+    try:
+        last_length = -1
+        stable_count = 0
+        for _ in range(max_iterations):
+            length = await page.evaluate("document.body.innerHTML.length")
+            if length == last_length:
+                stable_count += 1
+                if stable_count >= checks:
+                    return
+            else:
+                stable_count = 0
+            last_length = length
+            await page.wait_for_timeout(interval)
+    except Exception:
+        pass
+
+
+async def _reveal_dynamic_content(page: Page) -> None:
+    """W24: เลื่อนจอลงมาเรื่อยๆ จนความสูงของหน้า (scrollHeight) ไม่ขยับอีกแล้ว หรือครบ
+    settings.site_learning_max_scroll_attempts ก่อน — เพื่อให้ extract_page() เห็นเนื้อหา
+    ที่โหลดแบบ lazy/infinite-scroll (เช่น product grid ที่โหลดสินค้าเพิ่มตอน scroll ถึง
+    ล่างสุด) ซึ่งเดิมไม่มีการ scroll เลยระหว่าง crawl เห็นแค่เนื้อหาที่โหลดมาตั้งแต่แรก —
+    best-effort ล้วนๆ ไม่ throw ออกไปแม้ evaluate ล้มเหลว กลับขึ้นบนสุดก่อนจบเสมอ (เผื่อ
+    fixed header/lazy image ที่ผูกกับ scroll position ตอน extract จริง)"""
+    try:
+        previous_height = await page.evaluate("document.body.scrollHeight")
+        for _ in range(settings.site_learning_max_scroll_attempts):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(settings.site_learning_scroll_wait_ms)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=2000)
+            except Exception:
+                pass
+            new_height = await page.evaluate("document.body.scrollHeight")
+            if new_height <= previous_height:
+                break
+            previous_height = new_height
+    except Exception:
+        pass
+    finally:
+        try:
+            await page.evaluate("window.scrollTo(0, 0)")
+        except Exception:
+            pass
+
+
+async def _goto_with_retry(page: Page, url: str, retries: int) -> Optional[str]:
+    """W24: retry page.goto()+networkidle สูงสุด `retries` ครั้ง (รวมครั้งแรกทั้งหมด
+    retries+1 ครั้ง) ก่อนยอมแพ้ — คืน None ถ้าสำเร็จ, คืนข้อความ error ตัวสุดท้ายถ้าล้มเหลว
+    ครบทุกครั้ง (ไม่ throw ออกไปให้ caller เอง — แค่หน้าเดียวพังไม่ควรทำทั้ง crawl ล้มไปด้วย
+    เหมือนพฤติกรรมเดิม แค่ตอนนี้ retry ก่อนค่อยยอมแพ้ + บอกเหตุผลที่แท้จริงกลับไปแทนที่จะ
+    เงียบข้ามไปเฉยๆ)"""
+    last_error = ""
+    for attempt in range(retries + 1):
+        try:
+            await page.goto(url, timeout=15000)
+            await page.wait_for_load_state("networkidle", timeout=8000)
+            return None
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt < retries:
+                await page.wait_for_timeout(settings.site_learning_retry_backoff_ms)
+    return last_error
+
+
+async def _click_with_retry(page: Page, selector: str, retries: int) -> Optional[str]:
+    """W24: เหมือน _goto_with_retry() แค่สำหรับ page.click() ระหว่างไล่สำรวจปุ่ม — คืน
+    None ถ้าสำเร็จ, ข้อความ error ตัวสุดท้ายถ้าล้มเหลวครบทุกครั้ง"""
+    last_error = ""
+    for attempt in range(retries + 1):
+        try:
+            await page.click(selector, timeout=5000)
+            return None
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            if attempt < retries:
+                await page.wait_for_timeout(settings.site_learning_retry_backoff_ms)
+    return last_error
+
+
 async def crawl_site(
     browser: Browser,
     start_url: str,
@@ -188,12 +334,28 @@ async def crawl_site(
     context = await browser.new_context()
     page = await context.new_page()
     pages: list[PageInfo] = []
+    # W24: เก็บ error ที่เกิดจริง (goto/click ที่ retry ครบแล้วยังล้ม, login ที่ดูเหมือน
+    # ไม่ผ่าน) ติดไปกับ SiteManual แทนที่จะกลืนเงียบๆ แล้วสรุปว่า "เรียนรู้เสร็จ" (ดู
+    # docstring หัวไฟล์ ข้อ 6)
+    manual_errors: list[dict] = []
     try:
         visited: set[str] = set()
         queue: list[str] = [start_url]
         queued: set[str] = {_normalize_url(start_url)}
         estimated_total = 1
         login_attempted = False
+
+        def _is_explorable(button) -> bool:
+            """W24: เมนู/nav item (is_nav_menu_item — ดู extractor.py::isNavMenuItem)
+            ตัดสินใจแบบ default-allow เหมือน safety.is_safe_nav_link() ที่ใช้กับ <a> nav
+            link ปกติ (บล็อกเฉพาะคำที่ชัดเจนว่าทำลาย/เปลี่ยนแปลงข้อมูล เช่น "Logout") —
+            ปุ่มอื่นๆ ทั้งหมดยังต้องผ่าน safety.is_crawl_safe() แบบ default-deny เข้มเหมือน
+            เดิมทุกประการ (ไม่ลดความเข้มงวดของ Safety Rule เดิมลงเลย แค่ให้เมนูที่ไม่ใช่
+            <a> ได้สิทธิ์เดียวกับเมนูที่เป็น <a>)"""
+            label = _button_label(button)
+            if getattr(button, "is_nav_menu_item", False) and is_safe_nav_link(label):
+                return True
+            return is_crawl_safe(label, cmd_type="click")
 
         async def _record_page(page_info: PageInfo, nav_links: list[dict]) -> None:
             """describe + เก็บเข้า pages + ยิง progress event + ไล่กดปุ่มปลอดภัย + ต่อคิว
@@ -237,30 +399,37 @@ async def crawl_site(
                 queued.add(normalized_link)
                 estimated_total = max(estimated_total, len(pages) + len(queue))
 
-        async def _explore_buttons(base_page_info: PageInfo) -> None:
-            """ไล่กดปุ่มที่ is_crawl_safe() อนุญาตทีละปุ่มบนหน้านี้ (base_page_info.url) —
+        async def _explore_buttons(base_page_info: PageInfo, depth: int = 0) -> None:
+            """ไล่กดปุ่มที่ _is_explorable() อนุญาตทีละปุ่มบนหน้านี้ (base_page_info.url) —
             กดแล้วเช็คว่า URL เปลี่ยนไหม: เปลี่ยน = เจอหน้าใหม่ (บันทึกผ่าน _record_page ถ้า
             ยังไม่เคยเจอ — ซึ่งจะไล่กดปุ่มของหน้าใหม่นั้นต่อทันที เป็น DFS แบบไม่จำกัดความลึก
             — แล้ว go_back()/goto() กลับมาหน้าตั้งต้นก่อนลองปุ่มถัดไปเสมอ, ถ้าเคยเจอแล้ว
             (visited/queued) ก็แค่กลับมาเฉยๆ ไม่สำรวจซ้ำ นี่คือจุดที่ทำให้ DFS "ตัน" แล้ว
-            ถอยกลับไปลองปุ่มอื่นของหน้าก่อนหน้าโดยธรรมชาติ) ไม่เปลี่ยน = แค่ modal/panel/tab
-            เปิดในหน้าเดิม (re-extract แล้ว merge เข้า base_page_info ผ่าน _merge_page_info
-            แทนที่จะสร้างหน้าใหม่ + กด Escape ปิดแบบ best-effort ก่อนไปปุ่มถัดไป) ไม่ throw
-            ออกไปแม้ปุ่มไหนกด/กลับไม่ได้ — ข้ามไปปุ่มถัดไปเงียบๆ เว้นแต่ "กลับหน้าตั้งต้น
-            ไม่ได้เลย" ซึ่งเลิกไล่ปุ่มที่เหลือของหน้านี้ทันที (state ของหน้าพังไปแล้ว ไล่ต่อ
-            ไม่มีประโยชน์)"""
+            ถอยกลับไปลองปุ่มอื่นของหน้าก่อนหน้าโดยธรรมชาติ) ไม่เปลี่ยน = แค่ modal/panel/tab/
+            dropdown/accordion เปิดในหน้าเดิม (re-extract แล้ว merge เข้า base_page_info
+            ผ่าน _merge_page_info แทนที่จะสร้างหน้าใหม่ — W24: แล้วไล่กด element ที่ "เพิ่ง
+            โผล่มาจริง" ต่ออีก 1 ชั้น ดู depth/_MAX_REVEAL_DEPTH ด้านล่าง — เพราะ element ที่
+            ถูกซ่อนด้วย display:none ตอน extract ครั้งแรกไม่เคยถูกมองเห็น/กดเลยมาก่อน + กด
+            Escape ปิดแบบ best-effort ก่อนไปปุ่มถัดไป) ไม่ throw ออกไปแม้ปุ่มไหนกด/กลับไม่ได้
+            — ข้ามไปปุ่มถัดไปเงียบๆ เว้นแต่ "กลับหน้าตั้งต้นไม่ได้เลย" ซึ่งเลิกไล่ปุ่มที่
+            เหลือของหน้านี้ทันที (state ของหน้าพังไปแล้ว ไล่ต่อไม่มีประโยชน์)
+
+            W24: click/goto ที่ล้มเหลวตอนนี้ retry ก่อน (settings.site_learning_
+            click_retries) แล้วค่อยบันทึกลง manual_errors + ยิง "button_click_failed"
+            แทนการกลืนเงียบๆ เหมือนเดิม — depth=0 คือปุ่มระดับหน้าโดยตรง, depth=1 คือปุ่มที่
+            เพิ่งโผล่มาจาก modal/dropdown/accordion (ไม่ recurse ลึกกว่านี้)"""
             before_url = _normalize_url(page.url)
             # W18: รวมปุ่มระดับหน้า + ปุ่ม "ตัวแทน" ของ UI pattern แต่ละแบบ (ดู
             # extractor.py::UIPatternInfo — เช่น ปุ่ม "View" ใน product card ที่ซ้ำกัน 100
             # ใบ ตอนนี้เหลือ instance เดียวให้ลองกด) เข้าลิสต์เดียวกัน กรองด้วย
-            # is_crawl_safe() เหมือนกันทุกประการ — label ใช้ text > aria_label > title >
-            # icon_hint (เผื่อเป็นปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย)
+            # _is_explorable() (W24: เมนู/nav item default-allow, ปุ่มอื่น default-deny
+            # เหมือนเดิม — ดู docstring ของ _is_explorable) — label ใช้ text > aria_label >
+            # title > icon_hint (เผื่อเป็นปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย)
             candidate_buttons = list(base_page_info.buttons)
             for pattern in base_page_info.ui_patterns:
                 candidate_buttons.extend(pattern.buttons)
             safe_buttons = [
-                b for b in candidate_buttons
-                if b.selector and is_crawl_safe(_button_label(b), cmd_type="click")
+                b for b in candidate_buttons if b.selector and _is_explorable(b)
             ][:settings.site_learning_max_buttons_per_page]
 
             for button in safe_buttons:
@@ -269,15 +438,15 @@ async def crawl_site(
                 label = _button_label(button)
                 if on_progress:
                     await on_progress({"kind": "button_explored", "url": before_url, "button": label})
-                try:
-                    await page.click(button.selector, timeout=5000)
-                    await page.wait_for_timeout(400)
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=3000)
-                    except Exception:
-                        pass
-                except Exception:
-                    continue  # กดปุ่มนี้ไม่ได้ (element หาย/ถูกบัง/detach ฯลฯ) ข้ามไปปุ่มถัดไป
+
+                click_error = await _click_with_retry(page, button.selector, settings.site_learning_click_retries)
+                if click_error is not None:
+                    manual_errors.append({"url": before_url, "phase": "click", "button": label, "error": click_error})
+                    if on_progress:
+                        await on_progress({
+                            "kind": "button_click_failed", "url": before_url, "button": label, "error": click_error,
+                        })
+                    continue  # กดปุ่มนี้ไม่ได้แม้ retry ครบแล้ว (element หาย/ถูกบัง/detach ฯลฯ) ข้ามไปปุ่มถัดไป
 
                 # ปุ่มบาง element เป็น target="_blank" เปิดแท็บใหม่แทนที่จะ navigate หน้า
                 # เดิม — ปิดแท็บที่เพิ่งเปิดทิ้งทันที (ไม่ตามไปสำรวจ) กัน context สะสม page
@@ -289,10 +458,17 @@ async def crawl_site(
                         except Exception:
                             pass
 
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=3000)
+                except Exception:
+                    pass
+                await _wait_for_dom_stable(page)  # W24: SPA client-side routing (ดู docstring หัวไฟล์ ข้อ 3)
+
                 after_url = _normalize_url(page.url)
                 if after_url != before_url and extract_domain(page.url) == domain:
                     if after_url not in visited and after_url not in queued:
                         visited.add(after_url)
+                        await _reveal_dynamic_content(page)
                         new_page_info, new_nav_links = await extract_page(page)
                         await _record_page(new_page_info, new_nav_links)
 
@@ -308,11 +484,26 @@ async def crawl_site(
                         except Exception:
                             break  # กลับหน้าตั้งต้นไม่ได้จริงๆ — เลิกไล่ปุ่มที่เหลือของหน้านี้
                 else:
-                    # ไม่ navigate ไปไหน — น่าจะเป็น modal/expand panel/tab ที่เปิดในหน้าเดิม
-                    # re-extract แล้ว merge โครงสร้างใหม่เข้าไปในหน้านี้ (ไม่ใช่หน้าใหม่จริง)
+                    # ไม่ navigate ไปไหน — น่าจะเป็น modal/expand panel/tab/dropdown/accordion
+                    # ที่เปิดในหน้าเดิม re-extract แล้ว merge โครงสร้างใหม่เข้าไปในหน้านี้
+                    # (ไม่ใช่หน้าใหม่จริง)
+                    known_selectors_before = {b.selector for b in base_page_info.buttons if b.selector}
                     try:
                         revealed_info, _ = await extract_page(page)
                         _merge_page_info(base_page_info, revealed_info)
+                        # W24: element ที่ "เพิ่งโผล่มาจริง" (ไม่เคยอยู่ใน base_page_info มา
+                        # ก่อนเลย — ถูกซ่อนด้วย display:none ตอน extract ครั้งแรก มองไม่
+                        # เห็น/กดไม่ได้เลยมาก่อน) ไล่กดต่ออีกแค่ 1 ชั้น (depth < _MAX_
+                        # REVEAL_DEPTH) กันเปิด/ปิด dropdown ซ้อนกันไม่รู้จบ — ใช้ before_url
+                        # เดียวกัน (หน้ายังไม่ navigate ไปไหนเลย) รีเคิร์สผ่าน PageInfo ปลอม
+                        # ที่มีแค่ปุ่มใหม่พวกนี้ ไม่ต้องเขียน loop ซ้ำ
+                        if depth < _MAX_REVEAL_DEPTH:
+                            newly_revealed_buttons = [
+                                b for b in revealed_info.buttons
+                                if b.selector and b.selector not in known_selectors_before
+                            ]
+                            if newly_revealed_buttons:
+                                await _explore_buttons(PageInfo(buttons=newly_revealed_buttons), depth=depth + 1)
                     except Exception:
                         pass
                     try:
@@ -323,22 +514,73 @@ async def crawl_site(
         async def _login_and_continue(
             login_username: str, login_password: str, page_info: PageInfo, nav_links: list[dict],
         ) -> None:
-            """บันทึกหน้า login เอง (มีประโยชน์ต่อ manual) แล้วลอง attempt_login() —
-            สำเร็จ (did_login=True — แค่แปลว่ากด submit ได้จริง ไม่ได้การันตีว่า login
-            ผ่าน) ก็ extract+บันทึกหน้าถัดจาก login ต่อด้วยเลย ใช้ร่วมกันทั้ง 2 เส้นทางที่มี
-            username/password มาใช้ได้ (ส่งมาตั้งแต่ต้น crawl กับได้จาก
-            on_credentials_needed ระหว่างทาง — ดู docstring ของ crawl_site())"""
+            """บันทึกหน้า login เอง (มีประโยชน์ต่อ manual) แล้วลอง attempt_login() แล้ว
+            ตรวจสอบว่า session ใช้ได้จริงหรือไม่ (W24 — ดู docstring หัวไฟล์ ข้อ 8) ก่อนค่อย
+            extract+บันทึกหน้าถัดจาก login ต่อ ใช้ร่วมกันทั้ง 2 เส้นทางที่มี username/
+            password มาใช้ได้ (ส่งมาตั้งแต่ต้น crawl กับได้จาก on_credentials_needed
+            ระหว่างทาง — ดู docstring ของ crawl_site())
+
+            W24 การตรวจ session: attempt_login() คืนแค่ "กด submit ได้จริงไหม" ไม่รู้ว่า
+            login ผ่านจริง — เพิ่มเช็ค 2 ชั้นที่ตัดสิน "session_ok" จริงๆ (ทั้งคู่ต้องผ่าน):
+            (1) URL เปลี่ยนไปจาก URL ก่อน submit จริง (ไม่ใช่แค่ submit แล้ว reload หน้าเดิม)
+            (2) หน้าใหม่ไม่มีฟอร์ม login เหลืออยู่แล้ว (find_login_fields คืน (None, None)
+            — ถ้ายังเจอ = โดน redirect กลับมาหน้า login เดิม ถือว่า login ไม่ผ่าน)
+            ส่วนจำนวน cookie / มี localStorage-sessionStorage token ไหม เป็นแค่สัญญาณ
+            informational แนบไปกับ event "login_result" เท่านั้น *** ไม่ใช้ตัดสิน pass/fail
+            เพราะเว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย (fixture ทดสอบในโปรเจกต์
+            นี้เองก็ไม่มี server จริงตั้ง cookie ให้ — ถ้าเอา cookie เป็นเงื่อนไขบังคับจะทำให้
+            false-negative ทุกเว็บที่ไม่ใช้ cookie ทันที) ***"""
             await _record_page(page_info, nav_links)
+            pre_login_url = _normalize_url(page.url)
             did_login = await attempt_login(page, page_info, login_username, login_password)
-            if did_login:
+
+            session_ok = False
+            reason = ""
+            post_page_info: Optional[PageInfo] = None
+            post_nav_links: list[dict] = []
+            if not did_login:
+                reason = "กรอกฟอร์ม/กดปุ่ม submit ไม่สำเร็จ (หา field/ปุ่มไม่ครบ หรือ fill/click ล้มเหลว)"
+            else:
+                post_login_url = _normalize_url(page.url)
+                if post_login_url == pre_login_url:
+                    reason = "URL ไม่เปลี่ยนหลัง submit — เข้าใจว่า login ไม่ผ่าน"
+                else:
+                    await _reveal_dynamic_content(page)
+                    await _wait_for_dom_stable(page)
+                    post_page_info, post_nav_links = await extract_page(page)
+                    if find_login_fields(post_page_info) != (None, None):
+                        reason = "ยังเจอฟอร์ม login (username+password field) อยู่หลัง submit — เข้าใจว่าถูก redirect กลับหน้า login"
+                    else:
+                        session_ok = True
+
+            cookie_count = 0
+            try:
+                cookie_count = len(await context.cookies())
+            except Exception:
+                pass
+            has_storage_token = False
+            try:
+                has_storage_token = bool(await page.evaluate(
+                    "() => Object.keys(window.localStorage||{}).length + Object.keys(window.sessionStorage||{}).length > 0"
+                ))
+            except Exception:
+                pass
+            if on_progress:
+                await on_progress({
+                    "kind": "login_result", "success": session_ok, "url": page.url,
+                    "reason": reason, "cookie_count": cookie_count, "has_storage_token": has_storage_token,
+                })
+
+            if session_ok and post_page_info is not None:
                 post_login_url = _normalize_url(page.url)
                 if post_login_url not in visited:
                     visited.add(post_login_url)
                     await page.bring_to_front()
                     if on_progress:
                         await on_progress({"kind": "page_start", "url": page.url})
-                    post_page_info, post_nav_links = await extract_page(page)
                     await _record_page(post_page_info, post_nav_links)
+            elif did_login and not session_ok:
+                manual_errors.append({"url": page.url, "phase": "login", "error": reason})
 
         while queue and len(pages) < effective_max_pages:
             url = queue.pop(0)
@@ -347,13 +589,15 @@ async def crawl_site(
                 continue
             visited.add(normalized)
 
-            try:
-                await page.goto(url, timeout=15000)
-                await page.wait_for_load_state("networkidle", timeout=8000)
-            except Exception:
-                # หน้านี้ไปไม่ถึง (404/timeout/DNS ฯลฯ) — ข้ามไปหน้าถัดไปเงียบๆ ไม่ล้ม
-                # ทั้ง crawl เพราะแค่หน้าเดียวมีปัญหา
-                continue
+            # W24: retry ก่อนยอมแพ้ (settings.site_learning_goto_retries) — เดิมล้มครั้งเดียว
+            # = ข้ามทันที ไม่แยกว่าเป็น transient failure (network กระตุก/DOM ยังไม่นิ่ง) หรือ
+            # พังจริง (404/DNS ผิด) บันทึก error จริงลง manual_errors + ยิง event แทนกลืนเงียบๆ
+            goto_error = await _goto_with_retry(page, url, settings.site_learning_goto_retries)
+            if goto_error is not None:
+                manual_errors.append({"url": url, "phase": "goto", "error": goto_error})
+                if on_progress:
+                    await on_progress({"kind": "page_error", "url": url, "phase": "goto", "error": goto_error})
+                continue  # หน้านี้ไปไม่ถึงแม้ retry ครบแล้ว (404/timeout/DNS ฯลฯ) — ข้ามไปหน้าถัดไป ไม่ล้มทั้ง crawl
 
             # W16: ยิงก่อน extract/describe (ซึ่งกินเวลาจาก LLM call) เพื่อให้ UI โชว์ "กำลัง
             # เรียนรู้หน้านี้อยู่" ได้ทันทีที่หน้าโหลดเสร็จ ไม่ต้องรอ page_done — คู่กับ
@@ -363,6 +607,10 @@ async def crawl_site(
             if on_progress:
                 await on_progress({"kind": "page_start", "url": page.url})
 
+            # W24: เผยเนื้อหา lazy/infinite-scroll ก่อน แล้วรอ DOM นิ่ง (SPA client routing)
+            # ก่อนสกัดโครงสร้างจริง — ดู docstring หัวไฟล์ ข้อ 3, 11
+            await _reveal_dynamic_content(page)
+            await _wait_for_dom_stable(page)
             page_info, nav_links = await extract_page(page)
 
             # W15: login bootstrap — ลองแค่ครั้งเดียวตลอดทั้ง crawl (login_attempted)
@@ -396,7 +644,11 @@ async def crawl_site(
     finally:
         await context.close()
 
-    manual = SiteManual(website=domain, pages=pages, generated_at=time.time())
+    manual = SiteManual(website=domain, pages=pages, generated_at=time.time(), errors=manual_errors)
     if on_progress:
-        await on_progress({"kind": "crawl_scan_done", "pages_found": len(pages)})
+        # W24: errors_found เพิ่มเข้ามา — สรุปว่า crawl "จบเพราะสำรวจครบจริง" หรือ "จบทั้งที่
+        # เจอปัญหาระหว่างทาง" ไม่ใช่แค่ pages_found เฉยๆ (ดู docstring หัวไฟล์ ข้อ 9)
+        await on_progress({
+            "kind": "crawl_scan_done", "pages_found": len(pages), "errors_found": len(manual_errors),
+        })
     return manual

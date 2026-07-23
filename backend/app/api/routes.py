@@ -521,7 +521,10 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
         # ทับค่าเดิมด้วยค่าเดิมก็ไม่มีผลเสียอะไร (idempotent)
         if resolved_username and resolved_password:
             save_credentials(manual.website, resolved_username, resolved_password)
-        return {"version": version, "pages_found": len(manual.pages)}
+        # W24: ส่ง errors_count กลับไปด้วย — ให้ frontend โชว์ว่า crawl จบพร้อมปัญหาที่เจอ
+        # ระหว่างทางกี่รายการ (ดู manual.errors — SiteManual.to_dict() มีรายละเอียดเต็ม
+        # อยู่แล้วถ้าต้องการขุดดูทีหลัง ไม่ส่งรายละเอียดเต็มมาที่นี่เพราะ event นี้แค่สรุปผล)
+        return {"version": version, "pages_found": len(manual.pages), "errors_count": len(manual.errors)}
 
     record = learn_manager.submit(learn_id, req.url, _run())
     return LearnCreatedResponse(learn_id=record.learn_id, status=record.status)

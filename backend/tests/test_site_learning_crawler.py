@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import async_playwright
 
-from backend.app.site_learning.crawler import crawl_site
+from backend.app.site_learning.crawler import (
+    _click_with_retry,
+    _goto_with_retry,
+    _reveal_dynamic_content,
+    _wait_for_dom_stable,
+    crawl_site,
+)
 
 # เทสต์กลุ่มนี้ยิงจริงผ่าน chromium จริง (ไม่ mock Playwright) ต่อ local HTTP server ที่
 # serve fixture HTML จริง — mock page.goto()/nav ทั้งเชนยากกว่าและพิสูจน์ BFS/dedup/
@@ -642,3 +648,253 @@ async def test_crawl_site_explores_only_the_representative_instance_of_a_ui_patt
     product_pages_visited = [p for p in manual.pages if "/product" in p.url and p.url.endswith(".html")]
     assert len(product_pages_visited) == 1
     assert len(manual.pages) == 2  # grid.html + 1 product detail page เท่านั้น
+
+
+# ---------------- W24: retry helper สำหรับ goto/click ----------------
+# mock page ตรงๆ (ไม่เปิด browser จริง) — เร็วกว่ามากและพิสูจน์ retry semantics (จำนวนครั้ง
+# ที่เรียกจริง, คืน None ตอนสำเร็จ, คืนข้อความ error ตอนล้มเหลวครบ) ได้แม่นยำกว่าการพยายาม
+# จำลอง network failure ผ่าน browser จริง
+
+
+@pytest.mark.asyncio
+async def test_goto_with_retry_returns_none_on_first_success():
+    page = AsyncMock()
+    error = await _goto_with_retry(page, "http://example.com", retries=2)
+    assert error is None
+    assert page.goto.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_goto_with_retry_recovers_from_transient_failure(monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_retry_backoff_ms", 1)
+    page = AsyncMock()
+    page.goto.side_effect = [RuntimeError("timeout"), None]
+    error = await _goto_with_retry(page, "http://example.com", retries=2)
+    assert error is None
+    assert page.goto.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_goto_with_retry_gives_up_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_retry_backoff_ms", 1)
+    page = AsyncMock()
+    page.goto.side_effect = RuntimeError("connection refused")
+    error = await _goto_with_retry(page, "http://example.com", retries=2)
+    assert error is not None
+    assert "connection refused" in error
+    assert page.goto.await_count == 3  # ครั้งแรก + retry 2 ครั้ง
+
+
+@pytest.mark.asyncio
+async def test_click_with_retry_recovers_from_transient_failure(monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_retry_backoff_ms", 1)
+    page = AsyncMock()
+    page.click.side_effect = [RuntimeError("detached"), None]
+    error = await _click_with_retry(page, "#btn", retries=2)
+    assert error is None
+    assert page.click.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_click_with_retry_gives_up_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_retry_backoff_ms", 1)
+    page = AsyncMock()
+    page.click.side_effect = RuntimeError("element not visible")
+    error = await _click_with_retry(page, "#btn", retries=1)
+    assert error is not None
+    assert page.click.await_count == 2  # ครั้งแรก + retry 1 ครั้ง
+
+
+# ---------------- W24: SPA DOM-stability + infinite-scroll reveal helper ----------------
+
+
+@pytest.mark.asyncio
+async def test_wait_for_dom_stable_returns_once_length_repeats():
+    page = AsyncMock()
+    # การอ่านครั้งแรกแค่ตั้ง baseline (เทียบกับ sentinel -1 เริ่มต้น ไม่นับเป็น match) —
+    # ต้องอ่านซ้ำจนค่าเท่าเดิมติดกันครบ `checks` ครั้ง (ไม่นับครั้ง baseline) ถึงจะถือว่านิ่ง
+    # ค่า 100 ครบ 3 ครั้ง (1 baseline + 2 ครั้งติดกันจริง) พอสำหรับ checks=2 ไม่ต้องวนต่อจน
+    # เจอ 999 เลย
+    page.evaluate.side_effect = [100, 100, 100, 999, 999]
+    await _wait_for_dom_stable(page, checks=2, interval_ms=1, max_iterations=10)
+    assert page.evaluate.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_wait_for_dom_stable_never_throws_when_evaluate_fails():
+    page = AsyncMock()
+    page.evaluate.side_effect = RuntimeError("page closed")
+    await _wait_for_dom_stable(page, checks=2, interval_ms=1, max_iterations=5)  # ไม่ throw ออกมา
+
+
+@pytest.mark.asyncio
+async def test_reveal_dynamic_content_scrolls_until_height_stops_growing(monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_max_scroll_attempts", 6)
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_scroll_wait_ms", 1)
+    page = AsyncMock()
+    # scrollHeight: 1000 (initial) -> 1500 -> 2000 -> 2000 (นิ่งแล้ว หยุด scroll)
+    page.evaluate.side_effect = [1000, 1500, 2000, 2000]
+    await _reveal_dynamic_content(page)
+    # เรียก evaluate: 1 (initial height) + 3 รอบ scroll (แต่ล่าสุดเท่าเดิมเลยหยุด) + 1 (scroll กลับบนสุด)
+    scroll_to_top_calls = [c for c in page.evaluate.call_args_list if c.args and "scrollTo(0, 0)" in c.args[0]]
+    assert len(scroll_to_top_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_reveal_dynamic_content_never_throws_when_evaluate_fails():
+    page = AsyncMock()
+    page.evaluate.side_effect = RuntimeError("page closed")
+    await _reveal_dynamic_content(page)  # ไม่ throw ออกมา
+
+
+# ---------------- W24: เมนูที่ไม่ใช่ <a> (role=menuitem/tab) ----------------
+
+_MENU_ITEM_FIXTURE_PAGES = {
+    "menu_start.html": """
+        <html><body>
+          <div role="menuitem" onclick="window.location.href='/settings.html'">Settings</div>
+        </body></html>
+    """,
+    "settings.html": "<html><body>settings page</body></html>",
+}
+
+
+@pytest.fixture
+def menu_item_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _MENU_ITEM_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_explores_role_menuitem_even_with_generic_label(menu_item_fixture_server):
+    """"Settings" ไม่ตรงคำไหนใน safety.ALLOWED_CRAWL_KEYWORDS เลย (ต่างจาก "view"/"next"/
+    ฯลฯ) — ปุ่มทั่วไปแบบนี้เดิมจะไม่ถูกไล่กด (is_crawl_safe default-deny) แต่ element นี้มี
+    role="menuitem" ตรงๆ (ไม่ใช่ <a href>) ต้องถูกจัดเป็น nav menu item แล้วไล่กดแบบ
+    default-allow (ดู extractor.py::isNavMenuItem + crawler.py::_is_explorable)"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{menu_item_fixture_server}/menu_start.html", max_pages=10)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("settings.html" in u for u in visited_urls)
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_does_not_dfs_click_real_href_nav_links(fixture_server):
+    """W24: <a href="..."> ที่มีปลายทางจริงต้องไม่ถูก DFS-click ซ้ำผ่าน _explore_buttons()
+    (เดินผ่าน BFS href เดิมเท่านั้น ที่เช็ค same-origin ได้ก่อน navigate) — ยืนยันด้วยการ
+    เช็คว่า "Dashboard"/"Products" (label ที่ไม่ตรง ALLOWED_CRAWL_KEYWORDS เลย) ไม่เคยปรากฏ
+    ใน progress event "button_explored" แม้แต่ครั้งเดียว ทั้งที่ทั้งคู่ถูกเยี่ยมจริงผ่าน BFS
+    (เห็นได้จาก manual.pages)"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{fixture_server}/index.html", max_pages=10, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("dashboard" in u for u in visited_urls)  # เข้าถึงได้จริงผ่าน BFS href
+    button_labels = {e["button"] for e in events if e["kind"] == "button_explored"}
+    assert "Dashboard" not in button_labels
+    assert "Products" not in button_labels
+
+
+# ---------------- W24: session check หลัง login (login_result event) ----------------
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_emits_login_result_success_true_when_session_looks_valid(login_fixture_server):
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            await crawl_site(
+                browser, f"{login_fixture_server}/login.html", max_pages=10,
+                username="alice", password="s3cr3t", on_progress=on_progress,
+            )
+            await browser.close()
+
+    login_events = [e for e in events if e["kind"] == "login_result"]
+    assert len(login_events) == 1
+    assert login_events[0]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_emits_login_result_success_false_when_submit_never_happened(no_submit_fixture_server):
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            await crawl_site(
+                browser, f"{no_submit_fixture_server}/login_no_submit.html", max_pages=10,
+                username="alice", password="s3cr3t", on_progress=on_progress,
+            )
+            await browser.close()
+
+    login_events = [e for e in events if e["kind"] == "login_result"]
+    assert len(login_events) == 1
+    assert login_events[0]["success"] is False
+    assert login_events[0]["reason"]  # ต้องมีเหตุผลแนบมาด้วย ไม่ใช่แค่ False เฉยๆ
+
+
+# ---------------- W24: บันทึก error จริงแทนกลืนเงียบๆ ----------------
+
+_BROKEN_LINK_FIXTURE_PAGES = {
+    "broken_start.html": """
+        <html><body>
+          <nav><a href="http://127.0.0.1:9/unreachable">Broken</a></nav>
+        </body></html>
+    """,
+}
+
+
+@pytest.fixture
+def broken_link_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _BROKEN_LINK_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_records_goto_errors_instead_of_silently_skipping(broken_link_fixture_server, monkeypatch):
+    """ลิงก์ไปพอร์ตที่ไม่มีอะไรฟังอยู่ (connection refused ทันที) ต้องไม่ทำให้ crawl ทั้ง
+    ก้อนพัง (เก็บ broken_start.html ได้ตามปกติ) แต่ต้องบันทึกไว้ใน manual.errors + ยิง
+    event "page_error" แทนที่จะกลืนเงียบๆ เหมือนเดิม (ดู docstring หัวไฟล์ ข้อ 6)"""
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_goto_retries", 0)
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_retry_backoff_ms", 1)
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{broken_link_fixture_server}/broken_start.html", max_pages=10, on_progress=on_progress,
+            )
+            await browser.close()
+
+    assert len(manual.pages) == 1  # แค่ broken_start.html — ลิงก์ที่ไปไม่ถึงไม่ถูกนับเป็นหน้า
+    assert any(e["phase"] == "goto" for e in manual.errors)
+    assert any(e["kind"] == "page_error" for e in events)
+    done_event = [e for e in events if e["kind"] == "crawl_scan_done"][0]
+    assert done_event["errors_found"] >= 1
