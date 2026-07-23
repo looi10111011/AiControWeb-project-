@@ -873,6 +873,45 @@ def broken_link_fixture_server(tmp_path):
     httpd.shutdown()
 
 
+# ---------------- W25: BFS ต้องเดินตามลิงก์ในเนื้อหา ไม่ใช่แค่ลิงก์ในเมนู ----------------
+
+_CONTENT_LINK_FIXTURE_PAGES = {
+    "home.html": """
+        <html><body>
+          <nav><a href="/dashboard.html">Dashboard</a></nav>
+          <main>
+            <article><p>Some text <a href="/article-detail.html">Read more</a> here.</p></article>
+          </main>
+        </body></html>
+    """,
+    "dashboard.html": "<html><body>dashboard</body></html>",
+    "article-detail.html": "<html><body>article detail page</body></html>",
+}
+
+
+@pytest.fixture
+def content_link_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _CONTENT_LINK_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_visits_links_outside_nav_containers(content_link_fixture_server):
+    """W25: user ขอ "extract all clickable elements: a" ตรงๆ — ลิงก์กลางบทความ (ไม่ได้อยู่
+    ใน <nav>) ต้องถูก BFS เดินตามไปเยี่ยมด้วย ไม่ใช่แค่ลิงก์ในเมนู (เดิม extractor.py สแกน
+    หา <a href> แค่ใน NAV_CONTAINERS เท่านั้น พลาดหน้านี้ไปเลย)"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{content_link_fixture_server}/home.html", max_pages=10)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("dashboard.html" in u for u in visited_urls)
+    assert any("article-detail.html" in u for u in visited_urls)
+
+
 @pytest.mark.asyncio
 async def test_crawl_site_records_goto_errors_instead_of_silently_skipping(broken_link_fixture_server, monkeypatch):
     """ลิงก์ไปพอร์ตที่ไม่มีอะไรฟังอยู่ (connection refused ทันที) ต้องไม่ทำให้ crawl ทั้ง

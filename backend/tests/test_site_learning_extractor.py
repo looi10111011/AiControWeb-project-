@@ -130,6 +130,33 @@ async def test_extract_page_discovers_nav_links_and_skips_anchors_and_javascript
     assert not any(h.lower().startswith("javascript:") for h in hrefs)
 
 
+_HTML_CONTENT_AREA_LINK = """
+<html><body>
+  <nav><a href="/dashboard">Dashboard</a></nav>
+  <main>
+    <article>
+      <p>Some text <a href="/articles/42">Read more</a> in the middle of a paragraph.</p>
+    </article>
+    <div class="card"><a href="/products/7">View product</a></div>
+  </main>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_discovers_content_area_links_not_just_nav_links():
+    """W25: user ขอ "extract all clickable elements: a" ตรงๆ — ลิงก์กลางบทความ/การ์ดที่ไม่
+    ได้อยู่ใน <nav>/<aside>/<header>/<footer>/[role=tablist]/[role=menu] เลยก็ต้องถูกเก็บ
+    เข้า nav_links ด้วย ไม่ใช่แค่ลิงก์ในเมนู (เดิมสแกนแค่ใน NAV_CONTAINERS พลาดลิงก์แบบนี้
+    ไปเลยทั้งที่เป็นหน้าที่ "เข้าถึงได้จริง")"""
+    _, nav_links = await _extract(_HTML_CONTENT_AREA_LINK)
+    hrefs = {link["href"] for link in nav_links}
+
+    assert "/dashboard" in hrefs  # ของเดิมยังทำงานต่อ
+    assert "/articles/42" in hrefs  # ลิงก์กลางบทความ
+    assert "/products/7" in hrefs  # ลิงก์ในการ์ดนอก nav
+
+
 _HTML_BREADCRUMB = """
 <html><body>
   <div class="breadcrumb"><a href="/">Home</a><span>Dashboard</span></div>

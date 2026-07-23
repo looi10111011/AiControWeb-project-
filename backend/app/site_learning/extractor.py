@@ -361,19 +361,24 @@ _EXTRACT_JS = r"""
   }
 
   // ---- nav links (ไว้ต่อคิว BFS ใน crawler.py — ไม่ใช่ส่วนหนึ่งของ PageInfo) ----
-  // NAV_CONTAINERS ประกาศไว้ด้านบนสุดของสคริปต์แล้ว (ใช้ร่วมกับ isNavMenuItem())
+  // W25: เดิมสแกนหาแค่ a[href] ที่อยู่ใน NAV_CONTAINERS เท่านั้น (nav/aside/header/footer/
+  // [role=tablist]/[role=menu]) — พลาดลิงก์ในเนื้อหา (content area) ที่ไม่ได้อยู่ในเมนูเลย
+  // (เช่น "อ่านต่อ"/"ดูรายละเอียด" กลางบทความ, ลิงก์ในตาราง/การ์ดที่ไม่ใช่ nav) ทำให้ BFS
+  // มองไม่เห็นหน้าที่เข้าถึงได้จริงแต่ไม่มีทางอื่นนอกจากลิงก์แบบนี้เลย — เปลี่ยนเป็นสแกนทั้ง
+  // เอกสาร (document.querySelectorAll ตรงๆ ไม่ผูกกับ NAV_CONTAINERS อีกต่อไป) ให้ตรงกับ
+  // "extract all clickable elements: a" ตามที่ user ระบุ — ยังกรองด้วย is_safe_nav_link()
+  // (default-allow, บล็อกเฉพาะคำทำลายชัดเจนอย่าง Logout/Delete) ที่ฝั่ง crawler.py เหมือน
+  // เดิมทุกประการ ไม่ได้ลดความเข้มงวดของ safety rule ลงเลย แค่ขยายขอบเขตที่ "เห็น" ลิงก์
   const navLinks = [];
   const seenHref = new Set();
-  document.querySelectorAll(NAV_CONTAINERS).forEach((container) => {
-    container.querySelectorAll('a[href]').forEach((a) => {
-      const href = a.getAttribute('href');
-      if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) return;
-      if (seenHref.has(href)) return;
-      const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
-      if (!text) return;
-      seenHref.add(href);
-      navLinks.push({ text, href, menu_path: [text] });
-    });
+  document.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) return;
+    if (seenHref.has(href)) return;
+    const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
+    if (!text) return;
+    seenHref.add(href);
+    navLinks.push({ text, href, menu_path: [text] });
   });
 
   // ---- breadcrumb ----

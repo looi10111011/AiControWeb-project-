@@ -2038,6 +2038,40 @@
            มาแล้วหลายรอบ (W12/W20) ว่าไม่ใช่ scope ของงานที่ทำอยู่ ไม่ใช่ regression ใหม่จากรอบ
            นี้)
 
+  [x] W25  Website Learning: BFS มองไม่เห็นลิงก์ในเนื้อหา (นอกเมนู) เลย — แก้แล้ว
+           (2026-07-23)
+           user ขอเพิ่มขั้นตอน "extract all clickable elements (a/button/role=button/
+           role=link) -> queue -> click ทีละตัว -> wait for load -> learn -> go back -> ทำ
+           จนกว่า queue จะว่าง" ตรวจแล้วพบว่า button/role=button/role=link เป็นแบบนี้อยู่แล้ว
+           ทุกประการผ่าน _explore_buttons() (W16/W24) — ส่วน <a> พบช่องว่างจริง: extractor.py
+           สแกนหา <a href> เพื่อต่อคิว BFS แค่ภายใน NAV_CONTAINERS (nav/aside/header/footer/
+           [role=tablist]/[role=menu]) เท่านั้น ลิงก์กลางเนื้อหา (เช่น "อ่านต่อ" กลางบทความ,
+           ลิงก์ในการ์ด/ตารางที่ไม่ใช่ nav) ไม่เคยถูกเก็บเข้า queue เลย — และก็ไปทาง DFS-click
+           (_explore_buttons) ไม่ได้เหมือนกันเพราะ label ของลิงก์พวกนี้ (เช่น ชื่อสินค้า/
+           "Read more") ไม่ตรงคำไหนใน safety.ALLOWED_CRAWL_KEYWORDS เลย (ลิงก์ที่มี href จริง
+           ถูกกันไว้ไม่ให้ผ่านทาง is_nav_menu_item อยู่แล้วตาม safety fix ของ W24) — ผลคือ
+           ลิงก์แบบนี้ "มองไม่เห็นเลยทั้ง 2 ทาง" ตรงกับที่ user รายงานว่า "agent ไม่ยอมกด
+           ตัวอักษรที่ลิงก์ไปหน้าอื่นๆ"
+
+           แก้: extractor.py เปลี่ยนจาก scoped เฉพาะ NAV_CONTAINERS มาเป็นสแกนทั้งเอกสาร
+           (document.querySelectorAll('a[href]') ตรงๆ) ให้ทุกลิงก์ที่มีปลายทางจริงถูกเก็บเข้า
+           nav_links แล้วต่อคิว BFS ผ่าน safety.is_safe_nav_link() เหมือนเดิมทุกประการ (ไม่ลด
+           ความเข้มงวด — ยังบล็อกคำทำลายชัดเจนอย่าง Logout/Delete เหมือนเดิม)
+
+           *** ตั้งใจไม่เปลี่ยน <a href> จาก goto()-based BFS ไปเป็น click()+go_back() แบบ
+           button ตามตัวอักษรเป๊ะของขั้นตอนที่ user ระบุ (ข้อ 3/6 "click"/"go back") — สอง
+           แบบให้ manual ผลลัพธ์เหมือนกันทุกประการ (เข้าเว็บ/เรียนรู้/บันทึกครบ) แค่ goto()
+           ไปที่ URL ที่รู้จาก href อยู่แล้วได้เลย ไม่ต้องคลิกแล้วกลับมาก่อนไปหน้าถัดไป (ไม่มี
+           "หน้าเดิม" ให้ต้องกลับในการ goto queue เรียงต่อกันแบบ BFS) เร็วกว่าและปลอดภัยกว่า
+           (เช็ค same-origin จาก href ได้ก่อน navigate เสมอ) ***
+
+           unit test ใหม่ 3 เคส: 1 ใน test_site_learning_extractor.py (ลิงก์กลางบทความ/การ์ด
+           นอก nav ถูกเก็บเข้า nav_links ด้วย ไม่ใช่แค่ลิงก์ในเมนู) + 2 ใน
+           test_site_learning_crawler.py (crawl_site() เดินตามลิงก์นอก nav container ได้จริง
+           ผ่าน browser จริง) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 484 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
