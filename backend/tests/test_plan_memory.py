@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from backend.app.config import settings
-from backend.app.core.plan_memory import find_matching_plan, save_confirmed_plan
+from backend.app.core.plan_memory import _uses_unsupported_script, find_matching_plan, save_confirmed_plan
 
 # ทุกเทสต์ mock get_plan_memory_collection() ตรงๆ (เหมือน test_long_term_memory.py) —
 # ไม่โหลด embedding model จริง/ไม่แตะ ChromaDB จริงเลย เพราะสิ่งที่ต้องพิสูจน์คือ logic การ
@@ -137,3 +137,47 @@ def test_save_confirmed_plan_swallows_errors_and_returns_none():
         "backend.app.core.plan_memory.get_plan_memory_collection", side_effect=RuntimeError("Chroma down"),
     ):
         assert save_confirmed_plan("example.com", "login", "1. Do X") is None
+
+
+# --- W23 (re-applied): unsupported-script goals skip Plan Memory entirely ---
+#
+# เจอบั๊กจริง: chromadb DefaultEmbeddingFunction (English-only tokenizer) ยุบ text
+# ภาษาไทยสองอันที่ไม่เกี่ยวข้องกันเลยให้ cosine distance ≈ 0 (แทบเหมือนกันหมด) ทำให้
+# goal ภาษาไทยใหม่ใดๆ "match" กับ lineage แรกที่เคยบันทึกไว้ในโดเมนเดิมเสมอ ไม่ว่าเจตนา
+# จะตรงกันจริงหรือไม่ (เช่น "ซื้อของทั้งหมด...จ่ายเงิน" ดันได้แผน "ไปที่หน้าเข้าสู่ระบบ"
+# ของ goal เก่าคนละเรื่องกลับมา) — ทดสอบว่า find/save ทั้งคู่ข้าม Plan Memory ไปเลยสำหรับ
+# goal ที่ใช้สคริปต์กลุ่มนี้ ไม่ไปแตะ collection.query()/add() เลยด้วยซ้ำ
+
+
+def test_uses_unsupported_script_detects_thai():
+    assert _uses_unsupported_script("เปิดเว็บ") is True
+    assert _uses_unsupported_script("ซื้อของทั้งหมดบนหน้าเว็บ แล้วหยุดรอหน้าจ่ายเงิน") is True
+
+
+def test_uses_unsupported_script_detects_other_non_latin_scripts():
+    assert _uses_unsupported_script("打开网站") is True  # Chinese
+    assert _uses_unsupported_script("ログイン") is True  # Japanese
+    assert _uses_unsupported_script("로그인") is True  # Korean
+    assert _uses_unsupported_script("تسجيل الدخول") is True  # Arabic
+    assert _uses_unsupported_script("Войти") is True  # Cyrillic
+
+
+def test_uses_unsupported_script_false_for_latin_text():
+    assert _uses_unsupported_script("log in") is False
+    assert _uses_unsupported_script("Ouvrir le site web") is False  # accented Latin (French)
+
+
+def test_find_matching_plan_skips_lookup_entirely_for_thai_goal():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        result = find_matching_plan("www.saucedemo.com", "ซื้อของทั้งหมดบนหน้าเว็บ แล้วหยุดรอหน้าจ่ายเงิน")
+
+        assert result is None
+        mock_get.assert_not_called()  # ไม่แตะ ChromaDB เลยด้วยซ้ำ ไม่ใช่แค่ทิ้งผลลัพธ์
+
+
+def test_save_confirmed_plan_skips_saving_entirely_for_thai_goal():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        result = save_confirmed_plan("www.saucedemo.com", "เปิดเว็บ", "1. ไปที่หน้าเข้าสู่ระบบของเว็บไซต์")
+
+        assert result is None
+        mock_get.assert_not_called()

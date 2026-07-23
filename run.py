@@ -189,8 +189,22 @@ sys.stderr.reconfigure(encoding="utf-8")
 
 def run_server():
     print("=== เริ่ม API server (uvicorn) — ctrl+C เพื่อหยุด ===", flush=True)
+    # *** ห้ามใส่ --reload กลับเข้ามาเด็ดขาดบน Windows ***
+    # uvicorn.Config.use_subprocess คืน True ทันทีที่ reload=True (หรือ workers>1) —
+    # true แล้ว config.setup_event_loop() (เรียกจาก Server.run() ก่อน asyncio.run()
+    # สร้าง event loop จริง — ดู uvicorn/loops/asyncio.py::asyncio_setup()) จะบังคับ
+    # asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy()) ทับ Proactor
+    # default ของ Windows ทันที — SelectorEventLoop ไม่รองรับ asyncio subprocess เลย
+    # (create_subprocess_exec() throw NotImplementedError ตรงๆ) ทำให้ Playwright
+    # (BrowserPool.start() ต้อง spawn browser driver process ตอน startup) พังทันที
+    # ("Application startup failed") ยืนยันจริงจาก traceback ที่เจอ (ไม่ใช่ทฤษฎี) — ลอง
+    # ตั้ง policy เองใน backend/app/main.py ก่อนหน้านี้แล้วไม่ได้ผล เพราะ uvicorn ตั้ง
+    # policy + สร้าง loop เสร็จไปแล้วตั้งแต่ก่อน main.py จะถูก import ด้วยซ้ำ (import
+    # เกิดทีหลังสุดตอน Config.load()) วิธีเดียวที่ใช้ได้จริงคือไม่ให้ use_subprocess=True
+    # เกิดขึ้นเลย — เสียความสะดวกของ auto-reload ตอนแก้โค้ดไป (ต้อง Ctrl+C แล้วรันใหม่เอง)
+    # แลกกับ Playwright ใช้งานได้จริง ซึ่งจำเป็นกว่า
     subprocess.run(
-        [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--reload"],
+        [sys.executable, "-m", "uvicorn", "backend.app.main:app"],
         check=False,
     )
 

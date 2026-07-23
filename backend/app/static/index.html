@@ -80,6 +80,28 @@
   .theme-toggle button.active{ background:var(--accent); color:var(--accent-ink); }
   .theme-toggle button:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
 
+  /* ---- Settings button + dropdown panel (topbar) ---- */
+  .icon-btn{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--muted); cursor:pointer; flex-shrink:0; }
+  .icon-btn svg{ width:15px; height:15px; }
+  .icon-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  .icon-btn.active{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+  .settings-wrap{ position:relative; }
+  .settings-panel{ display:none; position:absolute; top:calc(100% + 8px); right:0; z-index:20; width:300px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); padding:14px; }
+  .settings-panel.open{ display:block; }
+  .settings-section + .settings-section{ margin-top:14px; padding-top:14px; border-top:1px solid var(--border); }
+  .settings-label{ font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin-bottom:8px; }
+  .settings-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+  .settings-row:last-child{ margin-bottom:0; }
+  .settings-row label{ font-size:12.5px; color:var(--muted); }
+  .settings-row select, .settings-row input[type=number]{ background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:7px; padding:6px 8px; font-size:12.5px; }
+  .settings-row select{ max-width:160px; }
+  .settings-row input[type=number]{ width:70px; }
+  .settings-panel .check-row{ margin-bottom:10px; align-items:flex-start; }
+  .settings-panel .check-row:last-child{ margin-bottom:0; }
+  .settings-panel .check-row input{ margin-top:2px; }
+  .settings-panel #tabReusePolicyRow{ flex-direction:column; align-items:flex-start; gap:6px; }
+  .settings-panel #tabReusePolicyRow select{ width:100%; max-width:none; }
+
   /* ---- Main grid ---- */
   .main{ display:grid; grid-template-columns:240px minmax(0,1fr) 320px; min-height:0; }
   .main.right-rail-hidden{ grid-template-columns:240px minmax(0,1fr); }
@@ -87,6 +109,10 @@
   .col{ min-height:0; display:flex; flex-direction:column; border-right:1px solid var(--border); }
   .main > .col:last-child, .right-rail{ border-right:none; }
   .col-header{ padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; gap:8px; }
+  .chat-header{ justify-content:flex-start; }
+  .chat-header .eyebrow{ flex-shrink:0; }
+  .chat-url-input{ flex:1; min-width:0; background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12.5px; }
+  .chat-url-input:focus{ outline:2px solid var(--accent); outline-offset:1px; }
   .col-body{ flex:1; min-height:0; overflow-y:auto; padding:0 8px 12px; }
 
   /* ---- History ---- */
@@ -95,11 +121,15 @@
   .new-session:hover{ border-color:var(--accent); color:var(--accent); }
   .new-session.active{ border-style:solid; border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
   .history-group{ padding:10px 8px 2px; font-size:10.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--faint); }
-  .list-item{ display:block; padding:9px 10px; border-radius:8px; cursor:pointer; margin-bottom:2px; border:none; background:none; width:100%; text-align:left; }
+  .list-item-wrap{ position:relative; }
+  .list-item{ display:block; padding:9px 28px 9px 10px; border-radius:8px; cursor:pointer; margin-bottom:2px; border:none; background:none; width:100%; text-align:left; }
   .list-item:hover{ background:var(--surface); }
   .list-item.active{ background:var(--surface); box-shadow:0 0 0 1px var(--border); }
   .list-item .title{ font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .list-item .meta{ display:flex; align-items:center; gap:6px; margin-top:3px; font-size:11.5px; color:var(--faint); }
+  .kill-session-btn{ position:absolute; top:8px; right:6px; width:19px; height:19px; border:none; border-radius:5px; background:transparent; color:var(--faint); font-size:13px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity .12s; }
+  .list-item-wrap:hover .kill-session-btn{ opacity:1; }
+  .kill-session-btn:hover{ background:var(--critical-soft); color:var(--critical); }
   .badge{ display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:700; padding:1px 6px; border-radius:5px; text-transform:uppercase; letter-spacing:.03em; }
   .badge.running{ background:var(--warning-soft); color:var(--warning); }
   .badge.done{ background:var(--accent-soft); color:var(--accent); }
@@ -148,15 +178,11 @@
   .plan-edit-textarea{ width:100%; background:var(--surface); border:1px solid var(--border); color:var(--ink); border-radius:6px; padding:8px; font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; min-height:110px; margin-bottom:8px; }
   .plan-edit-textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
 
-  /* W14: Website Learning banner (missing manual / learning progress / done / error) */
+  /* W14: Website Learning banner (crawl progress / done / error) — W23: no more
+     "missing"/"known" static states here, that's just the header button now (see
+     .manual-banner-learn-btn under #btnLearnSite in the chat-header) */
   .manual-banner-wrap{ flex-shrink:0; padding:10px 16px 0; }
   .manual-banner{ border-radius:8px; padding:10px 12px; font-size:12.5px; }
-  .manual-banner.missing{ background:var(--warning-soft); border:1px solid var(--warning); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-  .manual-banner.missing .manual-banner-title{ color:var(--warning); font-weight:700; }
-  .manual-banner-login-fields{ display:flex; gap:6px; flex:1 1 auto; min-width:220px; }
-  .manual-banner-login-fields input{ flex:1 1 0; min-width:0; padding:5px 8px; font-size:12px; border-radius:6px; border:1px solid var(--warning); background:var(--bg); color:var(--ink); }
-  .manual-banner-cred-choice{ display:flex; gap:14px; flex:1 1 auto; min-width:220px; font-size:12px; }
-  .manual-banner-cred-choice label{ display:flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap; }
   .manual-banner.learning{ background:var(--accent-soft); border:1px solid var(--accent); }
   .manual-banner.learning .manual-banner-title{ color:var(--accent); font-weight:700; margin-bottom:6px; }
   .manual-banner-current{ color:var(--muted); font-size:11.5px; margin-bottom:4px; word-break:break-all; }
@@ -164,35 +190,45 @@
   .manual-banner-checklist .item.done{ color:var(--accent); }
   .manual-banner-checklist .item.pending{ color:var(--faint); }
   .manual-banner-pct{ font-weight:700; margin-top:6px; }
-  .manual-banner.known{ background:var(--surface-2); border:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-  .manual-banner.known .manual-banner-title{ color:var(--muted); font-weight:600; }
   .manual-banner.done{ background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); }
   .manual-banner.error{ background:var(--critical-soft); border:1px solid var(--critical); color:var(--critical); }
   .manual-banner-learn-btn{ flex:0 0 auto; border:none; border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--warning); color:#1a1200; }
   .manual-banner-learn-btn:hover{ filter:brightness(1.08); }
 
-  .composer{ flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:8px; }
-  .composer-row{ display:flex; gap:8px; }
-  .composer-row > div{ flex:1; min-width:0; }
-  .composer label{ font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--faint); display:block; margin-bottom:3px; }
-  .composer input[type=text], .composer input[type=url], .composer input[type=number], .composer select, .composer textarea{
-    width:100%; background:var(--surface-2); border:1px solid var(--border); color:var(--ink);
-    border-radius:8px; padding:8px 10px; font-size:12.5px;
-  }
-  .composer textarea{ resize:vertical; min-height:38px; max-height:100px; }
-  .composer input:focus, .composer select:focus, .composer textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
-  .composer-checks{ display:flex; gap:16px; flex-wrap:wrap; }
+  /* W23: mid-crawl "this site needs login" prompt — crawler paused, waiting for the
+     user to answer via respondLearnCredentials() */
+  .manual-banner-cred-request{ margin-top:8px; padding-top:8px; border-top:1px solid var(--accent); }
+  .manual-banner-cred-request-title{ font-weight:700; margin-bottom:6px; }
+  .manual-banner-login-fields{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .manual-banner-login-fields input{ flex:1 1 140px; min-width:0; padding:5px 8px; font-size:12px; border-radius:6px; border:1px solid var(--accent); background:var(--bg); color:var(--ink); }
+  .manual-banner-cred-request-actions{ display:flex; gap:8px; }
+  .manual-banner-skip-btn{ flex:0 0 auto; border:1px solid var(--border); border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:transparent; color:var(--muted); }
+  .manual-banner-skip-btn:hover{ border-color:var(--accent); color:var(--accent); }
+
+  .composer{ flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:6px; }
   .check-row{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
   .check-row input{ width:auto; }
   .check-row .warn-hint{ color:var(--warning); font-size:10.5px; }
-  .composer-send-row{ display:flex; align-items:center; gap:10px; }
-  .send-btn{ flex-shrink:0; padding:9px 18px; border-radius:9px; border:none; background:var(--accent); color:var(--accent-ink); font-weight:700; font-size:13px; cursor:pointer; }
-  .send-btn:disabled{ opacity:.5; cursor:not-allowed; }
-  .send-btn:hover:not(:disabled){ filter:brightness(1.05); }
-  .stop-btn{ flex-shrink:0; padding:9px 18px; border-radius:9px; border:1px solid var(--critical); background:transparent; color:var(--critical); font-weight:700; font-size:13px; cursor:pointer; }
-  .stop-btn:hover{ background:var(--critical-soft); }
-  .stop-btn:disabled{ opacity:.5; cursor:not-allowed; }
   .composer-error{ font-size:12px; color:var(--critical); }
+
+  /* ---- Pill-shaped composer bar (chat-input style: + attach / textarea / stop) ---- */
+  .composer-bar{ display:flex; align-items:flex-end; gap:6px; background:var(--surface-2); border:1px solid var(--border); border-radius:22px; padding:6px 8px 6px 6px; }
+  .composer .composer-bar textarea{ flex:1; min-width:0; background:transparent; border:none; color:var(--ink); font-size:13px; padding:7px 6px; resize:none; min-height:24px; max-height:120px; }
+  .composer .composer-bar textarea:focus{ outline:none; }
+  .icon-round-btn{ flex-shrink:0; width:30px; height:30px; border-radius:50%; border:none; background:var(--surface); color:var(--muted); font-size:19px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .icon-round-btn:hover{ background:var(--border); color:var(--ink); }
+  .stop-icon-btn{ flex-shrink:0; width:30px; height:30px; border-radius:8px; border:none; background:var(--critical); color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .stop-icon-btn svg{ width:14px; height:14px; }
+  .stop-icon-btn:hover{ filter:brightness(1.08); }
+  .stop-icon-btn:disabled{ opacity:.5; cursor:not-allowed; }
+
+  /* ---- Attach-file dropdown — UI shell only, no upload/parsing wired up yet ---- */
+  .attach-wrap{ position:relative; flex-shrink:0; }
+  .attach-menu{ display:none; position:absolute; bottom:calc(100% + 8px); left:0; z-index:20; min-width:220px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); padding:6px; }
+  .attach-menu.open{ display:block; }
+  .attach-menu-item{ width:100%; display:flex; flex-direction:column; align-items:flex-start; gap:2px; padding:8px 10px; border:none; background:none; border-radius:7px; cursor:pointer; text-align:left; color:var(--ink); font-size:13px; font-weight:600; }
+  .attach-menu-item:hover{ background:var(--surface-2); }
+  .attach-menu-sub{ font-size:11px; font-weight:500; color:var(--faint); }
 
   /* ---- Log toggle (manual show/hide — see .right-rail-hidden on .main) ---- */
   .log-toggle-btn{ border:1px solid var(--border); background:var(--surface-2); color:var(--muted); font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px; cursor:pointer; flex-shrink:0; }
@@ -235,9 +271,53 @@
     <div class="topbar-actions">
       <span class="health-dot" id="healthDot" title="API health"></span>
       <span class="pool-text" id="poolText">pool —</span>
-      <div class="theme-toggle" id="themeToggle">
-        <button data-theme="light">Light</button>
-        <button data-theme="dark">Dark</button>
+      <div class="settings-wrap">
+        <button class="icon-btn" id="btnSettings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+        <div class="settings-panel" id="settingsPanel">
+          <div class="settings-section">
+            <div class="settings-label">Appearance</div>
+            <div class="settings-row">
+              <label>Theme</label>
+              <div class="theme-toggle" id="themeToggle">
+                <button data-theme="light">Light</button>
+                <button data-theme="dark">Dark</button>
+              </div>
+            </div>
+            <div class="settings-row">
+              <label>Log panel</label>
+              <button class="log-toggle-btn" id="btnToggleLog">Show log</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-label">Run configuration</div>
+            <div class="settings-row">
+              <label for="provider">Provider</label>
+              <select id="provider">
+                <option value="">default</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="gemini">Gemini</option>
+                <option value="groq">Groq</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label for="maxSteps">Max steps</label>
+              <input type="number" id="maxSteps" value="30" min="1" max="200">
+            </div>
+            <label class="check-row"><input type="checkbox" id="headless"> Headless (hide the browser window) <span class="warn-hint">(unchecked: a real browser window opens and stays open until you close it)</span></label>
+            <label class="check-row"><input type="checkbox" id="useUserBrowser"> Use my browser <span class="warn-hint">(opens a new tab in your own Chrome instead of a separate window — requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup)</span></label>
+            <label class="check-row" id="tabReusePolicyRow" style="display:none;">
+              Continuing in that tab:
+              <select id="tabReusePolicy">
+                <option value="ask">Ask each time (default, safest)</option>
+                <option value="always_reuse">Always continue in the same tab (no prompts)</option>
+                <option value="always_new_tab">Always open a new tab</option>
+              </select>
+            </label>
+            <label class="check-row"><input type="checkbox" id="autoApprove"> Auto-approve permission prompts <span class="warn-hint">(lets the agent act without asking)</span></label>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -254,52 +334,34 @@
 
     <!-- CHAT -->
     <div class="col chat">
-      <div class="col-header"><span class="eyebrow">Chat</span><button class="log-toggle-btn" id="btnToggleLog">Show log</button></div>
+      <div class="col-header chat-header">
+        <span class="eyebrow">Chat</span>
+        <input type="url" id="url" placeholder="Target URL — https://www.example.com" value="https://www.saucedemo.com/" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
+        <datalist id="urlHistory"></datalist>
+        <button type="button" id="btnLearnSite" class="manual-banner-learn-btn" data-learn-site="true" style="display:none;"></button>
+      </div>
       <div class="col-body" id="transcript"></div>
       <div class="manual-banner-wrap" id="manualBanner" style="display:none;"></div>
       <div class="composer">
-        <div class="composer-row">
-          <div>
-            <label for="url">Target URL</label>
-            <input type="url" id="url" placeholder="https://www.example.com" value="https://www.saucedemo.com/" list="urlHistory" autocomplete="off">
-            <datalist id="urlHistory"></datalist>
+        <div class="composer-bar">
+          <div class="attach-wrap">
+            <button class="icon-round-btn" id="btnAttach" title="Attach a file" aria-label="Attach a file" type="button">+</button>
+            <div class="attach-menu" id="attachMenu">
+              <!-- UI shell only for now, per request — no upload/parsing wired up yet.
+                   Clicking this just closes the menu (see the [data-attach-placeholder]
+                   handler below); nothing is read, stored, or sent anywhere. -->
+              <button class="attach-menu-item" data-attach-placeholder="true" type="button">
+                <span>Attach file</span>
+                <span class="attach-menu-sub">.txt · .pdf · .docx · .xlsx · image</span>
+              </button>
+            </div>
           </div>
-          <div style="flex:0 0 150px;">
-            <label for="provider">Provider</label>
-            <select id="provider">
-              <option value="">default</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="gemini">Gemini</option>
-              <option value="groq">Groq</option>
-            </select>
-          </div>
-          <div style="flex:0 0 100px;">
-            <label for="maxSteps">Max steps</label>
-            <input type="number" id="maxSteps" value="30" min="1" max="200">
-          </div>
+          <textarea id="goal" rows="1" placeholder="e.g. add the first item to cart and checkout"></textarea>
+          <button class="stop-icon-btn" id="btnStop" style="display:none;" title="Stop" aria-label="Stop task" type="button">
+            <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
+          </button>
         </div>
-        <div>
-          <label for="goal">Goal</label>
-          <textarea id="goal" rows="2" placeholder="e.g. add the first item to cart and checkout"></textarea>
-        </div>
-        <div class="composer-checks">
-          <label class="check-row"><input type="checkbox" id="headless"> Headless (hide the browser window) <span class="warn-hint">(unchecked: a real browser window opens and stays open until you close it)</span></label>
-          <label class="check-row"><input type="checkbox" id="useUserBrowser"> Use my browser <span class="warn-hint">(opens a new tab in your own Chrome instead of a separate window — requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup)</span></label>
-          <label class="check-row" id="tabReusePolicyRow" style="display:none;">
-            Continuing in that tab:
-            <select id="tabReusePolicy">
-              <option value="ask">Ask each time (default, safest)</option>
-              <option value="always_reuse">Always continue in the same tab (no prompts)</option>
-              <option value="always_new_tab">Always open a new tab</option>
-            </select>
-          </label>
-          <label class="check-row"><input type="checkbox" id="autoApprove"> Auto-approve permission prompts <span class="warn-hint">(lets the agent act without asking)</span></label>
-        </div>
-        <div class="composer-send-row">
-          <button class="send-btn" id="btnRun">Plan task</button>
-          <button class="stop-btn" id="btnStop" style="display:none;">Stop</button>
-          <span class="composer-error" id="composerError"></span>
-        </div>
+        <span class="composer-error" id="composerError"></span>
       </div>
     </div>
 
@@ -327,6 +389,10 @@ const pendingApprovals = {}; // task_id -> {request_id, cmd} — awaiting a huma
 // in-review state; there is at most one at a time (the composer is disabled while one
 // is pending — see requestPlan()).
 let pendingPlan = null;      // { sessionId, url, goal, planDraft, requestParams } | null
+// There's no visible "Plan task" button anymore (removed in favor of Enter-to-submit,
+// chat-composer style) — this replaces what used to be $("btnRun").disabled to gate
+// against double-submitting while a generate_plan request is already in flight.
+let planRequestInFlight = false;
 const runningPlans = {};     // task_id -> plan text, set right when execute_plan succeeds so the
                               // approved plan stays visible in the chat while the task is still
                               // running (task.result.plan only exists once it's done)
@@ -335,14 +401,13 @@ let logVisible = false;      // Log panel is collapsed until the user explicitly
 
 // W14: Website Learning & Manual Generation — banner shown above the composer when the
 // current Target URL's site has no manual yet, plus live progress while crawling it.
+// W23: no more upfront username/password fields here — learnProgress.credentialsRequest
+// ({ requestId, domain } | null) holds a *mid-crawl* prompt instead, set when the
+// crawler itself hits a login page and asks via the "credentials_needed" SSE event
+// (see openLearnStream()) rather than requiring them to be typed in before starting.
 let siteManualStatus = null; // { exists, version } for the current url, or null = not checked yet
-let learnProgress = null;    // { learnId, done, total, checklist: [names], status, version?, errorMessage? } | null
+let learnProgress = null;    // { learnId, done, total, checklist: [names], status, version?, errorMessage?, credentialsRequest? } | null
 let manualCheckTimer = null; // debounce handle for checkSiteManualStatus()
-// W18: { exists } for the current url's domain, or null = not checked yet — drives the
-// "ใช้บัญชีที่บันทึกไว้ / เข้าสู่ระบบด้วยบัญชีอื่น" choice in the learn banner instead of
-// always showing blank username/password fields
-let siteCredentialsStatus = null;
-let learnUseNewAccount = false; // toggled by the radio choice — only relevant when siteCredentialsStatus.exists
 
 // ---- Conversations: the backend only knows about individual tasks (one orchestrator
 // run each), but the UI groups a sequence of them into one continuous chat thread so
@@ -589,6 +654,25 @@ async function stopTask(taskId) {
   }
 }
 
+// The × on a history entry — kills that session's browser resources right from the
+// list, without first having to select it (same POST /sessions/{id}/close the
+// "+ New session" button already calls when leaving a session behind — the session id
+// IS the conversation id, see newSessionId()/requestPlan()). Stops a still-running task
+// first so the browser isn't yanked out from under an active step. The conversation
+// itself stays in history afterward (this only tears down the live browser, not the
+// chat record — same as any other finished conversation).
+async function killSession(convId) {
+  const latest = latestTaskInConversation(convId);
+  if (latest && latest.status === "running") {
+    try { await fetch(`${API}/tasks/${latest.task_id}/stop`, { method: "POST" }); } catch (e) {}
+  }
+  try { await fetch(`${API}/sessions/${convId}/close`, { method: "POST" }); } catch (e) {}
+  if (selectedConvId === convId) {
+    closeStream(latest ? latest.task_id : null);
+  }
+  await refreshTasks();
+}
+
 // W13: plan review is 2 explicit steps now. requestPlan() asks the agent to draft a
 // plan (POST /api/generate_plan — a single fast LLM call, no browser touched) and
 // stores it as pendingPlan for local review; approvePlan() is what actually starts the
@@ -633,7 +717,7 @@ async function requestPlan() {
     use_user_browser: $("useUserBrowser").checked,
     tab_reuse_policy: $("useUserBrowser").checked ? $("tabReusePolicy").value : null,
   };
-  $("btnRun").disabled = true;
+  planRequestInFlight = true;
   try {
     const r = await fetch(API + "/api/generate_plan", {
       method: "POST",
@@ -655,7 +739,7 @@ async function requestPlan() {
     renderHistory();
     renderSelected();
   } finally {
-    $("btnRun").disabled = false;
+    planRequestInFlight = false;
   }
 }
 
@@ -732,54 +816,47 @@ async function checkSiteManualStatus() {
     // Don't clobber an in-progress/just-finished learn banner with a stale "checking"
     // pass — learnProgress's own lifecycle (startLearningSite/openLearnStream) clears
     // itself and re-checks explicitly when it's actually done.
-    if (!url) { siteManualStatus = null; siteCredentialsStatus = null; renderManualBanner(); }
+    if (!url) { siteManualStatus = null; renderManualBanner(); }
     return;
   }
-  learnUseNewAccount = false;  // รีเซ็ตตัวเลือกทุกครั้งที่ URL เปลี่ยน — ค่าเริ่มต้นคือ "ใช้บัญชีที่บันทึกไว้" ถ้ามี
   try {
     const r = await fetch(`${API}/api/site-manual/status?url=${encodeURIComponent(url)}`);
     siteManualStatus = r.ok ? await r.json() : null;
   } catch (e) {
     siteManualStatus = null;
   }
-  // W18: เช็คว่ามี credential เก็บไว้แล้วสำหรับโดเมนนี้ไหม — ขับ radio choice "ใช้บัญชีที่
-  // บันทึกไว้ / เข้าสู่ระบบด้วยบัญชีอื่น" แทนที่จะโชว์ช่องกรอกเปล่าๆ ทุกครั้ง
-  try {
-    const domain = new URL(url).hostname;
-    const cr = await fetch(`${API}/api/site-manual/${encodeURIComponent(domain)}/credentials/status`);
-    siteCredentialsStatus = cr.ok ? await cr.json() : null;
-  } catch (e) {
-    siteCredentialsStatus = null;
-  }
   renderManualBanner();
 }
 
-// W18: ถ้ามี credential เก็บไว้แล้วสำหรับโดเมนนี้ (siteCredentialsStatus.exists) โชว์ radio
-// ให้เลือก "ใช้บัญชีที่บันทึกไว้" (ค่าเริ่มต้น — ไม่โชว์ช่องกรอกเลย ไม่ต้องกรอกซ้ำ) กับ
-// "เข้าสู่ระบบด้วยบัญชีอื่น" (เลือกแล้วค่อยโชว์ช่อง username/password ให้กรอกใหม่) ถ้ายังไม่
-// เคยมี credential เก็บไว้เลย ก็โชว์ช่องกรอกตรงๆ เหมือนเดิม (ไม่มีอะไรให้เลือก)
-function renderCredentialFieldsHtml() {
-  if (siteCredentialsStatus && siteCredentialsStatus.exists) {
-    const fieldsHtml = learnUseNewAccount ? `
-        <div class="manual-banner-login-fields">
-          <input type="text" id="learnUsername" placeholder="Username ใหม่" autocomplete="off" />
-          <input type="password" id="learnPassword" placeholder="Password ใหม่" autocomplete="off" />
-        </div>` : "";
-    return `
-      <div class="manual-banner-cred-choice">
-        <label><input type="radio" name="credChoice" data-cred-choice="saved" ${!learnUseNewAccount ? "checked" : ""} /> ใช้บัญชีที่บันทึกไว้</label>
-        <label><input type="radio" name="credChoice" data-cred-choice="new" ${learnUseNewAccount ? "checked" : ""} /> เข้าสู่ระบบด้วยบัญชีอื่น</label>
-      </div>${fieldsHtml}`;
+// W23: no upfront credential fields anymore — updates the Learn/Relearn button that
+// now lives next to the Target URL field (see the chat-header markup) instead of
+// inside this banner. Hidden while a crawl is already running (nothing to start).
+function updateLearnButton() {
+  const btn = $("btnLearnSite");
+  if (learnProgress) {
+    btn.style.display = "none";
+    return;
   }
-  return `
-        <div class="manual-banner-login-fields">
-          <input type="text" id="learnUsername" placeholder="Username (ถ้าเว็บนี้ต้อง login — ไม่บังคับ, จะจำไว้ใช้อัตโนมัติครั้งหน้า)" autocomplete="off" />
-          <input type="password" id="learnPassword" placeholder="Password (ไม่บังคับ)" autocomplete="off" />
-        </div>`;
+  if (siteManualStatus && siteManualStatus.exists === false) {
+    btn.textContent = "เรียนรู้เว็บไซต์";
+    btn.classList.remove("relearn");
+    btn.style.display = "";
+  } else if (siteManualStatus && siteManualStatus.exists === true) {
+    // W16: เว็บไซต์อาจอัปเดตหน้าตา/โครงสร้างไปหลังจากเรียนรู้ครั้งก่อน — ให้กดเรียนรู้
+    // ใหม่ทั้งเว็บได้ตลอด ไม่ต้องรอ manual หาย/พังก่อน (ต่างจาก relearn-page ที่ซ่อมทีละ
+    // หน้าตอน selector ใช้งานไม่ได้ endpoint นี้เรียก POST /api/site-manual/learn ตัวเดิม
+    // ซ้ำ — crawl ใหม่ทั้งเว็บ + bump version เหมือนเดิมทุกประการ)
+    btn.textContent = "เรียนรู้ใหม่อีกรอบ";
+    btn.classList.add("relearn");
+    btn.style.display = "";
+  } else {
+    btn.style.display = "none";
+  }
 }
 
 function renderManualBanner() {
   const box = $("manualBanner");
+  updateLearnButton();
   if (learnProgress) {
     if (learnProgress.status === "running") {
       const pct = learnProgress.total ? Math.min(100, Math.round((learnProgress.done / learnProgress.total) * 100)) : 0;
@@ -798,6 +875,20 @@ function renderManualBanner() {
       const buttonLine = learnProgress.currentButton
         ? `<div class="manual-banner-current">กำลังลองกดปุ่ม: ${escapeHtml(learnProgress.currentButton)}</div>`
         : "";
+      // W23: crawler เจอหน้า login ระหว่างทางและกำลังรอ user กรอก username/password
+      // (หรือกดข้าม) อยู่ — ดู openLearnStream()'s "credentials_needed" handler
+      const credRequestHtml = learnProgress.credentialsRequest ? `
+        <div class="manual-banner-cred-request">
+          <div class="manual-banner-cred-request-title">เว็บไซต์นี้ต้อง Login (${escapeHtml(learnProgress.credentialsRequest.domain)}) เพื่อเรียนรู้ต่อ</div>
+          <div class="manual-banner-login-fields">
+            <input type="text" id="credReqUsername" placeholder="Username" autocomplete="off" />
+            <input type="password" id="credReqPassword" placeholder="Password" autocomplete="off" />
+          </div>
+          <div class="manual-banner-cred-request-actions">
+            <button type="button" class="manual-banner-learn-btn" data-submit-learn-credentials="true">เข้าสู่ระบบ</button>
+            <button type="button" class="manual-banner-skip-btn" data-skip-learn-credentials="true">ข้าม (ไม่ต้อง Login)</button>
+          </div>
+        </div>` : "";
       box.innerHTML = `
         <div class="manual-banner learning">
           <div class="manual-banner-title">กำลังเรียนรู้เว็บไซต์...</div>
@@ -805,6 +896,7 @@ function renderManualBanner() {
           ${buttonLine}
           <div class="manual-banner-checklist">${items}</div>
           <div class="manual-banner-pct">${pct}%</div>
+          ${credRequestHtml}
         </div>`;
     } else if (learnProgress.status === "done") {
       box.innerHTML = `
@@ -821,30 +913,6 @@ function renderManualBanner() {
     box.style.display = "";
     return;
   }
-  if (siteManualStatus && siteManualStatus.exists === false) {
-    box.innerHTML = `
-      <div class="manual-banner missing">
-        <div class="manual-banner-title">เว็บไซต์นี้ยังไม่มีคู่มือ</div>
-        ${renderCredentialFieldsHtml()}
-        <button type="button" class="manual-banner-learn-btn" data-learn-site="true">เรียนรู้เว็บไซต์</button>
-      </div>`;
-    box.style.display = "";
-    return;
-  }
-  if (siteManualStatus && siteManualStatus.exists === true) {
-    // W16: เว็บไซต์อาจอัปเดตหน้าตา/โครงสร้างไปหลังจากเรียนรู้ครั้งก่อน — ให้กดเรียนรู้
-    // ใหม่ทั้งเว็บได้ตลอด ไม่ต้องรอ manual หาย/พังก่อน (ต่างจาก relearn-page ที่ซ่อมทีละ
-    // หน้าตอน selector ใช้งานไม่ได้ endpoint นี้เรียก POST /api/site-manual/learn ตัวเดิม
-    // ซ้ำ — crawl ใหม่ทั้งเว็บ + bump version เหมือนเดิมทุกประการ)
-    box.innerHTML = `
-      <div class="manual-banner known">
-        <div class="manual-banner-title">มีคู่มือเว็บไซต์นี้แล้ว (Version ${siteManualStatus.version})</div>
-        ${renderCredentialFieldsHtml()}
-        <button type="button" class="manual-banner-learn-btn relearn" data-learn-site="true">เรียนรู้ใหม่อีกรอบ</button>
-      </div>`;
-    box.style.display = "";
-    return;
-  }
   box.style.display = "none";
   box.innerHTML = "";
 }
@@ -852,26 +920,13 @@ function renderManualBanner() {
 async function startLearningSite() {
   const url = $("url").value.trim();
   if (!url || learnProgress) return;
-  // W15: อ่านค่า username/password ตอนกดปุ่มเท่านั้น — ส่งไปใน request เดียวแล้วทิ้ง
-  // ไม่เก็บลง learnProgress/state ใดๆ เพื่อไม่ให้ credential ค้างอยู่ใน memory ฝั่ง UI
-  const usernameEl = document.getElementById("learnUsername");
-  const passwordEl = document.getElementById("learnPassword");
-  const username = usernameEl && usernameEl.value ? usernameEl.value : null;
-  const password = passwordEl && passwordEl.value ? passwordEl.value : null;
-  // W18: "ใช้บัญชีที่บันทึกไว้" ถูกเลือกอยู่ (ไม่ได้กดเปลี่ยนเป็นบัญชีใหม่) และมี credential
-  // เก็บไว้จริง — ส่ง flag นี้แทนตัว username/password (ซึ่งจะเป็น null ทั้งคู่อยู่แล้ว
-  // เพราะช่องกรอกไม่ได้ถูก render เลยในเคสนี้) ให้ backend ไปดึงค่าที่เก็บไว้มาใช้เอง
-  const useSavedCredentials = !!(siteCredentialsStatus && siteCredentialsStatus.exists && !learnUseNewAccount);
-  learnProgress = { learnId: null, done: 0, total: 1, checklist: [], status: "running", currentUrl: url };
+  learnProgress = { learnId: null, done: 0, total: 1, checklist: [], status: "running", currentUrl: url, credentialsRequest: null };
   renderManualBanner();
   try {
     const r = await fetch(`${API}/api/site-manual/learn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url, provider: $("provider").value || null, username, password,
-        use_saved_credentials: useSavedCredentials,
-      }),
+      body: JSON.stringify({ url, provider: $("provider").value || null }),
     });
     if (!r.ok) {
       learnProgress = { status: "error", errorMessage: await r.text() };
@@ -907,6 +962,16 @@ function openLearnStream(learnId) {
       learnProgress.total = event.total;
       learnProgress.checklist.push(event.name);
       renderManualBanner();
+    } else if (event.kind === "credentials_needed") {
+      // W23: crawler เจอหน้า login ที่ยังไม่มี username/password ให้เลย — หยุดรอ user
+      // ตอบผ่าน respondLearnCredentials() ด้านล่าง (POST .../credentials) ก่อนไปต่อ
+      learnProgress.credentialsRequest = { requestId: event.request_id, domain: event.domain };
+      renderManualBanner();
+    } else if (event.kind === "credentials_timeout") {
+      // ไม่มีใครตอบทันเวลา — backend auto-skip ไปแล้ว (ดู LearnManager.request_credentials())
+      // แค่เคลียร์ฟอร์มที่ค้างอยู่ทิ้ง ไม่ใช่ error
+      learnProgress.credentialsRequest = null;
+      renderManualBanner();
     } else if (event.kind === "learn_done") {
       es.close();
       if (event.status === "done") {
@@ -921,6 +986,26 @@ function openLearnStream(learnId) {
     }
   };
   es.onerror = () => { es.close(); };
+}
+
+// W23: answers a "credentials_needed" prompt — username/password both null means the
+// user chose to skip ("ข้าม"), which the backend treats as "continue without logging
+// in" rather than an error (see LearnManager.resolve_credentials()). Clears the pending
+// request optimistically right away so the form doesn't linger while the fetch is in
+// flight; the next SSE event (page_start/page_done/etc.) confirms the crawl actually
+// moved on.
+async function respondLearnCredentials(username, password) {
+  if (!learnProgress || !learnProgress.credentialsRequest || !learnProgress.learnId) return;
+  const requestId = learnProgress.credentialsRequest.requestId;
+  learnProgress.credentialsRequest = null;
+  renderManualBanner();
+  try {
+    await fetch(`${API}/api/site-manual/learn/${learnProgress.learnId}/credentials`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, username, password }),
+    });
+  } catch (e) {}
 }
 
 // ---------------- Rendering ----------------
@@ -954,10 +1039,13 @@ function renderHistory() {
       : `<span class="badge ${status}">${status}</span>`;
     const turnCount = convTasks.length > 1 ? `<span class="mono">${convTasks.length}&times;</span>` : "";
     html += `
-      <button class="list-item ${convId === selectedConvId ? "active" : ""}" data-conv-id="${convId}">
-        <div class="title">${escapeHtml(first.goal)}</div>
-        <div class="meta"><span class="mono">${fmtTime(latest.created_at)}</span>${turnCount}${badge}</div>
-      </button>`;
+      <div class="list-item-wrap">
+        <button class="list-item ${convId === selectedConvId ? "active" : ""}" data-conv-id="${convId}">
+          <div class="title">${escapeHtml(first.goal)}</div>
+          <div class="meta"><span class="mono">${fmtTime(latest.created_at)}</span>${turnCount}${badge}</div>
+        </button>
+        <button class="kill-session-btn" data-kill-conv="${convId}" title="Close this session">&times;</button>
+      </div>`;
   }
   list.innerHTML = html;
   list.querySelectorAll(".list-item").forEach((el) => {
@@ -1116,17 +1204,33 @@ function renderTaskTurn(task) {
 // Full chat transcript for the selected conversation: every turn (task) in submission
 // order, so a follow-up command shows up right below the previous turn instead of
 // replacing it — this is what lets you keep chatting without starting a new session.
+//
+// Two anti-jump fixes here (renderSelected() re-runs this on every SSE event AND every
+// 2.5s task poll, not just on real changes):
+//  1. "Sticky bottom" scrolling — only force-scroll to the newest message if the user
+//     was already near the bottom before this re-render. Otherwise a poll firing while
+//     someone's scrolled up reading history used to yank them straight back down.
+//  2. Skip re-rendering entirely while the plan-edit textarea is open — convTasks/pending
+//     can't legitimately change while a plan is being edited (requestPlan() already
+//     blocks starting a new plan while the previous task is still running, and nothing
+//     else touches this conversation until Approve/Cancel/Done, which call
+//     renderSelected() themselves) — replacing innerHTML here would tear down the live
+//     textarea and reset the cursor/selection mid-keystroke for no reason.
 function renderTranscript(convTasks) {
   const box = $("transcript");
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
+  if (pending && pending.editing && box.querySelector("#pendingPlanTextarea")) {
+    return;
+  }
   if (!convTasks.length && !pending) {
     box.innerHTML = '<div class="transcript-empty">Set a target URL and goal below, then click "Plan task" to draft a plan and start a new session.</div>';
     return;
   }
+  const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   let html = convTasks.map(renderTaskTurn).join("");
   if (pending) html += renderPendingPlanTurn(pending);
   box.innerHTML = html;
-  box.scrollTop = box.scrollHeight;
+  if (wasNearBottom) box.scrollTop = box.scrollHeight;
 }
 
 // W13: a plan awaiting local review — not a task yet (no task_id, no backend state at
@@ -1220,10 +1324,6 @@ function renderSelected() {
   renderTopbar(convTasks);
   renderTranscript(convTasks);
   renderLog(latest);
-  // A plan is pending review (in this or another conversation) — block requesting a
-  // second one until it's approved or cancelled, rather than only catching it inside
-  // requestPlan() after the click.
-  $("btnRun").disabled = !!pendingPlan;
 }
 
 // ---------------- Log panel visibility (manual "Show log" toggle) ----------------
@@ -1256,7 +1356,6 @@ $("useUserBrowser").addEventListener("change", () => {
   $("tabReusePolicyRow").style.display = active ? "" : "none";
 });
 
-$("btnRun").addEventListener("click", requestPlan);
 $("btnStop").addEventListener("click", () => {
   const taskId = $("btnStop").dataset.task;
   if (taskId) stopTask(taskId);
@@ -1288,6 +1387,42 @@ $("themeToggle").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-theme]");
   if (btn) applyTheme(btn.dataset.theme);
 });
+
+// ---------------- Settings dropdown (topbar) ----------------
+// Houses: theme toggle, Show log toggle, provider/max steps/headless/use-my-browser/
+// auto-approve — all moved here from the topbar/composer so those stay uncluttered.
+// Same ids as before, just relocated, so every other wiring above (theme, log
+// visibility, requestPlan() reading provider/maxSteps/etc.) keeps working untouched.
+$("btnSettings").addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("settingsPanel").classList.toggle("open");
+  $("btnSettings").classList.toggle("active", $("settingsPanel").classList.contains("open"));
+});
+$("settingsPanel").addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => {
+  $("settingsPanel").classList.remove("open");
+  $("btnSettings").classList.remove("active");
+  $("attachMenu").classList.remove("open");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    $("settingsPanel").classList.remove("open");
+    $("btnSettings").classList.remove("active");
+    $("attachMenu").classList.remove("open");
+  }
+});
+
+// ---------------- Attach-file menu (composer "+") ----------------
+// UI shell only, per request — reading/uploading a file isn't implemented yet. The
+// menu item's click handler below just closes the menu; nothing is read, stored, or
+// sent anywhere yet.
+$("btnAttach").addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("attachMenu").classList.toggle("open");
+});
+// No stopPropagation on the menu itself (unlike settingsPanel) — its one menu item is
+// supposed to close the menu on click via the delegated [data-attach-placeholder]
+// handler further down, which needs the click to actually bubble to document.
 document.addEventListener("click", (e) => {
   if (e.target.closest("[data-approve-plan]")) {
     approvePlan();
@@ -1309,16 +1444,29 @@ document.addEventListener("click", (e) => {
     startLearningSite();
     return;
   }
+  if (e.target.closest("[data-submit-learn-credentials]")) {
+    const u = document.getElementById("credReqUsername");
+    const p = document.getElementById("credReqPassword");
+    respondLearnCredentials(u && u.value ? u.value : null, p && p.value ? p.value : null);
+    return;
+  }
+  if (e.target.closest("[data-skip-learn-credentials]")) {
+    respondLearnCredentials(null, null);
+    return;
+  }
+  const killBtn = e.target.closest("[data-kill-conv]");
+  if (killBtn) {
+    killSession(killBtn.dataset.killConv);
+    return;
+  }
+  if (e.target.closest("[data-attach-placeholder]")) {
+    // Not implemented yet — see the composer "+" comment above. Just closes the menu.
+    $("attachMenu").classList.remove("open");
+    return;
+  }
   const btn = e.target.closest("[data-approve]");
   if (!btn) return;
   respondApproval(btn.dataset.task, btn.dataset.request, btn.dataset.approve === "true");
-});
-document.addEventListener("change", (e) => {
-  const radio = e.target.closest("[data-cred-choice]");
-  if (radio) {
-    learnUseNewAccount = radio.dataset.credChoice === "new";
-    renderManualBanner();
-  }
 });
 document.addEventListener("input", (e) => {
   // Keep the pending plan's draft in sync on every keystroke so a periodic re-render
@@ -1330,13 +1478,15 @@ document.addEventListener("input", (e) => {
 });
 $("url").addEventListener("input", scheduleManualStatusCheck);
 
-// Enter submits the goal (like a chat input) — Shift+Enter still inserts a newline for
-// a multi-line goal. Mirrors clicking "Plan task"; disabled while a plan is pending
-// review (same guard the button itself respects).
+// Enter submits the goal (like a chat input, no separate send button) — Shift+Enter
+// still inserts a newline for a multi-line goal. requestPlan() itself already re-checks
+// pendingPlan as a safety net; this just avoids double-firing while its own fetch is
+// still in flight (there's a moment before pendingPlan is set where a second Enter
+// press would otherwise slip through).
 $("goal").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    if (!$("btnRun").disabled) requestPlan();
+    if (!planRequestInFlight) requestPlan();
   }
 });
 

@@ -5,139 +5,193 @@
     "aria": "",
     "data_testid": "login-button"
   },
-  "หน้าแสดงรายการสินค้า > Open Menu": {
+  "หน้ารายการสินค้า > Open Menu": {
     "css": "#react-burger-menu-btn",
     "xpath": "//*[@id=\"react-burger-menu-btn\"]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแสดงรายการสินค้า > Close Menu": {
+  "หน้ารายการสินค้า > Close Menu": {
     "css": "#react-burger-cross-btn",
     "xpath": "//*[@id=\"react-burger-cross-btn\"]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแสดงรายการสินค้า > Twitter": {
+  "หน้ารายการสินค้า > Twitter": {
     "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": "social-twitter"
   },
-  "หน้าแสดงรายการสินค้า > Facebook": {
+  "หน้ารายการสินค้า > Facebook": {
     "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": "social-facebook"
   },
-  "หน้าแสดงรายการสินค้า > LinkedIn": {
+  "หน้ารายการสินค้า > LinkedIn": {
     "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": "social-linkedin"
   },
-  "หน้าแสดงรายการสินค้า > [Bm Item]": {
+  "หน้ารายการสินค้า > [Bm Item]": {
     "css": "a.bm-item.menu-item",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแสดงรายการสินค้า > [Inventory Item]": {
+  "หน้ารายการสินค้า > [Inventory Item]": {
     "css": "div.inventory_item",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแสดงรายการสินค้า > [Inventory Item] Sauce Labs Backpack": {
+  "หน้ารายการสินค้า > [Inventory Item] Sauce Labs Backpack": {
     "css": "[data-testid=\"item-4-title-link\"], [data-test=\"item-4-title-link\"]",
     "xpath": "//*[@id=\"item_4_title_link\"]",
     "aria": "",
     "data_testid": "item-4-title-link"
   },
-  "หน้าแสดงรายการสินค้า > [Inventory Item] Add to cart": {
+  "หน้ารายการสินค้า > [Inventory Item] Add to cart": {
     "css": "[data-testid=\"add-to-cart-sauce-labs-backpack\"], [data-test=\"add-to-cart-sauce-labs-backpack\"]",
     "xpath": "//*[@id=\"add-to-cart-sauce-labs-backpack\"]",
     "aria": "",
     "data_testid": "add-to-cart-sauce-labs-backpack"
   },
-  "ตะกร้าสินค้า > Open Menu": {
+  "หน้าตะกร้าสินค้า > Open Menu": {
     "css": "#react-burger-menu-btn",
     "xpath": "//*[@id=\"react-burger-menu-btn\"]",
     "aria": "",
     "data_testid": ""
   },
-  "ตะกร้าสินค้า > Continue Shopping": {
+  "หน้าตะกร้าสินค้า > Continue Shopping": {
     "css": "[data-testid=\"continue-shopping\"], [data-test=\"continue-shopping\"]",
     "xpath": "//*[@id=\"continue-shopping\"]",
     "aria": "",
     "data_testid": "continue-shopping"
   },
-  "ตะกร้าสินค้า > Checkout": {
+  "หน้าตะกร้าสินค้า > Checkout": {
     "css": "[data-testid=\"checkout\"], [data-test=\"checkout\"]",
     "xpath": "//*[@id=\"checkout\"]",
     "aria": "",
     "data_testid": "checkout"
   },
-  "ตะกร้าสินค้า > Twitter": {
+  "หน้าตะกร้าสินค้า > Twitter": {
     "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": "social-twitter"
   },
-  "ตะกร้าสินค้า > Facebook": {
+  "หน้าตะกร้าสินค้า > Facebook": {
     "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": "social-facebook"
   },
-  "ตะกร้าสินค้า > LinkedIn": {
+  "หน้าตะกร้าสินค้า > LinkedIn": {
     "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": "social-linkedin"
   },
-  "ตะกร้าสินค้า > Close Menu": {
+  "หน้าตะกร้าสินค้า > Close Menu": {
     "css": "#react-burger-cross-btn",
     "xpath": "//*[@id=\"react-burger-cross-btn\"]",
     "aria": "",
     "data_testid": ""
   },
-  "Product Detail Page > Open Menu": {
+  "หน้ากรอกข้อมูลการจัดส่ง > Open Menu": {
     "css": "#react-burger-menu-btn",
     "xpath": "//*[@id=\"react-burger-menu-btn\"]",
     "aria": "",
     "data_testid": ""
   },
-  "Product Detail Page > Back to products": {
-    "css": "[data-testid=\"back-to-products\"], [data-test=\"back-to-products\"]",
-    "xpath": "//*[@id=\"back-to-products\"]",
+  "หน้ากรอกข้อมูลการจัดส่ง > Cancel": {
+    "css": "[data-testid=\"cancel\"], [data-test=\"cancel\"]",
+    "xpath": "//*[@id=\"cancel\"]",
     "aria": "",
-    "data_testid": "back-to-products"
+    "data_testid": "cancel"
   },
-  "Product Detail Page > Add to cart": {
-    "css": "[data-testid=\"add-to-cart\"], [data-test=\"add-to-cart\"]",
-    "xpath": "//*[@id=\"add-to-cart\"]",
+  "หน้ากรอกข้อมูลการจัดส่ง > Continue": {
+    "css": "[data-testid=\"continue\"], [data-test=\"continue\"]",
+    "xpath": "//*[@id=\"continue\"]",
     "aria": "",
-    "data_testid": "add-to-cart"
+    "data_testid": "continue"
   },
-  "Product Detail Page > Twitter": {
+  "หน้ากรอกข้อมูลการจัดส่ง > Twitter": {
     "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": "social-twitter"
   },
-  "Product Detail Page > Facebook": {
+  "หน้ากรอกข้อมูลการจัดส่ง > Facebook": {
     "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": "social-facebook"
   },
-  "Product Detail Page > LinkedIn": {
+  "หน้ากรอกข้อมูลการจัดส่ง > LinkedIn": {
     "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
     "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": "social-linkedin"
   },
-  "Product Detail Page > Close Menu": {
+  "หน้ากรอกข้อมูลการจัดส่ง > Close Menu": {
+    "css": "#react-burger-cross-btn",
+    "xpath": "//*[@id=\"react-burger-cross-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้ากรอกข้อมูลการจัดส่ง > xmark": {
+    "css": "[data-testid=\"error-button\"], [data-test=\"error-button\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/div[2]/div[1]/form[1]/div[1]/div[4]/h3[1]/button[1]",
+    "aria": "",
+    "data_testid": "error-button"
+  },
+  "หน้ากรอกข้อมูลการจัดส่ง > [Form Group]": {
+    "css": "div.form_group",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าSecสินค้า > Open Menu": {
+    "css": "#react-burger-menu-btn",
+    "xpath": "//*[@id=\"react-burger-menu-btn\"]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าSecสินค้า > Back to products": {
+    "css": "[data-testid=\"back-to-products\"], [data-test=\"back-to-products\"]",
+    "xpath": "//*[@id=\"back-to-products\"]",
+    "aria": "",
+    "data_testid": "back-to-products"
+  },
+  "หน้าSecสินค้า > Add to cart": {
+    "css": "[data-testid=\"add-to-cart\"], [data-test=\"add-to-cart\"]",
+    "xpath": "//*[@id=\"add-to-cart\"]",
+    "aria": "",
+    "data_testid": "add-to-cart"
+  },
+  "หน้าSecสินค้า > Twitter": {
+    "css": "[data-testid=\"social-twitter\"], [data-test=\"social-twitter\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": "social-twitter"
+  },
+  "หน้าSecสินค้า > Facebook": {
+    "css": "[data-testid=\"social-facebook\"], [data-test=\"social-facebook\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": "social-facebook"
+  },
+  "หน้าSecสินค้า > LinkedIn": {
+    "css": "[data-testid=\"social-linkedin\"], [data-test=\"social-linkedin\"]",
+    "xpath": "/html/body[1]/div[1]/div[1]/footer[1]/ul[1]/li[3]/a[1]",
+    "aria": "",
+    "data_testid": "social-linkedin"
+  },
+  "หน้าSecสินค้า > Close Menu": {
     "css": "#react-burger-cross-btn",
     "xpath": "//*[@id=\"react-burger-cross-btn\"]",
     "aria": "",

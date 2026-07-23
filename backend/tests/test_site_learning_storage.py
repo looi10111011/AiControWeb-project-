@@ -164,6 +164,27 @@ def test_delete_credentials_removes_the_file_and_is_idempotent():
     assert storage.delete_credentials("example.com") is False  # ลบซ้ำไม่ error
 
 
+def test_credentials_are_isolated_per_domain():
+    """W23: credential ของเว็บหนึ่งต้องไม่มีทางไปโผล่/ถูกดึงมาใช้กับอีกเว็บหนึ่งได้เลย —
+    แต่ละโดเมนเก็บใน _domain_dir(domain)/credentials.json แยกโฟลเดอร์กันเด็ดขาดอยู่แล้ว
+    โดยโครงสร้าง (ดู storage.py หัวไฟล์) เทสต์นี้ยืนยันตรงๆ ว่า save/load จริงไม่รั่วข้ามกัน"""
+    storage.save_credentials("site-a.com", "alice", "alice-pass")
+    storage.save_credentials("site-b.com", "bob", "bob-pass")
+
+    assert storage.load_credentials("site-a.com") == {"username": "alice", "password": "alice-pass"}
+    assert storage.load_credentials("site-b.com") == {"username": "bob", "password": "bob-pass"}
+
+    # ลบของเว็บหนึ่งต้องไม่กระทบอีกเว็บหนึ่งเลย
+    assert storage.delete_credentials("site-a.com") is True
+    assert storage.credentials_exist("site-a.com") is False
+    assert storage.load_credentials("site-b.com") == {"username": "bob", "password": "bob-pass"}
+
+    domain_a_dir = os.path.join(settings.site_manuals_dir, "site-a.com")
+    domain_b_dir = os.path.join(settings.site_manuals_dir, "site-b.com")
+    assert not os.path.exists(os.path.join(domain_a_dir, "credentials.json"))
+    assert os.path.exists(os.path.join(domain_b_dir, "credentials.json"))
+
+
 def test_save_and_load_manual_round_trips_icon_hint_and_ui_patterns():
     manual = SiteManual(website="example.com", pages=[
         PageInfo(

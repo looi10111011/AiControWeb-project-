@@ -12,6 +12,7 @@ request_approval/resolve_approval (ดู task_manager.py)
 """
 
 import json
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -24,6 +25,7 @@ from backend.app.api.schemas import (
     GeneratePlanRequest,
     GeneratePlanResponse,
     LearnCreatedResponse,
+    LearnCredentialsRequest,
     LearnSiteRequest,
     PoolStatusResponse,
     RelearnPageRequest,
@@ -130,6 +132,7 @@ async def _run_with_resolved_browser(
             on_event=on_event,
             page=session.page,
             site_manual_context=site_manual_context,
+            session_id=req.session_id,
             **extra_run_task_kwargs,
         )
 
@@ -149,6 +152,7 @@ async def _run_with_resolved_browser(
             connect_to_user_browser=True,
             tab_reuse_policy=req.tab_reuse_policy,
             site_manual_context=site_manual_context,
+            session_id=req.session_id,
             **extra_run_task_kwargs,
         )
     if wants_visible_browser:
@@ -163,6 +167,7 @@ async def _run_with_resolved_browser(
             on_event=on_event,
             keep_browser_open=True,
             site_manual_context=site_manual_context,
+            session_id=req.session_id,
             **extra_run_task_kwargs,
         )
     async with pool.acquire() as browser:
@@ -177,6 +182,7 @@ async def _run_with_resolved_browser(
             browser=browser,
             on_event=on_event,
             site_manual_context=site_manual_context,
+            session_id=req.session_id,
             **extra_run_task_kwargs,
         )
 
@@ -460,6 +466,31 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
     async def _on_progress(event: dict) -> None:
         await learn_manager.push_event(learn_id, event)
 
+    # W23: crawler.py เจอหน้า login ระหว่างทางที่ยังไม่มี username/password ให้เลย —
+    # หยุดรอถามคนจริงผ่าน SSE (credentials_needed event) + POST .../credentials แทน
+    # การบังคับให้กรอกไว้ล่วงหน้าก่อน crawl เหมือนเดิม เก็บ credential ที่ได้ทันทีที่ user
+    # ตอบ (ไม่รอให้ crawl จบก่อน — ถ้า crawl ถูก stop กลางคันหลังจากนี้ credential ที่กรอก
+    # ไปแล้วก็ยังไม่หายไปเปล่าๆ)
+    #
+    # domain ที่ได้ต้องตรงกับ extract_domain(req.url) เท่านั้น (การันตีว่าไม่มีทางบันทึก
+    # credential ผิดเว็บ ข้าม site_manuals กันได้ — ป้องกันสองชั้น: ชั้นแรกคือ crawl_site()
+    # เอง generate domain นี้จาก extract_domain(start_url) ตรงๆ ไม่มีทางเป็นโดเมนอื่นอยู่
+    # แล้ว เพราะกรอง nav link/ปุ่มที่พาออกนอกโดเมนทิ้งไปหมดตั้งแต่ต้น ชั้นที่สองคือ assert
+    # ตรงนี้ กันไว้เผื่อ crawler เปลี่ยนพฤติกรรมในอนาคตแล้วลืมรักษา invariant นี้)
+    target_domain = extract_domain(req.url)
+
+    async def _on_credentials_needed(domain: str) -> Optional[dict]:
+        assert domain == target_domain, (
+            f"crawl job ของ {target_domain!r} เรียกขอ credential ของ {domain!r} ผิดเว็บ — "
+            "ห้ามบันทึก/ใช้ credential ข้าม site_manuals เด็ดขาด"
+        )
+        creds = await learn_manager.request_credentials(
+            learn_id, domain, timeout=settings.approval_timeout_seconds,
+        )
+        if creds:
+            save_credentials(domain, creds["username"], creds["password"])
+        return creds
+
     # W18: ถ้าผู้ใช้เลือก "ใช้บัญชีที่บันทึกไว้" บน UI แทนการกรอกใหม่ (req.username/password
     # จะเป็น None ทั้งคู่ในเคสนี้ — frontend ไม่มีทางส่งรหัสผ่านจริงที่ backend เก็บไว้แล้ว
     # กลับมาซ้ำได้อยู่แล้ว) โหลด credential ที่เก็บไว้ของโดเมนนี้มาใช้ login bootstrap แทน
@@ -480,6 +511,7 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
                     on_progress=_on_progress,
                     username=resolved_username,
                     password=resolved_password,
+                    on_credentials_needed=_on_credentials_needed,
                 )
             finally:
                 await browser.close()
@@ -498,8 +530,9 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
 @router.get("/api/site-manual/learn/{learn_id}/stream")
 async def stream_learn(learn_id: str, request: Request) -> StreamingResponse:
     """SSE ของ crawl job นี้ — "page_done" ทีละหน้าที่ crawl ผ่าน + "learn_done" ปิดท้าย
-    (เหมือน stream_task() ทุกประการแค่ event kind ต่างกัน — ไม่มี approval_request เลย
-    เพราะ crawl ไม่มี human-in-the-loop ระหว่างทาง)"""
+    (เหมือน stream_task() เกือบทุกประการแค่ event kind ต่างกัน) W23: เพิ่ม
+    "credentials_needed"/"credentials_timeout" เข้ามาแล้ว — human-in-the-loop จริงๆ
+    เหมือน approval_request ของ task ปกติ (ดู POST .../credentials ด้านล่าง)"""
     learn_manager: LearnManager = request.app.state.learn_manager
     record = learn_manager.get(learn_id)
     if record is None:
@@ -526,6 +559,21 @@ async def stream_learn(learn_id: str, request: Request) -> StreamingResponse:
     )
 
 
+@router.post("/api/site-manual/learn/{learn_id}/credentials", status_code=204)
+async def respond_learn_credentials(
+    learn_id: str, req: LearnCredentialsRequest, request: Request,
+) -> None:
+    """W23: ตอบ "credentials_needed" event (ดู stream_learn() ด้านบน) — ปลดล็อก
+    crawl_site() ที่กำลังรอ (await) อยู่ใน on_credentials_needed callback ของ
+    learn_site() ให้ไปต่อได้ ปล่อย username/password ว่างทั้งคู่ = ผู้ใช้เลือกข้าม
+    ("ไม่ต้อง login") คืน 404 ถ้า request_id ไม่ตรง/หมดอายุ/ตอบไปแล้ว (ดู
+    LearnManager.resolve_credentials())"""
+    learn_manager: LearnManager = request.app.state.learn_manager
+    ok = learn_manager.resolve_credentials(learn_id, req.request_id, req.username, req.password)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"ไม่พบ request_id: {req.request_id!r} (หมดอายุ/ตอบไปแล้ว)")
+
+
 @router.post("/api/site-manual/{domain}/relearn-page", response_model=RelearnPageResponse)
 async def relearn_page(domain: str, req: RelearnPageRequest, request: Request) -> RelearnPageResponse:
     """Selector-repair (สเปค: "หาก Selector ใช้งานไม่ได้ ให้สำรวจเฉพาะหน้านั้น อัปเดต
@@ -541,7 +589,7 @@ async def relearn_page(domain: str, req: RelearnPageRequest, request: Request) -
         )
     pool = request.app.state.browser_pool
     resolved_provider = req.provider or settings.llm_provider
-    client, model, _, _ = Orchestrator._llm_backend(resolved_provider)
+    client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
 
     async with pool.acquire() as browser:
         context = await browser.new_context()

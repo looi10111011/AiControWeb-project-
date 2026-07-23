@@ -17,6 +17,15 @@ record_task() เก็บทั้ง 2 อย่างไว้ในเอก
 
 กฎเดียวกับ retriever.py: ห้าม throw ออกไปให้ agent loop พังเด็ดขาด ทั้ง record_task()
 และ recall() ดักทุก exception เอง
+
+W23: session_id เข้ามาแล้ว — เดิม collection นี้เป็น global เดียวข้าม session/site/user
+ทั้งหมด ไม่มีการกรองใดๆ เลย ทำให้ session หนึ่งดึงความจำ (รวมถึง "action ที่เคย fail")
+ของอีก session ที่ทำคนละเว็บ/คนละเจตนาไปใช้ได้ (เจอบั๊กจริงคู่กับ plan_memory.py — เพราะ
+ใช้ embedding function ตัวเดียวกันที่ยุบ text ภาษาไทยให้ใกล้เคียงกันหมด ยิ่งซ้ำเติมปัญหา
+นี้ให้เกิดง่ายขึ้นไปอีก) — recall() ตอนนี้ "ต้อง" มี session_id ถึงจะคืนอะไรเลย (ไม่มี =
+คืน [] เงียบๆ ทันที ไม่ query เลยด้วยซ้ำ ปลอดภัยไว้ก่อนดีกว่าเสี่ยง unscoped query) กรอง
+ด้วย where={"session_id": ...} ตรงๆ ที่ ChromaDB เอง (ไม่ใช่กรองทีหลังในโค้ด) การันตีว่า
+document ที่คืนมาเป็นของ session นี้เท่านั้นจริงๆ ไม่มีทางหลุดข้าม session ได้เลย
 """
 
 import uuid
@@ -24,10 +33,18 @@ import uuid
 from backend.app.rag.chroma_client import get_long_term_collection
 
 
-def record_task(url: str, goal: str, success: bool, message: str, failed_actions: str = "") -> None:
+def record_task(
+    url: str, goal: str, success: bool, message: str, failed_actions: str = "", session_id: str = "",
+) -> None:
     """บันทึกผลลัพธ์ของ 1 task run — เรียกครั้งเดียวตอนจบ run_task() แต่ละครั้ง
     (ไม่ upsert ทับ id เดิมเหมือน manual ingestion — ทุก task run คือ document ใหม่
-    เสมอ เพราะต้องการสะสมประวัติหลายรอบไว้ ไม่ใช่แค่ค่าล่าสุด)"""
+    เสมอ เพราะต้องการสะสมประวัติหลายรอบไว้ ไม่ใช่แค่ค่าล่าสุด)
+
+    session_id: ผูก document นี้เข้ากับ session ที่สร้างมันขึ้นมา ให้ recall() กรองกลับ
+    มาได้เฉพาะของ session เดียวกันเท่านั้น (ดู module docstring) ว่างเปล่าได้ (เช่น task
+    ที่ไม่มี session concept เลย) — document ยังถูกบันทึกอยู่ (ไม่เสียประวัติ) แค่จะไม่มี
+    ทาง recall กลับมาเจอได้อีกเลยในทางปฏิบัติ เพราะ recall() ปฏิเสธ query แบบไม่มี
+    session_id ไปตั้งแต่ต้น"""
     try:
         collection = get_long_term_collection()
 
@@ -44,7 +61,7 @@ def record_task(url: str, goal: str, success: bool, message: str, failed_actions
 
         collection.add(
             documents=[document],
-            metadatas=[{"url": url, "goal": goal, "success": success}],
+            metadatas=[{"url": url, "goal": goal, "success": success, "session_id": session_id}],
             ids=[str(uuid.uuid4())],
         )
     except Exception as e:
@@ -52,16 +69,23 @@ def record_task(url: str, goal: str, success: bool, message: str, failed_actions
         print(f"⚠️ Long-term Memory Record Error: {e}")
 
 
-def recall(query: str, page_state: str = "", k: int = 3) -> list[str]:
-    """ดึง document ของ task run ก่อนหน้าที่เกี่ยวข้องกับ goal+page ปัจจุบัน —
-    รูปแบบเดียวกับ retriever.retrieve() ทุกประการ (รวม page_state เข้า query ก่อน
-    embed, คืน [] เสมอถ้า error/ไม่มีอะไรตรง ไม่ throw)"""
+def recall(query: str, page_state: str = "", k: int = 3, session_id: str = "") -> list[str]:
+    """ดึง document ของ task run ก่อนหน้าที่เกี่ยวข้องกับ goal+page ปัจจุบัน "ภายใน
+    session เดียวกันเท่านั้น" (session_id ว่างเปล่า = ไม่มี session context ให้ scope
+    ปลอดภัยได้ คืน [] ทันทีโดยไม่ query เลย — ดู module docstring) กรองด้วย
+    where={"session_id": ...} ที่ ChromaDB ตรงๆ ก่อน semantic search เสมอ ไม่ใช่กรอง
+    ทีหลังในโค้ด (รูปแบบเดียวกับ retriever.retrieve() ทุกประการนอกจากนี้ — รวม page_state
+    เข้า query ก่อน embed, คืน [] เสมอถ้า error/ไม่มีอะไรตรง ไม่ throw)"""
+    if not session_id:
+        return []
     try:
         collection = get_long_term_collection()
 
         embed_input = f"{query}\n\nCurrent page:\n{page_state}" if page_state else query
 
-        results = collection.query(query_texts=[embed_input], n_results=k)
+        results = collection.query(
+            query_texts=[embed_input], n_results=k, where={"session_id": session_id},
+        )
 
         documents = results.get("documents", [])
         if documents and len(documents) > 0:

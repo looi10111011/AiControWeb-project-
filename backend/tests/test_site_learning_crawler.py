@@ -324,6 +324,123 @@ async def test_crawl_site_never_persists_credentials_in_manual_or_progress_event
     assert password not in events_dump
 
 
+# ---------------- W23: on_credentials_needed — ถามคนจริงกลางคัน crawl ----------------
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_asks_for_credentials_when_none_given_and_login_page_found(login_fixture_server):
+    """ไม่ได้ส่ง username/password มาเลยตอนเริ่ม crawl แต่หน้าแรกมี password field จริง —
+    ต้องเรียก on_credentials_needed(domain) แล้วเอาผลลัพธ์ไป login bootstrap ต่อทันที
+    (เข้าถึง settings.html ได้เหมือน test_crawl_site_login_bootstrap_fills_and_submits_
+    then_continues_bfs ทุกประการ ทั้งที่รอบนี้ไม่ได้ส่ง credential มาตั้งแต่ต้นเลย)"""
+    domain_seen = None
+
+    async def on_credentials_needed(domain):
+        nonlocal domain_seen
+        domain_seen = domain
+        return {"username": "alice", "password": "s3cr3t"}
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{login_fixture_server}/login.html", max_pages=10,
+                on_credentials_needed=on_credentials_needed,
+            )
+            await browser.close()
+
+    assert domain_seen == "127.0.0.1"
+    visited_urls = {p.url for p in manual.pages}
+    assert any("post_login.html" in u for u in visited_urls)
+    assert any("settings.html" in u for u in visited_urls)
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_continues_without_login_when_user_skips_credentials_prompt(login_fixture_server):
+    """on_credentials_needed คืน None (user กด "ข้าม"/หมดเวลา) — crawl ต้องไปต่อโดยไม่
+    login แทนที่จะค้าง/ล้ม เก็บได้แค่หน้า login เดียว (settings.html เข้าถึงไม่ได้เพราะไม่ได้
+    login จริง — เหมือน test_crawl_site_login_bootstrap_fails_gracefully_without_submit_
+    button ทุกประการแค่สาเหตุต่างกัน)"""
+    async def on_credentials_needed(domain):
+        return None
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{login_fixture_server}/login.html", max_pages=10,
+                on_credentials_needed=on_credentials_needed,
+            )
+            await browser.close()
+
+    assert len(manual.pages) == 1
+    assert manual.pages[0].url.endswith("login.html")
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_asks_for_credentials_only_once(login_fixture_server):
+    """settings.html ก็มี password field เหมือนกัน (จำลองหน้า "เปลี่ยนรหัสผ่าน") แต่ถ้า
+    user เพิ่งเลือกข้ามไปแล้วตอนเจอหน้า login.html ต้องไม่ถามซ้ำอีกรอบตอนไปเจอหน้าอื่นที่มี
+    password field — login_attempted ตัวเดียวกับที่ gate เส้นทาง username/password ปกติ"""
+    call_count = 0
+
+    async def on_credentials_needed(domain):
+        nonlocal call_count
+        call_count += 1
+        return None
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            await crawl_site(
+                browser, f"{login_fixture_server}/login.html", max_pages=10,
+                on_credentials_needed=on_credentials_needed,
+            )
+            await browser.close()
+
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_does_not_ask_for_credentials_on_pages_without_login_fields(fixture_server):
+    """on_credentials_needed ให้มา แต่ไม่มีหน้าไหนมี password field เลย (fixture_server
+    ธรรมดา ไม่ใช่ login_fixture_server) — ต้องไม่ถูกเรียกเลยสักครั้ง"""
+    on_credentials_needed = AsyncMock(return_value=None)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            await crawl_site(
+                browser, f"{fixture_server}/index.html", max_pages=10,
+                on_credentials_needed=on_credentials_needed,
+            )
+            await browser.close()
+
+    on_credentials_needed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_prefers_upfront_credentials_over_asking(login_fixture_server):
+    """ถ้าส่ง username/password มาตั้งแต่ต้น crawl แล้ว ไม่ควรเรียก on_credentials_needed
+    เลย (เส้นทาง username/password ปกติ gate ด้วย login_attempted ตัวเดียวกัน — ตรวจก่อน
+    เสมอ ดู crawl_site() ในไฟล์ crawler.py)"""
+    on_credentials_needed = AsyncMock(return_value=None)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{login_fixture_server}/login.html", max_pages=10,
+                username="alice", password="s3cr3t",
+                on_credentials_needed=on_credentials_needed,
+            )
+            await browser.close()
+
+    on_credentials_needed.assert_not_awaited()
+    visited_urls = {p.url for p in manual.pages}
+    assert any("settings.html" in u for u in visited_urls)
+
+
 # ---------------- W16: ไล่กดปุ่มปลอดภัยระหว่าง crawl ----------------
 # ปุ่มพวกนี้ใช้ onclick="window.location.href=...' แทน <a href> จริง เพื่อจำลอง "ปุ่มที่
 # พาไปหน้าใหม่" (ต่างจาก nav link ที่ extractor.py เก็บแยกเป็น nav_links อยู่แล้ว — ปุ่ม

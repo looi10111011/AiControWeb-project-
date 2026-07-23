@@ -150,29 +150,39 @@ def _build_permission_query(cmd: dict, label: str) -> str:
     target = label or cmd.get("url", "")
     return f"{cmd.get('type', '')} {target}".strip()
 
-# W7[A] (context compaction, Gemini เท่านั้น): stateless chat API ต้องส่ง messages
-# ทั้งก้อนซ้ำทุก step (ไม่มี server-side session) — แต่ละ step ของ Gemini เพิ่ม page
-# snapshot เต็มๆ + manual/memory/long-term context ทุกครั้งเข้าไปใน messages เรื่อยๆ
-# ไม่เคยหดกลับเลย ทำให้ input token ต่อ step โตขึ้นเรื่อยๆ ตามจำนวน step (ไม่ใช่แค่
-# ตามความยาว task จริง) — พอ step สะสมเกิน _GEMINI_COMPACT_AFTER_STEPS ให้ตัด step
-# เก่ากว่า _GEMINI_KEEP_RECENT_STEPS ตัวล่าสุดออกจาก messages แล้วแทนที่ด้วย digest
-# สั้นๆ (สร้างจาก ShortTermMemory.all() ที่มีข้อมูลสะอาดอยู่แล้ว ไม่ต้อง parse raw
-# Gemini Content object เอง — ดู _build_gemini_history_digest()/_compact_gemini_messages()
-# ด้านล่าง) — จำกัด scope แค่ Gemini ตามที่ user เลือก (Anthropic/Groq มี message
-# format คนละแบบ ต้องเขียนแยกทีละตัว ยังไม่ทำตอนนี้)
-_GEMINI_COMPACT_AFTER_STEPS = 6
-_GEMINI_KEEP_RECENT_STEPS = 3
+# W7[A] (context compaction) / W22 (generalize จาก Gemini-only มาทุก provider):
+# stateless chat API ต้องส่ง messages ทั้งก้อนซ้ำทุก step (ไม่มี server-side session)
+# — ทุก step เพิ่ม page snapshot เต็มๆ + manual/memory/long-term context เข้าไปใน
+# messages เรื่อยๆ ไม่เคยหดกลับเลย ทำให้ input token ต่อ step โตขึ้นเรื่อยๆ ตามจำนวน
+# step (ไม่ใช่แค่ตามความยาว task จริง) — พอ step สะสมเกิน _COMPACT_AFTER_STEPS ให้ตัด
+# step เก่ากว่า _KEEP_RECENT_STEPS ตัวล่าสุดออกจาก messages แล้วแทนที่ด้วย digest สั้นๆ
+# (สร้างจาก ShortTermMemory.all() ที่มีข้อมูลสะอาดอยู่แล้ว ไม่ต้อง parse raw message
+# object ของแต่ละ provider เอง — ดู _build_history_digest() ด้านล่าง)
+#
+# เดิม (W7[A]) จำกัด scope แค่ Gemini เพราะ Anthropic/Groq มี message format คนละแบบ
+# ต้องเขียน splicing แยกทีละตัว — ตัว digest (provider-agnostic อยู่แล้วเพราะอ่านจาก
+# ShortTermMemory ไม่ใช่ raw messages) ใช้ร่วมกันได้ทั้ง 3 ตัว มีแค่ฟังก์ชัน splice
+# raw messages (_compact_gemini_messages/_compact_anthropic_messages/
+# _compact_groq_messages ด้านล่าง) ที่ต้องแยกตาม wire format ของแต่ละเจ้า — เลือกจาก
+# _llm_backend() เหมือน next_action/append_tool_result ที่มีอยู่แล้ว (ดู
+# Orchestrator._llm_backend())
+_COMPACT_AFTER_STEPS = 6
+_KEEP_RECENT_STEPS = 3
 
 
-def _build_gemini_history_digest(memory: ShortTermMemory, upto_step: int) -> str:
+def _build_history_digest(memory: ShortTermMemory, upto_step: int) -> str:
     """สรุป step 1..upto_step (ไม่รวม step 0 ที่เป็น goto ตอนเริ่ม task) เป็น bullet
     list บรรทัดละ step สั้นๆ — สร้างใหม่จาก ShortTermMemory.all() ทุกครั้งที่บีบอัด
     (ไม่ใช่สะสมจาก digest รอบก่อน) เพราะ ShortTermMemory เก็บ history แบบไม่ตัดทิ้ง
-    อยู่แล้วตลอด task จึงเป็นแหล่งความจริงที่สมบูรณ์กว่า raw messages ที่ถูกตัดไปแล้ว"""
+    อยู่แล้วตลอด task จึงเป็นแหล่งความจริงที่สมบูรณ์กว่า raw messages ที่ถูกตัดไปแล้ว —
+    provider-agnostic (ไม่แตะ raw messages เลย) เลยใช้ร่วมกันได้ทั้ง Anthropic/Groq/Gemini"""
     entries = [h for h in memory.all() if 0 < h.get("step", 0) <= upto_step]
     if not entries:
         return ""
     return "\n".join(f"- step {h['step']}: {h['cmd']} -> {h['result']}" for h in entries)
+
+
+_DIGEST_PREFIX = "[สรุป step ก่อนหน้าที่ถูกย่อไว้กันบทสนทนายาวเกินไป]"
 
 
 def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> list:
@@ -180,7 +190,7 @@ def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> l
     turn แรกที่เหลืออยู่ (แทนที่จะแทรก turn ใหม่แยกต่างหาก) — messages[cut_at] ต้อง
     เป็น {"role": "user", "parts": [{"text": ...}]} เสมอ (จุดเริ่ม step ใหม่จาก
     next_action_gemini()) เพราะ cut_at มาจาก step boundary ที่ orchestrator เก็บเอง
-    (ดู gemini_step_boundaries ใน run_task()) ไม่ใช่ตำแหน่งเดา — วิธีนี้ไม่ต้องแตะลำดับ
+    (ดู step_boundaries ใน run_task()) ไม่ใช่ตำแหน่งเดา — วิธีนี้ไม่ต้องแตะลำดับ
     role user/model ของ Gemini เลย กันปัญหา conversation structure ผิดเพี้ยนจากการ
     แทรก turn ใหม่ ถ้ารูปแบบไม่ตรงคาด (ผิดคาดจริงๆ) คืน messages เดิมไม่แก้อะไร
     ไม่ throw"""
@@ -194,10 +204,60 @@ def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> l
         original_text = first["parts"][0]["text"]
         new_first = {
             "role": "user",
-            "parts": [{"text": f"[สรุป step ก่อนหน้าที่ถูกย่อไว้กันบทสนทนายาวเกินไป]\n{digest_text}\n\n{original_text}"}],
+            "parts": [{"text": f"{_DIGEST_PREFIX}\n{digest_text}\n\n{original_text}"}],
         }
         return [new_first] + kept[1:]
     except (KeyError, IndexError, TypeError):
+        return messages
+
+
+def _compact_anthropic_messages(messages: list, cut_at: int, digest_text: str) -> list:
+    """W22: เหมือน _compact_gemini_messages() ทุกประการแค่ shape ต่างกัน — Anthropic
+    เก็บ user turn เป็น {"role": "user", "content": "<text ล้วนๆ>"} (ไม่ใช่ list of
+    content block เหมือน tool_result/assistant turn) messages[cut_at] ต้องเป็น turn
+    แบบนี้เสมอเพราะ cut_at มาจาก step boundary ที่บันทึกหลัง append_tool_result() พอดี
+    (จุดเริ่ม step ถัดไปคือ user text turn จาก next_action() เสมอ) — ถ้ารูปแบบไม่ตรงคาด
+    (เช่นโดน nudge message แทรกกลาง ทำให้ turn แรกไม่ใช่ plain text) คืน messages เดิม
+    ไม่แก้อะไร ไม่ throw เหมือนกัน"""
+    if cut_at <= 0 or not digest_text:
+        return messages
+    kept = messages[cut_at:]
+    if not kept:
+        return messages
+    try:
+        first = kept[0]
+        original_text = first["content"]
+        if first.get("role") != "user" or not isinstance(original_text, str):
+            return messages
+        new_first = {"role": "user", "content": f"{_DIGEST_PREFIX}\n{digest_text}\n\n{original_text}"}
+        return [new_first] + kept[1:]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return messages
+
+
+def _compact_groq_messages(messages: list, cut_at: int, digest_text: str) -> list:
+    """W22: เหมือน _compact_anthropic_messages() แต่ Groq เก็บ system prompt เป็น
+    messages[0] เอง (llm.next_action_groq(): "if not messages: messages = [{"role":
+    "system", ...}]") ต่างจาก Anthropic/Gemini ที่ส่ง system แยกนอก messages เสมอ —
+    ถ้าตัด messages[:cut_at] ตรงๆ แบบเดียวกับสองตัวบนจะกิน system message ทิ้งไปด้วย
+    (cut_at มาจาก step boundary ที่บันทึก "หลัง" step แรกจบเสมอ ซึ่งมากกว่า index 0
+    อยู่แล้ว) ต้องกัน messages[0] ไว้เสมอ ไม่ให้หลุดไปอยู่ใน "ส่วนที่ตัดทิ้ง"""
+    if cut_at <= 0 or not digest_text or not messages:
+        return messages
+    if messages[0].get("role") != "system":
+        return messages
+    system_msg = messages[0]
+    kept = messages[cut_at:]
+    if not kept:
+        return messages
+    try:
+        first = kept[0]
+        original_text = first["content"]
+        if first.get("role") != "user" or not isinstance(original_text, str):
+            return messages
+        new_first = {"role": "user", "content": f"{_DIGEST_PREFIX}\n{digest_text}\n\n{original_text}"}
+        return [system_msg, new_first] + kept[1:]
+    except (KeyError, IndexError, TypeError, AttributeError):
         return messages
 
 
@@ -417,10 +477,13 @@ class Orchestrator:
 
     @staticmethod
     def _llm_backend(provider: str):
-        """เลือก client/model/next_action/append_tool_result ตาม provider
-        รองรับ "anthropic" (ตัวหลักตาม roadmap), "gemini" (provider สำรอง free tier
-        กว้างกว่า) และ "groq" (ไว้ทดสอบตอนยังไม่มี Anthropic key จริง) — คืนรูปแบบ
-        เดียวกันหมดให้ loop ข้างล่างเรียกแบบไม่ต้องรู้ว่าเป็น provider ไหน
+        """เลือก client/model/next_action/append_tool_result/compact_messages ตาม
+        provider รองรับ "anthropic" (ตัวหลักตาม roadmap), "gemini" (provider สำรอง
+        free tier กว้างกว่า) และ "groq" (ไว้ทดสอบตอนยังไม่มี Anthropic key จริง) —
+        คืนรูปแบบเดียวกันหมดให้ loop ข้างล่างเรียกแบบไม่ต้องรู้ว่าเป็น provider ไหน
+        (W22: เพิ่ม compact_messages เข้าชุดนี้ด้วย — เดิม context compaction เคย
+        hardcode เฉพาะ Gemini ในตัว loop เอง ตอนนี้ generalize ผ่าน dispatch ตรงนี้แทน
+        เหมือน next_action/append_tool_result ทุกประการ)
         """
         if provider == "groq":
             return (
@@ -428,6 +491,7 @@ class Orchestrator:
                 settings.groq_model,
                 llm.next_action_groq,
                 llm.append_tool_result_groq,
+                _compact_groq_messages,
             )
         if provider == "gemini":
             return (
@@ -435,6 +499,7 @@ class Orchestrator:
                 settings.gemini_model,
                 llm.next_action_gemini,
                 llm.append_tool_result_gemini,
+                _compact_gemini_messages,
             )
         if provider == "anthropic":
             return (
@@ -442,6 +507,7 @@ class Orchestrator:
                 settings.anthropic_model,
                 llm.next_action,
                 llm.append_tool_result,
+                _compact_anthropic_messages,
             )
         raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
 
@@ -468,7 +534,7 @@ class Orchestrator:
         ค่อยส่งกลับเข้า run_task(approved_plan=...) เพื่อรันจริงทีหลัง (ดู docstring ของ
         approved_plan ใน run_task())"""
         resolved_provider = provider or settings.llm_provider
-        client, model, _, _ = self._llm_backend(resolved_provider)
+        client, model, _, _, _ = self._llm_backend(resolved_provider)
         page_text = ""
         if page is not None:
             try:
@@ -503,9 +569,16 @@ class Orchestrator:
         page: Optional[Page] = None,
         approved_plan: Optional[str] = None,
         site_manual_context: str = "",
+        session_id: Optional[str] = None,
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
+
+        session_id (W23): ส่งต่อให้ long_term_memory.recall()/record_task() ใช้ scope
+        ความจำข้าม task run ให้อยู่แค่ภายใน session เดียวกัน (ดู core/long_term_memory.py
+        module docstring) — ไม่ระบุมา (None) = ไม่มี session context ให้ scope ปลอดภัยได้
+        recall() จะคืน [] เสมอ (ไม่ query แบบไม่กรองเด็ดขาด) ส่วน record_task() ยังบันทึก
+        ได้ปกติแค่ session_id ว่างเปล่า (recall กลับมาไม่เจอในทางปฏิบัติ)
 
         headless: None = ใช้ settings.browser_headless, True/False = บังคับ override
                   (เช่น run.py agent อยากเห็นหน้าต่าง browser จริงๆ ระหว่างรัน) — ไม่มีผล
@@ -636,7 +709,7 @@ class Orchestrator:
 
         is_headless = settings.browser_headless if headless is None else headless
         resolved_provider = provider or settings.llm_provider
-        client, model, next_action, append_tool_result = self._llm_backend(resolved_provider)
+        client, model, next_action, append_tool_result, compact_messages = self._llm_backend(resolved_provider)
 
         async def _emit(event: dict) -> None:
             if on_event is not None:
@@ -720,10 +793,23 @@ class Orchestrator:
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
-        # W7[A] (context compaction, Gemini เท่านั้น): [(absolute_step_number,
-        # len(messages) หลังจบ step นั้น), ...] — ใช้หา cut point ที่ปลอดภัย
-        # (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
-        gemini_step_boundaries: list[tuple[int, int]] = []
+        # W7[A] (context compaction) / W22 (ทุก provider แล้ว ไม่ใช่แค่ Gemini):
+        # [(absolute_step_number, len(messages) หลังจบ step นั้น), ...] — ใช้หา cut
+        # point ที่ปลอดภัย (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
+        step_boundaries: list[tuple[int, int]] = []
+
+        # W22: dedupe manual_context/long_term_context ข้าม step ที่ page_text ไม่เปลี่ยน
+        # (เช่น action step ก่อนหน้า fail หรือเป็น fill ที่ไม่ navigate ไปไหน) — ทั้งสองคำนวณ
+        # จาก (goal, page_text) ล้วนๆ (goal คงที่ตลอด run_task() นี้อยู่แล้ว) เลย deterministic
+        # ถ้า page_text เดิมเป๊ะ = ผลลัพธ์ retrieval ต้องเหมือนเดิมเป๊ะด้วย ไม่มีประโยชน์ต้อง
+        # เรียก ChromaDB ซ้ำ (ประหยัด compute) หรือส่งข้อความ context ก้อนเดิมซ้ำเข้า prompt
+        # อีกรอบ (ประหยัด token จริง — provider-agnostic ไม่ผูกกับ cache feature ของเจ้าไหน
+        # เพราะเป็นการลด byte ที่ส่งจริง ไม่ใช่การลดราคาแบบ cache_control) ตัวแปรก้อนนี้เก็บผล
+        # ของ step ล่าสุดที่ page_text เปลี่ยนจริงไว้ใช้ซ้ำ
+        last_page_text_for_context: Optional[str] = None
+        last_manual_context = ""
+        last_long_term_context = ""
+        _CONTEXT_UNCHANGED_NOTE = "(เหมือนกับ step ก่อนหน้า — หน้าเว็บยังไม่เปลี่ยน)"
 
         # W12: "detect หน้าปัจจุบัน" แทนการบังคับ goto(url) เสมอ — เช็คจากสถานะจริงของ
         # page.url ตรงๆ (ไม่ผูกกับโหมดไหนเจาะจง) แทนเดิมที่เคยเช็คแค่ connect_to_user_browser
@@ -842,29 +928,41 @@ class Orchestrator:
                 # message ที่ LLM อ้างได้เอง ไม่ต้องเชื่อคำเคลมของ LLM ลอยๆ อย่างเดียว
                 final_page_text = page_text
 
-                # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step (retrieve()
-                # ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error) — ใช้ to_thread เพราะ
-                # เป็นงาน sync (local embedding inference + ChromaDB query) ไม่งั้นจะบล็อก
-                # event loop ตัวเดียวกับที่ Playwright ใช้อยู่ (เหมือน _confirm_plan()
-                # ที่ wrap input() ด้วย to_thread ด้วยเหตุผลเดียวกัน)
-                manual_chunks = await asyncio.to_thread(
-                    retriever.retrieve, query=goal, page_state=page_text, k=_RAG_CHUNKS_PER_STEP
-                )
-                manual_context = "\n".join(f"- {chunk}" for chunk in manual_chunks)
+                # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step ที่หน้าเปลี่ยน
+                # จริง (retrieve() ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error) — ใช้
+                # to_thread เพราะเป็นงาน sync (local embedding inference + ChromaDB query)
+                # ไม่งั้นจะบล็อก event loop ตัวเดียวกับที่ Playwright ใช้อยู่ (เหมือน
+                # _confirm_plan() ที่ wrap input() ด้วย to_thread ด้วยเหตุผลเดียวกัน)
+                #
+                # W22: ถ้า page_text เหมือน step ก่อนหน้าเป๊ะ (เช่น action ก่อนหน้า fail/ไม่
+                # navigate ไปไหน) ข้าม retrieval ทั้งคู่ไปเลย ใช้ marker สั้นๆ แทนก้อนข้อความ
+                # เดิมที่ LLM เห็นไปแล้วในเทิร์นก่อนหน้า (ดู comment ของ
+                # last_page_text_for_context ด้านบนสุดของ run_task())
+                page_changed_for_context = page_text != last_page_text_for_context
+                if page_changed_for_context:
+                    manual_chunks = await asyncio.to_thread(
+                        retriever.retrieve, query=goal, page_state=page_text, k=_RAG_CHUNKS_PER_STEP
+                    )
+                    manual_context = "\n".join(f"- {chunk}" for chunk in manual_chunks)
+
+                    long_term_chunks = await asyncio.to_thread(
+                        long_term_memory.recall,
+                        query=goal, page_state=page_text, k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
+                        session_id=session_id or "",
+                    )
+                    long_term_context = "\n".join(f"- {chunk}" for chunk in long_term_chunks)
+
+                    last_page_text_for_context = page_text
+                    last_manual_context = manual_context
+                    last_long_term_context = long_term_context
+                else:
+                    manual_context = _CONTEXT_UNCHANGED_NOTE if last_manual_context else ""
+                    long_term_context = _CONTEXT_UNCHANGED_NOTE if last_long_term_context else ""
 
                 # W7[A]: สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (ดู
                 # ShortTermMemory.failed_actions_summary() docstring) ป้อนกลับเข้า prompt
                 # ทุก step เหมือน manual_context — ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย
                 memory_context = self.memory.failed_actions_summary()
-
-                # W7[A] (long-term): ดึงประวัติ task run อื่นก่อนหน้าที่เกี่ยวข้องกับ
-                # goal+หน้าปัจจุบัน (recall() ไม่ throw เอง คืน [] เงียบๆ เหมือน
-                # retriever.retrieve()) — to_thread ด้วยเหตุผลเดียวกับ manual retrieve ด้านบน
-                long_term_chunks = await asyncio.to_thread(
-                    long_term_memory.recall,
-                    query=goal, page_state=page_text, k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
-                )
-                long_term_context = "\n".join(f"- {chunk}" for chunk in long_term_chunks)
 
                 # W9[A]: ใช้ vision_context ของรอบนี้แล้วเคลียร์ทิ้งทันที (one-shot —
                 # ดู pending_vision_context ด้านบนสุดของ run_task())
@@ -1120,23 +1218,33 @@ class Orchestrator:
 
                 messages = append_tool_result(messages, tool_use_id, str(result))
 
-                # W7[A] (context compaction, Gemini เท่านั้น): เก็บ boundary ของ step
-                # นี้ แล้วเช็คว่าต้องบีบอัดหรือยัง (ดูคอมเมนต์ยาวที่ _GEMINI_COMPACT_AFTER_STEPS
-                # ด้านบนสุดของไฟล์ — เหตุผลที่ scope แค่ Gemini)
-                if resolved_provider == "gemini":
-                    gemini_step_boundaries.append((steps_taken, len(messages)))
-                    if len(gemini_step_boundaries) > _GEMINI_COMPACT_AFTER_STEPS:
-                        cut_list_index = len(gemini_step_boundaries) - _GEMINI_KEEP_RECENT_STEPS
-                        cut_step_num, cut_at = gemini_step_boundaries[cut_list_index - 1]
-                        digest = _build_gemini_history_digest(self.memory, upto_step=cut_step_num)
-                        messages = _compact_gemini_messages(messages, cut_at, digest)
-                        gemini_step_boundaries = [
-                            (s, b - cut_at) for s, b in gemini_step_boundaries[cut_list_index:]
+                # W7[A] (context compaction) / W22 (ทุก provider): เก็บ boundary ของ
+                # step นี้ แล้วเช็คว่าต้องบีบอัดหรือยัง (ดูคอมเมนต์ยาวที่
+                # _COMPACT_AFTER_STEPS ด้านบนสุดของไฟล์) — compact_messages มาจาก
+                # _llm_backend() ตาม resolved_provider เอง (Anthropic/Groq/Gemini คนละ
+                # ฟังก์ชัน คนละ wire format แต่ contract เดียวกัน)
+                step_boundaries.append((steps_taken, len(messages)))
+                if len(step_boundaries) > _COMPACT_AFTER_STEPS:
+                    cut_list_index = len(step_boundaries) - _KEEP_RECENT_STEPS
+                    cut_step_num, cut_at = step_boundaries[cut_list_index - 1]
+                    digest = _build_history_digest(self.memory, upto_step=cut_step_num)
+                    len_before_compact = len(messages)
+                    messages = compact_messages(messages, cut_at, digest)
+                    # W22: อ้างจากความยาวจริงก่อน/หลัง แทนที่จะสมมติว่าลดลงเท่า cut_at
+                    # เป๊ะ — compact_messages() อาจ no-op (คืน messages เดิมเป๊ะถ้ารูปแบบ
+                    # ไม่ตรงคาด, removed=0) หรือลดลงน้อยกว่า cut_at จริง (Groq ต้องกัน
+                    # system message ไว้ที่ index 0 เสมอ ดู _compact_groq_messages())
+                    # ถ้าสมมติผิดจะได้ boundary เพี้ยนสะสมไปเรื่อยๆ ทำให้รอบบีบอัดถัดไป
+                    # ตัดผิดตำแหน่ง (กลางบทสนทนา ไม่ใช่ต้น turn จริง)
+                    removed = len_before_compact - len(messages)
+                    if removed > 0:
+                        step_boundaries = [
+                            (s, b - removed) for s, b in step_boundaries[cut_list_index:]
                         ]
                         if verbose:
                             print(
-                                f"[gemini-compact] ย่อ step 1..{cut_step_num} เหลือ digest เดียว "
-                                f"(เก็บ {_GEMINI_KEEP_RECENT_STEPS} step ล่าสุดแบบ raw)",
+                                f"[context-compact] ย่อ step 1..{cut_step_num} เหลือ digest เดียว "
+                                f"(เก็บ {_KEEP_RECENT_STEPS} step ล่าสุดแบบ raw)",
                                 flush=True,
                             )
 
@@ -1182,6 +1290,7 @@ class Orchestrator:
                 long_term_memory.record_task,
                 url=url, goal=goal, success=success, message=final_message,
                 failed_actions=self.memory.failed_actions_summary(),
+                session_id=session_id or "",
             )
 
             return {

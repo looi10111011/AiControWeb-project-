@@ -13,6 +13,15 @@ from fastapi.staticfiles import StaticFiles
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
+# หมายเหตุ: เคยลองแก้ NotImplementedError ของ Playwright บน Windows (ดู
+# run.py::run_server() สำหรับ root cause จริง — uvicorn --reload บังคับ
+# WindowsSelectorEventLoopPolicy) ด้วยการตั้ง asyncio.set_event_loop_policy(...) ตรงนี้
+# แต่ไม่ได้ผล เพราะ uvicorn.Server.run() เรียก config.setup_event_loop() (ซึ่งตั้ง
+# policy เป็น Selector ตอน --reload) แล้วค่อย asyncio.run(...) สร้าง event loop จริง
+# ก่อนที่ backend.app.main จะถูก import ด้วยซ้ำ (import เกิดทีหลังสุดตอน Config.load())
+# — ตั้ง policy ในไฟล์นี้จึงสายเกินไปเสมอ ไม่มีผลอะไรกับ loop ที่สร้างไปแล้ว ต้องแก้ที่
+# run.py (ไม่ยิง --reload) แทน ไม่ใช่ที่นี่
+
 from backend.app.api.routes import router as api_router
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
