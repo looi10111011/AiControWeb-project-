@@ -13,7 +13,9 @@ from backend.app.site_learning.crawler import (
     _reveal_dynamic_content,
     _wait_for_dom_stable,
     crawl_site,
+    describe_site,
 )
+from backend.app.site_learning.schema import PageInfo
 
 # เทสต์กลุ่มนี้ยิงจริงผ่าน chromium จริง (ไม่ mock Playwright) ต่อ local HTTP server ที่
 # serve fixture HTML จริง — mock page.goto()/nav ทั้งเชนยากกว่าและพิสูจน์ BFS/dedup/
@@ -937,3 +939,54 @@ async def test_crawl_site_records_goto_errors_instead_of_silently_skipping(broke
     assert any(e["kind"] == "page_error" for e in events)
     done_event = [e for e in events if e["kind"] == "crawl_scan_done"][0]
     assert done_event["errors_found"] >= 1
+
+
+# ---------------- W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" หลังเรียนรู้เสร็จ ----------------
+
+
+@pytest.mark.asyncio
+async def test_describe_site_uses_llm_to_summarize_all_pages():
+    pages = [
+        PageInfo(name="Login", url="/login", description="หน้าเข้าสู่ระบบ"),
+        PageInfo(name="Dashboard", url="/dashboard", description="หน้าแดชบอร์ดสรุปข้อมูล"),
+    ]
+    with patch(
+        "backend.app.site_learning.crawler.llm.generate_text",
+        AsyncMock(return_value="เว็บไซต์นี้ใช้เข้าสู่ระบบแล้วดูแดชบอร์ดข้อมูลได้"),
+    ):
+        summary = await describe_site(client=None, model="m", provider="gemini", website="example.com", pages=pages)
+    assert summary == "เว็บไซต์นี้ใช้เข้าสู่ระบบแล้วดูแดชบอร์ดข้อมูลได้"
+
+
+@pytest.mark.asyncio
+async def test_describe_site_falls_back_to_page_names_when_llm_fails():
+    """ไม่ throw ออกไปกลาง crawl เหมือน describe_page() — fallback เป็นการเรียงชื่อหน้าดิบๆ"""
+    pages = [PageInfo(name="Login", url="/login", description="")]
+    with patch("backend.app.site_learning.crawler.llm.generate_text", AsyncMock(side_effect=RuntimeError("boom"))):
+        summary = await describe_site(client=None, model="m", provider="gemini", website="example.com", pages=pages)
+    assert "Login" in summary
+
+
+@pytest.mark.asyncio
+async def test_describe_site_falls_back_when_llm_returns_empty_text():
+    pages = [PageInfo(name="Login", url="/login", description="")]
+    with patch("backend.app.site_learning.crawler.llm.generate_text", AsyncMock(return_value="   ")):
+        summary = await describe_site(client=None, model="m", provider="gemini", website="example.com", pages=pages)
+    assert "Login" in summary
+
+
+@pytest.mark.asyncio
+async def test_describe_site_returns_empty_string_when_no_pages_have_names():
+    summary = await describe_site(client=None, model="m", provider="gemini", website="example.com", pages=[])
+    assert summary == ""
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_populates_summary_field(fixture_server):
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{fixture_server}/index.html", max_pages=10)
+            await browser.close()
+
+    assert manual.summary != ""

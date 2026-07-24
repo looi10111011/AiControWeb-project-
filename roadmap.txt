@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-23)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-24)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -2069,6 +2069,39 @@
            นอก nav ถูกเก็บเข้า nav_links ด้วย ไม่ใช่แค่ลิงก์ในเมนู) + 2 ใน
            test_site_learning_crawler.py (crawl_site() เดินตามลิงก์นอก nav container ได้จริง
            ผ่าน browser จริง) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 484 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
+  [x] W26  Website Learning: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ให้ user อ่านทันทีที่
+           เรียนรู้เสร็จ — เสร็จแล้ว (2026-07-24)
+           user ขอให้หลัง self-learning เรียนรู้เว็บไซต์สำเร็จ สรุปคร่าวๆ ให้ user ฟังว่า
+           เว็บไซต์นั้นทำอะไรได้บ้าง — เดิมมีแค่ description ต่อหน้า (จาก describe_page(),
+           W14) ไม่มีสรุประดับ "ทั้งเว็บไซต์" เลย ต้องไล่เปิดดูทีละหน้าเองถึงจะรู้ภาพรวม
+
+           เพิ่ม crawler.py::describe_site(client, model, provider, website, pages) — เรียก
+           LLM อีกครั้งเดียว (แยกจาก describe_page ที่เรียกต่อหน้า) หลัง crawl จบทั้งเว็บแล้ว
+           ป้อนแค่ name/description ของทุกหน้าที่มีอยู่แล้ว (ไม่ส่ง buttons/forms/tables ดิบๆ
+           ซ้ำ กันกิน token เกินจำเป็น — สรุประดับภาพรวมไม่ต้องมีรายละเอียดลึกขนาดนั้น) ขอ
+           คำตอบภาษาไทยธรรมดาไม่เกิน 4 ประโยค ไม่ใช่ markdown/bullet — fallback เป็นการเรียง
+           ชื่อหน้าดิบๆ ถ้า LLM ล้มเหลว/ตอบว่างเปล่า (กฎเดียวกับ describe_page(): ไม่ throw
+           ออกไปกลาง crawl) คืนสตริงว่างเปล่าถ้า crawl ไม่เจอหน้าไหนเลย
+
+           schema.py: เพิ่ม SiteManual.summary: str = "" (round-trip ผ่าน to_dict/from_dict
+           อัตโนมัติ — manual เก่าที่ไม่มี key นี้เลยโหลดได้ default "" ไม่ throw) —
+           crawl_site() เรียก describe_site() ก่อนสร้าง SiteManual ตัวสุดท้าย (หลังปิด
+           context แล้ว ไม่กระทบ browser lifecycle เดิม) routes.py::learn_site() ส่ง
+           manual.summary กลับไปใน result dict ของ POST /api/site-manual/learn (ไหลผ่าน
+           learn_done SSE event ไปถึง frontend) index.html โชว์ในแบนเนอร์ "เรียนรู้เว็บไซต์
+           เรียบร้อยแล้ว" ทันที
+
+           unit test ใหม่: 5 เคสใน test_site_learning_crawler.py (describe_site ใช้ LLM
+           สรุปจริง, fallback เป็นชื่อหน้าเมื่อ LLM ล้มเหลว/ตอบว่างเปล่า, คืนว่างเปล่าเมื่อไม่
+           มีหน้าไหนมีชื่อเลย, crawl_site() จริงเติม manual.summary ไม่ว่างเปล่า) + 2 เคสใน
+           test_site_learning_storage.py (summary round-trip ผ่าน save/load, manual เก่าไม่มี
+           key นี้โหลดได้ default "" ไม่ throw) + 1 เคสใน test_api.py (summary ไหลไปถึง
+           learn_done SSE event's result.summary จริง — parse JSON จาก SSE stream ตรงๆ
+           เพราะ json.dumps escape ตัวอักษรไทยเป็น \uXXXX เทียบ literal string ตรงๆ ไม่เจอ)
+           — รันจริง `pytest -q` เต็ม suite ยืนยัน: 492 เคสผ่าน (ไม่นับ
            test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
            without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
 

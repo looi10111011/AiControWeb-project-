@@ -192,6 +192,7 @@
   .manual-banner-pct{ font-weight:700; margin-top:6px; }
   .manual-banner-errors{ color:var(--warning); font-size:11.5px; margin-top:6px; word-break:break-all; }
   .manual-banner.done{ background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); }
+  .manual-banner-summary{ margin-top:6px; font-size:12px; line-height:1.5; color:var(--ink); }
   .manual-banner.error{ background:var(--critical-soft); border:1px solid var(--critical); color:var(--critical); }
   .manual-banner-learn-btn{ flex:0 0 auto; border:none; border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--warning); color:#1a1200; }
   .manual-banner-learn-btn:hover{ filter:brightness(1.08); }
@@ -901,10 +902,16 @@ function renderManualBanner() {
           ${credRequestHtml}
         </div>`;
     } else if (learnProgress.status === "done") {
+      // W26: summary มาจาก describe_site() (routes.py::learn_site()) — ภาพรวม "เว็บไซต์นี้
+      // ทำอะไรได้บ้าง" สั้นๆ ให้ user อ่านทันทีที่เรียนรู้เสร็จ ไม่ต้องไล่เปิดดูเองทุกหน้า
+      const summaryHtml = learnProgress.summary
+        ? `<div class="manual-banner-summary">${escapeHtml(learnProgress.summary)}</div>`
+        : "";
       box.innerHTML = `
         <div class="manual-banner done">
           <div><b>เรียนรู้เว็บไซต์เรียบร้อยแล้ว</b></div>
           <div>Manual Version ${learnProgress.version ?? "?"} ถูกสร้างแล้ว</div>
+          ${summaryHtml}
           ${learnProgress.errorsCount ? `<div class="manual-banner-errors">พบปัญหาระหว่างทาง ${learnProgress.errorsCount} รายการ (บางหน้า/ปุ่มอาจไม่ถูกสำรวจ)</div>` : ""}
         </div>`;
     } else {
@@ -1000,6 +1007,7 @@ function openLearnStream(learnId) {
           status: "done",
           version: event.result ? event.result.version : null,
           errorsCount: event.result ? (event.result.errors_count || 0) : 0,
+          summary: event.result ? (event.result.summary || "") : "",
         };
       } else {
         learnProgress = { status: "error", errorMessage: event.error || "" };

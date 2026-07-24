@@ -524,7 +524,12 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
         # W24: ส่ง errors_count กลับไปด้วย — ให้ frontend โชว์ว่า crawl จบพร้อมปัญหาที่เจอ
         # ระหว่างทางกี่รายการ (ดู manual.errors — SiteManual.to_dict() มีรายละเอียดเต็ม
         # อยู่แล้วถ้าต้องการขุดดูทีหลัง ไม่ส่งรายละเอียดเต็มมาที่นี่เพราะ event นี้แค่สรุปผล)
-        return {"version": version, "pages_found": len(manual.pages), "errors_count": len(manual.errors)}
+        # W26: ส่ง summary (ภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" จาก describe_site()) กลับไปด้วย
+        # ให้ frontend โชว์ทันทีที่เรียนรู้เสร็จ (ดู index.html::renderManualBanner)
+        return {
+            "version": version, "pages_found": len(manual.pages),
+            "errors_count": len(manual.errors), "summary": manual.summary,
+        }
 
     record = learn_manager.submit(learn_id, req.url, _run())
     return LearnCreatedResponse(learn_id=record.learn_id, status=record.status)

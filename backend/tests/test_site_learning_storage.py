@@ -258,6 +258,35 @@ def test_save_and_load_manual_round_trips_errors_list():
     assert loaded.errors == [{"url": "/broken", "phase": "goto", "error": "TimeoutError: boom"}]
 
 
+def test_save_and_load_manual_round_trips_summary():
+    """W26: SiteManual.summary (ภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" จาก describe_site()) ต้อง
+    persist ผ่าน save_manual()/load_manual() ได้ครบ ไม่หายไปตอน round-trip ผ่าน JSON บนดิสก์"""
+    manual = SiteManual(
+        website="example.com",
+        pages=[PageInfo(name="Home", url="/")],
+        summary="เว็บไซต์นี้ใช้ดูสินค้าและสั่งซื้อออนไลน์ได้",
+    )
+    storage.save_manual(manual)
+
+    loaded = storage.load_manual("example.com")
+    assert loaded.summary == "เว็บไซต์นี้ใช้ดูสินค้าและสั่งซื้อออนไลน์ได้"
+
+
+def test_load_manual_defaults_summary_to_empty_string_for_old_manuals_without_it():
+    domain_dir = os.path.join(settings.site_manuals_dir, "legacy2.com")
+    os.makedirs(domain_dir, exist_ok=True)
+    legacy_data = {
+        "website": "legacy2.com", "version": 1, "generated_at": 0.0,
+        "pages": [{"name": "Home", "url": "/"}],
+    }
+    import json
+    with open(os.path.join(domain_dir, "latest.json"), "w", encoding="utf-8") as f:
+        json.dump(legacy_data, f)
+
+    loaded = storage.load_manual("legacy2.com")
+    assert loaded.summary == ""
+
+
 def test_load_manual_defaults_errors_to_empty_list_for_old_manuals_without_it():
     """manual ที่ save ไว้ก่อนมี W24 (ไม่มี key "errors" เลยใน JSON) ต้องโหลดได้ปกติ ไม่
     throw — errors default เป็น [] เงียบๆ"""

@@ -115,6 +115,11 @@ class SiteManual:
     # ใครรู้ (ดู crawler.py หัวไฟล์ W24) แต่ละ entry: {"url","phase","error"} หรือ
     # {"url","phase","button","error"} — ว่างเปล่า = ไม่เจอปัญหาอะไรเลยตลอด crawl
     errors: list[dict] = field(default_factory=list)
+    # W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" เป็นภาษาธรรมชาติ 2-4 ประโยค — เขียนโดย LLM
+    # ครั้งเดียวหลัง crawl จบทั้งเว็บ (ดู crawler.py::describe_site()) จาก name/description
+    # ของทุกหน้าที่สะสมมา ให้ user อ่านทันทีที่เรียนรู้เว็บไซต์เสร็จโดยไม่ต้องไล่เปิดดูเองทุก
+    # หน้า — ว่างเปล่าได้ถ้า crawl ไม่เจอหน้าไหนเลย (ไม่ throw)
+    summary: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -155,4 +160,5 @@ class SiteManual:
             generated_at=float(data.get("generated_at", 0.0)),
             pages=pages,
             errors=list(data.get("errors", [])),
+            summary=data.get("summary", ""),
         )

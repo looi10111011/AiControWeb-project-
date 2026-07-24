@@ -159,6 +159,44 @@ async def describe_page(client, model: str, provider: str, page_info: PageInfo) 
     return fallback.replace("-", " ").replace("_", " ").title(), ""
 
 
+_SITE_SUMMARY_PROMPT_TEMPLATE = (
+    "นี่คือรายชื่อหน้าเว็บทั้งหมดที่สำรวจเจอในเว็บไซต์ {website} พร้อมคำอธิบายสั้นๆ ของแต่ละหน้า "
+    "(สกัดจากโครงสร้าง DOM จริงของแต่ละหน้า ไม่ใช่จินตนาการ):\n{pages_summary}\n\n"
+    "เขียนสรุปสั้นๆ ไม่เกิน 4 ประโยค อธิบายให้ผู้ใช้ทั่วไป (ที่ยังไม่เคยเห็นเว็บนี้มาก่อน) "
+    "เข้าใจง่ายว่าเว็บไซต์นี้ทำอะไรได้บ้าง (สรุปภาพรวมความสามารถหลัก ไม่ใช่แค่ไล่ชื่อหน้าทีละ"
+    "หน้า) ตอบเป็นภาษาไทยล้วนๆ เป็นข้อความธรรมดา ไม่ต้องมี markdown/bullet/หัวข้อ"
+)
+
+
+async def describe_site(client, model: str, provider: str, website: str, pages: list[PageInfo]) -> str:
+    """W26: เรียก LLM อีกครั้งเดียว (แยกจาก describe_page ที่เรียกต่อหน้า) หลัง crawl จบทั้ง
+    เว็บแล้ว เพื่อสรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ให้ user อ่านทันทีที่เรียนรู้เสร็จ ไม่
+    ต้องไล่เปิดดูทุกหน้าเอง — ใช้แค่ name/description ของแต่ละหน้าที่มีอยู่แล้วจาก
+    describe_page() (ไม่ส่ง buttons/forms/tables ดิบๆ ซ้ำ กันกิน token เกินจำเป็น สรุประดับ
+    "ภาพรวมเว็บไซต์" ไม่ต้องมีรายละเอียดลึกขนาดนั้น)
+
+    fallback ถ้า LLM ล้มเหลว/ตอบว่างเปล่า: เรียงชื่อหน้าดิบๆ แทน (ไม่ throw ออกไปกลาง crawl —
+    กฎเดียวกับ describe_page()) คืนสตริงว่างเปล่าถ้าไม่มีหน้าไหนมีชื่อเลย (crawl ไม่เจออะไร)"""
+    named_pages = [p for p in pages if p.name]
+    fallback = (
+        f"เว็บไซต์นี้มีทั้งหมด {len(pages)} หน้า: " + ", ".join(p.name for p in named_pages[:15])
+        if named_pages else ""
+    )
+    if not named_pages:
+        return fallback
+    pages_summary = "\n".join(f"- {p.name}: {p.description}" for p in named_pages if p.description)
+    if not pages_summary:
+        pages_summary = "\n".join(f"- {p.name}" for p in named_pages)
+    prompt = _SITE_SUMMARY_PROMPT_TEMPLATE.format(website=website, pages_summary=pages_summary)
+    try:
+        text = (await llm.generate_text(client, model, prompt, provider)).strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    return fallback
+
+
 def _merge_page_info(base: PageInfo, extra: PageInfo) -> None:
     """รวมโครงสร้างที่เพิ่งโผล่มาใหม่ (เช่น modal/panel/tab ที่เปิดจากปุ่มที่เพิ่งกด แต่ URL
     ไม่เปลี่ยน — ดู _explore_buttons) เข้ากับ PageInfo เดิมของหน้านี้ — dedup ด้วย selector
@@ -656,7 +694,12 @@ async def crawl_site(
     finally:
         await context.close()
 
-    manual = SiteManual(website=domain, pages=pages, generated_at=time.time(), errors=manual_errors)
+    # W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ครั้งเดียวหลังสำรวจครบทุกหน้าแล้ว (ดู
+    # describe_site() — ใช้ client/model เดียวกับที่ describe_page() ใช้ต่อหน้าอยู่แล้ว)
+    site_summary = await describe_site(client, model, resolved_provider, domain, pages)
+    manual = SiteManual(
+        website=domain, pages=pages, generated_at=time.time(), errors=manual_errors, summary=site_summary,
+    )
     if on_progress:
         # W24: errors_found เพิ่มเข้ามา — สรุปว่า crawl "จบเพราะสำรวจครบจริง" หรือ "จบทั้งที่
         # เจอปัญหาระหว่างทาง" ไม่ใช่แค่ pages_found เฉยๆ (ดู docstring หัวไฟล์ ข้อ 9)
