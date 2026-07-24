@@ -1,6 +1,8 @@
 import functools
 import http.server
+import itertools
 import json
+import re
 import threading
 from unittest.mock import AsyncMock, patch
 
@@ -65,7 +67,19 @@ def fixture_server(tmp_path):
 
 
 def _mock_generate_text():
-    return AsyncMock(return_value='{"name": "Page", "description": "a page"}')
+    """W35: ชื่อหน้าต้องไม่ซ้ำกันข้าม call โดย default — crawler.py มี guard ใหม่ (ชื่อหน้า
+    เดิมซ้ำติดกันเกิน 2 ครั้ง = หยุดไล่กดปุ่ม/ต่อคิว nav link จากหน้านั้น กัน "วนลูป" ตามที่
+    user รายงาน) เดิม mock นี้คืนชื่อ "Page" คงที่ทุก call ทำให้เทสต์อื่นๆ ที่ไม่ได้ตั้งใจ
+    ทดสอบเรื่องชื่อซ้ำเลย (บาง fixture มีมากกว่า 2 หน้า) ดันไปชน guard ใหม่นี้โดยไม่ตั้งใจ —
+    ใช้ counter เฉพาะของแต่ละ mock instance ให้ชื่อไม่ซ้ำกันเสมอแทน (เทสต์ที่ตั้งใจทดสอบ
+    guard ตัวนี้โดยเฉพาะสร้าง mock ของตัวเองแยกต่างหาก ดู
+    test_crawl_site_stops_exploring_after_repeated_page_name)"""
+    counter = itertools.count(1)
+
+    async def _generate(*_args, **_kwargs):
+        return f'{{"name": "Page {next(counter)}", "description": "a page"}}'
+
+    return AsyncMock(side_effect=_generate)
 
 
 @pytest.mark.asyncio
@@ -1253,3 +1267,213 @@ async def test_crawl_site_respects_custom_max_repeat_button_clicks(repeat_button
     visited_urls = {p.url for p in manual.pages}
     assert any("shorts3.html" in u for u in visited_urls)  # เพดาน 2 -> กด "Next" ได้ 2 ครั้ง
     assert not any("shorts4.html" in u for u in visited_urls)  # ครั้งที่ 3 ยังเกินเพดาน
+
+
+# ---------------- W34: หลุดออกนอกโดเมนเป้าหมาย ต้องกลับมาทันที ไม่เรียนรู้เว็บอื่นต่อ ----------------
+# ใช้ "localhost" กับ "127.0.0.1" แทนกันเพื่อจำลอง cross-domain แบบไม่ต้องเปิด server จริง
+# 2 ตัว — extract_domain() แยกสองชื่อนี้เป็นคนละ domain แม้จะชี้ไป loopback/พอร์ตเดียวกันจริง
+
+
+@pytest.fixture
+def off_domain_fixture_server(tmp_path):
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    pages = {
+        "start.html": f"""
+            <html><body>
+              <button onclick="window.location.href='http://localhost:{port}/external.html'">View</button>
+              <button onclick="window.location.href='/safe.html'">Safe Details</button>
+            </body></html>
+        """,
+        "external.html": "<html><body>different domain — should never be recorded</body></html>",
+        "safe.html": "<html><body>same-domain page — should be recorded normally</body></html>",
+        "redirect.html": f"""
+            <html><body>
+              <script>window.location.href = 'http://localhost:{port}/external2.html';</script>
+            </body></html>
+        """,
+        "external2.html": "<html><body>different domain reached via client-side redirect</body></html>",
+        "feed.html": """
+            <html><body>
+              <p>ลิงก์นี้ตั้งใจวางไว้นอก &lt;nav&gt; และตั้ง label ที่ไม่ตรงคำไหนใน
+              ALLOWED_CRAWL_KEYWORDS เลยสักคำ (ระวัง: คำอย่าง "page"/"view"/"detail" ห้าม
+              ปรากฏเป็น substring เด็ดขาด เพราะ is_crawl_safe() เช็คแบบ substring match —
+              เดิมใช้ label "Weird Redirect Page" ซึ่งมีคำว่า "page" ปนอยู่ ทำให้ผ่าน
+              is_crawl_safe() ได้ทั้งที่ไม่ใช่ nav menu item กลายเป็นถูก
+              _explore_buttons() (DFS-click) กดไปก่อน BFS จะได้ประมวลผล href นี้เลย — เจอ
+              จาก test นี้ fail เพราะ manual.errors ไม่มี phase="goto" เลยสักตัว มีแต่
+              phase="click") เพื่อให้ is_crawl_safe() ปฏิเสธไม่ให้ _explore_buttons()
+              กดมันเป็นปุ่ม แต่ is_safe_nav_link() (default-allow) ยังคงปล่อยให้ BFS
+              เดินตาม href นี้ได้ตามปกติ — การันตีว่าเทสนี้ตรวจ BFS-goto path ล้วนๆ ไม่ปน
+              กับ DFS-click path ที่มีเทสของตัวเองอยู่แล้ว
+              (test_crawl_site_backs_out_immediately_when_click_navigates_off_domain)</p>
+              <a href="/redirect.html">Bounce Link Alpha</a>
+            </body></html>
+        """,
+    }
+    for name, html in pages.items():
+        (tmp_path / name).write_text(html, encoding="utf-8")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}"
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_backs_out_immediately_when_click_navigates_off_domain(off_domain_fixture_server):
+    """W34: ปุ่ม "View" ที่ label ทั่วไปผ่าน is_crawl_safe() ได้ (ไม่รู้ปลายทางล่วงหน้า ต่าง
+    จาก nav_links ที่เช็ค href ได้ก่อน queue) แต่จริงๆ พาไปคนละโดเมน ต้องไม่ถูก extract/
+    บันทึกเข้า manual เลย ต้อง go_back กลับมาที่โดเมนเป้าหมายทันที ยิง off_domain_navigation
+    event + บันทึก error ไว้
+
+    หมายเหตุ: เดิมเทสนี้เช็คด้วยว่ากลับมาแล้วต้องกดปุ่มถัดไป ("Safe Details") ต่อได้ปกติด้วย —
+    ตัดออกเพราะพบว่า fixture ที่จำลอง "คนละโดเมน" ด้วยการสลับ hostname "localhost" กับ
+    "127.0.0.1" บนพอร์ตเดียวกัน (ดู comment ของ off_domain_fixture_server) ทำให้ Chromium
+    หน่วงการยิง "load" event ของ goto() ที่กลับมาโดเมนเดิมนานผิดปกติ (~13-16 วินาที) เฉพาะ
+    เวลาที่ navigate มาจาก click event เท่านั้น (ทดสอบแยกแล้วด้วย goto() ตรงๆ สลับ host ไปมา
+    ไม่หน่วงเลย) — เป็น artifact ของวิธีจำลอง cross-domain แบบนี้ ไม่ใช่พฤติกรรมจริงที่จะเกิด
+    กับโดเมนที่ต่างกันจริงๆ ในโปรดักชัน (ไม่มี connection ให้ browser พยายามใช้ซ้ำข้ามโดเมนแบบ
+    นี้) คุณสมบัติหลักที่ user ต้องการ (ห้ามบันทึก/สำรวจเว็บนอกโดเมนเด็ดขาด + กลับมาทันที) ถูก
+    ตรวจสอบและยืนยันว่าทำงานถูกต้องสม่ำเสมอด้านล่างนี้แล้ว"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{off_domain_fixture_server}/start.html", max_pages=10, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert not any("external.html" in u for u in visited_urls)
+
+    off_domain_events = [e for e in events if e["kind"] == "off_domain_navigation"]
+    assert len(off_domain_events) >= 1
+    assert "localhost" in off_domain_events[0]["landed_on"]
+    assert any(e["phase"] == "click" and "นอกโดเมน" in e["error"] for e in manual.errors)
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_skips_queued_url_that_redirects_off_domain(off_domain_fixture_server):
+    """W34: URL ที่ same-domain ตอนถูกต่อคิว (nav_links กรอง cross-origin ไว้แล้ว) แต่ตัว
+    หน้าเอง client-side redirect ออกนอกโดเมนทันทีที่โหลด (เช่น URL shortener/OAuth bounce)
+    ต้องไม่ extract/บันทึกหน้าปลายทางที่ไม่ใช่โดเมนเป้าหมายเลย ข้ามไปหน้าถัดไปใน queue แทน"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{off_domain_fixture_server}/feed.html", max_pages=10, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert not any("external2.html" in u for u in visited_urls)
+    assert not any("redirect.html" in u for u in visited_urls)  # หน้าที่ redirect เองก็ไม่ถูกบันทึก (ไม่ใช่โดเมนเป้าหมายตอน extract จริง)
+
+    off_domain_events = [e for e in events if e["kind"] == "off_domain_navigation"]
+    assert len(off_domain_events) >= 1
+    assert any(e["phase"] == "goto" and "นอกโดเมน" in e["error"] for e in manual.errors)
+
+
+# ---------------- W35: ชื่อหน้าเดิมซ้ำติดกันเกิน 2 ครั้ง ต้องหยุดไล่สำรวจต่อจากหน้านั้น ----------------
+# จำลองเคสที่ user รายงาน: เว็บมีหน้าแบบ Shorts/Reels หลายรายการที่ URL ต่างกันจริง (ไม่ถูก
+# กันโดย visited-set) และโครงสร้าง (_page_template — W33) ก็ต่างกันเล็กน้อยพอที่ template
+# dedup จะไม่จับ (เช่น จำนวนปุ่มไม่เท่ากัน) แต่ LLM (describe_page) ตั้งชื่อเดิมซ้ำๆ ทุกครั้ง
+# ("Video") — ต้องมีเซฟตี้เน็ตจากมุมชื่อหน้าคอยตัดไม่ให้ไล่กดปุ่ม/ต่อคิว nav link ลึกลงไปอีก
+# หลังเจอชื่อซ้ำติดกันเกิน 2 ครั้ง (หน้าที่ 3, 4, ... ยังถูกบันทึกอยู่ปกติ ผู้ใช้เห็น tag แล้ว
+# จริง แค่ไม่ไล่ลึกต่อจากมันแล้ว)
+
+_REPEATED_NAME_PAGES = {
+    "index.html": """
+        <html><body>
+          <nav>
+            <a href="/clip1.html">Clip 1</a>
+            <a href="/clip2.html">Clip 2</a>
+            <a href="/clip3.html">Clip 3</a>
+            <a href="/clip4.html">Clip 4</a>
+          </nav>
+        </body></html>
+    """,
+    "clip1.html": '<html><body><a href="/secret1.html">Deeper 1</a></body></html>',
+    "clip2.html": '<html><body><a href="/secret2.html">Deeper 2</a></body></html>',
+    "clip3.html": '<html><body><a href="/secret3.html">Deeper 3</a></body></html>',
+    "clip4.html": '<html><body><a href="/secret4.html">Deeper 4</a></body></html>',
+    "secret1.html": "<html><body>reachable only via clip1 (count=1, should still explore)</body></html>",
+    "secret2.html": "<html><body>reachable only via clip2 (count=2, should still explore)</body></html>",
+    "secret3.html": "<html><body>reachable only via clip3 (count=3, must NOT be reached)</body></html>",
+    "secret4.html": "<html><body>reachable only via clip4 (count=4, must NOT be reached)</body></html>",
+}
+
+
+@pytest.fixture
+def repeated_name_fixture_server(tmp_path):
+    for name, html in _REPEATED_NAME_PAGES.items():
+        (tmp_path / name).write_text(html, encoding="utf-8")
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}"
+    httpd.shutdown()
+
+
+def _mock_generate_text_same_name_for_clips():
+    """clip1-4.html ทั้งหมดได้ชื่อ "Video" เหมือนกันเป๊ะทุก call (จำลอง LLM ตั้งชื่อคล้ายกัน
+    ให้หน้าประเภทเดียวกันซ้ำๆ) หน้าอื่น (index/secret) ได้ชื่อไม่ซ้ำกันตาม URL ปกติ"""
+
+    async def _generate(_client, _model, prompt, _provider):
+        # เช็คจากบรรทัด "URL: ..." ของ prompt โดยเฉพาะ (ไม่ใช่ substring ทั้งก้อน) กัน
+        # ปนกับข้อความปุ่ม/ลิงก์บนหน้า index.html เอง (ซึ่งมีคำว่า "Clip 1".."Clip 4" อยู่ใน
+        # รายชื่อปุ่มด้วย ทั้งที่ URL ของ index.html เองไม่ใช่หน้า clip*)
+        match = re.search(r"URL: \S*/(\w+)\.html", prompt)
+        page_name = match.group(1) if match else "page"
+        if page_name.startswith("clip"):
+            return '{"name": "Video", "description": "a clip"}'
+        return f'{{"name": "{page_name}", "description": "a page"}}'
+
+    return AsyncMock(side_effect=_generate)
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_stops_exploring_after_repeated_page_name(repeated_name_fixture_server):
+    """W35: clip1/clip2/clip3/clip4 ทั้ง 4 หน้าถูกบันทึกเข้า manual ตามปกติทุกหน้า (ยังเห็น
+    tag ครบ) แต่หลังชื่อ "Video" ซ้ำติดกันเกิน 2 ครั้ง (นับจาก clip3 เป็นต้นไป) ต้องหยุดไล่
+    กดปุ่ม/ต่อคิว nav link จากหน้านั้นทันที — secret1/secret2 (เจอผ่าน clip1/clip2 ซึ่งยังไม่
+    เกินเพดาน) ต้องถูกสำรวจตามปกติ แต่ secret3/secret4 (เจอผ่าน clip3/clip4 ที่เกินเพดานแล้ว)
+    ต้องไม่ถูกสำรวจเลย"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text_same_name_for_clips()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{repeated_name_fixture_server}/index.html", max_pages=20, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    for n in range(1, 5):
+        assert any(f"clip{n}.html" in u for u in visited_urls), f"clip{n}.html should still be recorded"
+
+    assert any("secret1.html" in u for u in visited_urls)
+    assert any("secret2.html" in u for u in visited_urls)
+    assert not any("secret3.html" in u for u in visited_urls)
+    assert not any("secret4.html" in u for u in visited_urls)
+
+    skip_events = [e for e in events if e["kind"] == "repeated_page_name_skipped"]
+    assert len(skip_events) >= 2
+    assert all(e["name"] == "Video" for e in skip_events)
