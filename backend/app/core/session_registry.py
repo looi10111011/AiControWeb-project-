@@ -232,10 +232,16 @@ class SessionRegistry:
         )
 
     async def _best_effort_close(self, session: BrowserSession) -> None:
-        """เหมือน close() แต่กลืน exception ทุกจุด — เรียกตอนกู้คืน session ที่รู้อยู่แล้ว
-        ว่า resource เดิมพังบางส่วน/ทั้งหมด (ปิดของที่พังไปแล้วซ้ำมักจะ throw เอง — เช่น
-        context.close() บน browser ที่ disconnect ไปแล้ว) ไม่ให้เรื่องนั้นบล็อกการสร้าง
-        session ใหม่ทดแทน
+        """ปิด resource ของ session นี้ตาม mode โดยกลืน exception ทุกจุด — เรียกจาก 2 ที่:
+        (1) _recover() ตอนกู้คืน session ที่รู้อยู่แล้วว่า resource เดิมพังบางส่วน/ทั้งหมด
+        (ปิดของที่พังไปแล้วซ้ำมักจะ throw เอง — เช่น context.close() บน browser ที่
+        disconnect ไปแล้ว) ไม่ให้เรื่องนั้นบล็อกการสร้าง session ใหม่ทดแทน (2) W27:
+        close() (ปุ่ม "kill session" บน Test Console) — เดิม close() เขียนตรรกะปิดซ้ำเองแบบ
+        ไม่มี error handling เลย ทำให้ race กับ task ที่เพิ่งถูก stop (ดู
+        task_manager.py::cancel()) หรือ browser ที่ user ปิดเองด้วยมือไปก่อนแล้ว ทำให้
+        endpoint 500 ทั้งที่ session ถูก pop ออกจาก registry ไปแล้ว (ดูเหมือนปิดสำเร็จแต่
+        resource จริงรั่ว) — รวมเป็น method เดียวกัน ให้ทั้ง 2 เส้นทางได้ error handling
+        เดียวกัน
 
         mode="pool": ห้าม release_one() browser ที่ disconnect ไปแล้วกลับเข้า pool
         เด็ดขาด — release_one() ไม่เช็คสถานะ browser เลย (แค่ put ลง queue ตรงๆ) ถ้าคืน
@@ -297,23 +303,25 @@ class SessionRegistry:
 
     async def close(self, session_id: str) -> bool:
         """ปิด session — คืน False ถ้าไม่พบ session_id นี้ (ปิดไปแล้ว/ไม่เคยมีอยู่จริง)
-        ปิดเฉพาะ resource ที่ session นี้เป็นเจ้าของเองจริงๆ ตาม mode"""
+        ปิดเฉพาะ resource ที่ session นี้เป็นเจ้าของเองจริงๆ ตาม mode
+
+        W27: แก้บั๊ก "ปุ่ม kill session ใช้งานจริงไม่ได้" — เดิม method นี้ไม่มี try/except
+        เลยสักจุด (ต่างจาก _best_effort_close() ด้านบนที่กลืน exception ทุกจุดอยู่แล้ว) ถ้า
+        browser.close()/context.close() ล้มเหลว (เช่น race กับ task ที่เพิ่งถูก
+        TaskManager.cancel() แต่ยังไม่ทันหยุดใช้ page จริงๆ — ดู task_manager.py::cancel()
+        กับ routes.py::stop_task() ที่แก้คู่กัน หรือ user ปิดหน้าต่าง browser จริงเองด้วยมือ
+        ก่อนกดปุ่มนี้) exception จะหลุดออกไปจาก endpoint ตรงๆ เป็น 500 — แต่ session ก็ถูก
+        pop() ออกจาก self._sessions ไปแล้วก่อนหน้านั้น (บรรทัดบน) ทำให้ดูเหมือน "ปิดแล้ว"
+        จาก state ของ registry แต่ resource จริง (browser process/หน้าต่างที่มองเห็นได้/
+        browser ที่ยืมจาก pool) อาจไม่ถูกปิด/คืนจริงเลย — ตอนนี้ delegate ไปที่
+        _best_effort_close() ตัวเดียวกับที่ _recover() ใช้อยู่แล้ว (กลืน exception ทุกจุด +
+        เช็ค is_connected() ก่อนคืน browser กลับ pool กัน poison pool ด้วย browser ที่ตายไป
+        แล้ว) แทนที่จะเขียนตรรกะเดิมซ้ำแบบไม่มี error handling"""
         session = self._sessions.pop(session_id, None)
         self._locks.pop(session_id, None)
         if session is None:
             return False
-
-        if session.mode == "user_browser":
-            # ห้าม browser.close()/context.close()/page.close() บน browser จริงของ user
-            # เด็ดขาด — ตัดแค่ CDP connection ของ driver ตัวนี้เอง (เหตุผลเดียวกับ
-            # orchestrator.py::run_task() finally block โหมด connect_to_user_browser)
-            await session.playwright.stop()
-        elif session.mode == "owns":
-            await session.browser.close()
-            await session.playwright.stop()
-        else:  # "pool"
-            await session.context.close()
-            await session.pool.release_one(session.browser)
+        await self._best_effort_close(session)
         return True
 
     async def close_all(self) -> None:

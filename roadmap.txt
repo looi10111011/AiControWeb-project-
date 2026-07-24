@@ -2105,6 +2105,53 @@
            test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
            without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
 
+  [x] W27  แก้บั๊ก: ปุ่ม "kill session" (Test Console) ใช้งานจริงไม่ได้ — เสร็จแล้ว
+           (2026-07-24)
+           user รายงานว่าปุ่ม kill session (× บนรายการบทสนทนาใน Test Console) กดแล้วไม่ได้
+           ผลจริง — สืบพบ 2 บั๊กซ้อนกันในเส้นทาง killSession() (index.html): กด × ->
+           POST /tasks/{id}/stop (ถ้า task กำลังรันอยู่) ต่อด้วย POST /sessions/{id}/close
+           ทันที
+
+           บั๊กที่ 1 (root cause หลัก — race condition): TaskManager.cancel() เดิมแค่ยิง
+           asyncio.CancelledError เข้า task (.cancel()) แล้ว return True ทันที ไม่รอให้ task
+           ประมวลผล cancellation จริงก่อน (asyncio.Task.cancel() แค่ "ขอ" ให้ cancel ที่จุด
+           await ถัดไป ไม่ได้หยุดทันที) — endpoint /stop เลยตอบกลับเร็วเกินไป ทำให้ frontend
+           ยิง /sessions/{id}/close ตามมาขณะที่ task ที่เพิ่งถูก cancel อาจยังไม่ทันเลิกใช้
+           page/context/browser จริง (เช่น อยู่กลาง page.click()/page.evaluate()) —
+           session.close() เลยไปแตะ resource เดียวกันพร้อมกัน race กันจริง
+
+           บั๊กที่ 2 (ขยายผล): SessionRegistry.close() เดิมไม่มี try/except เลยสักจุด (ต่างจาก
+           _best_effort_close() ที่ _recover() ใช้อยู่แล้วซึ่งกลืน exception ทุกจุด) ถ้า
+           browser.close()/context.close() ล้มเหลว (จาก race ข้างต้น หรือ user ปิดหน้าต่าง
+           browser จริงเองด้วยมือไปก่อนแล้ว — โหมด "owns" ใช้ headless=False เปิดหน้าต่างจริง
+           ให้เห็น) exception จะหลุดออกไปจาก endpoint เป็น 500 ทั้งที่ session ถูก pop() ออก
+           จาก registry ไปแล้วก่อนหน้านั้น (ดูเหมือนปิดสำเร็จจาก state แต่ resource จริง
+           (browser process/หน้าต่างที่มองเห็นได้/browser ที่ยืมจาก pool) ไม่ถูกปิด/คืนจริง
+           เลย — คือสิ่งที่ user เห็นว่า "กดแล้วไม่ได้ผล"
+
+           แก้บั๊กที่ 1: task_manager.py::TaskManager.cancel() เปลี่ยนเป็น async — หลังสั่ง
+           .cancel() แล้ว await ตัว task เดิมต่อ (มี wait_timeout=5.0 วิ กันค้างถ้า step ไหน
+           ไม่ยอมคืน control loop เลย — ไม่ throw ออกมาแม้ timeout เพราะ _run() เอง catch
+           CancelledError ไว้แล้วไม่ re-raise อยู่แล้ว) routes.py::stop_task() เปลี่ยนเป็น
+           await task_manager.cancel(task_id) ตาม — ผลคือ endpoint /stop ไม่ตอบกลับจนกว่า
+           task จะเลิกใช้ page/browser จริง (หรือครบ timeout) ปิดช่อง race เกือบทั้งหมด
+
+           แก้บั๊กที่ 2: session_registry.py::close() delegate ไปที่ _best_effort_close() ตัว
+           เดียวกับที่ _recover() ใช้ (กลืน exception ทุกจุด + เช็ค is_connected() ก่อนคืน
+           browser กลับ pool กัน poison pool ด้วย browser ที่ตายไปแล้ว — fix เดียวกับที่ W19
+           ทำไว้ให้ _recover() แต่ไม่เคยเอามาใช้กับ explicit close ปกติเลย) แทนที่จะเขียน
+           ตรรกะปิดซ้ำเองแบบไม่มี error handling — ลบโค้ดซ้ำซ้อนไปด้วยในตัว
+
+           unit test ใหม่ 3 เคสใน test_task_manager.py (cancel() waits จริง — เช็ค
+           record.status เป็น "cancelled" ทันทีที่ cancel() คืนค่า ไม่ต้องรออ่าน event เพิ่ม
+           — พิสูจน์ timing ไม่ใช่แค่ sequence, cancel() คืน False สำหรับ unknown/finished
+           task ยังทำงานถูกหลังเปลี่ยนเป็น async) + 2 เคสใน test_session_registry.py
+           (close() ไม่ throw ออกมาแม้ close call ข้างในล้มเหลว, close() ไม่ release_one()
+           browser ที่ disconnect แล้วกลับ pool) + แก้ 4 เคสเดิมที่เรียก .cancel()/.close()
+           แบบ sync ให้เป็น await ตามที่ signature เปลี่ยน — รันจริง `pytest -q` เต็ม suite
+           ยืนยัน: 495 เคสผ่าน (ไม่นับ test_site_learning_crawler.py เคสเดิมที่ fail
+           อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

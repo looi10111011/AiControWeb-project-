@@ -145,7 +145,7 @@ async def test_cancel_stops_a_running_task_and_marks_it_cancelled():
     record = tm.submit("t6", "https://example.com", "goal", None, _coro())
     await asyncio.wait_for(started.wait(), timeout=1)
 
-    assert tm.cancel("t6") is True
+    assert await tm.cancel("t6") is True
 
     done_event = await asyncio.wait_for(record.events.get(), timeout=1)
     assert done_event["kind"] == "task_done"
@@ -170,14 +170,40 @@ async def test_cancel_resolves_pending_approval_as_denied():
     approval_task = asyncio.create_task(tm.request_approval("t7", {"type": "purchase"}))
     await asyncio.wait_for(record.events.get(), timeout=1)  # approval_request
 
-    assert tm.cancel("t7") is True
+    assert await tm.cancel("t7") is True
 
     assert await asyncio.wait_for(approval_task, timeout=1) is False
 
 
-def test_cancel_returns_false_for_unknown_task_id():
+@pytest.mark.asyncio
+async def test_cancel_waits_for_the_task_to_actually_stop_before_returning():
+    """W27: แก้บั๊ก "ปุ่ม kill session ใช้งานจริงไม่ได้" — เดิม cancel() แค่ยิง
+    CancelledError แล้ว return True ทันที ไม่รอให้ _run() ประมวลผลเสร็จก่อน (race กับ
+    SessionRegistry.close() ที่ frontend เรียกตามมาทันทีหลัง stop ตอบกลับ — ดู
+    routes.py::stop_task()/killSession() ใน index.html) — พิสูจน์ด้วยการเช็คว่า
+    record.status เป็น "cancelled" ไปแล้วทันทีที่ cancel() คืนค่า โดยไม่ต้องรอ event อื่น
+    เพิ่มก่อนเลย (ต่างจาก test_cancel_stops_a_running_task_and_marks_it_cancelled เดิมที่
+    await record.events.get() เพิ่มก่อนเช็ค — พิสูจน์ได้แค่ "sequence ถูกต้องในที่สุด" ไม่ได้
+    พิสูจน์ timing ว่า cancel() เองรอจริงไหม)"""
     tm = TaskManager()
-    assert tm.cancel("does-not-exist") is False
+    started = asyncio.Event()
+
+    async def _coro() -> dict:
+        started.set()
+        await asyncio.Event().wait()  # ไม่มีวันจบเอง ต้องถูก cancel() เท่านั้น
+        return {}
+
+    record = tm.submit("t9", "https://example.com", "goal", None, _coro())
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert await tm.cancel("t9") is True
+    assert record.status == "cancelled"  # อัปเดตไปแล้วจริงๆ ก่อน cancel() จะคืนค่าด้วยซ้ำ
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_false_for_unknown_task_id():
+    tm = TaskManager()
+    assert await tm.cancel("does-not-exist") is False
 
 
 @pytest.mark.asyncio
@@ -190,7 +216,7 @@ async def test_cancel_returns_false_for_already_finished_task():
     record = tm.submit("t8", "https://example.com", "goal", None, _coro())
     await asyncio.wait_for(record.events.get(), timeout=1)  # task_done
 
-    assert tm.cancel("t8") is False
+    assert await tm.cancel("t8") is False
 
 
 @pytest.mark.asyncio

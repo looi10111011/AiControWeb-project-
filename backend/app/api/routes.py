@@ -382,7 +382,10 @@ async def stop_task(task_id: str, request: Request) -> dict:
     record = task_manager.get(task_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"ไม่พบ task_id: {task_id!r}")
-    ok = task_manager.cancel(task_id)
+    # W27: cancel() ตอนนี้เป็น async แล้ว (รอให้ task หยุดใช้ page/browser จริงก่อน return
+    # ไม่ใช่แค่ยิง CancelledError แล้วคืนทันที — ดู TaskManager.cancel() docstring) กัน race
+    # กับ POST /sessions/{id}/close ที่ frontend (killSession()) ยิงตามมาทันทีหลัง stop ตอบ
+    ok = await task_manager.cancel(task_id)
     if not ok:
         raise HTTPException(status_code=409, detail="Task นี้ไม่ได้กำลังรันอยู่แล้ว")
     return {"status": "stopping"}
