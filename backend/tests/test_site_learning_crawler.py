@@ -8,6 +8,7 @@ import pytest
 from playwright.async_api import async_playwright
 
 from backend.app.site_learning.crawler import (
+    _button_signature,
     _click_with_retry,
     _goto_with_retry,
     _reveal_dynamic_content,
@@ -15,7 +16,7 @@ from backend.app.site_learning.crawler import (
     crawl_site,
     describe_site,
 )
-from backend.app.site_learning.schema import PageInfo
+from backend.app.site_learning.schema import ButtonInfo, PageInfo
 
 # เทสต์กลุ่มนี้ยิงจริงผ่าน chromium จริง (ไม่ mock Playwright) ต่อ local HTTP server ที่
 # serve fixture HTML จริง — mock page.goto()/nav ทั้งเชนยากกว่าและพิสูจน์ BFS/dedup/
@@ -990,3 +991,118 @@ async def test_crawl_site_populates_summary_field(fixture_server):
             await browser.close()
 
     assert manual.summary != ""
+
+
+# ---------------- W28/W29: กันไล่กด "ปุ่มเดิม" ซ้ำไม่รู้จบข้ามหลายหน้า ----------------
+
+
+def test_button_signature_ignores_dynamic_aria_label_and_title():
+    """W29: aria_label/title มักมีเนื้อหาต่อท้ายที่เปลี่ยนทุก instance (เช่น "Next video:
+    <ชื่อคลิป>", "ผลการค้นหาสำหรับ <คำค้น>") — ต้องไม่ถูกใช้เป็นส่วนหนึ่งของ signature เลย
+    ปุ่มที่เหมือนกันทุกอย่างยกเว้น aria_label/title ต้องได้ signature เดียวกัน"""
+    a = ButtonInfo(text="Next", aria_label="Next video: Song A", title="Play next", has_icon=True)
+    b = ButtonInfo(text="Next", aria_label="Next video: Song B", title="Play next 2", has_icon=True)
+    assert _button_signature(a) == _button_signature(b)
+
+
+def test_button_signature_differs_by_text():
+    a = ButtonInfo(text="Next")
+    b = ButtonInfo(text="Search")
+    assert _button_signature(a) != _button_signature(b)
+
+
+def test_button_signature_differs_by_role():
+    a = ButtonInfo(text="View", role="button")
+    b = ButtonInfo(text="View", role="link")
+    assert _button_signature(a) != _button_signature(b)
+
+
+def test_button_signature_differs_by_is_nav_menu_item():
+    a = ButtonInfo(text="Settings", is_nav_menu_item=True)
+    b = ButtonInfo(text="Settings", is_nav_menu_item=False)
+    assert _button_signature(a) != _button_signature(b)
+
+
+def test_button_signature_falls_back_to_data_testid_when_text_empty():
+    """ปุ่ม icon-only (ไม่มี text บนปุ่มเลย เช่น ไอคอนค้นหาแว่นขยายล้วนๆ) ต้องยังจับคู่กันได้
+    ถ้า data-testid ตรงกัน"""
+    a = ButtonInfo(text="", data_testid="search-icon")
+    b = ButtonInfo(text="", data_testid="search-icon")
+    c = ButtonInfo(text="", data_testid="cart-icon")
+    assert _button_signature(a) == _button_signature(b)
+    assert _button_signature(a) != _button_signature(c)
+
+
+def test_button_signature_falls_back_to_icon_hint_when_text_and_testid_empty():
+    a = ButtonInfo(text="", data_testid="", icon_hint="search")
+    b = ButtonInfo(text="", data_testid="", icon_hint="search")
+    c = ButtonInfo(text="", data_testid="", icon_hint="cart")
+    assert _button_signature(a) == _button_signature(b)
+    assert _button_signature(a) != _button_signature(c)
+
+
+_REPEAT_BUTTON_FIXTURE_PAGES = {
+    # จำลอง "YouTube Shorts": ปุ่ม "Next" label+role เหมือนกันทุกหน้าพาไปหน้าใหม่ (URL ไม่
+    # ซ้ำ) เสมอไม่รู้จบ — shorts1 -> shorts2 -> shorts3 -> shorts4 ถ้าไม่ถูกจำกัดจะไล่กด
+    # "Next" ไปเรื่อยๆ กิน max_pages budget ทั้งหมด ไม่เคยไปถึง other.html เลย
+    "shorts1.html": """
+        <html><body>
+          <nav><a href="/other.html">Other</a></nav>
+          <button onclick="window.location.href='/shorts2.html'">Next</button>
+        </body></html>
+    """,
+    "shorts2.html": """
+        <html><body>
+          <button onclick="window.location.href='/shorts3.html'">Next</button>
+        </body></html>
+    """,
+    "shorts3.html": """
+        <html><body>
+          <button onclick="window.location.href='/shorts4.html'">Next</button>
+        </body></html>
+    """,
+    "shorts4.html": "<html><body>dead end</body></html>",
+    "other.html": "<html><body>a totally different section of the site</body></html>",
+}
+
+
+@pytest.fixture
+def repeat_button_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _REPEAT_BUTTON_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_stops_repeat_clicking_the_same_button_across_pages(repeat_button_fixture_server):
+    """W28/W29: ปุ่ม "Next" (signature เดียวกันทุกหน้า) ต้องหยุดถูกไล่กดหลังครบเพดาน
+    settings.site_learning_max_repeat_button_clicks (default 1) แม้จะเจอบนหน้าใหม่ที่ไม่
+    เคยไปมาก่อนก็ตาม (ต่างจากเดิมที่ visited-set กันแค่ "หน้า" ไม่กัน "ปุ่ม" — ปุ่ม Next บน
+    หน้าใหม่ทุกหน้าไม่เคยถูกมองว่า "เคยกดแล้ว" เพราะหน้ามัน "ใหม่" เสมอ) — ต้องยังสำรวจ
+    other.html (เข้าถึงผ่าน nav link ปกติ ไม่เกี่ยวกับปุ่ม) ได้ตามปกติ ไม่ถูกกระทบ"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{repeat_button_fixture_server}/shorts1.html", max_pages=20)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("shorts1.html" in u for u in visited_urls)
+    assert any("shorts2.html" in u for u in visited_urls)  # "Next" กดได้ 1 ครั้งตามเพดาน default
+    assert not any("shorts3.html" in u for u in visited_urls)  # ไม่ควรไปถึง — Next ถูกบล็อกแล้ว
+    assert not any("shorts4.html" in u for u in visited_urls)
+    assert any("other.html" in u for u in visited_urls)  # ยังสำรวจส่วนอื่นของเว็บได้ตามปกติ
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_respects_custom_max_repeat_button_clicks(repeat_button_fixture_server, monkeypatch):
+    monkeypatch.setattr("backend.app.site_learning.crawler.settings.site_learning_max_repeat_button_clicks", 2)
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{repeat_button_fixture_server}/shorts1.html", max_pages=20)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("shorts3.html" in u for u in visited_urls)  # เพดาน 2 -> กด "Next" ได้ 2 ครั้ง
+    assert not any("shorts4.html" in u for u in visited_urls)  # ครั้งที่ 3 ยังเกินเพดาน

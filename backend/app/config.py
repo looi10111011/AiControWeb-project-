@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # อาจต้องเพิ่มค่านี้ขึ้นถ้าพบว่า manual ที่ได้ไม่ครบเนื้อหาทั้งหมด
     site_learning_max_scroll_attempts: int = 6
     site_learning_scroll_wait_ms: int = 350
+    # W28: ปุ่มที่ "label+role เดียวกัน" โผล่ซ้ำข้ามหลายหน้า (เช่น ไอคอนค้นหาบน header ของ
+    # ทุกหน้า, ปุ่ม "Previous/Next video" บน player ของทุกคลิป) จะถูกไล่กดได้สูงสุดกี่ครั้ง
+    # รวมทั้ง crawl (นับข้าม URL ไม่ใช่แค่ในหน้าเดียว — ดู crawler.py::_button_signature) —
+    # ก่อนหน้านี้ไม่มีเพดานนี้เลย ทำให้เว็บที่มีเนื้อหาไม่จำกัด (เช่น YouTube Shorts ที่ปุ่ม
+    # "Next video" พาไป URL ใหม่ไม่รู้จบ) กิน max_pages budget ทั้งหมดไปกับการไล่กดปุ่มเดิม
+    # ซ้ำๆ ข้ามหน้า ไม่เคยย้อนกลับไปสำรวจส่วนอื่นของเว็บเลย ค่า 1 = กดแต่ละปุ่มที่เหมือนกัน
+    # ได้แค่ครั้งเดียวตลอดทั้ง crawl (เข้มสุด กัน loop เด็ดขาด แลกกับ coverage ที่ลดลงถ้าปุ่ม
+    # label เดียวกันจริงๆ ใช้งานต่างกันในแต่ละหมวดของเว็บ เช่น "View" ในตาราง Products กับ
+    # ตาราง Orders — คนละความหมายแต่ label เดียวกัน จะถูกไล่กดแค่อันแรกอันเดียว)
+    site_learning_max_repeat_button_clicks: int = 1
 
     # W20: Plan Memory (ดู core/plan_memory.py) — แผนที่ user "Confirm" แล้ว เก็บใน
     # ChromaDB collection แยกต่างหาก (persist_dir เดียวกับ chroma_persist_dir ข้างบน
