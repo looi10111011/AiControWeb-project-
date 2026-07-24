@@ -1,3 +1,4 @@
+import itertools
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1036,9 +1037,9 @@ async def test_run_task_triggers_vision_fallback_when_visible_action_fails_on_ge
     assert describe_args[3] == "click"
     assert describe_args[4] == 5
 
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ (ว่างเปล่าในเทสต์นี้) —
-    # vision_context ขยับไป args[-2]
-    second_call_vision_context = mock_next_action.await_args_list[1].args[-2]
+    # W14/W30/W32: args ท้ายสุดตามลำดับคือ site_manual_context, current_url,
+    # action_history_context (ใหม่) — vision_context เลยอยู่ args[-4]
+    second_call_vision_context = mock_next_action.await_args_list[1].args[-4]
     assert second_call_vision_context == "เห็น cookie banner บังปุ่มอยู่"
 
 
@@ -1307,10 +1308,57 @@ async def test_run_task_approved_plan_skips_internal_generation_and_confirmation
 
 
 @pytest.mark.asyncio
-async def test_run_task_stops_on_repeated_identical_action():
-    """loop-detection guard: บาง provider (เจอกับ Llama บน Groq) ยังวนเรียก
-    browser_action เดิมเป๊ะๆ ซ้ำๆ แม้ execute() จะสำเร็จทุกครั้ง — ต้องหยุด task เอง
-    ไม่ปล่อยให้วนจนหมด max_steps เสีย token ไปเรื่อยๆ โดยไม่มีความคืบหน้า"""
+async def test_run_task_forces_recovery_action_on_repeated_identical_action_then_continues():
+    """W31: loop-detection guard (คาบ 1) เดิมจบ task ทันทีที่ trigger — ตอนนี้ต้องบังคับ
+    ทำ go_back แทนก่อน (ไม่ผ่าน LLM) แล้วให้ agent ลองต่อจาก state ใหม่ — พิสูจน์ด้วยการ
+    ให้ mock คืน action เดิมซ้ำจนครบเพดาน แล้วสลับเป็น action ที่ต่างออกไปซึ่งนำไปสู่
+    finish_task(success=true) ได้จริง ต้องไม่ถูกตัดจบก่อนเวลาเพราะ recovery แทรกเข้ามา"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(5)", "คลิกสำเร็จ")
+    same_click = {"type": "click", "index": 5}
+
+    next_action_calls = [
+        ("browser_action", same_click, "t1", [], llm.TokenUsage()),
+        ("browser_action", same_click, "t2", [], llm.TokenUsage()),
+        ("browser_action", same_click, "t3", [], llm.TokenUsage()),  # trigger ที่นี่ -> forced go_back แทน
+        ("browser_action", {"type": "click", "index": 9}, "t4", [], llm.TokenUsage()),  # action ใหม่หลัง recovery
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is True  # ไม่ถูกตัดจบก่อนเวลา — ไปต่อจนสำเร็จได้จริง
+    # 2 click สำเร็จ (count 1,2) + 1 go_back บังคับ (แทนที่ click ตัวที่ 3 ที่ถูกบล็อก) +
+    # 1 click ใหม่หลัง recovery = 4 ครั้ง (finish_task ไม่ผ่าน execute())
+    assert mock_execute.await_count == 4
+    forced_call = mock_execute.await_args_list[2]
+    assert forced_call.args[1] == {"type": "go_back"}
+    assert mock_next_action.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_run_task_aborts_after_exhausting_forced_loop_recoveries():
+    """W31: ถ้า agent ยังวนกลับมาเรียก action เดิมซ้ำแม้บังคับ recovery ไปแล้ว ต้อง
+    ยอมแพ้จริงในที่สุด (escape valve กัน force ไม่รู้จบ) — mock คืน click index 5 ซ้ำ
+    ตลอดกาลไม่ว่าจะบังคับ recovery ไปกี่ครั้งก็ตาม
+
+    trace ที่เกิดขึ้นจริง (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS=3,
+    _MAX_FORCED_LOOP_RECOVERIES=2): รอบ 1 (click,click,[trigger]->forced go_back) ->
+    รอบ 2 (click,click,[trigger]->forced scroll) -> รอบ 3 (click,click,[trigger]-> เกิน
+    เพดานแล้ว ยอมแพ้จริง ไม่ execute action ที่ถูกบล็อก) — รวม execute() 3*2+2=8 ครั้ง
+    (2 click ต่อรอบ x3 รอบ + go_back + scroll), next_action ถูกเรียก 3*3=9 ครั้ง (รวม
+    call ที่ 3 ของแต่ละรอบที่ trigger guard ด้วย)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     click_result = ActionResult(True, "click(5)", "คลิกสำเร็จ")
     same_action = ("browser_action", {"type": "click", "index": 5}, "tool_x", [], llm.TokenUsage())
@@ -1323,15 +1371,17 @@ async def test_run_task_stops_on_repeated_identical_action():
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(return_value=same_action)) as mock_next_action:
         result = await Orchestrator().run_task(
-            "https://example.com", "goal", max_steps=10, provider="anthropic"
+            "https://example.com", "goal", max_steps=20, provider="anthropic"
         )
 
     assert result["success"] is False
     assert "ซ้ำ" in result["message"]
-    # ยิงจริงแค่ (N-1) ครั้ง เพราะการเรียกซ้ำครั้งที่ N ถูกสกัดไว้ก่อน execute()
-    assert result["steps"] == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1
-    assert mock_execute.await_count == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1
-    assert mock_next_action.await_count == _MAX_CONSECUTIVE_IDENTICAL_ACTIONS
+    assert "บังคับ" in result["message"]
+    assert result["steps"] == 8
+    assert mock_execute.await_count == 8
+    assert mock_next_action.await_count == 9
+    forced_types = [c.args[1].get("type") for c in mock_execute.await_args_list if c.args[1].get("type") != "click"]
+    assert forced_types == ["go_back", "scroll"]  # ลำดับ recovery action ตาม _LOOP_RECOVERY_ACTIONS
 
 
 @pytest.mark.asyncio
@@ -1397,21 +1447,25 @@ async def test_run_task_loop_guard_resets_count_after_different_action():
 
 @pytest.mark.asyncio
 async def test_run_task_stops_on_alternating_two_action_pattern():
-    """loop-detection (คาบ 2, 2026-07-13): agent วนสลับ 2 action ที่ไม่เหมือนกันไปมา
-    (เช่น go_back <-> click) — guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS) จับได้
-    แค่ action เดิมเป๊ะๆ ซ้ำติดกัน (คาบ 1) ไม่ตรงเงื่อนไขนี้เลยไม่เคย trigger ต้องมี
-    guard ใหม่จับคาบ 2 (ABAB) แยกต่างหาก"""
+    """loop-detection (คาบ 2, 2026-07-13): agent วนสลับ 2 action ที่ไม่เหมือนกันไปมา —
+    guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS) จับได้แค่ action เดิมเป๊ะๆ ซ้ำติดกัน
+    (คาบ 1) ไม่ตรงเงื่อนไขนี้เลยไม่เคย trigger ต้องมี guard ใหม่จับคาบ 2 (ABAB) แยกต่างหาก
+
+    W31: trigger แล้วตอนนี้บังคับ recovery action ก่อน (ไม่จบ task ทันทีเหมือนเดิม) — ใช้
+    itertools.cycle ให้ mock วน A/B ไม่รู้จบ (เหมือน agent ที่ไม่ยอมเปลี่ยนพฤติกรรมเอง) กัน
+    escape valve (_MAX_FORCED_LOOP_RECOVERIES) ในที่สุด แทนที่จะ hand-compute จำนวนครั้ง
+    เป๊ะๆ (ซับซ้อนเกินไปเพราะ forced action เองก็เข้าไปอยู่ใน recent_actions window ที่ใช้
+    ตรวจจับคาบต่อด้วย) ตรวจแค่ผลลัพธ์สุดท้ายที่สำคัญจริง: จบด้วย fail + ข้อความบอกคาบ 2
+    ชัดเจน + มีการบังคับ go_back ไปแล้วอย่างน้อย 1 ครั้งจริง + ไม่ได้วนจนหมด max_steps"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     click_result = ActionResult(True, "click", "สำเร็จ")
-    action_a = {"type": "go_back"}
-    action_b = {"type": "click", "index": 3}
+    action_a = {"type": "click", "index": 1}
+    action_b = {"type": "click", "index": 2}
 
-    next_action_calls = [
+    next_action_calls = itertools.cycle([
         ("browser_action", action_a, "t1", [], llm.TokenUsage()),
         ("browser_action", action_b, "t2", [], llm.TokenUsage()),
-        ("browser_action", action_a, "t3", [], llm.TokenUsage()),
-        ("browser_action", action_b, "t4", [], llm.TokenUsage()),
-    ]
+    ])
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
@@ -1419,18 +1473,17 @@ async def test_run_task_stops_on_alternating_two_action_pattern():
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
-         patch(
-             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
-         ) as mock_next_action:
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         result = await Orchestrator().run_task(
-            "https://example.com", "goal", max_steps=10, provider="anthropic"
+            "https://example.com", "goal", max_steps=30, provider="anthropic"
         )
 
     assert result["success"] is False
     assert "คาบ 2" in result["message"]
-    # การสลับครั้งที่ 4 (B ตัวที่ 2) ถูกสกัดไว้ก่อน execute() เหมือน guard คาบ 1
-    assert mock_execute.await_count == 3
-    assert mock_next_action.await_count == 4
+    assert "บังคับ" in result["message"]
+    assert result["steps"] < 30  # ยอมแพ้ก่อนหมด max_steps จริง ไม่ใช่วนจนครบ budget
+    forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
+    assert len(forced_go_back_calls) >= 1
 
 
 @pytest.mark.asyncio
@@ -1447,14 +1500,11 @@ async def test_run_task_stops_on_repeating_three_action_cycle():
     action_b = {"type": "click", "index": 2}
     action_c = {"type": "click", "index": 3}
 
-    next_action_calls = [
+    next_action_calls = itertools.cycle([
         ("browser_action", action_a, "t1", [], llm.TokenUsage()),
         ("browser_action", action_b, "t2", [], llm.TokenUsage()),
         ("browser_action", action_c, "t3", [], llm.TokenUsage()),
-        ("browser_action", action_a, "t4", [], llm.TokenUsage()),
-        ("browser_action", action_b, "t5", [], llm.TokenUsage()),
-        ("browser_action", action_c, "t6", [], llm.TokenUsage()),
-    ]
+    ])
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
@@ -1462,18 +1512,19 @@ async def test_run_task_stops_on_repeating_three_action_cycle():
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
-         patch(
-             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
-         ) as mock_next_action:
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         result = await Orchestrator().run_task(
-            "https://example.com", "goal", max_steps=10, provider="anthropic"
+            "https://example.com", "goal", max_steps=30, provider="anthropic"
         )
 
+    # W31: trigger แล้วบังคับ recovery ก่อน (ดู test_run_task_stops_on_alternating_two_
+    # action_pattern สำหรับเหตุผลที่ตรวจแบบ behavioral แทน exact count)
     assert result["success"] is False
     assert "คาบ 3" in result["message"]
-    # ครบ 2 รอบเต็ม (ABC-ABC = 6 action) ถึงจะ trigger — ครั้งที่ 6 ถูกสกัดไว้ก่อน execute()
-    assert mock_execute.await_count == 5
-    assert mock_next_action.await_count == 6
+    assert "บังคับ" in result["message"]
+    assert result["steps"] < 30
+    forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
+    assert len(forced_go_back_calls) >= 1
 
 
 @pytest.mark.asyncio
@@ -1487,16 +1538,12 @@ async def test_run_task_stops_on_repeating_four_action_cycle():
     action_c = {"type": "click", "index": 3}
     action_d = {"type": "click", "index": 4}
 
-    next_action_calls = [
+    next_action_calls = itertools.cycle([
         ("browser_action", action_a, "t1", [], llm.TokenUsage()),
         ("browser_action", action_b, "t2", [], llm.TokenUsage()),
         ("browser_action", action_c, "t3", [], llm.TokenUsage()),
         ("browser_action", action_d, "t4", [], llm.TokenUsage()),
-        ("browser_action", action_a, "t5", [], llm.TokenUsage()),
-        ("browser_action", action_b, "t6", [], llm.TokenUsage()),
-        ("browser_action", action_c, "t7", [], llm.TokenUsage()),
-        ("browser_action", action_d, "t8", [], llm.TokenUsage()),
-    ]
+    ])
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
@@ -1504,17 +1551,19 @@ async def test_run_task_stops_on_repeating_four_action_cycle():
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
-         patch(
-             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
-         ) as mock_next_action:
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         result = await Orchestrator().run_task(
-            "https://example.com", "goal", max_steps=10, provider="anthropic"
+            "https://example.com", "goal", max_steps=30, provider="anthropic"
         )
 
+    # W31: ดูเหตุผลที่ตรวจแบบ behavioral ใน test_run_task_stops_on_alternating_two_
+    # action_pattern
     assert result["success"] is False
     assert "คาบ 4" in result["message"]
-    assert mock_execute.await_count == 7
-    assert mock_next_action.await_count == 8
+    assert "บังคับ" in result["message"]
+    assert result["steps"] < 30
+    forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
+    assert len(forced_go_back_calls) >= 1
 
 
 @pytest.mark.asyncio
@@ -1672,8 +1721,10 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
     mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — manual_context ขยับไป args[-5]
-    manual_context = mock_next_action.await_args.args[-5]
+    # W14/W30/W32: args ท้ายสุดตามลำดับคือ manual_context, memory_context,
+    # long_term_context, vision_context, site_manual_context, current_url,
+    # action_history_context — manual_context เลยอยู่ args[-7]
+    manual_context = mock_next_action.await_args.args[-7]
     assert manual_context == "- chunk1\n- chunk2\n- chunk3"
 
 
@@ -1729,8 +1780,9 @@ async def test_run_task_manual_context_is_empty_string_when_retrieve_returns_no_
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — manual_context ขยับไป args[-5]
-    manual_context = mock_next_action.await_args.args[-5]
+    # W14/W30/W32: ดูคอมเมนต์เต็มใน test_run_task_calls_retrieve_with_goal_page_text_and_
+    # k_then_passes_result_into_next_action — manual_context อยู่ args[-7]
+    manual_context = mock_next_action.await_args.args[-7]
     assert manual_context == ""
 
 
@@ -1759,9 +1811,10 @@ async def test_run_task_memory_context_reflects_previous_step_failure():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — memory_context ขยับไป args[-4]
-    first_call_memory_context = mock_next_action.await_args_list[0].args[-4]
-    second_call_memory_context = mock_next_action.await_args_list[1].args[-4]
+    # W14/W30/W32: memory_context อยู่ args[-6] (ดูลำดับเต็มใน test_run_task_calls_
+    # retrieve_with_goal_page_text_and_k_then_passes_result_into_next_action)
+    first_call_memory_context = mock_next_action.await_args_list[0].args[-6]
+    second_call_memory_context = mock_next_action.await_args_list[1].args[-6]
     assert first_call_memory_context == ""
     assert "[FAIL]" in second_call_memory_context
     assert "หา element ไม่เจอ" in second_call_memory_context
@@ -1782,9 +1835,149 @@ async def test_run_task_memory_context_is_empty_string_when_no_failures_yet():
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — memory_context ขยับไป args[-4]
-    memory_context = mock_next_action.await_args.args[-4]
+    # W14/W30/W32: memory_context อยู่ args[-6]
+    memory_context = mock_next_action.await_args.args[-6]
     assert memory_context == ""
+
+
+# --- W30: current_url ส่งเข้า next_action() ทุก step + แจ้งเตือนเมื่อ URL เปลี่ยนไปเอง ---
+
+
+@pytest.mark.asyncio
+async def test_run_task_passes_live_page_url_into_next_action():
+    """W30: page.url ต้องถูกส่งเข้า next_action() ทุก step (args[-2] — ดู current_url
+    parameter) อ่านสดจาก page object จริง ไม่ใช่ค่าที่จำมาจาก step ก่อน"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/cart"
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "", [], llm.TokenUsage())),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    current_url = mock_next_action.await_args.args[-2]
+    assert current_url == "https://example.com/cart"
+
+
+@pytest.mark.asyncio
+async def test_run_task_flags_unexpected_navigation_after_non_navigational_action():
+    """W30: click ธรรมดาที่ดันมี redirect/JS navigation ซ่อนอยู่ (page.url เปลี่ยนไปเอง
+    หลัง execute() แม้ tool_input.type ไม่ใช่ goto/switch_tab/go_back) ต้องแนบคำเตือนต่อ
+    ท้าย tool_result ให้โมเดลรู้ตัวว่าหน้าเว็บเปลี่ยนไปแล้ว ไม่ใช่หน้าที่วางแผนไว้"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/start"
+    click_result = ActionResult(True, "click(1)", "สำเร็จ")
+
+    async def _execute_side_effect(page, cmd, **kwargs):
+        mock_page.url = "https://example.com/unexpected"  # จำลอง redirect หลังคลิก
+        return click_result
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+    captured_tool_results = []
+
+    def _capture_append_tool_result(messages, tool_use_id, result_text):
+        captured_tool_results.append(result_text)
+        return messages
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute_side_effect)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_capture_append_tool_result), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert len(captured_tool_results) == 1
+    assert "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" in captured_tool_results[0]
+    assert "https://example.com/start" in captured_tool_results[0]
+    assert "https://example.com/unexpected" in captured_tool_results[0]
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_flag_navigation_for_goto_action():
+    """goto มีจุดประสงค์หลักคือเปลี่ยนหน้าอยู่แล้ว — URL เปลี่ยนไม่ใช่เรื่อง "ไม่คาดคิด"
+    ต้องไม่แนบคำเตือนซ้ำ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/start"
+    goto_result = ActionResult(True, "goto", "สำเร็จ")
+
+    async def _execute_side_effect(page, cmd, **kwargs):
+        mock_page.url = "https://example.com/new-page"
+        return goto_result
+
+    next_action_calls = [
+        ("browser_action", {"type": "goto", "url": "https://example.com/new-page"}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+    captured_tool_results = []
+
+    def _capture_append_tool_result(messages, tool_use_id, result_text):
+        captured_tool_results.append(result_text)
+        return messages
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute_side_effect)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_capture_append_tool_result), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert len(captured_tool_results) == 1
+    assert "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" not in captured_tool_results[0]
+
+
+# --- W32: action_history_context ส่งเข้า next_action() ทุก step ---
+
+
+@pytest.mark.asyncio
+async def test_run_task_passes_action_history_context_into_next_action():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "สำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    # call แรก: มีแค่ step 0 (goto เริ่มต้น) ใน history อยู่แล้ว ยังไม่มี browser_action ใดๆ
+    first_call_history = mock_next_action.await_args_list[0].args[-1]
+    assert "step 0" in first_call_history
+    assert "goto" in first_call_history
+    assert "click" not in first_call_history
+    # call ที่สอง ต้องเห็น step 1 (click ที่เพิ่งทำ) เพิ่มเข้ามาแล้ว (ทั้งที่สำเร็จ ไม่ใช่
+    # แค่ fail — ต่างจาก memory_context)
+    second_call_history = mock_next_action.await_args_list[1].args[-1]
+    assert "step 1" in second_call_history
+    assert "click" in second_call_history
 
 
 @pytest.mark.asyncio
@@ -1813,8 +2006,8 @@ async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_
         query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
         session_id="",
     )
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — long_term_context ขยับไป args[-3]
-    long_term_context = mock_next_action.await_args.args[-3]
+    # W14/W30/W32: long_term_context อยู่ args[-5]
+    long_term_context = mock_next_action.await_args.args[-5]
     assert long_term_context == "- task1: เคยกด Apply Code แล้วโดนบล็อก"
 
 
@@ -1834,8 +2027,8 @@ async def test_run_task_long_term_context_is_empty_string_when_recall_returns_no
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
-    # W14: args[-1] เป็น site_manual_context ตัวใหม่ — long_term_context ขยับไป args[-3]
-    long_term_context = mock_next_action.await_args.args[-3]
+    # W14/W30/W32: long_term_context อยู่ args[-5]
+    long_term_context = mock_next_action.await_args.args[-5]
     assert long_term_context == ""
 
 
@@ -2136,6 +2329,7 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
     async def _next_action_side_effect(
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
+        current_url="", action_history_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -2200,6 +2394,7 @@ async def test_run_task_compacts_anthropic_history_once_step_count_exceeds_thres
     async def _next_action_side_effect(
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
+        current_url="", action_history_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -2262,6 +2457,7 @@ async def test_run_task_compacts_groq_history_and_preserves_leading_system_messa
     async def _next_action_side_effect(
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
+        current_url="", action_history_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1

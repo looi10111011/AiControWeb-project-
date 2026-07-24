@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-23)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-24)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -1945,6 +1945,493 @@
            test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_
            gracefully_without_submit_button 1 เคสเดิมที่ fail อยู่ก่อนแล้วตั้งแต่ก่อน
            รอบนี้ ไม่เกี่ยวกับงานนี้)
+
+  [x] W24  Website Learning: ทำให้ "เรียนรู้เว็บไซต์" เป็น contract ที่ชัดเจน+ตรวจสอบได้ —
+           เสร็จแล้ว (2026-07-23)
+           user ขอปรับปรุง self-learning ตามเช็คลิสต์ยาว (Login/สำรวจทุกเมนู/คลิกทุกหน้า/
+           อ่านข้อมูล/บันทึก/จบเมื่อ queue ว่างเท่านั้น, queue-based crawler, SPA support,
+           หาเมนูให้ครบไม่ใช่แค่ <a>, ไม่ปิด browser ก่อนเวลา, error handling+retry, finish
+           condition, ตรวจ session หลัง login, logging, ตรวจ config ที่จำกัดการสำรวจ,
+           dynamic content (infinite scroll/lazy load/modal/dropdown/tab), กันเรียนรู้ซ้ำ)
+           — เช็คลิสต์เขียนในเชิง "LLM agent ที่ตัดสินใจเองจาก prompt" แต่ระบบจริงเป็น
+           deterministic crawler (BFS+DFS ล้วนๆ ตามที่ user ยืนยันไว้ตั้งแต่ W14 เพื่อลด
+           token cost ไม่ให้ LLM ตัดสินใจ navigate เอง) — แจ้ง user ตรงๆ แล้วแปล requirement
+           แต่ละข้อเป็นการบังคับ+ตรวจสอบ "ขั้นตอน" ในโค้ดจริงแทนที่จะเขียนเป็น prompt ให้ตีความ
+           (รายละเอียดเหตุผลเต็มอยู่ใน docstring หัวไฟล์ site_learning/crawler.py หัวข้อ
+           "W24" — สรุปตามข้อ):
+
+           1/2/7/12 (contract หลัก + queue + finish condition + กันซ้ำ): ของเดิมมีอยู่แล้ว
+           เกือบทั้งหมดตั้งแต่ W14/W16 (queue/visited/queued set, while queue and len(pages)
+           < max) ไม่ต้องแก้โครงสร้าง — ตรวจสอบยืนยันซ้ำว่า loop ไม่จบทันทีหลัง login/เข้า
+           dashboard จริง (เดินตาม queue ต่อเสมอ)
+
+           3 (SPA): เพิ่ม _wait_for_dom_stable() (poll ความยาว document.body.innerHTML จน
+           นิ่งติดกัน N ครั้ง) เรียกคู่กับ wait_for_load_state("networkidle") เดิมทุกจุดที่
+           navigate/click แล้ว — เดิมพึ่ง networkidle อย่างเดียวซึ่งไม่พอสำหรับ client-side
+           routing ที่ไม่ยิง network request ใหม่เลย (route จาก cache/state ล้วนๆ)
+
+           4 (เมนูที่ไม่ใช่ <a>): extractor.py เพิ่ม role=menuitem/role=tab/router-link เข้า
+           BUTTON_SELECTOR + ธง is_nav_menu_item ใหม่ใน ButtonInfo (คำนวณจาก isNavMenuItem()
+           — อยู่ใน nav container หรือแมตช์ selector ใหม่พวกนี้) — element ที่ธงนี้ true จะถูก
+           _explore_buttons() ไล่กดแบบ default-allow (safety.is_safe_nav_link — เหมือน nav
+           link ปกติ) แทนที่จะต้องผ่าน safety.is_crawl_safe() default-deny เข้มแบบปุ่มทั่วไป
+           (ดู crawler.py::_is_explorable) *** เจอ safety regression ระหว่างเขียนเอง (ไม่ใช่
+           ตาม spec): ตอนแรกให้ <a href> ใน nav container ได้ is_nav_menu_item=true ด้วย ทำให้
+           _explore_buttons() ไป "คลิก" ลิงก์ nav ซ้ำ (นอกจากเดินผ่าน BFS href เดิม) ซึ่งคลิก
+           จริงทำให้ browser navigate ไปก่อนรู้ปลายทาง ต่างจาก BFS ที่เช็ค same-origin จาก
+           href ได้ก่อน navigate เสมอ — เสี่ยงคลิกหลุดไปเว็บนอกโดเมนจริงระหว่าง "เรียนรู้
+           เว็บไซต์" ทั้งที่ตั้งใจจำกัดขอบเขตไว้แค่โดเมนเดียว แก้โดยให้ <a href="..."> ที่มี
+           ปลายทางจริง (ไม่ใช่ "#fragment"/"javascript:") ไม่ถือเป็น nav menu item เด็ดขาด
+           (ยังเดินผ่าน BFS href เดิมอย่างเดียว) ***
+
+           5 (ไม่ปิด browser ก่อนเวลา): ตรวจโค้ดแล้ว — context.close()/browser.close() (ทั้ง
+           crawler.py และ routes.py::learn_site) อยู่ใน finally หลัง crawl loop จบสมบูรณ์
+           เท่านั้นอยู่แล้ว ไม่มีจุดไหนปิดกลางคัน ไม่ต้องแก้
+
+           6/9 (error handling + logging): page.goto()/page.click() เดิมไม่มี retry เลย (fail
+           ครั้งเดียว = ข้ามเงียบๆ ทันที ไม่มีร่องรอยว่าพังตรงไหน) — เพิ่ม
+           _goto_with_retry()/_click_with_retry() (จำนวนครั้งจาก settings.site_learning_
+           goto_retries/click_retries) แล้วบันทึกลง SiteManual.errors (field ใหม่ list[dict])
+           + ยิง progress event ใหม่ "page_error"/"button_click_failed"/"login_result" แทนการ
+           กลืน exception เงียบๆ เหมือนเดิม — crawl_scan_done เพิ่ม errors_found เข้าไปด้วย
+
+           8 (ตรวจ session หลัง login): attempt_login() เดิมคืนแค่ "กด submit ได้จริงไหม" ไม่
+           รู้ว่า login ผ่านจริง — เพิ่มเช็คใน _login_and_continue(): URL เปลี่ยนจริงไหม + ยัง
+           เจอฟอร์ม login อยู่ไหม (find_login_fields) เป็นตัวตัดสิน pass/fail จริง ส่วนจำนวน
+           cookie/มี localStorage-sessionStorage token ไหม เป็นแค่สัญญาณ informational แนบไป
+           กับ event "login_result" เท่านั้น *** ตั้งใจไม่ใช้ cookie เป็นเงื่อนไขบังคับ เพราะ
+           เว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย (fixture ทดสอบในโปรเจกต์เองก็ไม่มี
+           server จริงตั้ง cookie ให้ — ถ้าบังคับด้วย cookie จะ false-negative ทุกเว็บที่ไม่ใช้
+           cookie ทันที) ***
+
+           10 (config): ย้าย retry count/scroll count จาก magic number เป็น settings.
+           site_learning_goto_retries/click_retries/retry_backoff_ms/max_scroll_attempts/
+           scroll_wait_ms ปรับได้จาก .env พร้อมคอมเมนต์อธิบายว่า "ตั้งน้อยเกินไปจะหยุดเร็ว"
+
+           11 (dynamic content): เพิ่ม _reveal_dynamic_content() (เลื่อนจอลงจน scrollHeight
+           นิ่ง — รองรับ infinite scroll/lazy loading ซึ่งเดิมไม่มีการ scroll เลยระหว่าง crawl)
+           เรียกก่อน extract ทุกจุด — ส่วน modal/dropdown/accordion/tab ที่เปิดจากปุ่มโดยไม่
+           navigate มีกลไก merge เข้า page เดิมอยู่แล้วตั้งแต่ W16 แต่เดิมไม่เคยไล่กด element ที่
+           เพิ่ง "โผล่มา" จากการเปิดนั้นต่อ (ถูกซ่อนด้วย display:none ตอน extract ครั้งแรก มอง
+           ไม่เห็นเลย) — เพิ่ม newly-revealed pass ความลึกจำกัด 1 ชั้น (รีเคิร์ส
+           _explore_buttons() ผ่าน PageInfo สังเคราะห์ที่มีแค่ element ใหม่ กัน dropdown ซ้อน
+           กันไม่รู้จบ) ให้ dropdown/accordion ที่เพิ่งเปิดถูกไล่กดต่อได้จริง
+
+           unit test ใหม่ 15 เคสใน test_site_learning_crawler.py (retry helper สำเร็จ/กู้คืน
+           จาก transient failure/ยอมแพ้หลัง retry ครบทั้ง goto และ click, DOM-stable helper
+           รอจนนิ่งจริง/ไม่ throw ตอน evaluate ล้มเหลว, scroll-reveal helper หยุดเมื่อความสูง
+           นิ่ง/ไม่ throw, เมนู role=menuitem แม้ label ทั่วไปก็ยังถูกไล่กด, nav <a href> ไม่ถูก
+           DFS-click ซ้ำ, login_result event ทั้งเคสสำเร็จ/ไม่สำเร็จ, goto error ถูกบันทึกลง
+           manual.errors+event แทนกลืนเงียบๆ) + 6 เคสใหม่ใน test_site_learning_extractor.py
+           (is_nav_menu_item ถูกต้องครบทุก pattern: role=menuitem/tab, อยู่ใน nav container,
+           class router-link, href จริงต้องเป็น false, fragment href ยังเป็น true ได้,
+           ปุ่มธรรมดาเป็น false) + 2 เคสใหม่ใน test_site_learning_storage.py (SiteManual.errors
+           round-trip ผ่าน save/load, manual เก่าที่ไม่มี key "errors" เลยโหลดได้ default []
+           ไม่ throw) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 482 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button 1 เคสเดิมที่ fail อยู่ก่อนแล้วตั้งแต่ก่อนรอบนี้มาก — สืบสาเหตุ
+           จริงระหว่างทำรอบนี้แล้วพบว่าไม่ใช่บั๊ก: ปุ่ม "Continue" ของ fixture ตรงกับคำใน
+           safety.ALLOWED_CRAWL_KEYWORDS (เพิ่มเข้ามาตั้งแต่ W20 สำหรับ multi-step
+           form/wizard) ทำให้ _explore_buttons() ไล่กดมันเป็นปุ่ม "ไปหน้าถัดไปของ flow" อิสระ
+           จาก logic login เอง — ไม่ใช่ auto_login.py ผิดพลาด สมมติฐานเดิมของเทสต์ (ต้องเหลือ
+           แค่ 1 หน้า) ล้าสมัยกว่ากติกา ALLOWED_CRAWL_KEYWORDS ปัจจุบัน ปล่อยไว้ตามที่บันทึกซ้ำ
+           มาแล้วหลายรอบ (W12/W20) ว่าไม่ใช่ scope ของงานที่ทำอยู่ ไม่ใช่ regression ใหม่จากรอบ
+           นี้)
+
+  [x] W25  Website Learning: BFS มองไม่เห็นลิงก์ในเนื้อหา (นอกเมนู) เลย — แก้แล้ว
+           (2026-07-23)
+           user ขอเพิ่มขั้นตอน "extract all clickable elements (a/button/role=button/
+           role=link) -> queue -> click ทีละตัว -> wait for load -> learn -> go back -> ทำ
+           จนกว่า queue จะว่าง" ตรวจแล้วพบว่า button/role=button/role=link เป็นแบบนี้อยู่แล้ว
+           ทุกประการผ่าน _explore_buttons() (W16/W24) — ส่วน <a> พบช่องว่างจริง: extractor.py
+           สแกนหา <a href> เพื่อต่อคิว BFS แค่ภายใน NAV_CONTAINERS (nav/aside/header/footer/
+           [role=tablist]/[role=menu]) เท่านั้น ลิงก์กลางเนื้อหา (เช่น "อ่านต่อ" กลางบทความ,
+           ลิงก์ในการ์ด/ตารางที่ไม่ใช่ nav) ไม่เคยถูกเก็บเข้า queue เลย — และก็ไปทาง DFS-click
+           (_explore_buttons) ไม่ได้เหมือนกันเพราะ label ของลิงก์พวกนี้ (เช่น ชื่อสินค้า/
+           "Read more") ไม่ตรงคำไหนใน safety.ALLOWED_CRAWL_KEYWORDS เลย (ลิงก์ที่มี href จริง
+           ถูกกันไว้ไม่ให้ผ่านทาง is_nav_menu_item อยู่แล้วตาม safety fix ของ W24) — ผลคือ
+           ลิงก์แบบนี้ "มองไม่เห็นเลยทั้ง 2 ทาง" ตรงกับที่ user รายงานว่า "agent ไม่ยอมกด
+           ตัวอักษรที่ลิงก์ไปหน้าอื่นๆ"
+
+           แก้: extractor.py เปลี่ยนจาก scoped เฉพาะ NAV_CONTAINERS มาเป็นสแกนทั้งเอกสาร
+           (document.querySelectorAll('a[href]') ตรงๆ) ให้ทุกลิงก์ที่มีปลายทางจริงถูกเก็บเข้า
+           nav_links แล้วต่อคิว BFS ผ่าน safety.is_safe_nav_link() เหมือนเดิมทุกประการ (ไม่ลด
+           ความเข้มงวด — ยังบล็อกคำทำลายชัดเจนอย่าง Logout/Delete เหมือนเดิม)
+
+           *** ตั้งใจไม่เปลี่ยน <a href> จาก goto()-based BFS ไปเป็น click()+go_back() แบบ
+           button ตามตัวอักษรเป๊ะของขั้นตอนที่ user ระบุ (ข้อ 3/6 "click"/"go back") — สอง
+           แบบให้ manual ผลลัพธ์เหมือนกันทุกประการ (เข้าเว็บ/เรียนรู้/บันทึกครบ) แค่ goto()
+           ไปที่ URL ที่รู้จาก href อยู่แล้วได้เลย ไม่ต้องคลิกแล้วกลับมาก่อนไปหน้าถัดไป (ไม่มี
+           "หน้าเดิม" ให้ต้องกลับในการ goto queue เรียงต่อกันแบบ BFS) เร็วกว่าและปลอดภัยกว่า
+           (เช็ค same-origin จาก href ได้ก่อน navigate เสมอ) ***
+
+           unit test ใหม่ 3 เคส: 1 ใน test_site_learning_extractor.py (ลิงก์กลางบทความ/การ์ด
+           นอก nav ถูกเก็บเข้า nav_links ด้วย ไม่ใช่แค่ลิงก์ในเมนู) + 2 ใน
+           test_site_learning_crawler.py (crawl_site() เดินตามลิงก์นอก nav container ได้จริง
+           ผ่าน browser จริง) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 484 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
+  [x] W26  Website Learning: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ให้ user อ่านทันทีที่
+           เรียนรู้เสร็จ — เสร็จแล้ว (2026-07-24)
+           user ขอให้หลัง self-learning เรียนรู้เว็บไซต์สำเร็จ สรุปคร่าวๆ ให้ user ฟังว่า
+           เว็บไซต์นั้นทำอะไรได้บ้าง — เดิมมีแค่ description ต่อหน้า (จาก describe_page(),
+           W14) ไม่มีสรุประดับ "ทั้งเว็บไซต์" เลย ต้องไล่เปิดดูทีละหน้าเองถึงจะรู้ภาพรวม
+
+           เพิ่ม crawler.py::describe_site(client, model, provider, website, pages) — เรียก
+           LLM อีกครั้งเดียว (แยกจาก describe_page ที่เรียกต่อหน้า) หลัง crawl จบทั้งเว็บแล้ว
+           ป้อนแค่ name/description ของทุกหน้าที่มีอยู่แล้ว (ไม่ส่ง buttons/forms/tables ดิบๆ
+           ซ้ำ กันกิน token เกินจำเป็น — สรุประดับภาพรวมไม่ต้องมีรายละเอียดลึกขนาดนั้น) ขอ
+           คำตอบภาษาไทยธรรมดาไม่เกิน 4 ประโยค ไม่ใช่ markdown/bullet — fallback เป็นการเรียง
+           ชื่อหน้าดิบๆ ถ้า LLM ล้มเหลว/ตอบว่างเปล่า (กฎเดียวกับ describe_page(): ไม่ throw
+           ออกไปกลาง crawl) คืนสตริงว่างเปล่าถ้า crawl ไม่เจอหน้าไหนเลย
+
+           schema.py: เพิ่ม SiteManual.summary: str = "" (round-trip ผ่าน to_dict/from_dict
+           อัตโนมัติ — manual เก่าที่ไม่มี key นี้เลยโหลดได้ default "" ไม่ throw) —
+           crawl_site() เรียก describe_site() ก่อนสร้าง SiteManual ตัวสุดท้าย (หลังปิด
+           context แล้ว ไม่กระทบ browser lifecycle เดิม) routes.py::learn_site() ส่ง
+           manual.summary กลับไปใน result dict ของ POST /api/site-manual/learn (ไหลผ่าน
+           learn_done SSE event ไปถึง frontend) index.html โชว์ในแบนเนอร์ "เรียนรู้เว็บไซต์
+           เรียบร้อยแล้ว" ทันที
+
+           unit test ใหม่: 5 เคสใน test_site_learning_crawler.py (describe_site ใช้ LLM
+           สรุปจริง, fallback เป็นชื่อหน้าเมื่อ LLM ล้มเหลว/ตอบว่างเปล่า, คืนว่างเปล่าเมื่อไม่
+           มีหน้าไหนมีชื่อเลย, crawl_site() จริงเติม manual.summary ไม่ว่างเปล่า) + 2 เคสใน
+           test_site_learning_storage.py (summary round-trip ผ่าน save/load, manual เก่าไม่มี
+           key นี้โหลดได้ default "" ไม่ throw) + 1 เคสใน test_api.py (summary ไหลไปถึง
+           learn_done SSE event's result.summary จริง — parse JSON จาก SSE stream ตรงๆ
+           เพราะ json.dumps escape ตัวอักษรไทยเป็น \uXXXX เทียบ literal string ตรงๆ ไม่เจอ)
+           — รันจริง `pytest -q` เต็ม suite ยืนยัน: 492 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py::test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
+  [x] W27  แก้บั๊ก: ปุ่ม "kill session" (Test Console) ใช้งานจริงไม่ได้ — เสร็จแล้ว
+           (2026-07-24)
+           user รายงานว่าปุ่ม kill session (× บนรายการบทสนทนาใน Test Console) กดแล้วไม่ได้
+           ผลจริง — สืบพบ 2 บั๊กซ้อนกันในเส้นทาง killSession() (index.html): กด × ->
+           POST /tasks/{id}/stop (ถ้า task กำลังรันอยู่) ต่อด้วย POST /sessions/{id}/close
+           ทันที
+
+           บั๊กที่ 1 (root cause หลัก — race condition): TaskManager.cancel() เดิมแค่ยิง
+           asyncio.CancelledError เข้า task (.cancel()) แล้ว return True ทันที ไม่รอให้ task
+           ประมวลผล cancellation จริงก่อน (asyncio.Task.cancel() แค่ "ขอ" ให้ cancel ที่จุด
+           await ถัดไป ไม่ได้หยุดทันที) — endpoint /stop เลยตอบกลับเร็วเกินไป ทำให้ frontend
+           ยิง /sessions/{id}/close ตามมาขณะที่ task ที่เพิ่งถูก cancel อาจยังไม่ทันเลิกใช้
+           page/context/browser จริง (เช่น อยู่กลาง page.click()/page.evaluate()) —
+           session.close() เลยไปแตะ resource เดียวกันพร้อมกัน race กันจริง
+
+           บั๊กที่ 2 (ขยายผล): SessionRegistry.close() เดิมไม่มี try/except เลยสักจุด (ต่างจาก
+           _best_effort_close() ที่ _recover() ใช้อยู่แล้วซึ่งกลืน exception ทุกจุด) ถ้า
+           browser.close()/context.close() ล้มเหลว (จาก race ข้างต้น หรือ user ปิดหน้าต่าง
+           browser จริงเองด้วยมือไปก่อนแล้ว — โหมด "owns" ใช้ headless=False เปิดหน้าต่างจริง
+           ให้เห็น) exception จะหลุดออกไปจาก endpoint เป็น 500 ทั้งที่ session ถูก pop() ออก
+           จาก registry ไปแล้วก่อนหน้านั้น (ดูเหมือนปิดสำเร็จจาก state แต่ resource จริง
+           (browser process/หน้าต่างที่มองเห็นได้/browser ที่ยืมจาก pool) ไม่ถูกปิด/คืนจริง
+           เลย — คือสิ่งที่ user เห็นว่า "กดแล้วไม่ได้ผล"
+
+           แก้บั๊กที่ 1: task_manager.py::TaskManager.cancel() เปลี่ยนเป็น async — หลังสั่ง
+           .cancel() แล้ว await ตัว task เดิมต่อ (มี wait_timeout=5.0 วิ กันค้างถ้า step ไหน
+           ไม่ยอมคืน control loop เลย — ไม่ throw ออกมาแม้ timeout เพราะ _run() เอง catch
+           CancelledError ไว้แล้วไม่ re-raise อยู่แล้ว) routes.py::stop_task() เปลี่ยนเป็น
+           await task_manager.cancel(task_id) ตาม — ผลคือ endpoint /stop ไม่ตอบกลับจนกว่า
+           task จะเลิกใช้ page/browser จริง (หรือครบ timeout) ปิดช่อง race เกือบทั้งหมด
+
+           แก้บั๊กที่ 2: session_registry.py::close() delegate ไปที่ _best_effort_close() ตัว
+           เดียวกับที่ _recover() ใช้ (กลืน exception ทุกจุด + เช็ค is_connected() ก่อนคืน
+           browser กลับ pool กัน poison pool ด้วย browser ที่ตายไปแล้ว — fix เดียวกับที่ W19
+           ทำไว้ให้ _recover() แต่ไม่เคยเอามาใช้กับ explicit close ปกติเลย) แทนที่จะเขียน
+           ตรรกะปิดซ้ำเองแบบไม่มี error handling — ลบโค้ดซ้ำซ้อนไปด้วยในตัว
+
+           unit test ใหม่ 3 เคสใน test_task_manager.py (cancel() waits จริง — เช็ค
+           record.status เป็น "cancelled" ทันทีที่ cancel() คืนค่า ไม่ต้องรออ่าน event เพิ่ม
+           — พิสูจน์ timing ไม่ใช่แค่ sequence, cancel() คืน False สำหรับ unknown/finished
+           task ยังทำงานถูกหลังเปลี่ยนเป็น async) + 2 เคสใน test_session_registry.py
+           (close() ไม่ throw ออกมาแม้ close call ข้างในล้มเหลว, close() ไม่ release_one()
+           browser ที่ disconnect แล้วกลับ pool) + แก้ 4 เคสเดิมที่เรียก .cancel()/.close()
+           แบบ sync ให้เป็น await ตามที่ signature เปลี่ยน — รันจริง `pytest -q` เต็ม suite
+           ยืนยัน: 495 เคสผ่าน (ไม่นับ test_site_learning_crawler.py เคสเดิมที่ fail
+           อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
+  [x] W28/W29  แก้บั๊ก: self learning วนลูปไม่รู้จบ (เรียนรู้ได้แค่หมวดเดียว, ไล่กดปุ่มเดิม
+           ซ้ำข้ามหน้าไม่รู้จบ) — เสร็จแล้ว (2026-07-24)
+           user รายงานเจอบน YouTube Shorts: เรียนรู้ได้แค่หน้า Shorts วนไปเรื่อยๆ ไม่เคยไป
+           ถึงส่วนอื่นของเว็บเลย และปุ่มค้นหา (กับปุ่มอื่นๆ) ที่อยู่ตำแหน่งเดิมถูกไล่กดซ้ำไม่
+           รู้จบทุกครั้งที่เจอ ต่อให้เปลี่ยนหน้าไปแล้วก็ตาม
+
+           สาเหตุจริง: visited/queued set (ดู docstring หัวไฟล์ข้อ 12) กันแค่ "หน้า URL เดิม"
+           ไม่ให้สำรวจซ้ำ แต่ไม่เคยกัน "ปุ่มเดิม" (label+role เดียวกัน เช่น ไอคอนค้นหาบน
+           header ของทุกหน้า, ปุ่ม "Previous/Next video" บน player ของทุกคลิป) ไม่ให้ถูกไล่
+           กดซ้ำข้าม URL ที่ต่างกัน — ผสมกับ W16 ที่ตั้งใจเอา depth cap ของ DFS ปุ่มออกไปแล้ว
+           (กด "Next video" ได้ URL วิดีโอใหม่ = หน้าใหม่ที่ visited-set ไม่เคยเห็น = recurse
+           ไล่กดปุ่มของหน้านั้นต่อ = เจอ "Next video" อีก = กด = ได้ URL ใหม่อีก ไม่รู้จบ) ทำให้
+           เว็บที่มีเนื้อหาไม่จำกัด (ทุกคลิป Shorts มี URL ไม่ซ้ำกันเอง) ไล่กดปุ่มเดิมพาไปหน้า
+           ใหม่ที่ "ไม่เคยเจอ" ได้เรื่อยๆ จนกิน max_pages budget ทั้งหมดไปกับหมวดเดียว ไม่เคย
+           ย้อนกลับไปสำรวจส่วนอื่นของเว็บเลย — อธิบาย "เรียนรู้ได้แค่หน้า Shorts" ด้วยสาเหตุ
+           เดียวกัน (ไม่ใช่บั๊กแยก)
+
+           แก้ (W28): เพิ่ม explored_button_signatures (dict ระดับทั้ง crawl เดียวกับ
+           visited/queued ไม่ใช่แค่ต่อหน้า) นับจำนวนครั้งที่ปุ่ม "label+role เดียวกัน" ถูกไล่
+           กดข้ามทุกหน้าทั้ง crawl (ดู _button_signature() ใหม่) ถึงเพดาน
+           settings.site_learning_max_repeat_button_clicks (ค่าใหม่ ปรับได้จาก .env, default
+           1 = กดปุ่มที่เหมือนกันได้แค่ครั้งเดียวตลอดทั้ง crawl — เข้มสุด กัน loop เด็ดขาด
+           แลกกับ coverage ที่ลดลงถ้าปุ่ม label เดียวกันจริงๆ ใช้งานต่างกันในแต่ละหมวดของเว็บ
+           เช่น "View" ในตาราง Products กับตาราง Orders) แล้วข้ามปุ่มนั้นไปเลยไม่ว่าจะเจอบน
+           หน้าไหนอีก — dedup ด้วย selector ในหน้าเดียวกันเดิม (_merge_page_info,
+           known_button_selectors) ยังอยู่เหมือนเดิมทุกจุด นี่เป็นเพดานเพิ่มเติมข้าม URL
+           เท่านั้น
+
+           *** เจอบั๊กจริงระหว่างทดสอบเอง (ไม่ใช่ตาม spec): signature รอบแรก (W28) ใช้
+           _button_label() เต็ม (text > aria_label > title > icon_hint > data_testid) เป็น
+           identity — แต่ aria_label/title เป็น "description" ที่เว็บจำนวนมาก (เช่น YouTube)
+           generate มาแบบมีเนื้อหาต่อท้ายที่เปลี่ยนทุก instance (เช่น aria-label="Next video:
+           <ชื่อคลิป>", "ผลการค้นหาสำหรับ <คำค้น>") ทำให้ปุ่มที่จริงๆ เป็นปุ่มเดียวกันทุก
+           ประการ (icon/role/ตำแหน่งเหมือนกันเป๊ะ) ได้ signature ไม่ตรงกันสักครั้ง เพดานเลย
+           ไม่มีผลจริง (W28 ตั้งใจแก้แต่แก้ไม่หมด) — แก้ (W29): เปลี่ยน identity เป็น text >
+           data_testid > icon_hint (ตัด aria_label/title ออกจาก signature ไปเลย) รวมกับ
+           role/has_icon/is_nav_menu_item ตามที่ user ยืนยัน: "อ้างอิงจากองค์ประกอบปุ่ม แบบ
+           ไม่สนใจ description" — แลกกับ false-positive ที่เป็นไปได้ (ปุ่ม text ธรรมดาไม่มี
+           icon/data-testid ที่ข้อความบนปุ่มซ้ำกันโดยบังเอิญระหว่างปุ่มที่ทำหน้าที่ต่างกันจริง
+           จะถูกมองเป็นปุ่มเดียวกัน) ยอมรับ trade-off นี้เพราะเป้าหมายหลักคือกัน loop ไม่รู้จบ
+           ก่อน ***
+
+           unit test ใหม่ 6 เคสตรงๆ กับ _button_signature() (ไม่ผ่าน browser จริง — ปุ่มที่
+           อ่านไม่ตรงกันแค่ aria_label/title ต้องได้ signature เดียวกัน, text/role/
+           is_nav_menu_item ต่างกันต้องได้ signature ต่างกัน, fallback ไป data_testid แล้ว
+           icon_hint เมื่อ text ว่างเปล่า) + 2 เคส integration ผ่าน browser จริง (จำลอง
+           "YouTube Shorts": ปุ่ม "Next" label เหมือนกันทุกหน้าพาไปหน้าใหม่ไม่รู้จบ — เพดาน
+           default (1) ต้องหยุดที่หน้าที่ 2 ไม่ไปต่อหน้าที่ 3-4 และยังสำรวจ nav link อื่นได้
+           ตามปกติ, ปรับเพดานเป็น 2 ผ่าน settings ต้องกดได้ 2 ครั้งจริงตามที่ตั้ง) — รันจริง
+           `pytest -q` เต็ม suite ยืนยัน: 503 เคสผ่าน (ไม่นับ test_site_learning_crawler.py
+           เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
+
+  [x] W30/W31/W32  General task agent (core/orchestrator.py): กันวนลูปกดปุ่มเดิมซ้ำๆ —
+           เสร็จแล้ว (2026-07-24)
+           user ขอ 4 กลไก (Action Masking, Max Repeat Limit บังคับ action อื่นแทนแบบ
+           RL-style, ส่ง Action History เข้า state input, UI Page Classification) ตาม
+           ตัวอย่างที่เจอบน Shorts/Reels — สอบถามก่อนว่าหมายถึง crawler.py (W24-W29 ที่
+           เพิ่งแก้ไปเมื่อกี้) หรือ agent ทั่วไปที่รัน task จริงของ user (core/
+           orchestrator.py — มี "โมเดลเลือก action จาก state" จริงๆ ตามที่คำอธิบายใช้ศัพท์
+           ตรงกับ) — user ยืนยันว่าหมายถึงตัวหลัง
+
+           ระหว่างสำรวจโค้ดเจอว่ามี exploratory branch เก่า (คนละสายกับ W-numbering ปัจจุบัน
+           ของ branch นี้ ชื่อ W21-plan-matching ใน reflog) ที่เคยแก้ 2 เรื่องที่ตรงกับข้อ 4
+           (UI Page Classification) ไปแล้วตั้งแต่ 2026-07-21 แต่ไม่เคยถูก merge เข้ามาใน
+           branch ปัจจุบันเลย (commit ยังอยู่ใน object database, กู้คืนได้ผ่าน git hash
+           ตรงๆ) — ตรวจสอบเนื้อหาแล้วนำมาปรับใช้กับโค้ดปัจจุบัน (rename จาก W23/W24 เดิมของ
+           สาย นั้น เป็น W30 กันชนกับ W23/W24 ที่ branch นี้ใช้ไปแล้วกับ Website Learning)
+           แทนที่จะเขียนใหม่ตั้งแต่ต้น:
+
+           W30 (กู้คืน+ปรับใช้): page.url ไม่เคยถูกโชว์เป็นข้อความชัดๆ ให้ LLM เห็นเลย มีแค่
+           indexed elements list — เพิ่ม current_url เข้า llm.py::_build_user_turn_text()
+           (thread ผ่าน next_action/next_action_groq/next_action_gemini ทั้ง 3 ตัว) อ่านจาก
+           page.url สดทุก step + เพิ่มการเทียบ URL ก่อน/หลัง execute() ใน orchestrator.py —
+           action ที่ไม่ได้ตั้งใจ navigate เอง (ไม่ใช่ goto/switch_tab/go_back) แต่ URL
+           เปลี่ยนไปเอง (เช่น click ธรรมดาที่มี redirect ซ่อนอยู่) จะแนบคำเตือนต่อท้าย
+           tool_result ให้เห็นชัดๆ ว่า "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" + เพิ่มกติกาใหม่
+           ใน SYSTEM_PROMPT ("Action Trap" guard) บอกให้ยึด URL+elements ปัจจุบันเป็นความจริง
+           ล่าสุดเสมอ ห้ามอ้างอิง state จาก step ก่อนหน้า
+
+           W31 (ใหม่ — ตอบข้อ "Max Repeat Limit... Force Action อื่นทันที"): loop-detection
+           guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS คาบ 1 จาก W5[A], คาบ 2-4 จาก
+           2026-07-13/15) พอ trigger แล้วจบ task ทันที (success=false) — เปลี่ยนเป็นบังคับทำ
+           recovery action ก่อน (go_back ก่อนเสมอ แล้ว scroll ถ้ายังวนซ้ำอีกหลังจากนั้น — ดู
+           _force_loop_recovery()/_LOOP_RECOVERY_ACTIONS) โดยไม่ผ่านการตัดสินใจของ LLM รอบ
+           นั้นเลย ให้โอกาส agent กู้สถานการณ์เองจาก state ใหม่ก่อน มีเพดาน
+           _MAX_FORCED_LOOP_RECOVERIES=2 (escape valve เดียวกับ guard อื่นๆ ในไฟล์ — กัน
+           force ไม่รู้จบถ้า forcing เองก็ไม่ช่วยอะไร ค่อยยอมแพ้จริง) ผลลัพธ์ของ recovery
+           action ป้อนกลับเข้า messages ผ่าน tool_use_id ของ action ที่ถูกบล็อกไปพร้อม
+           อธิบายตรงๆ ว่าเกิดอะไรขึ้น (ไม่ใช่แกล้งทำเป็นว่า action เดิมสำเร็จ) + เพิ่มกติกาใน
+           SYSTEM_PROMPT ให้ตีความข้อความนี้แล้วเปลี่ยนไปทำ action ที่ต่างจริงๆ
+
+           W32 (ใหม่ — ตอบข้อ "ส่ง Action History เข้า State Input"): memory.py เพิ่ม
+           ShortTermMemory.recent_actions_summary(n=5) — สรุป action ล่าสุด (ทั้งสำเร็จและ
+           ล้มเหลว) แยกจาก failed_actions_summary() เดิมที่กรองเฉพาะ fail (ปุ่มที่กดสำเร็จ
+           ซ้ำหลายครั้งโดยไม่มีความคืบหน้าจริงจะไม่โผล่ใน failed_actions_summary() เลยเพราะ
+           ไม่เคย fail สักครั้ง) มีค่าเพิ่มเติมจาก raw conversation history เดิมเพราะไม่เคย
+           ถูกตัดทิ้งจาก context compaction (W7[A]/W22 — step เก่าที่ถูกบีบอัดไปแล้วเหลือแค่
+           digest สั้นๆ ไม่ครบเหมือน ShortTermMemory) ส่งเข้า _build_user_turn_text() เป็น
+           section ใหม่ "Action ล่าสุดที่คุณเพิ่งทำไป"
+
+           unit test ใหม่: 4 เคสตรงๆ กับ _build_user_turn_text() (current_url/
+           action_history_context โผล่/ไม่โผล่ตามเงื่อนไข) + 5 เคสกับ
+           ShortTermMemory.recent_actions_summary() (ว่างเปล่าเมื่อไม่มี history, รวม action
+           ที่สำเร็จด้วยต่างจาก failed_actions_summary(), มี step number, cap ที่ n เก็บล่าสุด,
+           เรียงลำดับถูกตามที่บันทึกจริง) + 6 เคส integration ผ่าน orchestrator.run_task()
+           (current_url ไหลเข้า next_action() จริงจาก page.url สด, คำเตือน URL เปลี่ยนไปเอง
+           แนบเข้า tool_result จริงเมื่อ action ไม่ใช่ goto/switch_tab/go_back, ไม่แนบซ้ำตอน
+           เป็น goto, action_history_context ไหลเข้า next_action() ถูกต้องทุก step) + แก้ไข
+           เทสต์เดิม 15+ เคสที่ตรวจ positional args ของ next_action()/next_action_groq()/
+           next_action_gemini() ตรงๆ (index ขยับหมดเพราะเพิ่ม 2 parameter ใหม่ท้ายสุด) และ
+           เทสต์ loop-detection guard 5 เคสที่ตรวจพฤติกรรม "abort ทันที" เดิม — เปลี่ยนเป็น
+           ตรวจ "บังคับ recovery ก่อน" (2 เคสใหม่แยกกรณี recovers-then-succeeds กับ
+           exhausts-then-aborts ที่คำนวณ trace ตัวเลขแม่นตรงๆ) และ 3 เคส cycle-period ที่ใช้
+           itertools.cycle() ให้ mock วนไม่รู้จบแล้วตรวจแบบ behavioral (จบด้วย fail + ข้อความ
+           บอกคาบถูกต้อง + มีการบังคับ go_back จริง + ไม่วนจนหมด max_steps) แทน exact-count
+           เพราะ forced action เองก็เข้าไปอยู่ใน recent_actions window ที่ใช้ตรวจจับคาบต่อ
+           ด้วย ทำให้ trace ตัวเลขเป๊ะๆ ซับซ้อนเกินจะ maintain ได้จริง — รันจริง `pytest -q`
+           เต็ม suite ยืนยัน: 517 เคสผ่าน (ไม่นับ test_site_learning_crawler.py เคสเดิมที่
+           fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้)
+
+  [x] W33  Website Learning: จำ "template โครงสร้างหน้า" กันบันทึกซ้ำหน้าที่หน้าตาเหมือนกัน
+           (feed ที่มีลิงก์ไป Shorts/Reels คนละคลิปจริงๆ หลายรายการ) — เสร็จแล้ว
+           (2026-07-24)
+           user เสนอทางแก้เพิ่มเติมเฉพาะเจาะจงกว่า W28/W29: "กดเข้าดูแค่ 1 รอบ แล้วเก็บ
+           เทมเพลตโครงสร้างไว้ ต่อไปหากอ่านได้โครงสร้างตรงกับ template (ต่างแค่รายละเอียด
+           แต่ปุ่มเหมือนกัน) ให้กด back แล้วไปทำ step ต่อไปได้เลย" — สอบถามก่อนว่านี่คือ
+           งานต่อยอด W24-W29 (crawler.py) หรือเรื่องเดียวกับ W30-W32 ที่เพิ่งทำ (orchestrator.py
+           agent ทั่วไป) เพราะคำอธิบาย "กดเข้าดู/เก็บ template" ตรงกับพฤติกรรม exploration
+           ของ crawler มากกว่า — สรุปว่าเป็นงานต่อยอด crawler.py จริง (ระบุ assumption
+           ตรงๆ ในคำตอบแทนที่จะถามซ้ำ เพราะสัญญาณจากคำอธิบายชัดเจนมากแล้ว)
+
+           ช่องว่างจริงที่ W28/W29 ยังไม่ครอบคลุม: explored_button_signatures (คุมการไล่กด
+           "ปุ่มเดิม" ซ้ำ) ใช้ได้แค่กับเส้นทาง DFS-click (_explore_buttons) เท่านั้น — ถ้าเว็บ
+           มี feed ที่มีลิงก์ไปคลิปคนละอันจริงๆ สิบๆ รายการ (คนละ href/URL จริง ไม่ใช่ปุ่ม
+           "Next" ตัวเดียวถูกกดซ้ำ) แต่ละลิงก์เป็น nav_links ที่ต่อคิว BFS ตรงๆ (ดู W25 —
+           สแกนทั้งเอกสารแล้ว) ไม่ผ่าน signature-cap เลย ทุกคลิปเลยยังถูก describe+บันทึกลง
+           manual ครบทุกอันอยู่ดี ทั้งที่ UI เหมือนกันทุกอย่าง (ปุ่ม Like/Comment/Share/Next)
+           ต่างแค่เนื้อหาคลิป — เสีย LLM describe call + กิน max_pages budget ไปกับหน้าที่ให้
+           ข้อมูลโครงสร้างซ้ำซ้อนกันจริง
+
+           แก้ด้วย _page_template()/known_page_templates (set ระดับ crawl เดียวกับ
+           explored_button_signatures) — ก่อน describe+บันทึกหน้าใหม่ทุกครั้งใน
+           _record_page() (จุดร่วมของทั้ง BFS/DFS-ปุ่ม/หลัง-login) เทียบ "ลายนิ้วมือ
+           โครงสร้าง" ของหน้านี้ (set ของ signature ปุ่มทุกปุ่มบนหน้า — reuse
+           _button_signature() เดิม + selector ของ ui_pattern แต่ละแบบ + สัญญาณหยาบๆ ว่ามี
+           ฟอร์ม/ตารางไหม — ไม่สนเนื้อหา/ลำดับ/URL) กับที่เคยเจอมาแล้ว ตรงเป๊ะ = ข้ามไปเลย
+           (ไม่ describe ไม่บันทึกลง pages ไม่ไล่กดปุ่มต่อ ไม่ต่อคิว nav link ของหน้านี้ —
+           ถือว่าได้ตัวแทนเพียงพอแล้วจากครั้งแรก) ไม่ตรง = บันทึกตามปกติ + จำ template นี้ไว้
+           เป็นตัวแทนใหม่ — ไม่ต้องมี logic "กด back" แยกต่างหากเลยตามที่ user ขอ เพราะ
+           _explore_buttons() (เส้นทาง DFS) go_back()/goto(before_url) อยู่แล้วเสมอไม่ว่า
+           _record_page() จะทำอะไรข้างในก็ตาม ส่วนเส้นทาง BFS ก็แค่ไปหยิบ URL ถัดไปจาก queue
+           ต่อเองอยู่แล้วโดยธรรมชาติ (ตรงกับ "ไปทำ step ต่อไปได้เลย")
+
+           *** เจอ false-positive จริง 2 จุดระหว่างทดสอบเอง (ไม่ใช่ตาม spec) แก้แล้วทั้งคู่:
+           1. หน้าที่ไม่มีปุ่ม/ui_pattern เลยสักตัว (เช่นหน้าเปล่าๆ ที่มีแค่ข้อความ) ได้
+              template ที่ "เหมือนกันโดยบังเอิญ" กับหน้าเปล่าอื่นๆ ทั้งที่เนื้อหา/ความหมาย
+              ต่างกันจริง (เจอจาก unit test เดิมที่มีอยู่แล้ว: home.html ลิงก์ไปทั้ง
+              dashboard.html และ article-detail.html ซึ่งทั้งคู่ไม่มีปุ่มเลยสักอัน — ถูกมองว่า
+              เป็น "template เดียวกัน" ทั้งที่เป็นคนละหน้ากันจริง ไม่ใช่เคส Shorts/Reels ที่ UI
+              ซับซ้อนพอจะเป็นสัญญาณจริง) — แก้ด้วยการกำหนดว่าต้องมีอย่างน้อย 1 ปุ่มหรือ 1
+              ui_pattern ก่อนถึงจะเอา template มาเทียบ dedup เลย (has_template_signal)
+           2. เส้นทาง _explore_buttons() (DFS-click) มีกลไก signature-cap ของตัวเองอยู่แล้ว
+              (W28/W29 — ปรับเพดานได้ผ่าน settings.site_learning_max_repeat_button_clicks)
+              ถ้าให้ page-template dedup ทำงานที่เส้นทางนี้ด้วยจะไปทับ/ขัดกับเพดานที่ user
+              ตั้งใจปรับไว้ (เจอจาก unit test เดิม: ตั้งเพดานไว้ 2 ครั้ง แต่ template dedup
+              ตัดจบไปตั้งแต่ครั้งที่ 1 โดยไม่สนเพดานที่ตั้งไว้เลย) — เพิ่มพารามิเตอร์
+              check_page_template=False ให้ _explore_buttons() ปิด layer นี้เฉพาะเส้นทางของ
+              ตัวเอง (ยังคงบันทึก template นี้ไว้ให้เส้นทาง BFS ใช้เทียบต่อได้ปกติ แค่ไม่
+              ตัดสินใจข้ามด้วยตัวเอง) ***
+
+           unit test ใหม่ 6 เคสตรงๆ กับ _page_template() (หน้าที่ปุ่มโครงสร้างเดียวกันได้
+           template เดียวกันแม้ URL ต่างกัน, ไม่สนลำดับปุ่ม, ต่างกันเมื่อชุดปุ่มต่างกัน/มี
+           ฟอร์มต่างกัน/ui_pattern ต่างกัน, หน้าเปล่า 2 หน้าได้ template เดียวกันจริงในระดับ
+           ฟังก์ชัน — พิสูจน์ว่าการ์ดกันอยู่ที่ _record_page() ไม่ใช่ตัวฟังก์ชันเอง) + 1 เคส
+           integration ผ่าน browser จริง (จำลอง feed ที่มีลิงก์ไป 3 คลิปคนละ URL จริงแต่ UI
+           เหมือนกันทุกอย่าง — บันทึกแค่ตัวแทนตัวแรก ตัวถัดๆ ไปถูกข้าม+ยิง event
+           "page_template_skipped" จริง ส่วนหน้าที่โครงสร้างต่างจริงยังบันทึกปกติไม่ถูก
+           กระทบ) — รันจริง `pytest -q` เต็ม suite ยืนยัน: 524 เคสผ่าน (ไม่นับ
+           test_site_learning_crawler.py เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้)
+
+  [x] W34  Website Learning: กดแล้วลิงก์หลุดออกนอกโดเมนเป้าหมาย ต้องกลับมาทันที ไม่เรียนรู้
+           เว็บอื่นต่อ — เสร็จแล้ว (2026-07-24)
+           user ขอเพิ่ม: "ถ้า self learning กดแล้วลิงก์หลักเปลี่ยนไปเป็นคนละเว็บเลย ให้กด
+           กลับมาที่ลิงก์หลักทันที ไม่ต้องเรียนรู้เว็บนั้นต่อ (เช่น หลักคือ youtube.com/...
+           หากกดแล้วลิงก์ youtube.com หายไปเป็นเว็บอื่น ____.com ให้กดกลับมาทันทีจนกว่าจะเจอ)"
+
+           ตรวจโค้ดแล้วพบบั๊กจริง 2 จุดใน crawler.py: (1) _explore_buttons() (เส้นทาง
+           DFS-click) เช็คแค่ "if after_url != before_url and extract_domain(page.url) ==
+           domain:" — ปุ่มที่ label ทั่วไปผ่าน is_crawl_safe() ได้ (เช่น "View"/"Continue")
+           แต่ href จริงพาไปคนละโดเมน (ไม่รู้ปลายทางล่วงหน้าเหมือน nav_links ที่เช็ค href
+           ได้ก่อน queue — ดู W25) ตกไปเข้า else ("ไม่ navigate เลย ต้องเป็น modal") ผิดๆ
+           แล้ว extract/merge เนื้อหาเว็บอื่นเข้ามาปนในหน้าเดิม ไม่เคย goto กลับเลย (2) main
+           BFS loop เดินตาม nav_links ที่กรอง same-origin ไว้ตอนต่อคิวแล้ว แต่ไม่เช็คซ้ำหลัง
+           goto จริง — URL ที่ same-domain ตอนต่อคิว แต่ตัวหน้าเอง client-side redirect ออก
+           นอกโดเมนทันทีที่โหลด (เช่น URL shortener/OAuth bounce) จะยัง extract/บันทึกหน้า
+           ปลายทางที่ไม่ใช่โดเมนเป้าหมายเข้า manual ไปเลย
+
+           แก้ด้วย: (1) เพิ่ม elif branch ใหม่ใน _explore_buttons() ดักกรณี navigate ไปจริง
+           แต่ extract_domain ไม่ตรง domain เป้าหมาย — บันทึก manual_errors (phase="click")
+           + ยิง event "off_domain_navigation" แล้ว goto(before_url) กลับทันที ไม่ extract/
+           บันทึกหน้านอกโดเมนเลย (2) เพิ่ม guard ในตัว main BFS loop หลัง goto สำเร็จ เช็ค
+           extract_domain(page.url) ซ้ำอีกที ถ้าไม่ตรง domain เป้าหมาย บันทึก manual_errors
+           (phase="goto") + ยิง "off_domain_navigation" แล้ว continue ไป URL ถัดไปใน queue
+           เลย (ไม่ต้อง goto กลับเพราะ BFS ไม่ได้ "อยู่หน้าไหน" ที่ต้องกลับไปเหมือน DFS)
+
+           *** เจอบั๊กจริงเพิ่มอีก 2 จุดระหว่างทดสอบ (ไม่ใช่ตาม spec) แก้แล้วทั้งคู่:
+           1. page.click() ที่ปุ่ม onclick สั่ง navigate ทันที (window.location.href=...)
+              บางครั้งรายงาน error เท็จ (execution context ของ frame ถูกทำลายกลางคันตอนหน้า
+              เริ่ม navigate ระหว่าง click() รอ post-click stability ตาม default) ทั้งที่
+              คลิกสำเร็จและ navigate ไปแล้วจริง แล้ว _click_with_retry() รีทรายหา selector
+              เดิมบนหน้าใหม่ (ที่ไม่มี element นั้นแล้ว) ไม่เจอ กลายเป็น timeout ซ้อนอีกที
+              ทำให้โค้ดเข้าใจผิดว่ากดไม่สำเร็จ ข้ามปุ่มนั้นไปทั้งที่จริง navigate ไปแล้ว —
+              แก้ด้วยเช็ค page.url ก่อนตัดสินว่า click_error ที่ได้กลับมาเป็นความล้มเหลวจริง
+              (ถ้า url เปลี่ยนไปจากตอนกดแล้ว ถือว่ากดสำเร็จ ไม่ต้อง treat เป็น error) +
+              เผื่อเวลา grace period สั้นๆ อีกครั้ง (สูงสุด ~5 วินาที) ก่อนสรุปว่า fail จริง
+              เผื่อ navigate มาดีเลย์ (ลอง no_wait_after=True ก่อนแล้วแต่กลับแย่กว่าเดิม เพราะ
+              โค้ดฝั่งเรียกไม่มีทางรู้ว่า navigate เริ่มหรือยังตอนเช็ค page.url ทันทีหลัง
+              click() คืนค่า race กับ event loop ของ browser เอง เลยไม่ใช้)
+           2. cascading redirect หลายชั้น (หน้า A มี <script> สั่ง window.location.href ไป
+              หน้า B ที่ redirect ต่อไป C อีกที) ทำให้ wait_for_load_state("networkidle")/
+              _wait_for_dom_stable() ที่เรียกไปก่อนหน้าอาจ "ผ่าน" เร็วเกินไปตอน execution
+              context ถูกทำลายกลางคัน redirect ชั้นแรก ทำให้โค้ดอ่าน page.url เจอ URL หน้า
+              กลางทาง ไม่ใช่ปลายทางจริง เข้าใจผิดว่ายังอยู่โดเมนเดิม — เพิ่ม _settle_url()
+              (poll page.url จนนิ่ง 2 รอบติดกันหรือครบ max_iterations) เรียกเฉพาะตอนรู้แล้ว
+              ว่า navigate จริง (ไม่ใช่ทุกครั้งที่กดปุ่ม กันกิน performance โดยเปล่าประโยชน์
+              — ลองเรียก unconditionally ทุกปุ่มก่อนแล้ว suite ทั้งชุดช้าลงจาก ~5 นาทีเป็น
+              ~70 นาที เพราะปุ่มส่วนใหญ่ไม่ navigate เลย) ***
+
+           unit test ใหม่ 3 เคส: (1) DFS-click กดปุ่มที่พาไปคนละโดเมนจริง (จำลองด้วย
+           hostname "localhost" vs "127.0.0.1" บน server เดียวกัน — extract_domain() แยก
+           สองชื่อนี้เป็นคนละ domain แม้จะชี้ loopback/พอร์ตเดียวกันจริง) ต้องไม่ถูก extract/
+           บันทึก + ต้อง goto กลับทันที + ยิง event/บันทึก error ถูกต้อง (2) BFS เจอ URL ที่
+           same-domain ตอนต่อคิว แต่หน้าเอง client-side redirect ออกนอกโดเมนทันทีที่โหลด
+           ต้องไม่ extract/บันทึกหน้าปลายทาง ข้ามไป URL ถัดไปในคิวแทน + บันทึก error
+           phase="goto" ถูกต้อง (3) เดิมเทสเคสแรกเช็คด้วยว่ากลับมาแล้วต้องกดปุ่มถัดไปบนหน้า
+           เดิมต่อได้ปกติด้วย — ตัดออกเพราะพบว่า fixture ที่จำลอง "คนละโดเมน" ด้วยการสลับ
+           hostname บนพอร์ตเดียวกันทำให้ Chromium หน่วงการยิง "load" event ของ goto() ที่
+           กลับมาโดเมนเดิมนานผิดปกติ (~13-16 วินาที) เฉพาะตอน navigate มาจาก click event
+           เท่านั้น (ทดสอบแยกด้วย goto() ตรงๆ สลับ host ไปมาไม่หน่วงเลย) — เป็น artifact
+           ของวิธีจำลอง cross-domain แบบนี้เอง ไม่ใช่พฤติกรรมจริงที่จะเกิดกับโดเมนที่ต่างกัน
+           จริงในโปรดักชัน คุณสมบัติหลักที่ user ต้องการ (ห้ามบันทึก/สำรวจเว็บนอกโดเมนเด็ดขาด
+           + กลับมาทันที) ถูกตรวจสอบและยืนยันว่าทำงานถูกต้องสม่ำเสมอในทุกเคสแล้ว
+
+  [x] W35  Website Learning: วนลูปเรียนรู้ "หน้าประเภทเดิม" ซ้ำๆ แม้มี W33 แล้ว — เสร็จแล้ว
+           (2026-07-24)
+           user รายงานว่า self learning "กลับมาลูปอีกแล้ว" — ขอให้ถ้าเคยเรียนรู้หน้าไหนแล้ว
+           ไม่ต้องเรียนอีก และถ้าเรียนแล้วขึ้น tag หน้าเดิมเกิน 2 ครั้งติดกัน ให้เปลี่ยนหน้า
+           ทันที
+
+           วิเคราะห์: W33 (_page_template — เทียบ signature ปุ่ม/ui_pattern ทุกตัวบนหน้า
+           แบบ exact-match) ป้องกันเคส "หน้าโครงสร้างเหมือนกันเป๊ะ" ได้ แต่บางเว็บหน้า
+           ประเภทเดียวกัน (เช่น Shorts/Reels) มี element ปลีกย่อยต่างกันเล็กน้อยจริง (เช่น
+           จำนวนปุ่ม like/comment ไม่เท่ากันแต่ละคลิป) ทำให้ได้ template ต่างกันจริงไม่ตรง
+           เงื่อนไข exact-match ของ W33 เลย ทั้งที่ LLM (describe_page) ตั้งชื่อ (tag ที่
+           user เห็นบนจอ) คล้ายกันหรือเหมือนกันเป๊ะทุกครั้ง — กลายเป็น "ดูเหมือนวนลูป" จาก
+           มุมมอง user ทั้งที่ URL/template ต่างกันจริงในเชิงเทคนิค
+
+           แก้ด้วยเซฟตี้เน็ตอีกชั้นจากมุมชื่อหน้าแทน (ไม่ต้องพึ่ง structural template ให้ตรง
+           เป๊ะ): เพิ่ม last_recorded_page_name/consecutive_same_name_count ใน crawl_site()
+           — ใน _record_page() หลัง describe_page() ได้ชื่อหน้ามาแล้ว เทียบกับชื่อหน้าก่อน
+           หน้าที่เพิ่งบันทึกไป ถ้าตรงกันนับต่อ ถ้าไม่ตรงรีเซ็ตเป็น 1 — บันทึกหน้านี้ไว้ตาม
+           ปกติเสมอ (user เห็น tag จริง ไม่ได้ข้ามไม่บันทึก ตรงตามที่ขอ "เคยเรียนรู้แล้วไม่
+           ต้องเรียนอีก" หมายถึงไม่ต้องไล่ลึกต่อ ไม่ใช่ไม่บันทึกเลย) แต่ถ้าชื่อซ้ำติดกันเกิน 2
+           ครั้ง (ครั้งที่ 3 เป็นต้นไป) หยุดไล่กดปุ่ม (_explore_buttons) และหยุดต่อคิว
+           nav_links จากหน้านั้นทันที ยิง event "repeated_page_name_skipped" ตัดวงจร "เจอ
+           หน้าคล้ายเดิม -> ไล่กดปุ่มในนั้น -> เจอหน้าคล้ายเดิมอีก -> ..." ที่ลึกไม่รู้จบ
+
+           unit test ใหม่ 1 เคส: จำลอง 4 หน้า (clip1-4.html) ที่ URL/เนื้อหาต่างกันจริงแต่
+           LLM ตั้งชื่อเดิมซ้ำ ("Video") ทุกครั้ง แต่ละหน้ามีลิงก์ลึกไปอีกหน้า (secret1-4.html)
+           ที่เข้าถึงได้ทางเดียวคือผ่านหน้า clip นั้นเท่านั้น — ยืนยันว่า clip1-4 ทั้ง 4 หน้า
+           ยังถูกบันทึกครบ (ผู้ใช้เห็น tag จริงทุกครั้ง) แต่ secret1/secret2 (เจอผ่าน
+           clip1/clip2 ที่ยังไม่เกินเพดาน) ถูกสำรวจต่อตามปกติ ส่วน secret3/secret4 (เจอผ่าน
+           clip3/clip4 ที่ชื่อซ้ำเกิน 2 ครั้งแล้ว) ไม่ถูกสำรวจเลย — แก้ _mock_generate_text()
+           ในเทสต์เดิมด้วย (เดิมคืนชื่อ "Page" คงที่ทุก call ทำให้เทสต์อื่นๆ ที่มีมากกว่า 2
+           หน้าเสี่ยงชนการ์ดใหม่นี้โดยไม่ตั้งใจ — เปลี่ยนเป็นชื่อไม่ซ้ำกันข้าม call แทนด้วย
+           counter เฉพาะของแต่ละ mock instance)
+
+           รันจริง `pytest -q` เต็ม suite (backend/tests/test_site_learning_crawler.py)
+           ยืนยัน: 60 เคสผ่าน 1 เคส fail (test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button — fail อยู่ก่อนแล้วตั้งแต่ก่อนงานนี้ ไม่เกี่ยวกับงานนี้)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

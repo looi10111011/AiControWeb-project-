@@ -29,6 +29,14 @@ class ButtonInfo:
     # ความสำคัญ: data-testid > id ที่ unique > class combo ที่ unique > nth-child path)
     selector: str = ""
     xpath: str = ""
+    # W24: True ถ้า element นี้อยู่ในคอนเทนเนอร์เมนู/นำทาง (nav/[role=navigation]/aside/
+    # header/footer/[role=tablist]/[role=menu]) หรือมี role="menuitem"/"tab" หรือเป็น
+    # <router-link>/มี class ที่มีคำว่า router-link เอง (ดู extractor.py::isNavMenuItem)
+    # — ใช้แยกว่า element นี้ "น่าจะเป็นเมนู" ควรเดินตามแบบ default-allow
+    # (safety.is_safe_nav_link) แม้ label จะไม่ใช่คำ action ทั่วไป ต่างจากปุ่มอื่นบนหน้าที่
+    # ยังต้องผ่าน safety.is_crawl_safe แบบ default-deny เหมือนเดิม (ดู
+    # crawler.py::_is_explorable)
+    is_nav_menu_item: bool = False
 
 
 # W18: Pattern ของ UI ที่ซ้ำกันหลาย instance บนหน้าเดียว (เช่น product card 100 ใบ, แถว
@@ -101,6 +109,17 @@ class SiteManual:
     version: int = 1
     generated_at: float = 0.0
     pages: list[PageInfo] = field(default_factory=list)
+    # W24: รายการปัญหาที่เจอระหว่าง crawl (goto/click ที่ล้มเหลวครบทุกครั้งที่ retry แล้ว,
+    # login ที่ดูเหมือนไม่ผ่าน) — ก่อนหน้านี้ error พวกนี้ถูก catch แล้วข้ามเงียบๆ ไม่มี
+    # ร่องรอยเหลือให้เห็นเลยว่า crawl "จบ" เพราะสำรวจครบจริง หรือเพราะพังกลางทางแล้วไม่มี
+    # ใครรู้ (ดู crawler.py หัวไฟล์ W24) แต่ละ entry: {"url","phase","error"} หรือ
+    # {"url","phase","button","error"} — ว่างเปล่า = ไม่เจอปัญหาอะไรเลยตลอด crawl
+    errors: list[dict] = field(default_factory=list)
+    # W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" เป็นภาษาธรรมชาติ 2-4 ประโยค — เขียนโดย LLM
+    # ครั้งเดียวหลัง crawl จบทั้งเว็บ (ดู crawler.py::describe_site()) จาก name/description
+    # ของทุกหน้าที่สะสมมา ให้ user อ่านทันทีที่เรียนรู้เว็บไซต์เสร็จโดยไม่ต้องไล่เปิดดูเองทุก
+    # หน้า — ว่างเปล่าได้ถ้า crawl ไม่เจอหน้าไหนเลย (ไม่ throw)
+    summary: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -140,4 +159,6 @@ class SiteManual:
             version=int(data.get("version", 1)),
             generated_at=float(data.get("generated_at", 0.0)),
             pages=pages,
+            errors=list(data.get("errors", [])),
+            summary=data.get("summary", ""),
         )

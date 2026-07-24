@@ -144,3 +144,67 @@ def test_failed_actions_summary_keeps_all_distinct_rejected_actions():
 
     assert "click(5)" in summary
     assert "delete(7)" in summary
+
+
+# --- recent_actions_summary() (W32) — ต่างจาก failed_actions_summary() ตรงที่รวมทั้ง
+# action ที่สำเร็จด้วย ไม่ใช่แค่ที่ fail ---
+
+
+def test_recent_actions_summary_empty_when_no_history():
+    mem = ShortTermMemory()
+
+    assert mem.recent_actions_summary() == ""
+
+
+def test_recent_actions_summary_includes_successful_actions_unlike_failed_only_summary():
+    mem = ShortTermMemory()
+    mem.record({"step": 1, "cmd": {"type": "click", "index": 1}, "result": "[OK] click(1) -> สำเร็จ", "success": True})
+
+    summary = mem.recent_actions_summary()
+
+    assert "click" in summary
+    assert "[OK]" in summary
+    # ต่างจาก failed_actions_summary() ที่ว่างเปล่าเพราะไม่มี action ไหน fail เลย
+    assert mem.failed_actions_summary() == ""
+
+
+def test_recent_actions_summary_includes_step_number_and_result():
+    mem = ShortTermMemory()
+    mem.record({"step": 3, "cmd": {"type": "fill", "index": 2}, "result": "[OK] fill(2) -> กรอกสำเร็จ", "success": True})
+
+    summary = mem.recent_actions_summary()
+
+    assert "step 3" in summary
+    assert "{'type': 'fill', 'index': 2}" in summary
+    assert "[OK] fill(2) -> กรอกสำเร็จ" in summary
+
+
+def test_recent_actions_summary_caps_at_n_keeping_most_recent():
+    mem = ShortTermMemory()
+    for i in range(7):
+        mem.record({
+            "step": i, "cmd": {"type": "click", "index": i},
+            "result": f"[OK] click({i})", "success": True,
+        })
+
+    summary = mem.recent_actions_summary(n=3)
+    lines = summary.split("\n")
+
+    assert len(lines) == 3
+    assert "click(4)" in summary
+    assert "click(5)" in summary
+    assert "click(6)" in summary
+    assert "click(0)" not in summary
+
+
+def test_recent_actions_summary_mixes_success_and_failure_in_order():
+    mem = ShortTermMemory()
+    mem.record({"step": 1, "cmd": {"type": "click", "index": 1}, "result": "[OK] click(1)", "success": True})
+    mem.record({"step": 2, "cmd": {"type": "click", "index": 2}, "result": "[FAIL] click(2) -> พัง", "success": False})
+
+    summary = mem.recent_actions_summary()
+    lines = summary.split("\n")
+
+    assert len(lines) == 2
+    assert "step 1" in lines[0] and "[OK]" in lines[0]
+    assert "step 2" in lines[1] and "[FAIL]" in lines[1]

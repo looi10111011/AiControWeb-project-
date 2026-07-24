@@ -15,6 +15,14 @@ W18: เพิ่มสองความสามารถ —
      ของ pattern แล้วจะไม่ถูกเก็บซ้ำในลิสต์ buttons/forms ระดับหน้าอีก เป็น heuristic ล้วนๆ
      (จับคู่ด้วย tag + sorted class list + child-tag sequence แบบ exact match — ไม่ครอบคลุม
      ทุกกรณี แต่พอสำหรับเว็บที่ render จาก template เดียวกันจริงๆ ซึ่งเป็นส่วนใหญ่)
+
+W24 (แก้ตามข้อร้องขอ "ค้นหาเมนูให้ครบ ไม่ใช่เฉพาะ <a>"): BUTTON_SELECTOR เดิมพลาด SPA ที่
+render เมนู/แท็บเป็น <div role="menuitem">/<div role="tab">/<router-link> ล้วนๆ ไม่มี a/
+button เลย — เพิ่ม [role=menuitem]/[role=tab]/router-link เข้า selector + describeButton()
+เพิ่มฟิลด์ is_nav_menu_item (ดู isNavMenuItem() — true ถ้าอยู่ใน nav/aside/header/footer/
+[role=tablist]/[role=menu] หรือแมตช์ selector ใหม่พวกนี้ตรงๆ) ให้ crawler.py ตัดสินใจ
+default-allow (เหมือน nav link ปกติ) แทนที่จะต้องผ่าน keyword allowlist แบบปุ่มทั่วไป (ดู
+crawler.py::_is_explorable)
 """
 
 from typing import Optional
@@ -64,6 +72,42 @@ _EXTRACT_JS = r"""
       node = node.parentElement;
     }
     return path.join(' > ');
+  };
+
+  // W24: คอนเทนเนอร์เมนู/นำทางทั่วไป — ยกขึ้นมาไว้บนสุด (เดิมประกาศแค่ตอนเก็บ nav_links
+  // ท้ายสคริปต์) เพราะตอนนี้ describeButton() ก็ต้องใช้ตัวเดียวกันเช็ค isNavMenuItem() ด้วย
+  const NAV_CONTAINERS = 'nav, [role=navigation], aside, header, footer, [role=tablist], [role=menu]';
+
+  // W24: True ถ้า element นี้ "น่าจะเป็นเมนู/นำทาง" ไม่ใช่ปุ่ม action ทั่วไปบนหน้า — อยู่ใน
+  // คอนเทนเนอร์เมนูด้านบน หรือมี role="menuitem"/"tab" ตรงๆ (SPA จำนวนมากไม่ใช้ <a href>
+  // สำหรับเมนู แต่ใช้ <button>/<div role="menuitem"> ที่ trigger client-side routing เอง)
+  // หรือเป็น <router-link> (Vue Router แบบไม่ render เป็น <a>) หรือมี class ที่มีคำว่า
+  // router-link (บาง component library แปะ class นี้ไว้แม้จะ render เป็น <a> จริงก็ตาม —
+  // ไม่มีผลเสียถ้าธงนี้ true ซ้ำกับที่ NAV_CONTAINERS จับได้อยู่แล้ว) ใช้ตัดสินใจใน
+  // crawler.py::_is_explorable ว่าจะยอมกดแบบ default-allow (เหมือน nav link ปกติ) หรือ
+  // ต้องผ่าน default-deny keyword allowlist เหมือนปุ่มอื่นๆ
+  //
+  // *** ข้อยกเว้นสำคัญ: <a href="..."> ที่มี href จริง (ไม่ใช่ "#fragment"/"javascript:")
+  // ไม่ถือเป็น nav menu item ที่นี่เลย แม้จะอยู่ใน NAV_CONTAINERS ก็ตาม — เพราะ crawler.py
+  // มีเส้นทาง BFS แยกต่างหากอยู่แล้วที่เดินตาม href นี้ (nav_links ด้านล่าง) ซึ่งเช็ค
+  // same-origin จาก href ได้ก่อน "goto" เสมอ (กัน cross-origin เด็ดขาด) ถ้าให้ธงนี้ true
+  // ด้วย จะทำให้ _explore_buttons() ไป "คลิก" ลิงก์เดิมซ้ำ ซึ่งคลิกจริงทำให้ browser
+  // navigate ไปเลยก่อนจะรู้ปลายทาง (ต่างจาก BFS ที่รู้ domain จาก href ได้ก่อน navigate)
+  // เสี่ยงคลิกหลุดไปเว็บอื่นจริงๆ ระหว่าง "เรียนรู้เว็บไซต์" ทั้งที่ตั้งใจจำกัดขอบเขตไว้แค่
+  // โดเมนเดียว — <a href="#tab1">/<a href="javascript:...">/element ที่ไม่ใช่ a เลย (ปุ่ม/
+  // div ที่ trigger client-side routing ด้วย JS ล้วนๆ) ไม่มีปลายทางข้ามหน้าให้เสี่ยงคลิก
+  // หลุดแบบนี้ได้อยู่แล้ว (คลิกแล้วอยู่หน้าเดิมเสมอ) ยังคง eligible ตามปกติ
+  const isNavMenuItem = (el) => {
+    if (el.tagName.toLowerCase() === 'a') {
+      const href = el.getAttribute('href') || '';
+      const isRealHref = href && !href.startsWith('#') && !href.toLowerCase().startsWith('javascript:');
+      if (isRealHref) return false;
+    }
+    if (el.closest(NAV_CONTAINERS)) return true;
+    if (el.matches('[role=menuitem], [role=tab]')) return true;
+    if (el.tagName.toLowerCase() === 'router-link') return true;
+    if (typeof el.className === 'string' && /router-link/i.test(el.className)) return true;
+    return false;
   };
 
   const computeXPath = (el) => {
@@ -124,11 +168,20 @@ _EXTRACT_JS = r"""
     role: el.getAttribute('role') || '',
     data_testid: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
     icon_hint: inferIconHint(el),
+    is_nav_menu_item: isNavMenuItem(el),
     selector: computeSelector(el),
     xpath: computeXPath(el),
   });
 
-  const BUTTON_SELECTOR = 'a, button, [role=button], [role=link], input[type=submit], input[type=button], [onclick]';
+  // W24: เพิ่ม [role=menuitem]/[role=tab]/router-link เข้ามาแล้ว — เดิมมีแค่ a/button/
+  // [role=button]/[role=link]/input[submit|button]/[onclick] ซึ่งพลาดเมนู/แท็บที่ SPA
+  // สมัยใหม่ render เป็น <div role="menuitem">/<div role="tab"> ล้วนๆ ไม่ผ่าน a/button
+  // เลย (ดู isNavMenuItem ด้านบน — องค์ประกอบที่แมตช์ selector เหล่านี้ หรืออยู่ใน
+  // NAV_CONTAINERS จะถูก crawler.py ปฏิบัติแบบ "เมนู" default-allow แทนที่จะต้องผ่าน
+  // keyword allowlist แบบปุ่มทั่วไป)
+  const BUTTON_SELECTOR =
+    'a, button, [role=button], [role=link], [role=menuitem], [role=tab], router-link, ' +
+    'input[type=submit], input[type=button], [onclick]';
 
   // ---- W18: UI pattern detection (product card / list item / table row ฯลฯ ที่ซ้ำกัน
   // หลาย instance) — ทำก่อน buttons/forms loop ด้านล่าง เพื่อรู้ว่า element ไหน "ถูกจัดเป็น
@@ -308,19 +361,24 @@ _EXTRACT_JS = r"""
   }
 
   // ---- nav links (ไว้ต่อคิว BFS ใน crawler.py — ไม่ใช่ส่วนหนึ่งของ PageInfo) ----
-  const NAV_CONTAINERS = 'nav, [role=navigation], aside, header, footer, [role=tablist], [role=menu]';
+  // W25: เดิมสแกนหาแค่ a[href] ที่อยู่ใน NAV_CONTAINERS เท่านั้น (nav/aside/header/footer/
+  // [role=tablist]/[role=menu]) — พลาดลิงก์ในเนื้อหา (content area) ที่ไม่ได้อยู่ในเมนูเลย
+  // (เช่น "อ่านต่อ"/"ดูรายละเอียด" กลางบทความ, ลิงก์ในตาราง/การ์ดที่ไม่ใช่ nav) ทำให้ BFS
+  // มองไม่เห็นหน้าที่เข้าถึงได้จริงแต่ไม่มีทางอื่นนอกจากลิงก์แบบนี้เลย — เปลี่ยนเป็นสแกนทั้ง
+  // เอกสาร (document.querySelectorAll ตรงๆ ไม่ผูกกับ NAV_CONTAINERS อีกต่อไป) ให้ตรงกับ
+  // "extract all clickable elements: a" ตามที่ user ระบุ — ยังกรองด้วย is_safe_nav_link()
+  // (default-allow, บล็อกเฉพาะคำทำลายชัดเจนอย่าง Logout/Delete) ที่ฝั่ง crawler.py เหมือน
+  // เดิมทุกประการ ไม่ได้ลดความเข้มงวดของ safety rule ลงเลย แค่ขยายขอบเขตที่ "เห็น" ลิงก์
   const navLinks = [];
   const seenHref = new Set();
-  document.querySelectorAll(NAV_CONTAINERS).forEach((container) => {
-    container.querySelectorAll('a[href]').forEach((a) => {
-      const href = a.getAttribute('href');
-      if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) return;
-      if (seenHref.has(href)) return;
-      const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
-      if (!text) return;
-      seenHref.add(href);
-      navLinks.push({ text, href, menu_path: [text] });
-    });
+  document.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) return;
+    if (seenHref.has(href)) return;
+    const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
+    if (!text) return;
+    seenHref.add(href);
+    navLinks.push({ text, href, menu_path: [text] });
   });
 
   // ---- breadcrumb ----

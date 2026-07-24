@@ -795,6 +795,46 @@ def test_learn_site_returns_202_and_saves_manual(client, isolated_manuals_dir):
     assert saved.pages[0].name == "Home"
 
 
+def test_learn_site_result_includes_summary_from_manual(client, isolated_manuals_dir):
+    """W26: manual.summary (ภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" จาก describe_site()) ต้องไหล
+    ออกไปถึง learn_done SSE event's result.summary ให้ frontend โชว์ได้"""
+    from backend.app.site_learning.schema import PageInfo, SiteManual
+
+    fake_manual = SiteManual(
+        website="example.com",
+        pages=[PageInfo(name="Home", url="https://example.com/")],
+        summary="เว็บไซต์นี้ใช้ดูสินค้าและสั่งซื้อออนไลน์ได้",
+    )
+
+    fake_browser = AsyncMock()
+    fake_playwright_obj = AsyncMock()
+    fake_playwright_obj.chromium.launch = AsyncMock(return_value=fake_browser)
+    fake_playwright_cm = AsyncMock()
+    fake_playwright_cm.__aenter__ = AsyncMock(return_value=fake_playwright_obj)
+    fake_playwright_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("backend.app.api.routes.async_playwright", return_value=fake_playwright_cm), \
+         patch("backend.app.api.routes.crawl_site", AsyncMock(return_value=fake_manual)):
+        resp = client.post("/api/site-manual/learn", json={"url": "https://example.com/"})
+        learn_id = resp.json()["learn_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        stream_resp = None
+        while time.monotonic() < deadline:
+            stream_resp = client.get(f"/api/site-manual/learn/{learn_id}/stream")
+            if "learn_done" in stream_resp.text:
+                break
+            time.sleep(0.02)
+
+    # stream_resp.text เป็น SSE ("data: {...}\n\n") ที่ json.dumps escape ตัวอักษรไทยเป็น
+    # \uXXXX เสมอ (ensure_ascii default) — เทียบ literal string ตรงๆ ไม่เจอ ต้อง parse JSON
+    # ออกมาก่อนถึงจะเทียบได้ถูกต้อง
+    done_line = next(line for line in stream_resp.text.splitlines() if "learn_done" in line)
+    event = json.loads(done_line[len("data: "):])
+    assert event["result"]["summary"] == "เว็บไซต์นี้ใช้ดูสินค้าและสั่งซื้อออนไลน์ได้"
+
+
 def test_learn_site_stream_unknown_learn_id_returns_404(client):
     resp = client.get("/api/site-manual/learn/does-not-exist/stream")
     assert resp.status_code == 404

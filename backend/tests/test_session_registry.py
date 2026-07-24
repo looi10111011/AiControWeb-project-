@@ -372,6 +372,48 @@ async def test_close_unknown_session_id_returns_false():
     assert await registry.close("does-not-exist") is False
 
 
+@pytest.mark.asyncio
+async def test_close_does_not_raise_when_underlying_close_call_fails():
+    """W27: แก้บั๊ก "ปุ่ม kill session ใช้งานจริงไม่ได้" — เดิม close() ไม่มี try/except เลย
+    ถ้า browser.close()/context.close() ล้มเหลว (เช่น race กับ task ที่เพิ่งถูก
+    TaskManager.cancel() แต่ยังไม่ทันเลิกใช้ page จริงๆ หรือ user ปิดหน้าต่าง browser เอง
+    ด้วยมือไปก่อนแล้ว) exception จะหลุดออกไปที่ routes.py::close_session() เป็น 500 ทั้งที่
+    session ถูก pop ออกจาก registry ไปแล้ว (ดูเหมือนปิดสำเร็จแต่ resource จริงรั่ว) — ตอนนี้
+    ต้องไม่ throw ออกมาเลย (delegate ไป _best_effort_close() ที่กลืน exception ทุกจุดอยู่แล้ว)"""
+    mock_browser = AsyncMock()
+    mock_browser.close.side_effect = RuntimeError("Target page, context or browser has been closed")
+    mock_playwright = AsyncMock()
+    session = BrowserSession("sess-1", "owns", AsyncMock(), None, mock_browser, mock_playwright)
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+
+    closed = await registry.close("sess-1")  # ต้องไม่ throw ออกมา
+
+    assert closed is True
+    assert registry.get("sess-1") is None  # ถูกลบออกจาก tracking แล้วแม้ปิดจริงไม่สำเร็จ
+
+
+@pytest.mark.asyncio
+async def test_close_pool_mode_does_not_release_disconnected_browser_back_to_pool():
+    """W27: browser ที่ disconnect ไปแล้ว (เช่น crash ระหว่าง task ยังรันอยู่ตอนกด kill
+    session) ต้องไม่ถูก release_one() กลับเข้า pool เด็ดขาด (poison ทั้ง pool — ดู
+    _best_effort_close() docstring) — เดิม close() เดิมไม่เช็ค is_connected() เลยก่อน
+    release_one() ต่างจาก _recover()/_best_effort_close() ที่เช็คอยู่แล้ว ตอนนี้ close()
+    ก็เช็คด้วยเพราะ delegate ไปที่เดียวกัน"""
+    mock_context = AsyncMock()
+    mock_browser = AsyncMock()
+    mock_browser.is_connected = MagicMock(return_value=False)
+    pool = _fake_pool()
+    session = BrowserSession("sess-1", "pool", AsyncMock(), mock_context, mock_browser, None, pool=pool)
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+
+    closed = await registry.close("sess-1")
+
+    assert closed is True
+    pool.release_one.assert_not_awaited()
+
+
 def test_list_returns_sessions_newest_first():
     registry = SessionRegistry()
     older = BrowserSession("a", "pool", AsyncMock(), AsyncMock(), AsyncMock(), None, created_at=1.0)

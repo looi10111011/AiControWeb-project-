@@ -61,6 +61,30 @@ class Settings(BaseSettings):
     # crawler.py::_explore_buttons) — หน้าที่มีปุ่มเข้าข่ายปลอดภัยเยอะผิดปกติ (เช่น list
     # ยาวๆ ที่ทุกแถวมีปุ่ม "View") ไม่ควรไล่กดทุกอันจนใช้เวลาเป็นชั่วโมง
     site_learning_max_buttons_per_page: int = 15
+    # W24: ค่าพวกนี้เดิมเป็น magic number ฝังในโค้ดล้วนๆ (retry=0 เสมอ ไม่มี retry เลย) —
+    # ย้ายมาเป็น setting ที่ปรับได้จาก .env ตรงๆ เพราะ "หากตั้งไว้น้อยเกินไป Agent จะหยุด
+    # เร็ว" เป็นความเสี่ยงจริง (เว็บที่ network ช้า/element render ช้าต้องการ retry มากกว่า
+    # เว็บทดสอบทั่วไป) — ค่า default ที่เลือกไว้เป็นค่ากลางๆ ที่ไม่ทำให้ crawl ช้าเกินไปแต่
+    # กันความล้มเหลวชั่วคราว (transient — DOM ยังไม่นิ่ง/network กระตุก) ได้ระดับหนึ่ง
+    site_learning_goto_retries: int = 2  # รวมครั้งแรกเป็นลองทั้งหมด retries+1 ครั้งต่อหน้า
+    site_learning_click_retries: int = 2  # เหมือนกันแต่สำหรับกดปุ่มระหว่างไล่สำรวจ
+    site_learning_retry_backoff_ms: int = 500  # หน่วงก่อน retry แต่ละครั้ง
+    # W24: infinite scroll/lazy-loaded content — เลื่อนจอลงจนสุด scroll ไม่ขยับอีกแล้ว
+    # (หรือครบจำนวนครั้งนี้) ก่อน extract โครงสร้างหน้า (ดู
+    # crawler.py::_reveal_dynamic_content) เว็บที่โหลดทีละน้อยมากๆ (เช่น 1 การ์ดต่อ scroll)
+    # อาจต้องเพิ่มค่านี้ขึ้นถ้าพบว่า manual ที่ได้ไม่ครบเนื้อหาทั้งหมด
+    site_learning_max_scroll_attempts: int = 6
+    site_learning_scroll_wait_ms: int = 350
+    # W28: ปุ่มที่ "label+role เดียวกัน" โผล่ซ้ำข้ามหลายหน้า (เช่น ไอคอนค้นหาบน header ของ
+    # ทุกหน้า, ปุ่ม "Previous/Next video" บน player ของทุกคลิป) จะถูกไล่กดได้สูงสุดกี่ครั้ง
+    # รวมทั้ง crawl (นับข้าม URL ไม่ใช่แค่ในหน้าเดียว — ดู crawler.py::_button_signature) —
+    # ก่อนหน้านี้ไม่มีเพดานนี้เลย ทำให้เว็บที่มีเนื้อหาไม่จำกัด (เช่น YouTube Shorts ที่ปุ่ม
+    # "Next video" พาไป URL ใหม่ไม่รู้จบ) กิน max_pages budget ทั้งหมดไปกับการไล่กดปุ่มเดิม
+    # ซ้ำๆ ข้ามหน้า ไม่เคยย้อนกลับไปสำรวจส่วนอื่นของเว็บเลย ค่า 1 = กดแต่ละปุ่มที่เหมือนกัน
+    # ได้แค่ครั้งเดียวตลอดทั้ง crawl (เข้มสุด กัน loop เด็ดขาด แลกกับ coverage ที่ลดลงถ้าปุ่ม
+    # label เดียวกันจริงๆ ใช้งานต่างกันในแต่ละหมวดของเว็บ เช่น "View" ในตาราง Products กับ
+    # ตาราง Orders — คนละความหมายแต่ label เดียวกัน จะถูกไล่กดแค่อันแรกอันเดียว)
+    site_learning_max_repeat_button_clicks: int = 1
 
     # W20: Plan Memory (ดู core/plan_memory.py) — แผนที่ user "Confirm" แล้ว เก็บใน
     # ChromaDB collection แยกต่างหาก (persist_dir เดียวกับ chroma_persist_dir ข้างบน

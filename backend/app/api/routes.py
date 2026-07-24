@@ -382,7 +382,10 @@ async def stop_task(task_id: str, request: Request) -> dict:
     record = task_manager.get(task_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"ไม่พบ task_id: {task_id!r}")
-    ok = task_manager.cancel(task_id)
+    # W27: cancel() ตอนนี้เป็น async แล้ว (รอให้ task หยุดใช้ page/browser จริงก่อน return
+    # ไม่ใช่แค่ยิง CancelledError แล้วคืนทันที — ดู TaskManager.cancel() docstring) กัน race
+    # กับ POST /sessions/{id}/close ที่ frontend (killSession()) ยิงตามมาทันทีหลัง stop ตอบ
+    ok = await task_manager.cancel(task_id)
     if not ok:
         raise HTTPException(status_code=409, detail="Task นี้ไม่ได้กำลังรันอยู่แล้ว")
     return {"status": "stopping"}
@@ -521,7 +524,15 @@ async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedRes
         # ทับค่าเดิมด้วยค่าเดิมก็ไม่มีผลเสียอะไร (idempotent)
         if resolved_username and resolved_password:
             save_credentials(manual.website, resolved_username, resolved_password)
-        return {"version": version, "pages_found": len(manual.pages)}
+        # W24: ส่ง errors_count กลับไปด้วย — ให้ frontend โชว์ว่า crawl จบพร้อมปัญหาที่เจอ
+        # ระหว่างทางกี่รายการ (ดู manual.errors — SiteManual.to_dict() มีรายละเอียดเต็ม
+        # อยู่แล้วถ้าต้องการขุดดูทีหลัง ไม่ส่งรายละเอียดเต็มมาที่นี่เพราะ event นี้แค่สรุปผล)
+        # W26: ส่ง summary (ภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" จาก describe_site()) กลับไปด้วย
+        # ให้ frontend โชว์ทันทีที่เรียนรู้เสร็จ (ดู index.html::renderManualBanner)
+        return {
+            "version": version, "pages_found": len(manual.pages),
+            "errors_count": len(manual.errors), "summary": manual.summary,
+        }
 
     record = learn_manager.submit(learn_id, req.url, _run())
     return LearnCreatedResponse(learn_id=record.learn_id, status=record.status)

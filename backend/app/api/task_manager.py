@@ -120,15 +120,32 @@ class TaskManager:
             "result": record.result, "error": record.error,
         })
 
-    def cancel(self, task_id: str) -> bool:
+    async def cancel(self, task_id: str, wait_timeout: float = 5.0) -> bool:
         """เรียกจาก POST /tasks/{id}/stop — ส่ง asyncio.CancelledError เข้าไปใน task ที่
         กำลังรันอยู่ (ไม่ว่าจะกำลัง await LLM call, execute() action, หรือรอ
         request_approval() อยู่ก็ตาม — cancel() ทำงานได้ทุกจังหวะ await) คืน False ถ้า
-        task ไม่ได้ "running" อยู่แล้ว (จบไปแล้ว/ถูก stop ไปแล้ว) ให้ endpoint คืน 409"""
+        task ไม่ได้ "running" อยู่แล้ว (จบไปแล้ว/ถูก stop ไปแล้ว) ให้ endpoint คืน 409
+
+        W27: แก้บั๊ก "ปุ่ม kill session ใช้งานจริงไม่ได้" — เดิม .cancel() แค่ยิง
+        CancelledError เข้า task แล้ว "return True" ทันที ไม่รอให้ task หยุดใช้ page/browser
+        จริงๆ ก่อน (asyncio.Task.cancel() แค่ "ขอ" ให้ cancel ที่จุด await ถัดไป ไม่ได้หยุด
+        ทันที) — ฝั่ง frontend (index.html::killSession()) เรียก POST .../stop แล้วต่อด้วย
+        POST /sessions/{id}/close ทันทีที่ stop ตอบกลับมา ถ้า _run() ยังไม่ทันประมวลผล
+        CancelledError เสร็จ (ยังอยู่กลาง page.click()/page.evaluate() ฯลฯ) session.close()
+        จะไปแตะ page/context/browser ตัวเดียวกันพร้อมกัน race กันจริง — ตอนนี้ await task
+        ตัวเดิมหลังสั่ง cancel() (มี timeout กันค้างถ้า step ไหนไม่ยอมคืน control loop เลย)
+        ก่อน return — ไม่ throw ออกมาแม้ await timeout (แค่ไม่รอต่อ ไม่ใช่ error) เพราะ
+        _run() เองก็ catch CancelledError ไว้แล้วไม่ re-raise (ดู docstring ของ _run())
+        await ตรงนี้จึงไม่มีทาง raise CancelledError กลับมาที่นี่เองอยู่แล้ว"""
         record = self._tasks.get(task_id)
         if record is None or record.status != "running" or record.asyncio_task is None:
             return False
-        record.asyncio_task.cancel()
+        task = record.asyncio_task
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            pass
         return True
 
     async def push_event(self, task_id: str, event: dict) -> None:
