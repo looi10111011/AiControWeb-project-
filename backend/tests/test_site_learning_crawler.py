@@ -11,12 +11,13 @@ from backend.app.site_learning.crawler import (
     _button_signature,
     _click_with_retry,
     _goto_with_retry,
+    _page_template,
     _reveal_dynamic_content,
     _wait_for_dom_stable,
     crawl_site,
     describe_site,
 )
-from backend.app.site_learning.schema import ButtonInfo, PageInfo
+from backend.app.site_learning.schema import ButtonInfo, PageInfo, UIPatternInfo
 
 # เทสต์กลุ่มนี้ยิงจริงผ่าน chromium จริง (ไม่ mock Playwright) ต่อ local HTTP server ที่
 # serve fixture HTML จริง — mock page.goto()/nav ทั้งเชนยากกว่าและพิสูจน์ BFS/dedup/
@@ -1039,6 +1040,152 @@ def test_button_signature_falls_back_to_icon_hint_when_text_and_testid_empty():
     c = ButtonInfo(text="", data_testid="", icon_hint="cart")
     assert _button_signature(a) == _button_signature(b)
     assert _button_signature(a) != _button_signature(c)
+
+
+# ---------------- W33: template ของทั้งหน้า (ไม่ใช่แค่ปุ่มเดียว) ----------------
+
+
+def test_page_template_matches_pages_with_identical_button_structure():
+    """สองหน้าที่มีปุ่มโครงสร้างเดียวกันทุกอย่าง (เช่นคลิป Shorts คนละคลิป UI เหมือนกัน
+    ทุกอย่าง) ต้องได้ template เดียวกัน แม้ URL จะคนละอันก็ตาม (ไม่ใช่ส่วนหนึ่งของ template)"""
+    page_a = PageInfo(
+        url="/shorts/clip1",
+        buttons=[
+            ButtonInfo(text="Like", data_testid="like-btn", selector="#like"),
+            ButtonInfo(text="Comment", data_testid="comment-btn", selector="#comment"),
+        ],
+    )
+    page_b = PageInfo(
+        url="/shorts/clip2",
+        buttons=[
+            ButtonInfo(text="Like", data_testid="like-btn", selector="#like"),
+            ButtonInfo(text="Comment", data_testid="comment-btn", selector="#comment"),
+        ],
+    )
+    assert _page_template(page_a) == _page_template(page_b)
+
+
+def test_page_template_ignores_button_order():
+    page_a = PageInfo(buttons=[
+        ButtonInfo(text="Like", selector="#a"), ButtonInfo(text="Comment", selector="#b"),
+    ])
+    page_b = PageInfo(buttons=[
+        ButtonInfo(text="Comment", selector="#b"), ButtonInfo(text="Like", selector="#a"),
+    ])
+    assert _page_template(page_a) == _page_template(page_b)
+
+
+def test_page_template_differs_when_button_set_differs():
+    page_a = PageInfo(buttons=[ButtonInfo(text="Like", selector="#a"), ButtonInfo(text="Comment", selector="#b")])
+    page_b = PageInfo(buttons=[ButtonInfo(text="Like", selector="#a")])
+    assert _page_template(page_a) != _page_template(page_b)
+
+
+def test_page_template_differs_when_forms_presence_differs():
+    page_a = PageInfo(buttons=[ButtonInfo(text="Like", selector="#a")])
+    from backend.app.site_learning.schema import FormFieldInfo
+    page_b = PageInfo(
+        buttons=[ButtonInfo(text="Like", selector="#a")],
+        forms=[FormFieldInfo(field_name="q", selector="#q")],
+    )
+    assert _page_template(page_a) != _page_template(page_b)
+
+
+def test_page_template_accounts_for_ui_patterns():
+    page_a = PageInfo(buttons=[], ui_patterns=[UIPatternInfo(name="Products", ui_type="Card", selector="div.card")])
+    page_b = PageInfo(buttons=[], ui_patterns=[UIPatternInfo(name="Orders", ui_type="Table Row", selector="tr.row")])
+    assert _page_template(page_a) != _page_template(page_b)
+
+
+def test_page_template_of_two_completely_empty_pages_are_equal():
+    """_page_template() เองไม่แยกแยะหน้าที่ไม่มีปุ่ม/ui_pattern เลย (ได้ template เดียวกัน
+    จริง — "forms:False, tables:False" ทั้งคู่) — การ์ดกันไม่ให้ crawl_site() เอาไป dedupe
+    ผิดๆ อยู่ที่ _record_page() (เช็ค has_template_signal ก่อนเสมอ) ไม่ใช่ในฟังก์ชันนี้ ดู
+    test_crawl_site_visits_links_outside_nav_containers ที่ยืนยันพฤติกรรมระดับ crawl เต็ม
+    ว่าหน้าเปล่า 2 หน้าที่ต่างความหมายกันจริง (Dashboard vs Article Detail) ยังถูกบันทึกครบ
+    ทั้งคู่ ไม่ถูกข้ามเพราะบังเอิญไม่มีปุ่มเหมือนกัน"""
+    page_a = PageInfo(url="/dashboard")
+    page_b = PageInfo(url="/article-detail")
+    assert _page_template(page_a) == _page_template(page_b)
+
+
+_REPEAT_PAGE_TEMPLATE_FIXTURE_PAGES = {
+    # จำลอง feed ที่มีลิงก์ไปคลิป Shorts/Reels คนละคลิปจริง (คนละ URL) แต่ UI เหมือนกันทุก
+    # อย่าง (ปุ่ม Like/Comment) — ต่างจาก _REPEAT_BUTTON_FIXTURE_PAGES ด้านบนที่จำลองปุ่ม
+    # "Next" ตัวเดียวกันถูกกดซ้ำ (ผ่าน _explore_buttons/explored_button_signatures) ตัวนี้
+    # จำลองลิงก์คนละอันจริงๆ สิบๆ รายการที่ไม่เคยผ่าน signature-cap เลยเพราะเป็น nav_links
+    # BFS ล้วนๆ (ดู W25 — สแกนทั้งเอกสาร)
+    "feed.html": """
+        <html><body>
+          <a href="/clip1.html">Watch Video A</a>
+          <a href="/clip2.html">Watch Video B</a>
+          <a href="/clip3.html">Watch Video C</a>
+          <a href="/about.html">About Us</a>
+        </body></html>
+    """,
+    "clip1.html": """
+        <html><body>
+          <button data-testid="like-btn">Like</button>
+          <button data-testid="comment-btn">Comment</button>
+        </body></html>
+    """,
+    "clip2.html": """
+        <html><body>
+          <button data-testid="like-btn">Like</button>
+          <button data-testid="comment-btn">Comment</button>
+        </body></html>
+    """,
+    "clip3.html": """
+        <html><body>
+          <button data-testid="like-btn">Like</button>
+          <button data-testid="comment-btn">Comment</button>
+        </body></html>
+    """,
+    "about.html": """
+        <html><body>
+          <table><thead><tr><th>Name</th></tr></thead></table>
+        </body></html>
+    """,
+}
+
+
+@pytest.fixture
+def repeat_page_template_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _REPEAT_PAGE_TEMPLATE_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_records_only_the_first_page_matching_a_known_template(repeat_page_template_fixture_server):
+    """W33: 3 คลิปคนละ URL จริง (ไม่ถูกกันโดย visited-set) แต่ UI เหมือนกันทุกอย่าง — ต้อง
+    บันทึกแค่ตัวแทนตัวแรกที่เจอ (clip1) ตัวถัดๆ ไป (clip2, clip3) ต้องไม่ถูกบันทึกลง
+    manual.pages เลย ส่วนหน้าที่โครงสร้างต่างจริง (about.html — มีตารางไม่มีปุ่ม) ต้องยังถูก
+    บันทึกตามปกติไม่ถูกกระทบ"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{repeat_page_template_fixture_server}/feed.html", max_pages=20, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("feed.html" in u for u in visited_urls)
+    assert any("clip1.html" in u for u in visited_urls)
+    assert not any("clip2.html" in u for u in visited_urls)
+    assert not any("clip3.html" in u for u in visited_urls)
+    assert any("about.html" in u for u in visited_urls)  # โครงสร้างต่างจริง ยังบันทึกปกติ
+
+    skipped_events = [e for e in events if e["kind"] == "page_template_skipped"]
+    skipped_urls = {e["url"] for e in skipped_events}
+    assert any("clip2.html" in u for u in skipped_urls)
+    assert any("clip3.html" in u for u in skipped_urls)
 
 
 _REPEAT_BUTTON_FIXTURE_PAGES = {

@@ -102,6 +102,26 @@ explored_button_signatures (dict ระดับ crawl เดียวกับ 
 หน้าไหนอีก ทำให้ DFS ไล่ตามปุ่มประเภท pagination/chrome ที่ซ้ำกันได้จำกัดจำนวนครั้งจริง แทนที่
 จะไม่จำกัดเหมือนเดิม (ของเดิมที่ dedup ด้วย selector ในหน้าเดียวกัน — เช่น _merge_page_info,
 known_button_selectors — ยังอยู่เหมือนเดิมทุกจุด นี่เป็นเพดานเพิ่มเติมข้าม URL เท่านั้น)
+
+W33: user เสนอทางแก้เพิ่มเติมสำหรับเคส Shorts/Reels โดยเฉพาะ — "กดเข้าดูแค่ 1 รอบ แล้วเก็บ
+เทมเพลตโครงสร้างไว้ ต่อไปหากอ่านได้โครงสร้างตรงกับ template (ต่างแค่รายละเอียดแต่ปุ่มเหมือนกัน)
+ให้กด back แล้วไปทำ step ต่อไปได้เลย" — ช่องว่างจริงที่ W28/W29 (ข้างบน) ยังไม่ครอบคลุม: ถ้าเว็บ
+มี feed ที่มีลิงก์ไปคลิปคนละอันจริงๆ สิบๆ รายการ (คนละ href/URL จริง ไม่ใช่ปุ่ม "Next" ตัวเดียว
+ที่ถูกกดซ้ำ) explored_button_signatures ไม่ช่วยอะไรเลย เพราะแต่ละลิงก์เป็น nav_links ที่ต่อคิว
+BFS ตรงๆ (ดู W25 — สแกนทั้งเอกสารแล้ว) ไม่ผ่าน _explore_buttons()/signature-cap เลย แต่ละคลิป
+เลยยังถูก describe+บันทึกลง manual ครบทุกอันอยู่ดี ทั้งที่ UI เหมือนกันทุกอย่าง (ปุ่ม
+Like/Comment/Share/Next) ต่างแค่เนื้อหาคลิป — เสีย LLM describe call + กิน max_pages budget
+ไปกับหน้าที่ให้ข้อมูลโครงสร้างซ้ำซ้อนกันจริง
+
+แก้ด้วย _page_template()/known_page_templates (set ระดับ crawl เดียวกับ
+explored_button_signatures) — ก่อน describe+บันทึกหน้าใหม่ทุกครั้งใน _record_page() (จุดร่วม
+ของทั้ง BFS/DFS-ปุ่ม/หลัง-login) เทียบ "ลายนิ้วมือโครงสร้าง" ของหน้านี้ (set ของ signature ปุ่ม
+ทุกปุ่มบนหน้า + สัญญาณหยาบๆ ว่ามีฟอร์ม/ตารางไหม — ไม่สนเนื้อหา/ลำดับ) กับที่เคยเจอมาแล้ว ตรงเป๊ะ
+= ข้ามไปเลย (ไม่ describe ไม่บันทึกลง pages ไม่ไล่กดปุ่มต่อ ไม่ต่อคิว nav link ของหน้านี้ —
+ถือว่าได้ตัวแทนเพียงพอแล้วจากครั้งแรก) ไม่ตรง = บันทึกตามปกติ + จำ template นี้ไว้เป็นตัวแทนใหม่
+— ไม่ต้องมี logic "กด back" แยกต่างหากเลยตามที่ user ขอ เพราะ _explore_buttons() (เส้นทาง DFS)
+go_back()/goto(before_url) อยู่แล้วเสมอไม่ว่า _record_page() จะทำอะไรข้างในก็ตาม ส่วนเส้นทาง BFS
+ก็แค่ไปหยิบ URL ถัดไปจาก queue ต่อเองอยู่แล้วโดยธรรมชาติ (ตรงกับ "ไปทำ step ต่อไปได้เลย")
 """
 
 import json
@@ -283,6 +303,31 @@ def _button_signature(button) -> str:
     ])
 
 
+def _page_template(page_info: PageInfo) -> frozenset[str]:
+    """W33: ลายนิ้วมือของ "โครงสร้าง" หน้านี้ (ไม่ใช่เนื้อหา) — ใช้เทียบว่าหน้าใหม่ที่เพิ่ง
+    เจอ "หน้าตาเหมือนหน้าที่เคยบันทึกไปแล้วไหม ต่างแค่รายละเอียด" (ตามที่ user ระบุ — ตัวอย่าง
+    ที่เจอบ่อยคือหน้า Shorts/Reels: แต่ละคลิปเป็นคนละ URL จริง แต่ UI ทั้งหมด (ปุ่ม
+    Like/Comment/Share/Next ฯลฯ) เหมือนกันเป๊ะทุกคลิป) — ต่างจาก _button_signature() ที่
+    เทียบ "ปุ่มเดียว" ข้ามหน้า ตัวนี้เทียบ "ทั้งหน้า" โดยรวม signature ของทุกปุ่มบนหน้าเป็น
+    set เดียว (ไม่สนลำดับ/ตำแหน่งเป๊ะ — แค่ "มีปุ่มหน้าตาแบบนี้ครบชุดไหม") บวกกับสัญญาณหยาบๆ
+    ว่ามีฟอร์ม/ตารางอยู่ไหม (เฉพาะมี/ไม่มี ไม่สนจำนวนเป๊ะ กัน noise จาก UI pattern ที่
+    item_count ไม่เท่ากันเพราะโหลดเนื้อหามาไม่พร้อมกัน)
+
+    exact match เท่านั้น (frozenset ทั้งก้อนต้องเท่ากันเป๊ะ) — ยอมรับ false-negative ได้
+    (หน้าที่ต่างกันจริงเล็กน้อย เช่น มีปุ่ม "Pinned Comment" เพิ่มมาบางคลิป จะไม่ถูกมองว่า
+    "template เดียวกัน" ทั้งที่โดยรวมก็คล้ายกันมาก) ดีกว่าเสี่ยง false-positive (มองว่าเป็น
+    หน้าเดียวกันทั้งที่จริงๆ ต่างกัน แล้วข้ามไปไม่บันทึกหน้าที่ควรบันทึก) — เป้าหมายหลักคือกัน
+    การไล่บันทึก/สำรวจหน้าที่ซ้ำซ้อนกันจริงชัดๆ (เช่น feed ที่มีลิงก์ไปคลิปคนละอันนับสิบๆ
+    รายการ) ไม่ใช่การจัดกลุ่มหน้าเว็บแบบสมบูรณ์แบบ"""
+    button_sigs = frozenset(_button_signature(b) for b in page_info.buttons if b.selector)
+    pattern_sigs = frozenset(f"pattern:{p.ui_type}:{p.selector}" for p in page_info.ui_patterns)
+    coarse = frozenset({
+        f"forms:{bool(page_info.forms)}",
+        f"tables:{bool(page_info.tables)}",
+    })
+    return button_sigs | pattern_sigs | coarse
+
+
 def _normalize_url(url: str) -> str:
     """ตัด fragment ออกกันนับซ้ำ (URL ต่างกันแค่ #section ไม่ควรถือว่าเป็นคนละหน้า) และ
     ตัด trailing slash ให้เหมือนกันเสมอ"""
@@ -446,6 +491,10 @@ async def crawl_site(
         # W28: กันไล่กด "ปุ่มเดิม" (label+role เดียวกัน) ซ้ำไม่รู้จบข้าม URL ที่ต่างกัน — ดู
         # docstring หัวไฟล์ ข้อ W28 และ _button_signature ด้านบน
         explored_button_signatures: dict[str, int] = {}
+        # W33: template ของหน้าที่เคยบันทึกไปแล้ว (ดู _page_template()) — หน้าใหม่ที่โครงสร้าง
+        # ตรงกับ template ที่เคยเจอ (เช่น คลิป Shorts/Reels อื่นที่ UI เหมือนกันทุกอย่าง ต่าง
+        # แค่เนื้อหา) จะถูกข้ามไม่บันทึก/ไม่ไล่กดปุ่มต่อ (ดู _record_page())
+        known_page_templates: set[frozenset[str]] = set()
 
         def _is_explorable(button) -> bool:
             """W24: เมนู/nav item (is_nav_menu_item — ดู extractor.py::isNavMenuItem)
@@ -459,14 +508,47 @@ async def crawl_site(
                 return True
             return is_crawl_safe(label, cmd_type="click")
 
-        async def _record_page(page_info: PageInfo, nav_links: list[dict]) -> None:
+        async def _record_page(
+            page_info: PageInfo, nav_links: list[dict], check_page_template: bool = True,
+        ) -> None:
             """describe + เก็บเข้า pages + ยิง progress event + ไล่กดปุ่มปลอดภัย + ต่อคิว
             nav link ที่ปลอดภัย — logic ร่วมที่ใช้ทั้งกับหน้าที่เจอจาก BFS ปกติ, หน้าหลัง
             login bootstrap, และหน้าที่เจอจากการไล่กดปุ่ม (ดู docstring หัวไฟล์) ไล่กดปุ่ม
             ของทุกหน้าที่บันทึกเสมอ ไม่ว่าจะเจอหน้านั้นจากทางไหน (nav link/ปุ่ม/login) —
             ไม่มี depth cap แล้ว (W16) การันตีว่าจบได้จริงด้วย visited-set +
-            effective_max_pages เท่านั้น"""
+            effective_max_pages เท่านั้น
+
+            W33: หน้าที่โครงสร้างตรงกับ template ที่เคยบันทึกไปแล้ว (ดู _page_template()) —
+            เช่น เจอ feed ที่มีลิงก์ไปคลิป Shorts/Reels คนละอันสิบๆ รายการ แต่ละคลิปเป็น URL
+            จริงต่างกัน (ไม่ถูกกันโดย visited-set) แต่ UI เหมือนกันทุกอย่าง — บันทึกแค่ตัวแทน
+            ตัวแรกที่เจอ (ถือว่า "กดเข้าดูแล้ว 1 รอบ") ตัวถัดๆ ไปข้ามไปเลย ไม่ describe (ประหยัด
+            LLM call) ไม่ไล่กดปุ่มต่อ (ผู้เรียก — ทั้ง main BFS loop และ _explore_buttons — จะ
+            ไปทำ item ถัดไปเองตามปกติอยู่แล้ว ไม่ต้องมี logic "กด back" แยกต่างหากตรงนี้เลย
+            เพราะ _explore_buttons() go_back()/goto(before_url) เสมอหลัง _record_page() คืน
+            ไม่ว่าจะทำอะไรข้างในก็ตาม)
+
+            *** เจอ false-positive จริงระหว่างทดสอบ 2 จุด แก้แล้ว: (1) หน้าที่ไม่มีปุ่ม/
+            ui_pattern เลยสักตัว (เช่นหน้าเปล่าๆ ที่มีแค่ข้อความ) ได้ template ที่ "เหมือนกัน
+            โดยบังเอิญ" กับหน้าเปล่าอื่นๆ ทั้งที่เนื้อหา/ความหมายต่างกันจริง (เช่น "Dashboard"
+            vs "Article Detail") — ไม่ใช่เคส Shorts/Reels ที่ UI ซับซ้อนพอจะเป็นสัญญาณจริง —
+            ต้องมีอย่างน้อย 1 ปุ่มหรือ 1 ui_pattern ถึงจะเอามาเทียบ dedup เลย (ดู has_signal)
+            (2) เส้นทาง _explore_buttons() (DFS-click) มีกลไก signature-cap ของตัวเองอยู่แล้ว
+            (W28/W29 — settings.site_learning_max_repeat_button_clicks ปรับได้) ถ้าให้
+            page-template dedup ทำงานที่นั่นด้วยจะไปทับ/ขัดกับเพดานที่ user ปรับตั้งใจไว้ (เช่น
+            ตั้งเพดานไว้ 2 ครั้ง แต่ template dedup ตัดจบไปตั้งแต่ครั้งที่ 1) — พารามิเตอร์
+            check_page_template=False ให้ _explore_buttons() ปิด layer นี้เฉพาะเส้นทางของ
+            ตัวเอง (ยังคงบันทึก template นี้ไว้ให้เส้นทาง BFS ใช้เทียบต่อได้ปกติ แค่ไม่ตัดสินใจ
+            ข้ามด้วยตัวเอง) ***"""
             nonlocal estimated_total
+            template = _page_template(page_info)
+            has_template_signal = bool(page_info.buttons) or bool(page_info.ui_patterns)
+            if check_page_template and has_template_signal and template in known_page_templates:
+                if on_progress:
+                    await on_progress({"kind": "page_template_skipped", "url": page_info.url})
+                return
+            if has_template_signal:
+                known_page_templates.add(template)
+
             page_info.name, page_info.description = await describe_page(
                 client, model, resolved_provider, page_info,
             )
@@ -580,7 +662,11 @@ async def crawl_site(
                         visited.add(after_url)
                         await _reveal_dynamic_content(page)
                         new_page_info, new_nav_links = await extract_page(page)
-                        await _record_page(new_page_info, new_nav_links)
+                        # W33: ปิด page-template dedup เฉพาะเส้นทางนี้ (DFS-click) — มี
+                        # explored_button_signatures (W28/W29) เป็นกลไก dedup ของตัวเอง
+                        # อยู่แล้วที่ปรับเพดานได้ผ่าน settings ไม่อยากให้ template dedup มา
+                        # ทับ/ขัดเพดานที่ user ตั้งใจไว้ (ดู docstring ของ _record_page())
+                        await _record_page(new_page_info, new_nav_links, check_page_template=False)
 
                     try:
                         await page.go_back(timeout=8000)
