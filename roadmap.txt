@@ -2204,6 +2204,74 @@
            `pytest -q` เต็ม suite ยืนยัน: 503 เคสผ่าน (ไม่นับ test_site_learning_crawler.py
            เคสเดิมที่ fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ — ดู W24)
 
+  [x] W30/W31/W32  General task agent (core/orchestrator.py): กันวนลูปกดปุ่มเดิมซ้ำๆ —
+           เสร็จแล้ว (2026-07-24)
+           user ขอ 4 กลไก (Action Masking, Max Repeat Limit บังคับ action อื่นแทนแบบ
+           RL-style, ส่ง Action History เข้า state input, UI Page Classification) ตาม
+           ตัวอย่างที่เจอบน Shorts/Reels — สอบถามก่อนว่าหมายถึง crawler.py (W24-W29 ที่
+           เพิ่งแก้ไปเมื่อกี้) หรือ agent ทั่วไปที่รัน task จริงของ user (core/
+           orchestrator.py — มี "โมเดลเลือก action จาก state" จริงๆ ตามที่คำอธิบายใช้ศัพท์
+           ตรงกับ) — user ยืนยันว่าหมายถึงตัวหลัง
+
+           ระหว่างสำรวจโค้ดเจอว่ามี exploratory branch เก่า (คนละสายกับ W-numbering ปัจจุบัน
+           ของ branch นี้ ชื่อ W21-plan-matching ใน reflog) ที่เคยแก้ 2 เรื่องที่ตรงกับข้อ 4
+           (UI Page Classification) ไปแล้วตั้งแต่ 2026-07-21 แต่ไม่เคยถูก merge เข้ามาใน
+           branch ปัจจุบันเลย (commit ยังอยู่ใน object database, กู้คืนได้ผ่าน git hash
+           ตรงๆ) — ตรวจสอบเนื้อหาแล้วนำมาปรับใช้กับโค้ดปัจจุบัน (rename จาก W23/W24 เดิมของ
+           สาย นั้น เป็น W30 กันชนกับ W23/W24 ที่ branch นี้ใช้ไปแล้วกับ Website Learning)
+           แทนที่จะเขียนใหม่ตั้งแต่ต้น:
+
+           W30 (กู้คืน+ปรับใช้): page.url ไม่เคยถูกโชว์เป็นข้อความชัดๆ ให้ LLM เห็นเลย มีแค่
+           indexed elements list — เพิ่ม current_url เข้า llm.py::_build_user_turn_text()
+           (thread ผ่าน next_action/next_action_groq/next_action_gemini ทั้ง 3 ตัว) อ่านจาก
+           page.url สดทุก step + เพิ่มการเทียบ URL ก่อน/หลัง execute() ใน orchestrator.py —
+           action ที่ไม่ได้ตั้งใจ navigate เอง (ไม่ใช่ goto/switch_tab/go_back) แต่ URL
+           เปลี่ยนไปเอง (เช่น click ธรรมดาที่มี redirect ซ่อนอยู่) จะแนบคำเตือนต่อท้าย
+           tool_result ให้เห็นชัดๆ ว่า "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" + เพิ่มกติกาใหม่
+           ใน SYSTEM_PROMPT ("Action Trap" guard) บอกให้ยึด URL+elements ปัจจุบันเป็นความจริง
+           ล่าสุดเสมอ ห้ามอ้างอิง state จาก step ก่อนหน้า
+
+           W31 (ใหม่ — ตอบข้อ "Max Repeat Limit... Force Action อื่นทันที"): loop-detection
+           guard เดิม (_MAX_CONSECUTIVE_IDENTICAL_ACTIONS คาบ 1 จาก W5[A], คาบ 2-4 จาก
+           2026-07-13/15) พอ trigger แล้วจบ task ทันที (success=false) — เปลี่ยนเป็นบังคับทำ
+           recovery action ก่อน (go_back ก่อนเสมอ แล้ว scroll ถ้ายังวนซ้ำอีกหลังจากนั้น — ดู
+           _force_loop_recovery()/_LOOP_RECOVERY_ACTIONS) โดยไม่ผ่านการตัดสินใจของ LLM รอบ
+           นั้นเลย ให้โอกาส agent กู้สถานการณ์เองจาก state ใหม่ก่อน มีเพดาน
+           _MAX_FORCED_LOOP_RECOVERIES=2 (escape valve เดียวกับ guard อื่นๆ ในไฟล์ — กัน
+           force ไม่รู้จบถ้า forcing เองก็ไม่ช่วยอะไร ค่อยยอมแพ้จริง) ผลลัพธ์ของ recovery
+           action ป้อนกลับเข้า messages ผ่าน tool_use_id ของ action ที่ถูกบล็อกไปพร้อม
+           อธิบายตรงๆ ว่าเกิดอะไรขึ้น (ไม่ใช่แกล้งทำเป็นว่า action เดิมสำเร็จ) + เพิ่มกติกาใน
+           SYSTEM_PROMPT ให้ตีความข้อความนี้แล้วเปลี่ยนไปทำ action ที่ต่างจริงๆ
+
+           W32 (ใหม่ — ตอบข้อ "ส่ง Action History เข้า State Input"): memory.py เพิ่ม
+           ShortTermMemory.recent_actions_summary(n=5) — สรุป action ล่าสุด (ทั้งสำเร็จและ
+           ล้มเหลว) แยกจาก failed_actions_summary() เดิมที่กรองเฉพาะ fail (ปุ่มที่กดสำเร็จ
+           ซ้ำหลายครั้งโดยไม่มีความคืบหน้าจริงจะไม่โผล่ใน failed_actions_summary() เลยเพราะ
+           ไม่เคย fail สักครั้ง) มีค่าเพิ่มเติมจาก raw conversation history เดิมเพราะไม่เคย
+           ถูกตัดทิ้งจาก context compaction (W7[A]/W22 — step เก่าที่ถูกบีบอัดไปแล้วเหลือแค่
+           digest สั้นๆ ไม่ครบเหมือน ShortTermMemory) ส่งเข้า _build_user_turn_text() เป็น
+           section ใหม่ "Action ล่าสุดที่คุณเพิ่งทำไป"
+
+           unit test ใหม่: 4 เคสตรงๆ กับ _build_user_turn_text() (current_url/
+           action_history_context โผล่/ไม่โผล่ตามเงื่อนไข) + 5 เคสกับ
+           ShortTermMemory.recent_actions_summary() (ว่างเปล่าเมื่อไม่มี history, รวม action
+           ที่สำเร็จด้วยต่างจาก failed_actions_summary(), มี step number, cap ที่ n เก็บล่าสุด,
+           เรียงลำดับถูกตามที่บันทึกจริง) + 6 เคส integration ผ่าน orchestrator.run_task()
+           (current_url ไหลเข้า next_action() จริงจาก page.url สด, คำเตือน URL เปลี่ยนไปเอง
+           แนบเข้า tool_result จริงเมื่อ action ไม่ใช่ goto/switch_tab/go_back, ไม่แนบซ้ำตอน
+           เป็น goto, action_history_context ไหลเข้า next_action() ถูกต้องทุก step) + แก้ไข
+           เทสต์เดิม 15+ เคสที่ตรวจ positional args ของ next_action()/next_action_groq()/
+           next_action_gemini() ตรงๆ (index ขยับหมดเพราะเพิ่ม 2 parameter ใหม่ท้ายสุด) และ
+           เทสต์ loop-detection guard 5 เคสที่ตรวจพฤติกรรม "abort ทันที" เดิม — เปลี่ยนเป็น
+           ตรวจ "บังคับ recovery ก่อน" (2 เคสใหม่แยกกรณี recovers-then-succeeds กับ
+           exhausts-then-aborts ที่คำนวณ trace ตัวเลขแม่นตรงๆ) และ 3 เคส cycle-period ที่ใช้
+           itertools.cycle() ให้ mock วนไม่รู้จบแล้วตรวจแบบ behavioral (จบด้วย fail + ข้อความ
+           บอกคาบถูกต้อง + มีการบังคับ go_back จริง + ไม่วนจนหมด max_steps) แทน exact-count
+           เพราะ forced action เองก็เข้าไปอยู่ใน recent_actions window ที่ใช้ตรวจจับคาบต่อ
+           ด้วย ทำให้ trace ตัวเลขเป๊ะๆ ซับซ้อนเกินจะ maintain ได้จริง — รันจริง `pytest -q`
+           เต็ม suite ยืนยัน: 517 เคสผ่าน (ไม่นับ test_site_learning_crawler.py เคสเดิมที่
+           fail อยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

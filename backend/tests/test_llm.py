@@ -695,3 +695,34 @@ def test_build_user_turn_text_includes_vision_section_when_provided():
 
     assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
     assert "เห็น cookie banner บังปุ่ม Login อยู่" in result
+
+
+def test_build_user_turn_text_omits_current_url_section_when_empty():
+    result = llm._build_user_turn_text("goal", "page", current_url="")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_current_url_before_page_text():
+    """W30: URL ต้องโผล่ก่อนส่วน 'หน้าเว็บปัจจุบัน' (indexed elements) เสมอ ให้โมเดลเห็น
+    บริบทว่ากำลังอยู่หน้าไหนก่อนจะเห็นรายละเอียด element"""
+    result = llm._build_user_turn_text("goal", "page-text", current_url="https://example.com/cart")
+
+    assert "https://example.com/cart" in result
+    assert result.index("https://example.com/cart") < result.index("หน้าเว็บปัจจุบัน:\npage-text")
+
+
+def test_build_user_turn_text_omits_action_history_section_when_empty():
+    result = llm._build_user_turn_text("goal", "page", action_history_context="")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_action_history_section_when_provided():
+    result = llm._build_user_turn_text(
+        "goal", "page", action_history_context="- step 3: {'type': 'click'} -> [OK]",
+    )
+
+    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert "step 3" in result
+    assert "Action ล่าสุดที่คุณเพิ่งทำไป" in result

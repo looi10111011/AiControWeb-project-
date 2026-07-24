@@ -86,6 +86,17 @@ _MAX_CYCLE_PERIOD = 4
 _MIN_CYCLE_REPEATS = 2  # ทุกคาบ (2 ขึ้นไป) ต้องเห็นครบกี่รอบถึงจะถือว่าติด loop
 _MAX_CYCLE_WINDOW = _MAX_CYCLE_PERIOD * _MIN_CYCLE_REPEATS
 
+# W31: ทั้ง 2 guard ด้านบน (คาบ 1 และคาบ 2-4) เดิมพอ trigger แล้วจบ task ทันที
+# (success=False) — user ขอให้ลองบังคับทำ action อื่นแทนก่อน (เช่น scroll/go_back) ให้
+# โอกาส agent กู้สถานการณ์เอง แทนที่จะยอมแพ้ทันทีที่เจอ loop ครั้งแรก — เลือก go_back เป็น
+# ตัวแรกเสมอ (ทางที่น่าเชื่อถือที่สุดที่จะพา agent ออกจาก sub-flow ที่ติดอยู่ เช่น Shorts/
+# Reels viewer หรือ modal ที่วนเปิด-ปิดซ้ำ) ถ้ายังวนซ้ำอีกหลังจากนั้น (บังคับ go_back ไปแล้ว
+# ก็ยังไม่หลุด) ลองครั้งที่ 2 ด้วย scroll แทน (เผื่อเป็นกรณี "มีตัวเลือกอื่นอยู่นอกจอ ไม่ใช่
+# ติดอยู่ใน sub-flow") — เกินจำนวนนี้แล้วยังวนซ้ำไม่หายค่อยยอมแพ้จริง (escape valve เดียวกับ
+# guard อื่นๆ ในไฟล์นี้ กัน force ไม่รู้จบถ้า forcing เองก็ไม่ช่วยอะไร)
+_MAX_FORCED_LOOP_RECOVERIES = 2
+_LOOP_RECOVERY_ACTIONS: list[dict] = [{"type": "go_back"}, {"type": "scroll", "direction": "down"}]
+
 
 def _is_repeating_cycle(window: list[dict], period: int) -> bool:
     """เช็คว่า window (ต้องยาวเท่ากับ period * _MIN_CYCLE_REPEATS พอดี) เป็นการวนซ้ำ
@@ -715,6 +726,59 @@ class Orchestrator:
             if on_event is not None:
                 await on_event(event)
 
+        async def _force_loop_recovery(reason: str) -> bool:
+            """W31: เรียกตอน loop-detection guard (คาบ 1 หรือคาบ 2-4 — ดู
+            _MAX_CONSECUTIVE_IDENTICAL_ACTIONS/_detect_repeating_cycle_period ด้านบนสุด
+            ของไฟล์) trigger — บังคับทำ recovery action (go_back ก่อน แล้ว scroll ถ้ายัง
+            ไม่หาย — ดู _LOOP_RECOVERY_ACTIONS) แทน action ที่ agent เพิ่งขอไป โดยไม่ผ่าน
+            การตัดสินใจของ LLM รอบนี้เลย แทนที่จะจบ task ทันทีเหมือนเดิม — คืน True ถ้า
+            บังคับสำเร็จ (caller ควร continue loop ต่อ ให้ agent ลองใหม่จาก state หลัง
+            recovery) คืน False ถ้าเกิน _MAX_FORCED_LOOP_RECOVERIES แล้ว (caller ควร
+            fallback ไปจบ task แบบเดิม — escape valve กัน force ไม่รู้จบถ้า forcing เองก็
+            ไม่ช่วยอะไร)
+
+            ผลลัพธ์ของ recovery action ถูกป้อนกลับเข้า messages ผ่าน tool_use_id ของ
+            action เดิมที่ agent เพิ่งขอ (ต้องตอบทุก tool_use ด้วย tool_result เสมอ ไม่งั้น
+            Anthropic/Groq API จะ error) พร้อมอธิบายตรงๆ ว่าเกิดอะไรขึ้น ไม่ใช่แกล้งทำเป็น
+            ว่า action เดิมที่ agent ขอไปสำเร็จ"""
+            nonlocal forced_recovery_count, messages, last_action_cmd, consecutive_repeat_count, steps_taken
+            if forced_recovery_count >= _MAX_FORCED_LOOP_RECOVERIES:
+                return False
+            forced_cmd = _LOOP_RECOVERY_ACTIONS[min(forced_recovery_count, len(_LOOP_RECOVERY_ACTIONS) - 1)]
+            forced_recovery_count += 1
+            forced_result: ActionResult = await execute(
+                page, forced_cmd, ask_user_func=ask_user_func, label="",
+                manual_guidance="", allowed_domains=effective_allowed_domains,
+            )
+            steps_taken += 1
+            self.memory.record({
+                "step": steps_taken,
+                "cmd": forced_cmd,
+                "label": "[ระบบบังคับ - กันวนซ้ำ]",
+                "result": str(forced_result),
+                "success": forced_result.success,
+                "tokens": _tokens_dict(llm.TokenUsage()),
+            })
+            await _emit({
+                "kind": "step", "step": steps_taken, "cmd": forced_cmd,
+                "label": "[ระบบบังคับ - กันวนซ้ำ]",
+                "result": str(forced_result), "success": forced_result.success,
+            })
+            forced_text = (
+                f"[ระบบตรวจพบการวนซ้ำ: {reason} — ระบบจึงบังคับทำ {forced_cmd} แทน action ที่"
+                f"คุณเพิ่งขอโดยอัตโนมัติ (ครั้งที่ {forced_recovery_count}/"
+                f"{_MAX_FORCED_LOOP_RECOVERIES}) ผลลัพธ์: {forced_result}] ตรวจสอบ URL ปัจจุบัน"
+                "และ indexed elements ของหน้าเว็บใหม่ทั้งหมด แล้วเลือก action ที่ต่างจากที่วน"
+                "ซ้ำมาก่อนหน้านี้จริงๆ"
+            )
+            messages = append_tool_result(messages, tool_use_id, forced_text)
+            last_action_cmd = forced_cmd
+            consecutive_repeat_count = 1
+            recent_actions.append(forced_cmd)
+            if len(recent_actions) > _MAX_CYCLE_WINDOW:
+                recent_actions.pop(0)
+            return True
+
         # W10[A]: owns_browser=True (browser ไม่ได้ถูกส่งมา, ไม่ใช่โหมด user browser, ไม่ใช่
         # โหมด session-managed) = พฤติกรรมเดิมของ W1-W9 เปิด/ปิด playwright + browser
         # process เองทั้งหมด — owns_browser=False (ยืมมาจาก BrowserPool) เปิดแค่ context
@@ -793,6 +857,10 @@ class Orchestrator:
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
+        # W31: จำนวนครั้งที่บังคับทำ recovery action (go_back/scroll) แทน action ที่ agent
+        # เพิ่งขอไปแล้ว เพราะตรวจพบว่ากำลังวนซ้ำ — ดู _force_loop_recovery()/
+        # _MAX_FORCED_LOOP_RECOVERIES ด้านบนสุดของไฟล์
+        forced_recovery_count = 0
         # W7[A] (context compaction) / W22 (ทุก provider แล้ว ไม่ใช่แค่ Gemini):
         # [(absolute_step_number, len(messages) หลังจบ step นั้น), ...] — ใช้หา cut
         # point ที่ปลอดภัย (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
@@ -964,6 +1032,10 @@ class Orchestrator:
                 # ทุก step เหมือน manual_context — ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย
                 memory_context = self.memory.failed_actions_summary()
 
+                # W32: action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) แยกจาก memory_context
+                # ด้านบนที่กรองเฉพาะ fail — ดู ShortTermMemory.recent_actions_summary()
+                action_history_context = self.memory.recent_actions_summary()
+
                 # W9[A]: ใช้ vision_context ของรอบนี้แล้วเคลียร์ทิ้งทันที (one-shot —
                 # ดู pending_vision_context ด้านบนสุดของ run_task())
                 vision_context, pending_vision_context = pending_vision_context, ""
@@ -971,7 +1043,7 @@ class Orchestrator:
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
                     client, model, effective_goal, page_text, messages,
                     manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context,
+                    site_manual_context, page.url, action_history_context,
                 )
                 total_usage += usage
                 if verbose:
@@ -1089,11 +1161,19 @@ class Orchestrator:
                     consecutive_repeat_count = 1
 
                 if consecutive_repeat_count >= _MAX_CONSECUTIVE_IDENTICAL_ACTIONS:
-                    success = False
-                    final_message = (
-                        f"หยุด task: agent สั่ง action เดิมซ้ำติดกัน "
-                        f"{consecutive_repeat_count} ครั้ง ({tool_input}) โดยไม่มีความคืบหน้า"
+                    loop_reason = (
+                        f"agent สั่ง action เดิมซ้ำติดกัน {consecutive_repeat_count} ครั้ง "
+                        f"({tool_input}) โดยไม่มีความคืบหน้า"
                     )
+                    # W31: บังคับ recovery action แทนการจบ task ทันที ให้โอกาส agent กู้
+                    # สถานการณ์เอง (ดู _force_loop_recovery() — คืน False ถ้าเกิน
+                    # _MAX_FORCED_LOOP_RECOVERIES แล้ว ค่อย fallback ไปจบ task แบบเดิม)
+                    if await _force_loop_recovery(loop_reason):
+                        if verbose:
+                            print(f"[loop-detected] {loop_reason} -> บังคับ recovery action แทน", flush=True)
+                        continue
+                    success = False
+                    final_message = f"หยุด task: {loop_reason} (บังคับ recovery action ไปแล้วแต่ยังไม่หาย)"
                     if verbose:
                         print(f"[loop-detected] {final_message}", flush=True)
                     break
@@ -1111,12 +1191,14 @@ class Orchestrator:
 
                 detected_period = _detect_repeating_cycle_period(recent_actions)
                 if detected_period is not None:
-                    success = False
                     cycle_desc = " -> ".join(str(a) for a in recent_actions[-detected_period:])
-                    final_message = (
-                        f"หยุด task: agent วน action ซ้ำเป็นคาบ {detected_period} "
-                        f"({cycle_desc}) โดยไม่มีความคืบหน้า"
-                    )
+                    loop_reason = f"agent วน action ซ้ำเป็นคาบ {detected_period} ({cycle_desc}) โดยไม่มีความคืบหน้า"
+                    if await _force_loop_recovery(loop_reason):
+                        if verbose:
+                            print(f"[loop-detected] {loop_reason} -> บังคับ recovery action แทน", flush=True)
+                        continue
+                    success = False
+                    final_message = f"หยุด task: {loop_reason} (บังคับ recovery action ไปแล้วแต่ยังไม่หาย)"
                     if verbose:
                         print(f"[loop-detected] {final_message}", flush=True)
                     break
@@ -1145,6 +1227,12 @@ class Orchestrator:
                     if permission_query else []
                 )
                 manual_permission_guidance = "\n".join(f"- {c}" for c in permission_chunks)
+
+                # W30: เก็บ URL ก่อน dispatch action ไว้เทียบหลัง action จบ (ดู
+                # url_changed_unexpectedly ด้านล่าง) — เฉพาะ action ที่ "ไม่ได้ตั้งใจจะ
+                # navigate" เอง (goto/switch_tab/go_back คือจุดประสงค์หลักคือเปลี่ยนหน้า
+                # อยู่แล้ว ไม่ต้องเตือนซ้ำ)
+                url_before_action = page.url
 
                 result: ActionResult = await execute(
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
@@ -1216,7 +1304,24 @@ class Orchestrator:
                         if verbose:
                             print(f"  [vision-fallback] ล้มเหลว: {e}", flush=True)
 
-                messages = append_tool_result(messages, tool_use_id, str(result))
+                # W30: แจ้งเตือนชัดๆ ถ้าหน้าเว็บเปลี่ยนไปเองหลัง action ที่ไม่ได้ตั้งใจจะ
+                # navigate (เช่น click ธรรมดาที่ดันมี redirect/JS navigation ซ่อนอยู่) —
+                # user รายงานว่า agent บางครั้งดูเหมือนตัดสินใจ step ถัดไปจาก state เก่า
+                # (คิดว่ายังอยู่หน้าเดิม) ทั้งที่จริงๆ หน้าเปลี่ยนไปแล้ว — get_snapshot()
+                # ของ step ถัดไปอ่านสดจาก page จริงเสมออยู่แล้ว (ไม่มี cache ทางโค้ด) แต่
+                # ไม่เคยมีสัญญาณชัดๆ บอกโมเดลตรงๆ ว่า "หน้าเปลี่ยนไปแล้วนะ อย่าเพิ่งเชื่อ
+                # แผนเดิม" มาก่อน — เช็คแม้ result.success=True ด้วย (การ "สำเร็จ" ที่แอบ
+                # พาไปหน้าอื่นโดยไม่ตั้งใจอันตรายกว่า fail ธรรมดา เพราะโมเดลอาจไม่รู้ตัวว่า
+                # ต้อง re-evaluate) ไม่เช็คกับ goto/switch_tab/go_back เพราะ navigate คือ
+                # จุดประสงค์หลักของ action พวกนี้อยู่แล้ว ไม่ต้องเตือนซ้ำ
+                result_text = str(result)
+                if tool_input.get("type") not in ("goto", "switch_tab", "go_back") and page.url != url_before_action:
+                    result_text += (
+                        f"\n[หน้าเว็บเปลี่ยนไปเองหลัง action นี้: จาก {url_before_action} เป็น "
+                        f"{page.url} — แผนเดิมอาจไม่ตรงกับหน้าปัจจุบันแล้ว ตรวจสอบ indexed "
+                        "elements ของหน้าใหม่นี้ก่อนตัดสินใจ action ถัดไป]"
+                    )
+                messages = append_tool_result(messages, tool_use_id, result_text)
 
                 # W7[A] (context compaction) / W22 (ทุก provider): เก็บ boundary ของ
                 # step นี้ แล้วเช็คว่าต้องบีบอัดหรือยัง (ดูคอมเมนต์ยาวที่

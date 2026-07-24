@@ -72,6 +72,26 @@ class ShortTermMemory:
         lines += [f"- {h.get('cmd')} -> {h.get('result', '')}" for h in other[-max_items:]]
         return "\n".join(lines)
 
+    def recent_actions_summary(self, n: int = 5) -> str:
+        """W32: สรุป action ล่าสุด n ตัว (ไม่ว่าจะสำเร็จหรือ fail) เป็น bullet list สั้นๆ
+        — ป้อนกลับเข้า prompt ทุก step ให้โมเดลเห็นชัดๆ ว่า "ตัวเองเพิ่งทำอะไรไปบ้าง"
+        แทนที่จะต้องไล่อ่าน raw conversation history เอง (ซึ่งอาจถูกบีบอัดไปแล้วจาก
+        context compaction — ดู orchestrator.py W7[A]/W22 — history ที่ถูกตัดออกไปจะ
+        เหลือแค่ digest สั้นๆ ไม่ครบเหมือนของจริง แต่ ShortTermMemory ตัวนี้ไม่เคยถูกตัด
+        ทิ้งเลยตลอด task จึงสมบูรณ์กว่าเสมอไม่ว่า context จะถูกบีบอัดไปกี่รอบแล้วก็ตาม)
+
+        ต่างจาก failed_actions_summary() ตรงที่รวมทั้ง action ที่สำเร็จด้วย ไม่ใช่แค่ที่
+        fail — เพราะ "เพิ่งทำอะไรไปบ้าง" ต้องเห็น action ที่สำเร็จด้วย ไม่งั้นโมเดลอาจเข้าใจ
+        ผิดว่ายังไม่เคยลอง action ที่จริงๆ ทำไปแล้วและได้ผลลัพธ์ที่ต้องการแล้ว (เช่น กด
+        "Next" ไปแล้วสำเร็จ 3 ครั้งติดกัน แต่ไม่มีความคืบหน้าจริงต่อ goal เพราะแค่วนอยู่ใน
+        หมวดเดิม — เห็นแค่ failed_actions_summary() เปล่าๆ จะไม่มีทางรู้เลยว่ากำลังวนซ้ำ)"""
+        recent = self._history[-n:]
+        if not recent:
+            return ""
+        return "\n".join(
+            f"- step {h.get('step', '?')}: {h.get('cmd')} -> {h.get('result', '')}" for h in recent
+        )
+
 
 class LongTermMemory:
     """Nice-to-have — ตัดก่อนถ้าเวลาไม่พอ (ดู roadmap.txt ข้อควรระวัง #4)."""

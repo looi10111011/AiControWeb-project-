@@ -144,6 +144,20 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   เหตุผลที่ทำต่อไม่ได้ให้ user เข้าใจชัดเจน — ต่างจาก action ที่ล้มเหลวเพราะเหตุผลทาง
   เทคนิค (เช่น timeout/index ผิด) ที่ยังลองทางอื่นได้ตามปกติ การถูกปฏิเสธคือคำตัดสินใจ
   ของมนุษย์ ไม่ใช่ปัญหาทางเทคนิคที่แก้ด้วยการลองซ้ำ
+- ก่อนเลือก action ทุกครั้ง (โดยเฉพาะ click/fill/select/check) ให้ยึด "URL ปัจจุบันจริง
+  ของหน้าเว็บ" และ indexed elements ที่แนบมาในข้อความนี้เท่านั้นเป็นความจริงล่าสุด ห้าม
+  อ้างอิง index/สมมติสถานะจากหน้าเว็บของ step ก่อนหน้าเด็ดขาด แม้จะดูคล้ายกับที่วางแผนไว้
+  ก็ตาม (นี่คือ "Action Trap" — ทำ action ต่อจากแผนเดิมทั้งที่หน้าเว็บเปลี่ยนไปแล้วจริง) —
+  ถ้าเห็นข้อความ "[หน้าเว็บเปลี่ยนไปเองหลัง action นี้: จาก ... เป็น ...]" ต่อท้ายผลลัพธ์
+  action ก่อนหน้า ต้องตรวจสอบ URL ปัจจุบันและ indexed elements ของหน้าใหม่นี้ใหม่ทั้งหมด
+  ก่อนตัดสินใจ action ถัดไปเสมอ ห้ามเดินหน้าตามแผนเดิมที่ร่างไว้ก่อนหน้าเปลี่ยนต่อ
+- ถ้าเห็นข้อความ "[ระบบตรวจพบการวนซ้ำ: ... ระบบจึงบังคับทำ ... แทน action ที่คุณเพิ่งขอ
+  โดยอัตโนมัติ ...]" ต่อท้ายผลลัพธ์ action ก่อนหน้า แปลว่าระบบเพิ่งบังคับทำ action อื่น
+  แทน action ที่คุณเพิ่งขอไปจริงๆ (ไม่ใช่ action เดิมของคุณที่สำเร็จ) — ห้ามเลือก action
+  ประเภทเดิม/element เดิมที่ทำให้ติด loop ซ้ำอีกเด็ดขาดในรอบถัดไป ให้ตรวจสอบ URL ปัจจุบัน
+  และ indexed elements ของหน้าใหม่หลัง recovery นี้ก่อน แล้วเลือก action ที่ต่างออกไป
+  จริงๆ (เช่น element อื่นที่ยังไม่เคยลอง) หรือถ้าเห็นชัดว่าไม่มีทางไปต่อจริงๆ ให้
+  finish_task พร้อมอธิบายเหตุผล
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -176,8 +190,21 @@ def _build_user_turn_text(
     long_term_context: str = "",
     vision_context: str = "",
     site_manual_context: str = "",
+    current_url: str = "",
+    action_history_context: str = "",
 ) -> str:
-    text = f"Goal: {goal}\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
+    text = f"Goal: {goal}"
+    # W30 (recovered from an earlier exploratory branch — ดู roadmap.txt): เพิ่มหลัง user
+    # รายงานว่า agent บางครั้งดูเหมือนตัดสินใจจาก state เก่า (เช่นหน้าเว็บเปลี่ยนไปเองระหว่าง
+    # ทาง แต่ยังพูดถึงหน้าเดิม) — get_snapshot() ที่ orchestrator.py เรียกทุก step อยู่แล้ว
+    # เป็นการอ่านสด (live) จาก page จริงเสมออยู่แล้ว ไม่มี cache ทางโค้ด แต่ก่อนหน้านี้
+    # page.url ไม่เคยถูกโชว์เป็นข้อความชัดๆ ให้ LLM เห็นเลย (มีแค่ indexed elements list) —
+    # โมเดลเลยต้องเดาว่า "นี่หน้าเดิมหรือหน้าใหม่" จาก element ที่หน้าตาอาจคล้ายกันได้ ใส่
+    # URL ปัจจุบันจริงตรงๆ ทุก step (อ่านจาก page.url สดๆ ไม่ใช่ค่าที่จำมาจาก step ก่อน) ให้
+    # หลักฐานชัดเจนกว่าการเดาจาก element เพียงอย่างเดียว
+    if current_url:
+        text += f"\n\nURL ปัจจุบันจริงของหน้าเว็บ (อ่านสดจาก browser ทุก step): {current_url}"
+    text += f"\n\nหน้าเว็บปัจจุบัน:\n{page_text}"
     # W14: site_manual_context มาจากคู่มือที่ crawl มาอัตโนมัติ (backend/app/site_learning/
     # — คนละระบบสมบูรณ์จาก manual_context ด้านล่างที่มาจากคู่มือที่ user อัปโหลดเอง/ingest
     # เข้า ChromaDB) แยก section ให้ชัดเจนไม่ปนกัน เพื่อให้ debug ง่ายว่าข้อมูลมาจากไหน —
@@ -201,6 +228,17 @@ def _build_user_turn_text(
             "ทางอื่นหรือยุติงานพร้อมอธิบายเหตุผล — ส่วน Action อื่นที่ล้มเหลวเพราะเหตุผลทาง"
             "เทคนิค ให้ลองทางอื่นแทนได้ตามปกติ):\n"
             f"{memory_context}"
+        )
+    # W32: action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) แยกจาก memory_context ด้านบนที่
+    # กรองเฉพาะ fail — ให้เห็นชัดๆ ว่า "ตัวเองเพิ่งทำอะไรไปบ้าง" กันเลือก action เดิมซ้ำ
+    # (เช่น กดปุ่มเดิมสำเร็จซ้ำหลายครั้งแต่ไม่มีความคืบหน้าจริงต่อ goal — memory_context
+    # เปล่าๆ เพราะไม่มี action ไหน fail เลยสักครั้ง)
+    if action_history_context:
+        text += (
+            "\n\nAction ล่าสุดที่คุณเพิ่งทำไป (เรียงตามลำดับ ไม่ว่าจะสำเร็จหรือล้มเหลว) — "
+            "ถ้าเห็นว่ากำลังจะเลือก action ซ้ำ/คล้ายกับที่เพิ่งทำไปโดยไม่มีความคืบหน้าใหม่ "
+            "จริงต่อ goal ให้เปลี่ยนไปทำ action ที่ต่างออกไปแทน:\n"
+            f"{action_history_context}"
         )
     if long_term_context:
         text += (
@@ -316,6 +354,8 @@ async def next_action(
     long_term_context: str = "",
     vision_context: str = "",
     site_manual_context: str = "",
+    current_url: str = "",
+    action_history_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -343,13 +383,19 @@ async def next_action(
     backend/app/site_learning/) — orchestrator ดึงมาครั้งเดียวตอนเริ่ม task (ไม่ใช่ทุก
     step แบบ manual_context เพราะไม่ได้ผูกกับ page state ปัจจุบัน) ว่างเปล่าถ้าโดเมนนี้
     ยังไม่เคยถูกเรียนรู้/สร้าง manual ไว้
+
+    current_url (W30): page.url จริงตอน perceive step นี้ (orchestrator.py ดึงมาให้ทุก
+    step เหมือน page_text — ดู _build_user_turn_text() สำหรับเหตุผลที่เพิ่ม)
+
+    action_history_context (W32): action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) จาก
+    ShortTermMemory.recent_actions_summary() — ต่างจาก memory_context ที่กรองเฉพาะ fail
     """
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context,
+                site_manual_context, current_url, action_history_context,
             ),
         }
     ]
@@ -406,6 +452,8 @@ async def next_action_groq(
     long_term_context: str = "",
     vision_context: str = "",
     site_manual_context: str = "",
+    current_url: str = "",
+    action_history_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -417,9 +465,9 @@ async def next_action_groq(
     usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
-    manual_context/memory_context/long_term_context/vision_context: ดู next_action() —
-    เหมือนกัน (vision_context จะเป็น "" เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน
-    scope แค่ provider=gemini)
+    manual_context/memory_context/long_term_context/vision_context/current_url/
+    action_history_context: ดู next_action() — เหมือนกัน (vision_context จะเป็น ""
+    เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน scope แค่ provider=gemini)
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -429,7 +477,7 @@ async def next_action_groq(
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context,
+                site_manual_context, current_url, action_history_context,
             ),
         }
     ]
@@ -516,6 +564,8 @@ async def next_action_gemini(
     long_term_context: str = "",
     vision_context: str = "",
     site_manual_context: str = "",
+    current_url: str = "",
+    action_history_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -527,9 +577,10 @@ async def next_action_gemini(
     จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
-    manual_context/memory_context/long_term_context/vision_context: ดู next_action() —
-    เหมือนกัน (vision_context (W9[A]) จะมีค่าจริงเฉพาะ provider นี้ — orchestrator.py
-    ยิง vision fallback (llm.describe_screenshot()) scope แค่ Gemini เท่านั้นตอนนี้)
+    manual_context/memory_context/long_term_context/vision_context/current_url/
+    action_history_context: ดู next_action() — เหมือนกัน (vision_context (W9[A]) จะมี
+    ค่าจริงเฉพาะ provider นี้ — orchestrator.py ยิง vision fallback
+    (llm.describe_screenshot()) scope แค่ Gemini เท่านั้นตอนนี้)
     """
     gemini_model = client.GenerativeModel(
         model_name=model,
@@ -544,7 +595,7 @@ async def next_action_gemini(
             "parts": [{
                 "text": _build_user_turn_text(
                     goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context,
+                    site_manual_context, current_url, action_history_context,
                 )
             }],
         }
