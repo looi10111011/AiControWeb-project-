@@ -1,0 +1,4639 @@
+{
+  "website": "uitestingplayground.com",
+  "version": 5,
+  "generated_at": 1784804329.691488,
+  "pages": [
+    {
+      "name": "UI Test Automation Home",
+      "url": "http://uitestingplayground.com/home",
+      "description": "หน้าแรกของเว็บไซต์ UI Test Automation Playground ที่รวบรวมตัวอย่างและทรัพยากรสำหรับการทดสอบระบบ",
+      "menu_path": [
+        "UI Test Automation Home"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rubik's Cube",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "CC 4.0 BY-NC",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Row",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Description",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Dynamic ID",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Class Attribute",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(2) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Hidden Layers",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(3) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Load Delay",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(4) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[4]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div > div:nth-of-type(1)",
+          "item_count": 8
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Automation Playground",
+      "url": "http://uitestingplayground.com/",
+      "description": "หน้าแรกของเว็บไซต์รวมเครื่องมือและแบบฝึกหัดสำหรับการทดสอบระบบอัตโนมัติ",
+      "menu_path": [
+        "UI Test Automation Playground"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rubik's Cube",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "CC 4.0 BY-NC",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Row",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Description",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Dynamic ID",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Class Attribute",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(2) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Hidden Layers",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(3) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Load Delay",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(4) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[4]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div > div:nth-of-type(1)",
+          "item_count": 8
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Resources",
+      "url": "http://uitestingplayground.com/resources",
+      "description": "หน้ารวบรวมแหล่งข้อมูล ลิงก์ภายนอก และเอกสารที่เกี่ยวข้องกับการทดสอบระบบ UI",
+      "menu_path": [
+        "UI Test Resources"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "W3C",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(2) > li > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[2]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Test Pyramid",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(3) > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[3]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Where do our flaky tests come from?",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(3) > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[3]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > h4:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Learning",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "w3schools.com",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[1]/div[1]/ul[1]/li[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Community",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Ministry of Testing",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section > div > ul:nth-of-type(4) > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[1]/div[1]/ul[4]/li[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > ul:nth-of-type(4) > li:nth-of-type(1)",
+          "item_count": 5
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Dynamic ID Test",
+      "url": "http://uitestingplayground.com/dynamicid",
+      "description": "หน้ารวมปุ่มที่มีการสลับเปลี่ยนแปลงค่า ID ของ element ทุกครั้งที่โหลดหน้าเว็บใหม่เพื่อทดสอบระบบอัตโนมัติ",
+      "menu_path": [
+        "Dynamic ID Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button with Dynamic ID",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#b77fc00d-afd3-4fad-cff8-a5d3c61cd864",
+          "xpath": "//*[@id=\"b77fc00d-afd3-4fad-cff8-a5d3c61cd864\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Class Attribute Test Page",
+      "url": "http://uitestingplayground.com/classattr",
+      "description": "หน้านี้ใช้ทดสอบการหา Element ที่มีคลาส CSS เปลี่ยนแปลงหรือซับซ้อนในระบบอัตโนมัติ",
+      "menu_path": [
+        "Class Attribute Test Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.class1.btn-primary.btn-test",
+          "xpath": "/html/body[1]/section[1]/div[1]/button[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.class2.btn-success.btn-test",
+          "xpath": "/html/body[1]/section[1]/div[1]/button[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.class3.btn-warning.btn-test",
+          "xpath": "/html/body[1]/section[1]/div[1]/button[3]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > p:nth-of-type(1)",
+          "item_count": 3
+        },
+        {
+          "name": "Token",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > pre:nth-of-type(1) > code > span > span:nth-of-type(3) > span:nth-of-type(1)",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Hidden Layers Test",
+      "url": "http://uitestingplayground.com/hiddenlayers",
+      "description": "หน้าเว็บสำหรับทดสอบการทำงานของ Automation กับ Element ที่ถูกซ่อนอยู่หลัง Layer อื่น",
+      "menu_path": [
+        "Hidden Layers Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#greenButton",
+          "xpath": "//*[@id=\"greenButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Load Delay",
+      "url": "http://uitestingplayground.com/loaddelay",
+      "description": "หน้าทดสอบการรอโหลดปุ่มที่ต้องใช้เวลาแสดงผลบนหน้าจอ",
+      "menu_path": [
+        "Load Delay"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button Appearing After Delay",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.btn-primary",
+          "xpath": "/html/body[1]/section[1]/div[1]/button[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "AJAX Data Loading",
+      "url": "http://uitestingplayground.com/ajax",
+      "description": "ทดสอบการดึงข้อมูลและแสดงผลแบบ AJAX บนหน้าเว็บ",
+      "menu_path": [
+        "AJAX Data Loading"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button Triggering AJAX Request",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#ajaxButton",
+          "xpath": "//*[@id=\"ajaxButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Client Side Delay",
+      "url": "http://uitestingplayground.com/clientdelay",
+      "description": "หน้านี้มีปุ่มสำหรับทริกเกอร์การทำงานที่ต้องรอการประมวลผลฝั่งไคลเอนต์",
+      "menu_path": [
+        "Client Side Delay"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button Triggering Client Side Logic",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#ajaxButton",
+          "xpath": "//*[@id=\"ajaxButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Click Page",
+      "url": "http://uitestingplayground.com/click",
+      "description": "หน้าทดสอบการคลิกปุ่มที่จำลองพฤติกรรมเพิกเฉยต่อเหตุการณ์คลิกใน DOM",
+      "menu_path": [
+        "UI Test Click Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button That Ignores DOM Click Event",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#badButton",
+          "xpath": "//*[@id=\"badButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Text Input Test",
+      "url": "http://uitestingplayground.com/textinput",
+      "description": "หน้าทดสอบการเปลี่ยนชื่อปุ่มตามข้อความที่ผู้ใช้กรอกเข้ามา",
+      "menu_path": [
+        "Text Input Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button That Should Change it's Name Based on Input Value",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#updatingButton",
+          "xpath": "//*[@id=\"updatingButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "Set New Button Name",
+          "placeholder": "MyButton",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "#newButtonName"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Scrollbars Page",
+      "url": "http://uitestingplayground.com/scrollbars",
+      "description": "หน้ารวมตัวอย่างการทดสอบการเลื่อนแถบเลื่อน (Scrollbars) ในเว็บแอปพลิเคชัน",
+      "menu_path": [
+        "Scrollbars Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Hiding Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#hidingButton",
+          "xpath": "//*[@id=\"hidingButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [
+        {
+          "columns": [
+            "Hiding Button"
+          ],
+          "sortable": false,
+          "filterable": false,
+          "paginated": false,
+          "row_actions": [
+            "Hiding Button"
+          ]
+        }
+      ],
+      "ui_patterns": [
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Dynamic Table Test Page",
+      "url": "http://uitestingplayground.com/dynamictable",
+      "description": "หนี้สำหรับทดสอบการจัดการและดึงข้อมูลจากตารางแบบไดนามิกใน UI Testing Playground",
+      "menu_path": [
+        "Dynamic Table Test Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "WAI-ARIA table design pattern",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > p:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/p[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Cloudflare",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div:nth-of-type(2) > div > div > div:nth-of-type(2) > span:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/span[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Privacy",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.footer-text",
+          "xpath": "/html/body[1]/div[2]/div[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > div > div:nth-of-type(2) > div > span:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > div > div:nth-of-type(3) > div:nth-of-type(1)",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Verify Text Page",
+      "url": "http://uitestingplayground.com/verifytext",
+      "description": "หนี้สำหรับทดสอบการตรวจสอบข้อความบนหน้าเว็บโดยใช้ Automated Testing",
+      "menu_path": [
+        "Verify Text Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > p:nth-of-type(1)",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Progress Bar",
+      "url": "http://uitestingplayground.com/progressbar",
+      "description": "หน้าเว็บสำหรับทดสอบการทำงานของ Progress Bar ด้วยการคลิกปุ่ม Start และ Stop",
+      "menu_path": [
+        "Progress Bar"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Start",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#startButton",
+          "xpath": "//*[@id=\"startButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Stop",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#stopButton",
+          "xpath": "//*[@id=\"stopButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Visibility",
+      "url": "http://uitestingplayground.com/visibility",
+      "description": "หนทดสอบการมองเห็นของธาตตางๆ บนหนาเว็บดวย UI Test Automation Playground",
+      "menu_path": [
+        "UI Test Visibility"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Overlapped",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#overlappedButton",
+          "xpath": "//*[@id=\"overlappedButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [
+        {
+          "columns": [
+            "Hide",
+            "Removed",
+            "Zero Width",
+            "Overlapped"
+          ],
+          "sortable": false,
+          "filterable": false,
+          "paginated": false,
+          "row_actions": [
+            "Hide",
+            "Removed",
+            "Zero Width",
+            "Overlapped",
+            "Opacity 0",
+            "Visibility Hidden",
+            "Display None",
+            "Offscreen"
+          ]
+        }
+      ],
+      "ui_patterns": [
+        {
+          "name": "Visibility",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul:nth-of-type(2) > li:nth-of-type(1)",
+          "item_count": 3
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Hide",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "#hideButton",
+              "xpath": "//*[@id=\"hideButton\"]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > table > tbody > tr:nth-of-type(1) > td:nth-of-type(1)",
+          "item_count": 3
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Opacity 0",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "#transparentButton",
+              "xpath": "//*[@id=\"transparentButton\"]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Sample Application",
+      "url": "http://uitestingplayground.com/sampleapp",
+      "description": "หน้าเว็บตัวอย่างสำหรับการทดสอบระบบ UI ด้วยการเข้าสู่ระบบ",
+      "menu_path": [
+        "UI Test Sample Application"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Row",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > div:nth-of-type(2)",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Mouse Over Test",
+      "url": "http://uitestingplayground.com/mouseover",
+      "description": "หน้ารวมการทดสอบการใช้งานเมาส์ชี้ผ่านเพื่อแสดงผลลัพธ์",
+      "menu_path": [
+        "Mouse Over Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Click me",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "Click me",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > div:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Link Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "Link Button",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > div:nth-of-type(3) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Non-Breaking Space Test",
+      "url": "http://uitestingplayground.com/nbsp",
+      "description": "หน้าทดสอบการจัดการกับอักขระเว้นวรรคแบบไม่ตัดบรรทัด (NBSP) ของ UI Testing Playground",
+      "menu_path": [
+        "Non-Breaking Space Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "My Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.btn-primary",
+          "xpath": "/html/body[1]/section[1]/div[1]/button[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Overlapped Element Test",
+      "url": "http://uitestingplayground.com/overlapped",
+      "description": "หน้าเว็บสำหรับทดสอบการทำงานของระบบอัตโนมัติกับองค์ประกอบที่ซ้อนทับกัน",
+      "menu_path": [
+        "Overlapped Element Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "#id",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Shadow DOM Test",
+      "url": "http://uitestingplayground.com/shadowdom",
+      "description": "หน้าเว็บสำหรับทดสอบการทำงานของ Shadow DOM ภายใน UI Test Automation Playground",
+      "menu_path": [
+        "Shadow DOM Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Alerts Page",
+      "url": "http://uitestingplayground.com/alerts",
+      "description": "หน้ารวมปุ่มทดสอบการทำงานของ JavaScript alert รูปแบบต่างๆ สำหรับการฝึกอบรมการทดสอบอัตโนมัติ",
+      "menu_path": [
+        "UI Test Alerts Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Btn",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "button.btn.btn-primary",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "File Upload Page",
+      "url": "http://uitestingplayground.com/upload",
+      "description": "หน้าระบบทดสอบการอัปโหลดไฟล์สำหรับผู้ใช้งาน UI Testing Playground",
+      "menu_path": [
+        "File Upload Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Animation Testing Page",
+      "url": "http://uitestingplayground.com/animation",
+      "description": "หน้าเว็บสำหรับทดสอบการทำงานของแอนิเมชันและการโต้ตอบกับเป้าหมายที่กำลังเคลื่อนไหว",
+      "menu_path": [
+        "Animation Testing Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Start Animation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#animationButton",
+          "xpath": "//*[@id=\"animationButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Moving Target",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#movingTarget",
+          "xpath": "//*[@id=\"movingTarget\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Disabled Input Test",
+      "url": "http://uitestingplayground.com/disabledinput",
+      "description": "หน้าเว็บสำหรับทดสอบการโต้ตอบกับช่องกรอกข้อมูลที่ถูกปิดใช้งานซึ่งต้องรอเวลาในการเปิดใช้งาน",
+      "menu_path": [
+        "Disabled Input Test"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Enable Edit Field with 5 seconds delay",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#enableButton",
+          "xpath": "//*[@id=\"enableButton\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "Change me...",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "#inputField"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Auto Wait Test Page",
+      "url": "http://uitestingplayground.com/autowait",
+      "description": "หน้าเว็บสำหรับทดสอบระบบ Auto Wait ในการทำ UI Testing",
+      "menu_path": [
+        "Auto Wait Test Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#target",
+          "xpath": "//*[@id=\"target\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "element-type",
+          "label": "Choose an element type:",
+          "placeholder": "",
+          "required": false,
+          "input_type": "select",
+          "validation": "",
+          "selector": "#element-type"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "Settings",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "button.btn.btn-secondary",
+          "item_count": 3
+        },
+        {
+          "name": "Form Check",
+          "ui_type": "List Item",
+          "components": [
+            "Badge"
+          ],
+          "buttons": [],
+          "selector": "li.form-check",
+          "item_count": 5
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Automation Frames",
+      "url": "http://uitestingplayground.com/frames",
+      "description": "หน้าเว็บสำหรับทดสอบการใช้งาน HTML frames และ iframe ในการทำ UI automation",
+      "menu_path": [
+        "UI Test Automation Frames"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > h4:nth-of-type(1)",
+          "item_count": 3
+        },
+        {
+          "name": "Element Search Strategies",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul:nth-of-type(2) > li:nth-of-type(1)",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Geolocation Testing Page",
+      "url": "http://uitestingplayground.com/geolocation",
+      "description": "หนี้สำหรับทดสอบฟังก์ชันการเข้าถึงตำแหน่งทางภูมิศาสตร์ (Geolocation) ของเบราว์เซอร์",
+      "menu_path": [
+        "Geolocation Testing Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Request Location",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#requestLocation",
+          "xpath": "//*[@id=\"requestLocation\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 3
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้า Clear Input",
+      "url": "http://uitestingplayground.com/clearinput",
+      "description": "หน้านี้ใช้สำหรับทดสอบการล้างข้อความในช่องกรอกข้อมูล (Textarea) ของระบบอัตโนมัติ",
+      "menu_path": [
+        "หน้า Clear Input"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "Textarea",
+          "placeholder": "",
+          "required": false,
+          "input_type": "textarea",
+          "validation": "",
+          "selector": "#clearTextarea"
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Form Group",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > div:nth-of-type(1)",
+          "item_count": 7
+        },
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Scroll to Click",
+      "url": "http://uitestingplayground.com/scrolltoclick",
+      "description": "ทดสอบการเลื่อนหน้าจอเพื่อให้ปุ่มเป้าหมายปรากฏขึ้นมาและสามารถคลิกได้",
+      "menu_path": [
+        "Scroll to Click"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button 1",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#scrollTarget1",
+          "xpath": "//*[@id=\"scrollTarget1\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button 2",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#scrollTarget2",
+          "xpath": "//*[@id=\"scrollTarget2\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Button 3",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#scrollTarget3",
+          "xpath": "//*[@id=\"scrollTarget3\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > p:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > h5:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "Case 4 — Hover to Reveal",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [],
+          "selector": "div.hover-row",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "CSS Selectors Testing Page",
+      "url": "http://uitestingplayground.com/cssselectors",
+      "description": "หน้านี้ใช้สำหรับทดสอบการเขียน CSS selectors รูปแบบต่างๆ บน UI หลายรูปแบบ",
+      "menu_path": [
+        "CSS Selectors Testing Page"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Primary Button",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#primary-btn",
+          "xpath": "//*[@id=\"primary-btn\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "First",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > div:nth-of-type(1) > button:nth-of-type(1)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/button[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Second",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > div:nth-of-type(1) > button:nth-of-type(2)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/button[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Third",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.btn.btn-info.css-btn.highlight",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/button[3]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "External Link",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.btn.btn-link",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "I am visible",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#visible-btn",
+          "xpath": "//*[@id=\"visible-btn\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Hidden via zero-size parent",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#hidden-overflow",
+          "xpath": "//*[@id=\"hidden-overflow\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Hidden via offscreen position",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "#hidden-offscreen",
+          "xpath": "//*[@id=\"hidden-offscreen\"]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "Username",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "[data-testid=\"username-input\"], [data-test=\"username-input\"]"
+        },
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "Email",
+          "required": false,
+          "input_type": "email",
+          "validation": "",
+          "selector": "[data-testid=\"email-input\"], [data-test=\"email-input\"]"
+        }
+      ],
+      "tables": [
+        {
+          "columns": [
+            "Row 1, Cell 1",
+            "Row 1, Cell 2"
+          ],
+          "sortable": false,
+          "filterable": false,
+          "paginated": false,
+          "row_actions": []
+        }
+      ],
+      "ui_patterns": [
+        {
+          "name": "Mt 3",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "h5.mt-3",
+          "item_count": 6
+        },
+        {
+          "name": "Table Row Pattern",
+          "ui_type": "Table Row",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > table > tbody > tr:nth-of-type(1)",
+          "item_count": 4
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "Select Dropdown Practice",
+      "url": "http://uitestingplayground.com/select",
+      "description": "หนี้สำหรับฝึกอบรมการทดสอบอัตโนมัติด้วยการเลือกค่าจากรายการดรอปดาวน์",
+      "menu_path": [
+        "Select Dropdown Practice"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Form Group",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "div.form-group",
+          "item_count": 5
+        },
+        {
+          "name": "Scenario",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > ul > li:nth-of-type(1)",
+          "item_count": 5
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    }
+  ],
+  "errors": []
+}

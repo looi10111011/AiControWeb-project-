@@ -7,6 +7,7 @@ finish_task(false) ก่อนเวลาอันควร (ด้านล�
 
 import asyncio
 import sys
+import time
 from typing import Awaitable, Callable, Optional
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
@@ -352,11 +353,40 @@ async def _login_form_needs_password(page: Page) -> bool:
     except Exception:
         return False
 
-# หน่วงท้ายทุก step ที่ยังวนต่อ กันยิง LLM API ถี่เกิน free-tier quota ต่อนาที (RPM) —
-# ไม่ใช่แค่ Gemini เจอ 429 ResourceExhausted เอง (ดู llm.py) provider อื่นก็มี rate
-# limit เหมือนกัน แค่ชื่อ error ต่างกัน ค่านี้เป็น heuristic คร่าวๆ ไม่ได้ผูกกับ quota
-# จริงเป๊ะๆ ของ key ไหน (แต่ละ key/โมเดลจำกัดไม่เท่ากัน)
+# ระยะห่างต่ำสุดที่ต้องการระหว่างการเรียก next_action() (LLM) 2 ครั้งติดกัน กันยิง LLM
+# API ถี่เกิน free-tier quota ต่อนาที (RPM) — ไม่ใช่แค่ Gemini เจอ 429 ResourceExhausted
+# เอง (ดู llm.py) provider อื่นก็มี rate limit เหมือนกัน แค่ชื่อ error ต่างกัน ค่านี้เป็น
+# heuristic คร่าวๆ ไม่ได้ผูกกับ quota จริงเป๊ะๆ ของ key ไหน (แต่ละ key/โมเดลจำกัดไม่เท่ากัน)
+#
+# W41: user รายงานว่า agent ใช้เวลานานเกินไปกว่าจะ "แจ้งสถานะเสร็จสิ้น" หลัง action สุดท้าย
+# เสร็จจริงแล้ว — เดิม sleep(_STEP_PACING_DELAY_SECONDS) แบบตรงๆ ท้ายทุก step (ไม่ว่า step
+# นั้นจะกินเวลาไปแล้วเท่าไหร่ก็ตามจาก execute()/wait_stable()/get_snapshot()/retrieve() ฯลฯ)
+# บวกเพิ่มเข้าไปอีกทุกครั้งแบบ "ไม่หักลบ" เวลาที่ผ่านไปแล้วเลย — เปลี่ยนมาวัด wall-clock
+# จริงตั้งแต่ next_action() ครั้งก่อนจบ แล้ว sleep แค่ส่วนที่ยังขาดให้ครบ
+# _STEP_PACING_DELAY_SECONDS เท่านั้น (ดู last_llm_call_at ใน run_task()) — ยังการันตี
+# ระยะห่างขั้นต่ำเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก rate-limit เลย) แค่ไม่เสียเวลาเปล่า
+# ซ้ำกับงานที่ทำไปแล้วจริงระหว่าง step นั้น — ผลคือ step สุดท้ายก่อนจะรู้ว่า LLM ตัดสินใจ
+# เรียก finish_task (ซึ่งงานจริงของ step ก่อนหน้ามักกินเวลาไปเกิน 3 วินาทีอยู่แล้วจาก
+# wait_stable()/network) มักไม่ต้องรอเพิ่มเลยหรือรอสั้นลงมาก
 _STEP_PACING_DELAY_SECONDS = 3
+
+# W41: user รายงานว่า agent ใช้เวลานานเกินไปกว่าจะ "แจ้งสถานะเสร็จสิ้น" หลัง action
+# สุดท้ายเสร็จจริงแล้ว — สาเหตุหนึ่งที่แก้ได้ตรงๆ ไม่มี trade-off เลย: long_term_memory.
+# record_task() (บันทึกประวัติ task run ไว้ให้ task ถัดไป recall() ใช้ — ดู
+# long_term_memory.py) เดิม await ตรงๆ ก่อน return ผลลัพธ์กลับไปเสมอ ทั้งที่เป็นแค่
+# embedding + ChromaDB write ที่ "ไม่มีใครรอผลลัพธ์" เลย (คืน None, ไม่ throw ออกมาเอง
+# อยู่แล้วตามสัญญาของ record_task() เอง) ทำให้ user เห็นสถานะ "เสร็จสิ้น" ช้าไปอีก
+# เท่ากับเวลาที่ embedding+write ใช้จริงโดยไม่จำเป็น — ยิงเป็น background task แทน (ไม่
+# await ก่อน return) เก็บ reference ไว้ใน _background_tasks กัน asyncio garbage collect
+# ทิ้งก่อนทำงานเสร็จ (python เตือนเรื่องนี้ไว้ตรงๆ ใน asyncio.create_task() docs) ใช้
+# add_done_callback ลบ reference ทิ้งเองอัตโนมัติเมื่อเสร็จแล้ว ไม่ต้องมีใครมาคอย clear
+_background_tasks: set = set()
+
+
+def _fire_and_forget(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 # W10[B]: callback (event dict) -> None ให้ชั้นบน (API server) รับรู้ความคืบหน้าสดๆ
@@ -856,6 +886,11 @@ class Orchestrator:
         # ใช้แบบดิบๆ ต่อ (RAG query, long-term memory query, log) ไม่อยากให้ข้อความแผนที่
         # อาจยาวมากปนเข้าไปทำให้ query เพี้ยน
         effective_goal = goal
+        # W41: wall-clock เวลาที่ next_action() ครั้งก่อนหน้า "จบ" (คืนค่ามาแล้ว) — None
+        # ตอนยังไม่เคยเรียกเลย (ครั้งแรกไม่ต้องรอ pacing delay อะไรทั้งนั้น) ใช้คำนวณว่ายัง
+        # ต้องหน่วงอีกแค่ไหนให้ครบ _STEP_PACING_DELAY_SECONDS ก่อนเรียกครั้งถัดไป (ดู
+        # docstring ของ _STEP_PACING_DELAY_SECONDS ด้านบนสุดของไฟล์)
+        last_llm_call_at: Optional[float] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
@@ -1074,11 +1109,28 @@ class Orchestrator:
                 # ดู pending_vision_context ด้านบนสุดของ run_task())
                 vision_context, pending_vision_context = pending_vision_context, ""
 
+                # W41: หน่วงเฉพาะส่วนที่ยังขาดให้ครบ _STEP_PACING_DELAY_SECONDS นับจากที่
+                # next_action() ครั้งก่อนจบ (ไม่ใช่ sleep เต็มจำนวนทุกครั้งแบบเดิม) — งาน
+                # จริงที่ทำไปแล้วตั้งแต่ครั้งก่อน (execute()/wait_stable()/get_snapshot()/
+                # retrieve()/recall() ด้านบน) นับรวมเข้าไปในระยะห่างนี้ด้วย ระยะห่างขั้นต่ำ
+                # ระหว่างการเรียก LLM 2 ครั้งยังเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก
+                # rate-limit) แค่ไม่ sleep ซ้ำกับเวลาที่ผ่านไปแล้วจริง
+                if last_llm_call_at is not None:
+                    elapsed = time.monotonic() - last_llm_call_at
+                    remaining = _STEP_PACING_DELAY_SECONDS - elapsed
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+
+                # W43: plan_text (ดู confirm_plan/approved_plan ด้านบน) เป็น None สำหรับ
+                # ad-hoc task ที่ไม่มีแผนเลย — ส่งเป็น "" ให้ next_action()/
+                # _build_user_turn_text() ไม่ต้องรู้จัก Optional เอง (plan_context="" =
+                # ไม่มี section "แพลนปัจจุบัน" โผล่มาปนเลย ตรงกับพฤติกรรมเดิมทุกประการ)
                 tool_name, tool_input, tool_use_id, messages, usage = await next_action(
                     client, model, effective_goal, page_text, messages,
                     manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context, page.url, action_history_context,
+                    site_manual_context, page.url, action_history_context, plan_text or "",
                 )
+                last_llm_call_at = time.monotonic()
                 total_usage += usage
                 if verbose:
                     print(
@@ -1295,6 +1347,17 @@ class Orchestrator:
                     "result": str(result), "success": result.success,
                 })
 
+                # W43: LLM ระบุว่า action นี้ทำให้ step ของแผนเสร็จสมบูรณ์แล้ว (ดู
+                # completed_plan_step ใน llm.py::_BROWSER_ACTION_PARAMS) — ยิง SSE event
+                # ใหม่ให้ frontend ติ๊ก checkbox ของ step นั้นแบบ real-time เฉพาะตอน
+                # execute() สำเร็จจริงเท่านั้น (result.success — กันติ๊กผิดว่าทำสำเร็จ
+                # ทั้งที่ action พัง) และเฉพาะ task ที่มีแผนจริงๆ เท่านั้น (plan_text ไม่ใช่
+                # None/ว่างเปล่า — ad-hoc task ไม่มีแผนไม่ควรยิง event นี้เลยแม้ LLM จะใส่
+                # completed_plan_step มาผิดๆ ก็ตาม เพราะไม่มี checkbox ให้ติ๊กอยู่แล้วฝั่ง UI)
+                completed_plan_step = tool_input.get("completed_plan_step")
+                if plan_text and result.success and completed_plan_step is not None:
+                    await _emit({"kind": "plan_step_done", "step": completed_plan_step})
+
                 # W10[F]: human ปฏิเสธ action นี้ตรงๆ (กด Deny บน permission prompt) —
                 # ต้องจบ task ทันที ไม่ใช่ป้อนผลลัพธ์กลับเข้า messages แล้ววน loop ต่อให้
                 # LLM ลองทางอื่น (พฤติกรรมเดิม ผิดจุดประสงค์ของ human-in-the-loop: การ
@@ -1416,21 +1479,24 @@ class Orchestrator:
                                 print(f"  [domain-guard] {domain_guard_msg}", flush=True)
                             messages.append(_build_nudge_message(resolved_provider, domain_guard_msg))
 
-                # หน่วงท้าย step ก่อนวน next_action() รอบถัดไป กันยิง LLM API ถี่เกิน
-                # quota ต่อนาที (ดู _STEP_PACING_DELAY_SECONDS ด้านบน)
-                await asyncio.sleep(_STEP_PACING_DELAY_SECONDS)
+                # W41: pacing delay ย้ายไปอยู่ก่อน next_action() แทน (ดู comment ตรงจุดที่
+                # เรียก next_action() ด้านบน) — ไม่ sleep ซ้ำท้าย step แล้ว
 
             # W7[A] (long-term): บันทึกผลลัพธ์ของ task run นี้ไว้ให้ task run ถัดไป
             # (บน goal/หน้าเว็บที่เกี่ยวข้องกัน) recall() กลับมาใช้ได้ — เรียกครั้งเดียว
             # ตอนจบ loop จริง (ทุก path: finish_task, loop-detected, หมด max_steps)
             # ไม่ครอบ confirm_plan declined เพราะ return ไปก่อนถึงจุดนี้แล้ว (ไม่มี
             # action ใดๆ เกิดขึ้นจริงเลย ไม่มีอะไรให้บันทึกเป็น pattern)
-            await asyncio.to_thread(
+            #
+            # W41: ยิงเป็น background task (ไม่ await) — ดู docstring ของ
+            # _fire_and_forget/_background_tasks ด้านบนสุดของไฟล์ ผลลัพธ์ของ task run
+            # นี้ (return ด้านล่าง) ไม่ต้องรอ record_task() เสร็จก่อนเลย
+            _fire_and_forget(asyncio.to_thread(
                 long_term_memory.record_task,
                 url=url, goal=goal, success=success, message=final_message,
                 failed_actions=self.memory.failed_actions_summary(),
                 session_id=session_id or "",
-            )
+            ))
 
             return {
                 "success": success,

@@ -5,7 +5,7 @@
 """
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -37,6 +37,36 @@ class ButtonInfo:
     # ยังต้องผ่าน safety.is_crawl_safe แบบ default-deny เหมือนเดิม (ดู
     # crawler.py::_is_explorable)
     is_nav_menu_item: bool = False
+    # W36: True ถ้า element นี้อยู่ใน <form> จริง และเป็นปุ่ม submit ของฟอร์มนั้นตาม HTML
+    # semantics (input[type=submit], button[type=submit], หรือ <button> ที่ไม่มี attribute
+    # type เลยภายใน form ซึ่งเป็น type=submit โดย default ตามสเปค HTML) — คำนวณตอน extract
+    # (ดู extractor.py::isFormSubmit) ใช้เป็นสัญญาณ DOM หนึ่งใน
+    # safety.classify_button_tier()/button_core_priority() เท่านั้น ไม่ได้บอกว่า "กดได้ไหม"
+    # เลย (ยังต้องผ่าน safety.is_crawl_safe() แบบเดิมทุกประการก่อนกดจริง — ปุ่ม submit ส่วน
+    # ใหญ่ยังถูกบล็อกอยู่ดีเพราะ "submit" อยู่ใน BLOCKED_CRAWL_KEYWORDS)
+    is_form_submit: bool = False
+    # W36: ชั้นของปุ่มนี้ (ดู safety.classify_button_tier) — "nav" (เมนู/nav item, ตรงกับ
+    # is_nav_menu_item เสมอ), "core" (ฟังก์ชันหลักของหน้า เช่น search/filter/sort/ปุ่ม
+    # submit ในฟอร์ม — default fallback ของปุ่มที่ไม่เข้าเงื่อนไข nav/decorative ชัดเจนด้วย
+    # ตั้งใจ เพื่อไม่ให้ปุ่มสำคัญเดิมอย่าง "View"/"Expand"/"Next" ที่ W16 พึ่งพาอยู่หายไป),
+    # "decorative" (ปุ่มรอง/ตกแต่ง เช่น share/like/notification bell/theme switch — ไม่ไล่
+    # กดเลยไม่ว่า is_crawl_safe() จะอนุญาตหรือไม่ก็ตาม ดู crawler.py::_explore_buttons) —
+    # คำนวณตอน extract_page() เรียก safety.classify_button_tier() ทันทีหลังสร้าง ButtonInfo
+    # แต่ละตัว (ดู extractor.py) ไม่ใช่ตอน JS extraction เพราะ classify_button_tier() เป็น
+    # ฟังก์ชัน Python ล้วนๆ (heuristic, ไม่เรียก LLM ตามแนว W14/W24) เรียกจาก JS ตรงๆ ไม่ได้
+    tier: Literal["nav", "core", "decorative"] = "core"
+    # W39: index ของ frame ที่เจอปุ่มนี้ใน page.frames (Playwright) — 0 = main frame (default,
+    # ปุ่มทั่วไปที่ไม่ได้อยู่ใน <iframe> เลย ตรงกับพฤติกรรมเดิมทุกประการ) มากกว่า 0 = ปุ่มนี้อยู่
+    # ใน <iframe> ที่ document.querySelectorAll() ของ main frame มองไม่เห็นเลย (คนละ document
+    # แม้ same-origin ก็ตาม) selector ที่ compute มาถูก scope กับ document ของ frame นั้นๆ
+    # ต้องกดผ่าน frame object ที่ถูกต้องเท่านั้น (page.click() เดิมหา element ข้าม frame
+    # boundary ไม่เจอ) ดู crawler.py::_resolve_click_target — ตั้งใจใช้ index แทน frame.url
+    # ตรงๆ เพราะ <iframe srcdoc="..."> (พบได้ในเว็บ demo/testing บางเว็บ) ทุกตัวได้ url
+    # "about:srcdoc" เหมือนกันหมด ไม่ unique พอให้แยกแยะ frame ที่ต่างกันจริงได้ — ยอมรับความ
+    # เสี่ยงที่ index อาจไม่ตรงแล้วถ้าโครงสร้าง frame ของหน้าเปลี่ยนไประหว่าง extract กับตอนกด
+    # จริง (เช่น หน้าที่เพิ่ม/ลบ iframe แบบ dynamic) — มี fallback กลับไปที่ page เฉยๆ ถ้า index
+    # เกินขอบเขตแล้ว (ดู _resolve_click_target)
+    frame_index: int = 0
 
 
 # W18: Pattern ของ UI ที่ซ้ำกันหลาย instance บนหน้าเดียว (เช่น product card 100 ใบ, แถว
@@ -73,6 +103,12 @@ class FormFieldInfo:
     # extractor.py::computeSelector) ใช้เติมค่าลงช่องจริงได้ (เช่น crawler.py กรอก
     # username/password ตอน login bootstrap) ไม่ใช่แค่ไว้อ่านโครงสร้างเฉยๆ
     selector: str = ""
+    # W39: เหมือน ButtonInfo.frame_index เป๊ะ — ดูที่นั่นสำหรับเหตุผลเต็ม (ช่องกรอกที่อยู่ใน
+    # <iframe> ก็ selector ถูก scope กับ document ของ frame นั้นเหมือนกัน) *** หมายเหตุ:
+    # auto_login.py ยังไม่รองรับกรอกฟอร์มข้าม frame ในงานนี้ (นอกขอบเขตที่ user ขอ — ปัญหาที่
+    # รายงานเป็นเรื่องปุ่มเท่านั้น) ฟิลด์นี้แค่ทำให้ฟอร์มใน iframe "มองเห็นได้" ใน manual
+    # (บันทึกลง SiteManual ถูกต้อง) ไม่ได้แก้ auto-fill ให้ทำงานข้าม frame ได้จริง ***
+    frame_index: int = 0
 
 
 @dataclass

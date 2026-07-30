@@ -234,7 +234,14 @@ _NO_SUBMIT_FIXTURE_PAGES = {
 
 def _make_fixture_server(tmp_path, pages):
     for name, html in pages.items():
-        (tmp_path / name).write_text(html, encoding="utf-8")
+        path = tmp_path / name
+        # W37: รองรับ key ที่มี "/" (subdirectory) ด้วย — จำเป็นสำหรับ fixture ที่ต้องการ
+        # URL path segment จริง (เช่น "watch/clip1.html" -> "/watch/clip1.html") ไม่ใช่แค่
+        # ชื่อไฟล์แบนๆ ที่บังเอิญมีคำเดียวกันเป็น substring (ดู safety.is_video_content_url
+        # ที่เทียบ segment ทั้งชิ้นเป๊ะๆ ไม่ใช่ substring — "shorts1.html" ไม่ตรง "shorts" แต่
+        # "shorts/clip1.html" ตรง) — no-op สำหรับ fixture เดิมทั้งหมดที่ไม่มี "/" ใน key เลย
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
     httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
@@ -1131,9 +1138,9 @@ _REPEAT_PAGE_TEMPLATE_FIXTURE_PAGES = {
     # BFS ล้วนๆ (ดู W25 — สแกนทั้งเอกสาร)
     "feed.html": """
         <html><body>
-          <a href="/clip1.html">Watch Video A</a>
-          <a href="/clip2.html">Watch Video B</a>
-          <a href="/clip3.html">Watch Video C</a>
+          <a href="/clip1.html">Clip A</a>
+          <a href="/clip2.html">Clip B</a>
+          <a href="/clip3.html">Clip C</a>
           <a href="/about.html">About Us</a>
         </body></html>
     """,
@@ -1477,3 +1484,418 @@ async def test_crawl_site_stops_exploring_after_repeated_page_name(repeated_name
     skip_events = [e for e in events if e["kind"] == "repeated_page_name_skipped"]
     assert len(skip_events) >= 2
     assert all(e["name"] == "Video" for e in skip_events)
+
+
+# ---------------- W36: core function classification (tier) ----------------
+
+_TIER_DECORATIVE_FIXTURE_PAGES = {
+    "tier_start.html": """
+        <html><body>
+          <button onclick="window.location.href='/search-result.html'">Search</button>
+          <button onclick="window.location.href='/decorative-trap.html'">Profile Menu</button>
+        </body></html>
+    """,
+    "search-result.html": "<html><body>search result</body></html>",
+    # "Profile Menu" ตั้งใจเลือกเป็น label ที่ผ่าน safety.is_crawl_safe() ได้ (มีคำว่า "menu"
+    # ซึ่งอยู่ใน ALLOWED_CRAWL_KEYWORDS อยู่ก่อนแล้ว) — ก่อน W36 ปุ่มนี้จะถูกไล่กดตามปกติ
+    # (is_crawl_safe คืน True) พิสูจน์ว่า tier="decorative" (DECORATIVE_KEYWORDS มี "profile
+    # menu" ตรงๆ) ต่างหากที่กันไม่ให้กด ไม่ใช่ is_crawl_safe เหมือนเดิม
+    "decorative-trap.html": "<html><body>should never be reached — tier=decorative skips before is_crawl_safe</body></html>",
+}
+
+
+@pytest.fixture
+def tier_decorative_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _TIER_DECORATIVE_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_never_explores_decorative_tier_buttons(tier_decorative_fixture_server):
+    """W36: ปุ่ม tier="decorative" ต้องไม่ถูกไล่กดเลยแม้ label จะผ่าน is_crawl_safe() ได้ก็
+    ตาม (ดูเหตุผลการเลือก label "Profile Menu" ใน _TIER_DECORATIVE_FIXTURE_PAGES ด้านบน) —
+    ต้องไม่มี progress event "button_explored" สำหรับปุ่มนี้เลยสักครั้ง (ถูกกรองออกตั้งแต่
+    ก่อนถึง _is_explorable()/event-emission ไม่ใช่แค่ is_crawl_safe ปฏิเสธทีหลัง) ส่วนปุ่ม
+    tier="core" ("Search") บนหน้าเดียวกันต้องยังถูกไล่กดตามปกติ ไม่ถูกกระทบ"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{tier_decorative_fixture_server}/tier_start.html", max_pages=10, on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("search-result.html" in u for u in visited_urls)
+    assert not any("decorative-trap.html" in u for u in visited_urls)
+
+    button_events = [e for e in events if e["kind"] == "button_explored"]
+    assert not any(e["button"] == "Profile Menu" for e in button_events)
+    assert any(e["button"] == "Search" for e in button_events)
+
+
+_TIER_BUDGET_FIXTURE_PAGES = {
+    # id เฉพาะตัวบนทุกปุ่มตั้งใจกันปัญหา extractor.py::computeSelector fallback เป็น
+    # nth-of-type path ที่ไม่ scope กับ parent เวลาไม่มี id/class — ปุ่ม "Continue" (อยู่ใน
+    # <form>) กับ "Search" (อยู่ระดับ body) ต่างก็เป็นปุ่มตัวแรกในกลุ่มพี่น้อง tag เดียวกัน
+    # ของ parent ตัวเอง ได้ selector "button:nth-of-type(1)" ชนกันโดยไม่ได้ตั้งใจถ้าไม่มี id
+    "budget_start.html": """
+        <html><body>
+          <form onsubmit="return false;">
+            <input type="text" name="q">
+            <button id="continue-btn" onclick="window.location.href='/submit-result.html'">Continue</button>
+          </form>
+          <button id="search-btn" onclick="window.location.href='/search-result.html'">Search</button>
+          <button id="search-filters-btn" onclick="window.location.href='/partial-result.html'">Search Filters Panel</button>
+        </body></html>
+    """,
+    "submit-result.html": "<html><body>submit result</body></html>",
+    "search-result.html": "<html><body>search result</body></html>",
+    "partial-result.html": "<html><body>partial result — should be cut by the budget cap</body></html>",
+}
+
+
+@pytest.fixture
+def tier_budget_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _TIER_BUDGET_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_caps_core_tier_buttons_by_priority_when_over_budget(
+    tier_budget_fixture_server, monkeypatch,
+):
+    """W36: 3 ปุ่ม tier="core" บนหน้าเดียว priority ต่างกัน (form-submit > exact keyword
+    match > partial match — ดู safety.button_core_priority): "Continue" (ปุ่ม submit จริงใน
+    form, priority 0), "Search" (label ตรงคำใน CORE_ACTION_KEYWORDS เป๊ะ, priority 1),
+    "Search Filters Panel" (แค่มีคำว่า search อยู่ใน label, priority 2 — ต่ำสุด) — ตั้งเพดาน
+    settings.site_learning_max_core_buttons_per_page ไว้แค่ 2 ต้องตัดตัว priority ต่ำสุด
+    ("Search Filters Panel") ออก เหลือแค่ 2 ตัวที่สำคัญกว่า"""
+    monkeypatch.setattr(
+        "backend.app.site_learning.crawler.settings.site_learning_max_core_buttons_per_page", 2,
+    )
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{tier_budget_fixture_server}/budget_start.html", max_pages=10)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("submit-result.html" in u for u in visited_urls)
+    assert any("search-result.html" in u for u in visited_urls)
+    assert not any("partial-result.html" in u for u in visited_urls)
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_still_explores_nav_tier_buttons_after_tier_filter(menu_item_fixture_server):
+    """W36: ปุ่ม tier="nav" (role=menuitem, ไม่มี href จริง — ดู _MENU_ITEM_FIXTURE_PAGES/
+    isNavMenuItem) ต้องยังถูกไล่กดผ่าน _explore_buttons() เหมือนเดิมทุกประการหลังเพิ่มชั้น
+    tier filter — ยืนยันกับ user แล้วว่าไม่จำกัด _explore_buttons() เหลือแค่ tier=="core"
+    เท่านั้นตามที่ requirement เดิมระบุตรงๆ เพราะเมนู SPA แบบนี้ไม่มี href ให้ BFS เดินตามได้
+    เลย (W24) พึ่ง _explore_buttons() เป็นเส้นทางเดียวที่สำรวจได้จริง — ถ้ากรองเหลือแค่ core
+    จริงๆ "Settings" (label ที่ไม่ตรง ALLOWED_CRAWL_KEYWORDS เลยสักคำด้วย) จะไม่มีวันถูกกด"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{menu_item_fixture_server}/menu_start.html", max_pages=10)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("settings.html" in u for u in visited_urls)
+
+
+# ---------------- W37: กันกดดูวีดีโอ (YouTube/Facebook/Instagram ฯลฯ) ----------------
+
+_VIDEO_NAV_FIXTURE_PAGES = {
+    "video_nav_start.html": """
+        <html><body>
+          <nav>
+            <a href="/dashboard.html">Dashboard</a>
+            <a href="/watch/clip1.html">Amazing Cat Compilation</a>
+          </nav>
+        </body></html>
+    """,
+    "dashboard.html": "<html><body>dashboard</body></html>",
+    # อยู่ใต้ path segment "/watch/" จริง (ไม่ใช่แค่ substring บังเอิญ — ดู
+    # safety.is_video_content_url ที่เทียบ segment ทั้งชิ้นเป๊ะ) — link text เองไม่มีคำใบ้
+    # วีดีโอเลยสักคำ พิสูจน์ว่ากรองจาก URL ปลายทางจริง ไม่ใช่แค่ label
+    "watch/clip1.html": "<html><body>should never be visited — video content link</body></html>",
+}
+
+
+@pytest.fixture
+def video_nav_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _VIDEO_NAV_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_never_queues_video_content_nav_links(video_nav_fixture_server):
+    """W37: ลิงก์ nav ที่ href ตรง video URL pattern (เช่น "/watch...") ต้องไม่ถูกต่อคิว BFS
+    เลย แม้ label ของลิงก์เอง ("Amazing Cat Compilation") จะไม่มีคำใบ้ว่าเป็นวีดีโอเลยก็ตาม"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{video_nav_fixture_server}/video_nav_start.html", max_pages=10)
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("dashboard.html" in u for u in visited_urls)
+    assert not any("watch/clip1.html" in u for u in visited_urls)
+
+
+_VIDEO_BUTTON_FIXTURE_PAGES = {
+    "video_button_start.html": """
+        <html><body>
+          <button onclick="window.location.href='/shorts/clip1.html'">View Amazing Cat Compilation</button>
+          <button onclick="window.location.href='/detail.html'">View Details</button>
+        </body></html>
+    """,
+    # label ("View Amazing Cat Compilation") มีคำว่า "view" ผ่าน is_crawl_safe()/tier filter
+    # มาได้ (ไม่มีคำใบ้วีดีโอตรงๆ เลยสักคำ) — ต้องพึ่งการเช็ค URL ปลายทางหลัง navigate จริง
+    # (อยู่ใต้ path segment "/shorts/" จริง ดู safety.is_video_content_url)
+    "shorts/clip1.html": "<html><body>should never be recorded — caught by the post-click URL safety net</body></html>",
+    "detail.html": "<html><body>detail page</body></html>",
+}
+
+
+@pytest.fixture
+def video_button_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _VIDEO_BUTTON_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_skips_recording_video_content_page_reached_via_button_click(
+    video_button_fixture_server,
+):
+    """W37: ปุ่ม "View Amazing Cat Compilation" ผ่าน is_crawl_safe()/tier filter มาได้ (label
+    มีคำว่า "view" ที่ผ่าน allowlist, ไม่มีคำใบ้วีดีโอตรงๆ เลยได้ tier="core" fallback ตาม
+    ปกติ) แต่ปลายทางจริงตรง video URL pattern — safety net หลัง DFS-click ต้องไม่ extract/
+    describe/บันทึกหน้านั้นเป็นหน้าเลย (ต่างจากปุ่มถัดไป "View Details" ที่พาไป detail.html
+    ปกติ ยังถูกบันทึกตามปกติ ไม่ถูกกระทบ)"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{video_button_fixture_server}/video_button_start.html", max_pages=10,
+                on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert not any("shorts/clip1.html" in u for u in visited_urls)
+    assert any("detail.html" in u for u in visited_urls)
+
+    skip_events = [e for e in events if e["kind"] == "video_content_skipped"]
+    assert len(skip_events) == 1
+    assert "shorts/clip1.html" in skip_events[0]["landed_on"]
+
+
+# ---------------- W38: กันกดดูแฮชแท็ก ----------------
+
+_HASHTAG_NAV_URL_FIXTURE_PAGES = {
+    "hashtag_nav_url_start.html": """
+        <html><body>
+          <nav>
+            <a href="/dashboard.html">Dashboard</a>
+            <a href="/hashtag/travel.html">Travel Tag</a>
+          </nav>
+        </body></html>
+    """,
+    "dashboard.html": "<html><body>dashboard</body></html>",
+    # link text ("Travel Tag") ไม่มีคำใบ้แฮชแท็กเลย (ไม่ขึ้นต้นด้วย "#") — พิสูจน์ว่ากรองจาก
+    # URL path segment "/hashtag/" เพียงอย่างเดียวก็เพียงพอ
+    "hashtag/travel.html": "<html><body>should never be visited — hashtag URL pattern</body></html>",
+}
+
+
+@pytest.fixture
+def hashtag_nav_url_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _HASHTAG_NAV_URL_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_never_queues_hashtag_content_nav_links_by_url(hashtag_nav_url_fixture_server):
+    """W38: ลิงก์ nav ที่ href ตรง hashtag URL pattern ("/hashtag/...") ต้องไม่ถูกต่อคิว BFS
+    เลย แม้ label ของลิงก์เอง ("Travel Tag") จะไม่ขึ้นต้นด้วย "#" เลยก็ตาม"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{hashtag_nav_url_fixture_server}/hashtag_nav_url_start.html", max_pages=10,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("dashboard.html" in u for u in visited_urls)
+    assert not any("hashtag/travel.html" in u for u in visited_urls)
+
+
+_HASHTAG_NAV_LABEL_FIXTURE_PAGES = {
+    "hashtag_nav_label_start.html": """
+        <html><body>
+          <nav>
+            <a href="/dashboard.html">Dashboard</a>
+            <a href="/topics/1.html">#travel</a>
+          </nav>
+        </body></html>
+    """,
+    "dashboard.html": "<html><body>dashboard</body></html>",
+    # href ("/topics/1.html") ไม่ตรง hashtag URL pattern เลย (ไม่ใช่ "/hashtag/"/"/hashtags/")
+    # — พิสูจน์ว่ากรองจาก label "#travel" เพียงอย่างเดียวก็เพียงพอ ไม่ต้องพึ่ง URL convention
+    # เฉพาะเว็บเลย (สัญญาณหลักตามที่ออกแบบไว้ — ดู safety.is_hashtag_label)
+    "topics/1.html": "<html><body>should never be visited — hashtag label pattern</body></html>",
+}
+
+
+@pytest.fixture
+def hashtag_nav_label_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _HASHTAG_NAV_LABEL_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_never_queues_hashtag_content_nav_links_by_label(hashtag_nav_label_fixture_server):
+    """W38: ลิงก์ nav ที่ label ขึ้นต้นด้วย "#" ("#travel") ต้องไม่ถูกต่อคิว BFS เลย แม้ href
+    ปลายทางจะไม่ตรง hashtag URL pattern ใดๆ เลยก็ตาม (URL เป็นแค่ path ทั่วไป "/topics/1.html")
+    — สัญญาณ label เป็นตัวกันหลักที่ไม่ต้องพึ่ง URL convention เฉพาะเว็บ"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{hashtag_nav_label_fixture_server}/hashtag_nav_label_start.html", max_pages=10,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("dashboard.html" in u for u in visited_urls)
+    assert not any("topics/1.html" in u for u in visited_urls)
+
+
+_HASHTAG_BUTTON_FIXTURE_PAGES = {
+    "hashtag_button_start.html": """
+        <html><body>
+          <button onclick="window.location.href='/hashtag/travel.html'">View Popular Topic</button>
+          <button onclick="window.location.href='/detail.html'">View Details</button>
+        </body></html>
+    """,
+    # label ("View Popular Topic") มีคำว่า "view" ผ่าน is_crawl_safe()/tier filter มาได้
+    # (ไม่ขึ้นต้นด้วย "#" เลย) — ต้องพึ่งการเช็ค URL ปลายทางหลัง navigate จริง (อยู่ใต้ path
+    # segment "/hashtag/" จริง ดู safety.is_hashtag_url)
+    "hashtag/travel.html": "<html><body>should never be recorded — caught by the post-click hashtag URL safety net</body></html>",
+    "detail.html": "<html><body>detail page</body></html>",
+}
+
+
+@pytest.fixture
+def hashtag_button_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _HASHTAG_BUTTON_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_skips_recording_hashtag_content_page_reached_via_button_click(
+    hashtag_button_fixture_server,
+):
+    """W38: ปุ่ม "View Popular Topic" ผ่าน is_crawl_safe()/tier filter มาได้ (label มีคำว่า
+    "view" ที่ผ่าน allowlist, ไม่ขึ้นต้นด้วย "#" เลยได้ tier="core" fallback ตามปกติ) แต่
+    ปลายทางจริงตรง hashtag URL pattern — safety net หลัง DFS-click ต้องไม่ extract/describe/
+    บันทึกหน้านั้นเป็นหน้าเลย (ต่างจากปุ่มถัดไป "View Details" ที่พาไป detail.html ปกติ ยังถูก
+    บันทึกตามปกติ ไม่ถูกกระทบ)"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{hashtag_button_fixture_server}/hashtag_button_start.html", max_pages=10,
+                on_progress=on_progress,
+            )
+            await browser.close()
+
+    visited_urls = {p.url for p in manual.pages}
+    assert not any("hashtag/travel.html" in u for u in visited_urls)
+    assert any("detail.html" in u for u in visited_urls)
+
+    skip_events = [e for e in events if e["kind"] == "hashtag_content_skipped"]
+    assert len(skip_events) == 1
+    assert "hashtag/travel.html" in skip_events[0]["landed_on"]
+
+
+# ---------------- W39: ปุ่มที่อยู่ใน <iframe> ----------------
+
+_IFRAME_BUTTON_FIXTURE_PAGES = {
+    "iframe_button_start.html": """
+        <html><body>
+          <iframe src="/inner.html"></iframe>
+        </body></html>
+    """,
+    # ปุ่มนี้แค่เปลี่ยนข้อความตัวเอง (ไม่ navigate ไปไหนเลย) ตั้งใจให้ทดสอบ "หาเจอ+กดสำเร็จ"
+    # ล้วนๆ ไม่ปนกับความซับซ้อนของ navigation ที่เกิด "ภายใน" iframe เอง (ดู W39 docstring
+    # หัวไฟล์ crawler.py — เรื่อง scope ที่ตั้งใจไม่แตะ)
+    "inner.html": """
+        <html><body>
+          <button id="inner-btn" onclick="this.textContent='Clicked'">View Inner Item</button>
+        </body></html>
+    """,
+}
+
+
+@pytest.fixture
+def iframe_button_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _IFRAME_BUTTON_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_finds_and_clicks_button_inside_iframe(iframe_button_fixture_server):
+    """W39: ปุ่มที่อยู่ใน <iframe> (ไม่ใช่แค่ document หลัก) ต้องถูก extract เจอ (ปรากฏใน
+    manual.pages[0].buttons พร้อม frame_index != 0) และต้องกดผ่านไปได้จริงโดยไม่มี
+    "button_click_failed" event เลย (พิสูจน์ว่า _resolve_click_target() หา Frame object ที่
+    ถูกต้องแล้วกดผ่าน frame.click() ได้จริง ไม่ใช่แค่ page.click() ที่หา element ข้าม frame
+    boundary ไม่เจอแล้วเงียบๆ ข้ามไป)"""
+    events = []
+
+    async def on_progress(event):
+        events.append(event)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{iframe_button_fixture_server}/iframe_button_start.html", max_pages=10,
+                on_progress=on_progress,
+            )
+            await browser.close()
+
+    inner_buttons = [b for b in manual.pages[0].buttons if b.text == "View Inner Item"]
+    assert len(inner_buttons) == 1
+    assert inner_buttons[0].frame_index != 0
+
+    explored_events = [e for e in events if e["kind"] == "button_explored" and e["button"] == "View Inner Item"]
+    assert len(explored_events) == 1
+    failed_events = [e for e in events if e["kind"] == "button_click_failed" and e["button"] == "View Inner Item"]
+    assert failed_events == []

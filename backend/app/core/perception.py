@@ -15,15 +15,38 @@ perception.py  —  W2: Perception Module (หัวใจของ Agent)
 ติดตั้งก่อนใช้:
     pip install playwright
     playwright install chromium
+
+W40: user รายงานว่า agent "มองไม่เห็นปุ่ม" บนหน้าที่มี <iframe> (เจอบน
+uitestingplayground.com/frames — Outer Frame (Level 1) ซ้อน Inner Frame (Level 2) แต่ละ
+ชั้นมีปุ่ม Edit/Submit/Click me/Primary ของตัวเอง) แล้วเข้าลูปกดวนกลับไปหน้า Home/Frames/
+Resources ไม่รู้จบ (LLM เห็นแค่ nav link ที่มีอยู่จริงในหน้า Home เป็น element ที่กดได้เท่านั้น
+ไม่มีทางสั่งกดปุ่มใน frame ที่ไม่เคยอยู่ใน snapshot เลย วนจนโดน loop-guard ของ
+orchestrator.py บังคับ go_back/scroll ซ้ำๆ) — สาเหตุจริง (เหมือนบั๊กเดียวกับที่เจอใน
+site_learning/extractor.py W39 มาก่อน แต่คนละ subsystem กัน): _COLLECT_JS เดิมรันผ่าน
+page.evaluate() ซึ่ง execute ใน context ของ main document เท่านั้น
+document.querySelectorAll() มองไม่เห็น element ภายใน <iframe> เลย (คนละ document object
+กันโดยสิ้นเชิง แม้ same-origin ก็ตาม) — แก้ด้วยการเรียก _COLLECT_JS ซ้ำกับทุก frame ใน
+page.frames (ดู get_snapshot() ด้านล่าง) page.frames คืนทุก frame แบบ flat อยู่แล้ว รวม
+frame ที่ซ้อนกันกี่ชั้นก็ตาม ไม่ต้อง recurse เอง — เรียง main frame ก่อนเสมอ (หน้าที่ไม่มี
+iframe เลย page.frames จะมีแค่ [main_frame] ตัวเดียว พฤติกรรมเดิมทุกประการ ไม่มีอะไรเปลี่ยน)
+ส่ง startIndex เป็น argument ให้ _COLLECT_JS เพื่อให้เลข index เรียงต่อกันข้าม frame แบบไม่
+ชนกัน (agent ใช้ index เดียวอ้างอิง element ทั้งหน้า ไม่แยกตาม frame)
+
+แค่ perceive เห็นยังไม่พอ — click(N)/fill(N) เดิมก็ query ข้าม frame boundary ไม่ได้เหมือนกัน
+(page.click(selector) หา element ใน main document เท่านั้น) เพิ่ม resolve_frame() ด้านล่าง
+ให้ backend/app/core/actions.py (จุด dispatch จริงที่ orchestrator.py เรียก) ใช้หา Frame
+object ที่ถูกต้องก่อนกดทุกครั้ง
 """
 
 import asyncio
-from playwright.async_api import async_playwright, Page
+from typing import Union
+
+from playwright.async_api import async_playwright, Frame, Page
 
 
 # --- JS ที่ inject เข้าไปเก็บ element โต้ตอบได้ที่มองเห็นบนหน้าจอ ---
 _COLLECT_JS = r"""
-() => {
+(startIndex) => {
   const selectors = [
     'a', 'button', 'input', 'select', 'textarea',
     '[role=button]', '[role=link]', '[role=checkbox]',
@@ -92,7 +115,7 @@ _COLLECT_JS = r"""
 
   const nodes = Array.from(document.querySelectorAll(selectors));
   const out = [];
-  let idx = 0;
+  let idx = startIndex;
 
   for (const candidate of nodes) {
     const ancestor = isBadgeLikeLeaf(candidate)
@@ -192,8 +215,23 @@ async def get_snapshot(page: Page):
     คืนค่า 2 อย่าง:
       elements  = list ของ dict (index, tag, type, label)  -> ไว้ให้โค้ดใช้
       text_repr = string สรุปสั้นๆ                          -> ไว้ยัดใส่ prompt LLM
+
+    W40: ไล่เก็บจากทุก frame ใน page.frames ไม่ใช่แค่ main document (ดู docstring หัวไฟล์) —
+    main frame เก็บก่อนเสมอ (หน้าที่ไม่มี iframe เลย page.frames มีแค่ [main_frame] ตัวเดียว
+    พฤติกรรม/ลำดับ index เดิมทุกประการ ไม่มีอะไรเปลี่ยน) ส่ง len(elements) ปัจจุบันเป็น
+    startIndex ให้ _COLLECT_JS ของแต่ละ frame ถัดไป ให้ index เรียงต่อกันไม่ชนกันข้าม frame
+    — frame ที่ evaluate ไม่ได้ (cross-origin ที่ browser บล็อก, frame ถูก detach ระหว่างอ่าน
+    ฯลฯ) ข้ามไปเงียบๆ ไม่ throw ออกไป (เฟรมเดียวพังไม่ควรทำให้ perceive ทั้งหน้าล้มเหลวไปด้วย)
     """
-    elements = await page.evaluate(_COLLECT_JS)
+    elements: list[dict] = []
+    main_frame = page.main_frame
+    frames = [main_frame] + [f for f in page.frames if f != main_frame]
+    for frame in frames:
+        try:
+            frame_elements = await frame.evaluate(_COLLECT_JS, len(elements))
+        except Exception:
+            continue
+        elements.extend(frame_elements)
 
     lines = []
     for e in elements:
@@ -205,6 +243,31 @@ async def get_snapshot(page: Page):
     return elements, text_repr
 
 
+async def resolve_frame(page: Page, selector: str) -> Union[Page, Frame]:
+    """W40: หา Frame (หรือ page เอง) ที่มี element ตรง selector นี้จริง — ลอง main frame
+    ก่อนเสมอ (เร็วที่สุด/ตรงกับกรณีส่วนใหญ่ที่ element ไม่ได้อยู่ใน iframe เลย) แล้วค่อยไล่
+    frame อื่นถ้าไม่เจอ ใช้ query_selector() เช็คแค่ "มีอยู่ไหม" (คืนทันทีไม่รอ) แทนที่จะลอง
+    click()/wait_for_selector() ทีละ frame ซึ่งจะรอจน timeout เต็มทุกครั้งที่ไม่เจอ (ช้ามาก
+    ถ้าต้องไล่หลาย frame) — คืน page เฉยๆ ถ้าหาไม่เจอในทุก frame เลย ให้ caller
+    (backend/app/core/actions.py) เรียก click()/fill() ปกติแล้วเจอ error message ที่คุ้นเคย
+    (เช่น "หา element ไม่เจอ") แทนที่จะต้องแยก error กรณีนี้ออกมาต่างหาก"""
+    try:
+        if await page.query_selector(selector) is not None:
+            return page
+    except Exception:
+        pass
+    main_frame = page.main_frame
+    for frame in page.frames:
+        if frame == main_frame:
+            continue
+        try:
+            if await frame.query_selector(selector) is not None:
+                return frame
+        except Exception:
+            continue
+    return page
+
+
 # --- helper: ให้ agent สั่งงานกลับด้วย "หมายเลข" ที่ perception ให้มา ---
 # ทุก action คืนค่า "[OK]" หรือ "[FAIL] เหตุผล" เสมอ ไม่ raise exception ออกไป
 # เพื่อให้ agent loop (W4) จับ error แล้วตัดสินใจ retry/แจ้ง user ต่อได้ ไม่ crash ทั้ง process
@@ -214,7 +277,9 @@ ACTION_TIMEOUT_MS = 3000
 
 async def click_by_index(page: Page, index: int) -> str:
     try:
-        await page.click(f'[data-ai-index="{index}"]', timeout=ACTION_TIMEOUT_MS)
+        selector = f'[data-ai-index="{index}"]'
+        target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=ACTION_TIMEOUT_MS)
         return "[OK]"
     except Exception as e:
         return f"[FAIL] click index={index}: {type(e).__name__}"
@@ -222,7 +287,9 @@ async def click_by_index(page: Page, index: int) -> str:
 
 async def fill_by_index(page: Page, index: int, text: str) -> str:
     try:
-        await page.fill(f'[data-ai-index="{index}"]', text, timeout=ACTION_TIMEOUT_MS)
+        selector = f'[data-ai-index="{index}"]'
+        target = await resolve_frame(page, selector)
+        await target.fill(selector, text, timeout=ACTION_TIMEOUT_MS)
         return "[OK]"
     except Exception as e:
         return f"[FAIL] fill index={index}: {type(e).__name__}"
@@ -231,9 +298,9 @@ async def fill_by_index(page: Page, index: int, text: str) -> str:
 async def select_by_index(page: Page, index: int, label: str) -> str:
     """เลือกตัวเลือกใน <select> (เช่น dropdown เรียงสินค้าของ saucedemo)"""
     try:
-        await page.select_option(
-            f'[data-ai-index="{index}"]', label=label, timeout=ACTION_TIMEOUT_MS
-        )
+        selector = f'[data-ai-index="{index}"]'
+        target = await resolve_frame(page, selector)
+        await target.select_option(selector, label=label, timeout=ACTION_TIMEOUT_MS)
         return "[OK]"
     except Exception as e:
         return f"[FAIL] select index={index} label={label!r}: {type(e).__name__}"

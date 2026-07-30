@@ -1,9 +1,30 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from playwright.async_api import TimeoutError as PWTimeout
+from playwright.async_api import TimeoutError as PWTimeout, async_playwright
 
 from backend.app.core.actions import ActionResult, _ELEMENT_ACTION_TIMEOUT_MS, execute
+from backend.app.core.perception import get_snapshot
+
+
+def _make_select_mock_page(option_texts, select_side_effect):
+    """W42: select_option() ตอนนี้เรียก target.locator(selector).locator("option").
+    evaluate_all(...) ก่อนเสมอ (ดึง {text, value} จริงจาก DOM มาเทียบแบบ normalize
+    whitespace) — .locator() เป็น sync method ของ Playwright จริง (คืน Locator object
+    ทันที ไม่ await) ต้อง mock ด้วย MagicMock ธรรมดา (ไม่ใช่ AsyncMock ทั้งก้อนเหมือน
+    mock_page อื่นๆ ในไฟล์นี้) ไม่งั้นเรียก .locator(selector) จะได้ coroutine กลับมาแทน
+    Locator object จริง — value ในเทสต์นี้ตั้งให้เท่ากับ text เฉยๆ (เพียงพอสำหรับเทสต์
+    retry logic ที่ไม่ได้สนใจ whitespace/value แยกจาก text)"""
+    mock_page = AsyncMock()
+    option_locator = MagicMock()
+    option_locator.evaluate_all = AsyncMock(
+        return_value=[{"text": t, "value": t} for t in option_texts]
+    )
+    select_locator = MagicMock()
+    select_locator.locator = MagicMock(return_value=option_locator)
+    mock_page.locator = MagicMock(return_value=select_locator)
+    mock_page.select_option = AsyncMock(side_effect=select_side_effect)
+    return mock_page
 
 # W5: retry ระดับ click/fill/select/check เมื่อ action ล้มเหลว — ไม่เสีย LLM token
 # เพราะ retry อยู่ใน actions.py เอง ไม่ต้องรอ next_action() รอบใหม่ ทุกเทสต์ mock
@@ -69,8 +90,7 @@ async def test_execute_fill_gives_up_after_max_retries(_no_real_sleep):
 
 @pytest.mark.asyncio
 async def test_execute_select_and_check_also_get_retried(_no_real_sleep):
-    mock_page = AsyncMock()
-    mock_page.select_option = AsyncMock(side_effect=[PWTimeout("boom"), None])
+    mock_page = _make_select_mock_page(["A"], [PWTimeout("boom"), None])
     result_select = await execute(mock_page, {"type": "select", "index": 1, "label": "A"})
     assert result_select.success is True
     assert mock_page.select_option.await_count == 2
@@ -152,3 +172,187 @@ async def test_execute_does_not_retry_switch_tab_on_failure():
 
     assert result.success is False
     assert "มีแค่ 0 tab" in result.message
+
+
+# ---------------- W40: execute() ต้องกด element ที่อยู่ใน <iframe> ได้จริง ----------------
+# เทสต์กลุ่มนี้เปิด chromium จริง (ไม่ mock) — บั๊กที่ user รายงานคือ page.click(selector)
+# หา element ข้าม frame boundary ไม่ได้เลย ต้องพิสูจน์กับ DOM จริงที่มี iframe จริง mock
+# page ธรรมดาพิสูจน์เรื่องนี้ไม่ได้ (mock ไม่มี frame boundary ให้ล้มเหลวจริง)
+
+_HTML_BUTTON_INSIDE_IFRAME = """
+<html><body>
+  <button id="main-btn">Main Button</button>
+  <iframe srcdoc="<html><body><button id='inner-btn'>Inner Button</button></body></html>"></iframe>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_execute_click_succeeds_on_button_inside_iframe():
+    """W40: ปุ่มที่ perception.get_snapshot() เจอใน <iframe> ต้องกดผ่านได้จริงด้วย
+    execute({"type": "click", ...}) — พิสูจน์ทั้ง 2 ฝั่งของ pipeline ทำงานร่วมกันจริง
+    (perceive เห็น + dispatch กดได้ ไม่ใช่แค่เห็นแต่กดไม่ถึง)"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_BUTTON_INSIDE_IFRAME)
+
+        elements, _ = await get_snapshot(page)
+        inner_btn = next(e for e in elements if e["label"] == "Inner Button")
+
+        result = await execute(page, {"type": "click", "index": inner_btn["index"]})
+
+        await browser.close()
+
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_execute_click_still_succeeds_on_main_frame_button_when_iframe_present():
+    """ปุ่มในหน้าหลัก (ไม่ใช่ใน iframe) ต้องยังกดได้ตามปกติแม้หน้ามี iframe อื่นอยู่ด้วย —
+    resolve_frame() ต้องลอง main frame ก่อนเสมอและเจอเลยไม่ต้องไล่ frame อื่นต่อ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_BUTTON_INSIDE_IFRAME)
+
+        elements, _ = await get_snapshot(page)
+        main_btn = next(e for e in elements if e["label"] == "Main Button")
+
+        result = await execute(page, {"type": "click", "index": main_btn["index"]})
+
+        await browser.close()
+
+    assert result.success is True
+
+
+# ---------------- W42: select_option() กับ option text ที่มี non-breaking space ----------------
+# เทสต์กลุ่มนี้เปิด chromium จริง (ไม่ mock) — บั๊กที่ user รายงานคือ &nbsp; (U+00A0) ใน DOM
+# จริง เทียบ mock string ธรรมดาพิสูจน์เรื่องนี้ไม่ได้ (mock ไม่มี whitespace encoding ให้
+# ต่างจากที่พิมพ์เข้าไปเลย) ต้องใช้ <select> จริงที่ browser parse HTML entity ให้เอง
+
+_HTML_SELECT_WITH_NBSP = """
+<html><body>
+  <select id="city">
+    <option value="">Select a city</option>
+    <option value="ny">New&nbsp;York</option>
+    <option value="la">Los&nbsp;Angeles</option>
+  </select>
+</body></html>
+"""
+
+
+async def _select_and_read_value(html: str, index_finder, label: str):
+    """เปิดหน้า/select ตาม index/กด select_option ด้วย label ที่กำหนด แล้วอ่านค่า .value
+    ปัจจุบันของ <select> กลับมาด้วย — ใช้ร่วมกันในเทสต์ W42 ทุกตัวด้านล่าง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+        index = index_finder(elements)
+
+        result = await execute(page, {"type": "select", "index": index, "label": label})
+        selected_value = await page.input_value(f'[data-ai-index="{index}"]')
+
+        await browser.close()
+
+    return result, selected_value
+
+
+@pytest.mark.asyncio
+async def test_select_option_matches_nbsp_option_when_target_uses_regular_space():
+    """W42: option text ใน DOM ใช้ &nbsp; คั่นคำ ("New\\u00a0York") แต่ label ที่ LLM ส่งมา
+    ใช้ space ปกติ ("New York") — ต้อง select ได้ (เดิมจะ [FAIL] timeout เพราะเทียบ exact
+    string ตรงๆ)"""
+    result, selected_value = await _select_and_read_value(
+        _HTML_SELECT_WITH_NBSP,
+        lambda elements: next(e["index"] for e in elements if e["tag"] == "select"),
+        "New York",
+    )
+
+    assert result.success is True
+    assert selected_value == "ny"
+
+
+@pytest.mark.asyncio
+async def test_select_option_matches_regular_option_when_target_uses_nbsp():
+    """W42: กลับกัน — DOM ใช้ space ปกติ แต่ label ที่ LLM ส่งมาดันมี &nbsp; ปนอยู่ (เช่น
+    copy-paste มาจากที่อื่น) ก็ต้อง select ได้เหมือนกัน"""
+    html = """
+    <html><body>
+      <select id="city">
+        <option value="">Select a city</option>
+        <option value="ny">New York</option>
+      </select>
+    </body></html>
+    """
+    result, selected_value = await _select_and_read_value(
+        html,
+        lambda elements: next(e["index"] for e in elements if e["tag"] == "select"),
+        "New York",
+    )
+
+    assert result.success is True
+    assert selected_value == "ny"
+
+
+@pytest.mark.asyncio
+async def test_select_option_matches_option_with_duplicate_and_trailing_whitespace():
+    """W42: option text มี whitespace ซ้ำ/เว้นวรรคหัวท้ายเกิน (เช่นจาก HTML ที่จัด
+    indentation ไม่เรียบร้อย) — ต้อง select ได้เมื่อ label ที่ LLM ส่งมาเป็นข้อความสะอาด"""
+    html = """
+    <html><body>
+      <select id="city">
+        <option value="">Select a city</option>
+        <option value="ny">  New   York  </option>
+      </select>
+    </body></html>
+    """
+    result, selected_value = await _select_and_read_value(
+        html,
+        lambda elements: next(e["index"] for e in elements if e["tag"] == "select"),
+        "New York",
+    )
+
+    assert result.success is True
+    assert selected_value == "ny"
+
+
+@pytest.mark.asyncio
+async def test_select_option_fails_with_real_option_list_when_no_match_found():
+    """W42: label ที่ไม่ตรงกับ option ไหนเลยแม้ normalize whitespace แล้ว ต้องคืน [FAIL]
+    พร้อมแนบ list ตัวเลือกจริงที่มีอยู่ไปด้วย (ไม่ throw exception ออกมา)"""
+    result, _ = await _select_and_read_value(
+        _HTML_SELECT_WITH_NBSP,
+        lambda elements: next(e["index"] for e in elements if e["tag"] == "select"),
+        "Chicago",
+    )
+
+    assert result.success is False
+    assert "New York" in result.message
+    assert "Los Angeles" in result.message
+
+
+@pytest.mark.asyncio
+async def test_select_option_still_works_normally_for_plain_dropdown_without_nbsp():
+    """W42: dropdown ปกติที่ไม่มี non-breaking space เลย ต้องยัง select ได้เหมือนเดิมทุก
+    ประการ (regression check — ไม่กระทบ select ที่เคยผ่านอยู่แล้ว)"""
+    html = """
+    <html><body>
+      <select id="language">
+        <option value="">Select</option>
+        <option value="py">Python</option>
+        <option value="js">JavaScript</option>
+      </select>
+    </body></html>
+    """
+    result, selected_value = await _select_and_read_value(
+        html,
+        lambda elements: next(e["index"] for e in elements if e["tag"] == "select"),
+        "JavaScript",
+    )
+
+    assert result.success is True
+    assert selected_value == "js"

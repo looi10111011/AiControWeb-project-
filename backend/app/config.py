@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     # crawler.py::_explore_buttons) — หน้าที่มีปุ่มเข้าข่ายปลอดภัยเยอะผิดปกติ (เช่น list
     # ยาวๆ ที่ทุกแถวมีปุ่ม "View") ไม่ควรไล่กดทุกอันจนใช้เวลาเป็นชั่วโมง
     site_learning_max_buttons_per_page: int = 15
+    # W36: เพดานเฉพาะปุ่ม tier="core" (ดู site_learning/safety.py::classify_button_tier,
+    # crawler.py::_explore_buttons) ต่อ 1 หน้า — แยกจาก site_learning_max_buttons_per_page
+    # ข้างบน (เพดานรวมทุก tier ที่ผ่านเข้ามาถึงตอนนี้) เพราะ "core" function classification
+    # ตั้งใจลดจำนวนปุ่มที่ไล่กดต่อหน้าลงอีกชั้น (แก้ปัญหา self-learning กดปุ่มเยอะเกินความ
+    # จำเป็นบนหน้าที่มีปุ่มฟังก์ชันหลักเยอะผิดปกติ เช่น search/filter/sort/add-to-cart หลาย
+    # ตัวพร้อมกัน) เกินเพดานนี้จะตัดเอาแค่ top-K ตาม priority (form-submit > exact keyword
+    # match > partial match — ดู safety.button_core_priority) ตั้งน้อยเกินไปจะพลาดฟังก์ชัน
+    # หลักบางอย่างของหน้าที่มีปุ่ม core เยอะจริงๆ (ไม่ใช่ noise) ตั้งมากเกินไปจะไม่ช่วยลดปุ่ม
+    # ที่ไล่กดเท่าที่ควร — ไม่กระทบปุ่ม tier="nav" เลย (ยังไล่กดครบตาม
+    # site_learning_max_buttons_per_page เดิมด้านบนเหมือนที่ไม่มีฟีเจอร์นี้)
+    site_learning_max_core_buttons_per_page: int = 8
     # W24: ค่าพวกนี้เดิมเป็น magic number ฝังในโค้ดล้วนๆ (retry=0 เสมอ ไม่มี retry เลย) —
     # ย้ายมาเป็น setting ที่ปรับได้จาก .env ตรงๆ เพราะ "หากตั้งไว้น้อยเกินไป Agent จะหยุด
     # เร็ว" เป็นความเสี่ยงจริง (เว็บที่ network ช้า/element render ช้าต้องการ retry มากกว่า
