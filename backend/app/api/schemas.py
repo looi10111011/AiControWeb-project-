@@ -61,6 +61,8 @@ class GeneratePlanRequest(BaseModel):
 
 class GeneratePlanResponse(BaseModel):
     plan: str
+    is_qa: bool = False
+
 
 
 class ExecutePlanRequest(BaseModel):

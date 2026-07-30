@@ -399,7 +399,9 @@ const runningPlans = {};     // task_id -> plan text, set right when execute_pla
                               // approved plan stays visible in the chat while the task is still
                               // running (task.result.plan only exists once it's done)
 const liveConnections = {};  // task_id -> EventSource, one live stream per running task
+const liveChatReplies = {};  // task_id -> chat reply message for Q&A summarization intent
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
+
 
 // W14: Website Learning & Manual Generation — banner shown above the composer when the
 // current Target URL's site has no manual yet, plus live progress while crawling it.
@@ -424,8 +426,22 @@ try {
   conversations = {};
 }
 
+// ---- Blacklist: เก็บ session id และ task_id ที่ผู้ใช้ตั้งใจลบไปแล้ว (กด ×)
+// บันทึกลง localStorage เพื่อป้องกันไม่ให้ refreshTasks() สร้าง conversation กลับมาใหม่เมื่อดึง tasks จาก backend
+const DELETED_CONV_KEY = "agentConsoleDeletedConvs";
+let deletedConvs = {}; // { [id]: true }
+try {
+  deletedConvs = JSON.parse(localStorage.getItem(DELETED_CONV_KEY) || "{}");
+} catch (e) {
+  deletedConvs = {};
+}
+
 function saveConversations() {
   try { localStorage.setItem(CONV_STORAGE_KEY, JSON.stringify(conversations)); } catch (e) {}
+}
+
+function saveDeletedConvs() {
+  try { localStorage.setItem(DELETED_CONV_KEY, JSON.stringify(deletedConvs)); } catch (e) {}
 }
 
 // ---- Target URL history: remembered client-side (localStorage) so it survives a page
@@ -464,9 +480,11 @@ function conversationIdForTask(taskId) {
 // time seeing them — e.g. created before this feature existed, or from another tab)
 // each get their own solo conversation so they still show up in the history list.
 function ensureConversationFor(taskId) {
+  if (deletedConvs[taskId] || deletedConvs["conv-" + taskId] || deletedConvs["task-" + taskId]) return null;
   const existing = conversationIdForTask(taskId);
   if (existing) return existing;
   const convId = "conv-" + taskId;
+  if (deletedConvs[convId]) return null;
   conversations[convId] = [taskId];
   saveConversations();
   return convId;
@@ -572,12 +590,25 @@ async function refreshTasks() {
     if (!r.ok) return;
     tasks = await r.json();
     tasks.sort((a, b) => b.created_at - a.created_at);
+
+    // กรอง tasks ที่ถูก user ลบไปแล้วออกก่อน
+    tasks = tasks.filter(t => !deletedTaskIds.has(t.task_id));
+
     for (const t of tasks) {
       ensureConversationFor(t.task_id);
       // Reconnect live streams for any task still running (e.g. after a page reload)
       // so pending approvals / step updates aren't silently missed.
       if (t.status === "running") openStream(t.task_id);
     }
+
+    // ทำความสะอาด deletedTaskIds — เอา task_id ที่ไม่อยู่ใน backend แล้วออก
+    const currentTaskIds = new Set(tasks.map(t => t.task_id));
+    for (const taskId of deletedTaskIds) {
+      if (!currentTaskIds.has(taskId)) {
+        deletedTaskIds.delete(taskId);
+      }
+    }
+
     renderHistory();
     renderSelected();
   } catch (e) {}
@@ -611,6 +642,8 @@ function closeStream(taskId) {
 function handleStreamEvent(taskId, event) {
   if (event.kind === "step") {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push(event);
+  } else if (event.kind === "chat_reply") {
+    liveChatReplies[taskId] = event.message;
   } else if (event.kind === "approval_request") {
     // W13: this is always a permission prompt for an action now — plan review happens
     // before the task exists at all (see requestPlan()/approvePlan()), so a
@@ -661,18 +694,70 @@ async function stopTask(taskId) {
 // "+ New session" button already calls when leaving a session behind — the session id
 // IS the conversation id, see newSessionId()/requestPlan()). Stops a still-running task
 // first so the browser isn't yanked out from under an active step. The conversation
-// itself stays in history afterward (this only tears down the live browser, not the
-// chat record — same as any other finished conversation).
+// is permanently removed from the UI by adding its task_ids to deletedTaskIds,
+// preventing refreshTasks() from recreating them.
 async function killSession(convId) {
+  // 1. หยุด task ที่กำลังรันอยู่ (ถ้ามี)
   const latest = latestTaskInConversation(convId);
   if (latest && latest.status === "running") {
-    try { await fetch(`${API}/tasks/${latest.task_id}/stop`, { method: "POST" }); } catch (e) {}
+    try {
+      await fetch(`${API}/tasks/${latest.task_id}/stop`, { method: "POST" });
+    } catch (e) {
+      console.warn("Failed to stop task:", e);
+    }
   }
-  try { await fetch(`${API}/sessions/${convId}/close`, { method: "POST" }); } catch (e) {}
+
+  // 2. พยายามปิด session ที่ backend (ถ้ามี endpoint)
+  try {
+    await fetch(`${API}/sessions/${convId}/close`, { method: "POST" });
+  } catch (e) {
+    console.warn("Backend session close failed:", e);
+  }
+
+  // 3. เก็บ task_ids ทั้งหมดของ conversation นี้ลบลงใน deletedConvs และบันทึกลง localStorage
+  const tasksToRemove = conversations[convId] || [];
+  tasksToRemove.forEach(taskId => {
+    deletedConvs[taskId] = true;
+    deletedConvs["task-" + taskId] = true;
+    deletedConvs["conv-" + taskId] = true;
+  });
+  deletedConvs[convId] = true;
+  deletedConvs["conv-" + convId] = true;
+
+  // 4. ลบ conversation ออกจาก localStorage
+  delete conversations[convId];
+  saveConversations();
+  saveDeletedConvs();
+
+
+  // 5. ลบ tasks ออกจาก tasks array ทันที
+  tasks = tasks.filter(task => !tasksToRemove.includes(task.task_id));
+
+  // 6. ทำความสะอาด streams และ state ทั้งหมด
+  tasksToRemove.forEach(taskId => {
+    delete liveSteps[taskId];
+    delete pendingApprovals[taskId];
+    delete runningPlans[taskId];
+    delete liveChatReplies[taskId];
+    if (liveConnections[taskId]) {
+      closeStream(taskId);
+    }
+  });
+
+  // 7. ถ้ากำลังดู conversation นี้อยู่ ให้ reset การเลือก
   if (selectedConvId === convId) {
-    closeStream(latest ? latest.task_id : null);
+    selectedConvId = null;
+    $("url").value = "https://www.saucedemo.com/";
+    $("goal").value = "";
+    $("composerError").textContent = "";
+    learnProgress = null;
+    siteManualStatus = null;
+    checkSiteManualStatus();
   }
-  await refreshTasks();
+
+  // 8. รีเฟรช UI
+  renderHistory();
+  renderSelected();
 }
 
 // W13: plan review is 2 explicit steps now. requestPlan() asks the agent to draft a
@@ -731,7 +816,18 @@ async function requestPlan() {
       $("composerError").textContent = "Failed to generate plan: " + err;
       return;
     }
-    const { plan } = await r.json();
+    const res = await r.json();
+    const plan = res.plan;
+    const isQa = res.is_qa;
+
+    if (isQa) {
+      selectedConvId = sessionId;
+      $("goal").value = "";
+      pendingPlan = null;
+      await approvePlanWithPayload({ sessionId, url, goal, planDraft: "", requestParams });
+      return;
+    }
+
     pendingPlan = { sessionId, url, goal, planDraft: plan, requestParams, editing: false };
     // Selecting this conversation now (even though no task exists yet) so the pending
     // plan bubble renders in the right thread and, for a brand-new chat, so it doesn't
@@ -745,15 +841,11 @@ async function requestPlan() {
   }
 }
 
-async function approvePlan() {
-  if (!pendingPlan) return;
-  const { sessionId, url, goal, planDraft, requestParams } = pendingPlan;
+async function approvePlanWithPayload(planPayload) {
+  const { sessionId, url, goal, planDraft, requestParams } = planPayload;
   const payload = {
     url,
     goal,
-    // Confirming persists this plan into Plan Memory (backend/app/core/plan_memory.py)
-    // regardless of whether it was edited — future runs of a semantically similar goal
-    // on this domain reuse it directly instead of asking the LLM to draft again.
     plan: planDraft,
     session_id: sessionId,
     max_steps: requestParams.max_steps,
@@ -789,6 +881,13 @@ async function approvePlan() {
   } catch (e) {
     $("composerError").textContent = "Failed to start task.";
   }
+}
+
+async function approvePlan() {
+  if (!pendingPlan) return;
+  const planPayload = pendingPlan;
+  pendingPlan = null;
+  await approvePlanWithPayload(planPayload);
 }
 
 function cancelPlan() {
@@ -1101,6 +1200,15 @@ function renderHistory() {
       checkSiteManualStatus();
     });
   });
+  list.querySelectorAll(".kill-session-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const convId = btn.dataset.killConv;
+      if (convId) {
+        killSession(convId);
+      }
+    });
+  });
 }
 
 function statusMeta(task) {
@@ -1154,6 +1262,19 @@ function renderTaskTurn(task) {
   const agentIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/></svg>`;
 
   const pending = pendingApprovals[task.task_id];
+  const isChatReply = (task.result && task.result.status === "chat_reply") || !!liveChatReplies[task.task_id];
+
+  if (isChatReply) {
+    const replyMsg = (task.result && task.result.message) || liveChatReplies[task.task_id] || "";
+    html += `
+      <div class="msg agent">
+        <div class="avatar">${agentIcon}</div>
+        <div>
+          <div class="bubble">${escapeHtml(replyMsg)}</div>
+        </div>
+      </div>`;
+    return html;
+  }
 
   // W13: the plan (if any) was already reviewed and approved *before* this task was
   // even created (see requestPlan()/approvePlan()) — this bubble is purely a record of
@@ -1333,6 +1454,10 @@ function renderLog(task) {
   count.textContent = "";
   if (!task) {
     body.innerHTML = '<div class="log-placeholder">Select or start a task to see its step log.</div>';
+    return;
+  }
+  if ((task.result && task.result.status === "chat_reply") || liveChatReplies[task.task_id]) {
+    body.innerHTML = '<div class="log-placeholder">No action log for chat response.</div>';
     return;
   }
   const history = task.result && task.result.history;
