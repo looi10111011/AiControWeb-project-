@@ -18,6 +18,23 @@ orchestrator.py เรียกใช้แบบไม่ต้องรู้�
 Anthropic path เปิด prompt caching ไว้ (system + tools มี cache_control) เพราะสอง
 ก้อนนี้เหมือนเดิมทุก step ของ loop เดียวกัน ต่างแค่ messages ที่ยาวขึ้นเรื่อยๆ — Groq
 ไม่ได้ทำตรงนี้ (ไม่รองรับ cache_control แบบเดียวกันผ่าน chat.completions)
+
+W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) — ติ๊กทีละ step ตอน agent
+ทำ step นั้นสำเร็จจริงระหว่างรัน task (ไม่ใช่แค่ตอนจบ task ทั้งหมด) เพิ่ม 2 อย่างที่นี่:
+  1. _BROWSER_ACTION_PARAMS ได้ property "completed_plan_step" ใหม่ (optional เสมอ ไม่
+     required เด็ดขาด — ad-hoc task ที่ไม่มีแผนต้องยังทำงานเหมือนเดิมทุกประการ) ให้ LLM
+     ใส่เลขข้อ (1-based) ถ้า action ที่เพิ่งเรียกทำให้ step นั้นของแผนเสร็จสมบูรณ์แล้ว —
+     orchestrator.py อ่านค่านี้แล้วยิง SSE event "plan_step_done" เฉพาะตอน execute()
+     สำเร็จจริงเท่านั้น (ดู orchestrator.py สำหรับ logic เต็ม)
+  2. _build_user_turn_text()/next_action()/next_action_groq()/next_action_gemini() ทั้ง 3
+     provider ได้ parameter ใหม่ plan_context — แนบแผนที่ user ยืนยันแล้วเป็น section แยก
+     "แพลนปัจจุบัน" ให้ LLM เห็นเลขข้อจริงก่อนตัดสินใจว่า action นี้ทำให้ step ไหนเสร็จ (ว่าง
+     เปล่าเสมอสำหรับ ad-hoc task — ไม่มี section นี้โผล่มาปนเลย)
+  3. _PLAN_PROMPT_TEMPLATE เปลี่ยนจากขอ "bullet สั้นๆ" (ไม่บังคับ format จริงจัง) เป็น
+     บังคับ format เลขข้อ "1. ... \n2. ..." ตรงๆ เพราะ frontend (index.html) ต้อง parse
+     แต่ละบรรทัดเป็น step แยกเพื่อ render checklist ที่ index ตรงกับที่ LLM อ้างอิงใน
+     completed_plan_step ได้แน่นอน (เดิมโมเดลบังเอิญมักตอบแบบเลขข้ออยู่แล้วในทางปฏิบัติ
+     แต่ไม่ใช่สัญญาที่บังคับได้ — ต้องบังคับชัดเจนไม่งั้น parsing ฝั่ง frontend จะพลาด)
 """
 
 import asyncio
@@ -158,6 +175,14 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   และ indexed elements ของหน้าใหม่หลัง recovery นี้ก่อน แล้วเลือก action ที่ต่างออกไป
   จริงๆ (เช่น element อื่นที่ยังไม่เคยลอง) หรือถ้าเห็นชัดว่าไม่มีทางไปต่อจริงๆ ให้
   finish_task พร้อมอธิบายเหตุผล
+- ถ้ามี "แพลนปัจจุบันที่ user ยืนยันแล้ว" แนบมาในข้อความ (เลขข้อ 1, 2, 3, ...) ให้ดูว่า
+  action ที่คุณกำลังจะเรียกตอนนี้ทำให้ step ไหนของแพลน "เสร็จสมบูรณ์แล้วจริง" หรือไม่ (ต้อง
+  เสร็จจริงตามหลักฐานที่จะเห็นหลัง action นี้ทำงาน ไม่ใช่แค่ "กำลังจะทำ") ถ้าใช่ ให้ใส่เลขข้อ
+  นั้น (1-based ตามที่แสดงในแพลน) ลงใน parameter "completed_plan_step" ของ action นี้ด้วย —
+  ถ้า action นี้ยังไม่ทำให้ step ไหนเสร็จ (เช่น เป็นแค่ขั้นตอนย่อยระหว่างทางของ step เดียวกัน)
+  ห้ามใส่ completed_plan_step มาเลย (ละ parameter นี้ไว้) ห้ามเดา/ใส่เผื่อไว้ก่อน และห้ามใส่
+  เลขข้อเดิมซ้ำสำหรับ step ที่เคยระบุว่าเสร็จไปแล้วในรอบก่อนหน้า — ถ้าไม่มี "แพลนปัจจุบัน"
+  แนบมาเลย (ad-hoc task ไม่ผ่าน Confirm plan) ไม่ต้องสนใจ parameter นี้เลย
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -192,8 +217,17 @@ def _build_user_turn_text(
     site_manual_context: str = "",
     current_url: str = "",
     action_history_context: str = "",
+    plan_context: str = "",
 ) -> str:
     text = f"Goal: {goal}"
+    # W43: plan_context มีค่าเฉพาะ task ที่ผ่าน Confirm plan (confirm_plan=True/
+    # approved_plan) มาก่อนเท่านั้น — ad-hoc task (ไม่มีแพลนเลย) ได้ "" เสมอ ไม่มี section
+    # นี้โผล่มาปนเลย (backward compatible ทุกประการกับ prompt เดิม) วางไว้ก่อน "หน้าเว็บ
+    # ปัจจุบัน" เพราะเป็นบริบทระดับ task (เหมือน Goal) ไม่ใช่ข้อมูลเฉพาะ step นี้แบบ
+    # manual_context/memory_context ด้านล่าง — ให้ LLM เห็นเลขข้อของแผนก่อนตัดสินใจว่า action
+    # ที่กำลังจะทำ "ทำให้ step ไหนเสร็จ" (ดู completed_plan_step ใน _BROWSER_ACTION_PARAMS)
+    if plan_context:
+        text += f"\n\nแพลนปัจจุบันที่ user ยืนยันแล้ว (แต่ละบรรทัดคือ 1 step ตามเลขข้อ):\n{plan_context}"
     # W30 (recovered from an earlier exploratory branch — ดู roadmap.txt): เพิ่มหลัง user
     # รายงานว่า agent บางครั้งดูเหมือนตัดสินใจจาก state เก่า (เช่นหน้าเว็บเปลี่ยนไปเองระหว่าง
     # ทาง แต่ยังพูดถึงหน้าเดิม) — get_snapshot() ที่ orchestrator.py เรียกทุก step อยู่แล้ว
@@ -285,6 +319,19 @@ _BROWSER_ACTION_PARAMS = {
         "direction": {"type": "string", "enum": ["up", "down"], "description": "ทิศทางเลื่อนจอ (scroll)"},
         "url": {"type": "string", "description": "URL ปลายทาง (goto)"},
         "tab_index": {"type": "integer", "description": "ลำดับ tab ที่จะสลับไป (switch_tab)"},
+        # W43: optional เสมอ (ไม่อยู่ใน "required" ด้านล่าง) — ไม่ส่งมาก็ได้ถ้า action นี้ไม่
+        # เกี่ยวกับ plan step ไหนเลย/ยังไม่มี plan ให้ทำตาม (ad-hoc task ที่ไม่ผ่าน Confirm
+        # plan) เห็นได้จาก orchestrator.py ที่ตอนนี้อ่านค่านี้ผ่าน tool_input.get(...) เฉยๆ
+        # (คืน None ถ้าไม่มี ไม่ throw) — ห้าม LLM ทำเป็น required เด็ดขาด กันพัง backward
+        # compat กับ task ที่ไม่มีแพลนเลย
+        "completed_plan_step": {
+            "type": "integer",
+            "description": (
+                "ใส่เลขข้อ (1-based ตามที่แสดงใน \"แพลนปัจจุบัน\") ถ้า action ที่เพิ่งเรียกนี้"
+                " ทำให้ step นั้นของแพลนเสร็จสมบูรณ์แล้ว — ไม่ต้องใส่ (ละไว้) ถ้า action นี้ยัง"
+                " ไม่ทำให้ step ไหนเสร็จ หรือไม่มีแพลนแนบมาในบทสนทนานี้เลย"
+            ),
+        },
     },
     "required": ["type"],
 }
@@ -356,6 +403,7 @@ async def next_action(
     site_manual_context: str = "",
     current_url: str = "",
     action_history_context: str = "",
+    plan_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -389,13 +437,16 @@ async def next_action(
 
     action_history_context (W32): action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) จาก
     ShortTermMemory.recent_actions_summary() — ต่างจาก memory_context ที่กรองเฉพาะ fail
+
+    plan_context (W43): แผนที่ user ยืนยันแล้ว (เลขข้อ "1. ... 2. ...") ถ้า task นี้ผ่าน
+    Confirm plan มา — ว่างเปล่าถ้าเป็น ad-hoc task ไม่มีแผนเลย ดู _build_user_turn_text()
     """
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context, current_url, action_history_context,
+                site_manual_context, current_url, action_history_context, plan_context,
             ),
         }
     ]
@@ -454,6 +505,7 @@ async def next_action_groq(
     site_manual_context: str = "",
     current_url: str = "",
     action_history_context: str = "",
+    plan_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -466,8 +518,8 @@ async def next_action_groq(
     ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
 
     manual_context/memory_context/long_term_context/vision_context/current_url/
-    action_history_context: ดู next_action() — เหมือนกัน (vision_context จะเป็น ""
-    เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน scope แค่ provider=gemini)
+    action_history_context/plan_context: ดู next_action() — เหมือนกัน (vision_context
+    จะเป็น "" เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน scope แค่ provider=gemini)
     """
     if not messages:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -477,7 +529,7 @@ async def next_action_groq(
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context, current_url, action_history_context,
+                site_manual_context, current_url, action_history_context, plan_context,
             ),
         }
     ]
@@ -566,6 +618,7 @@ async def next_action_gemini(
     site_manual_context: str = "",
     current_url: str = "",
     action_history_context: str = "",
+    plan_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -578,8 +631,8 @@ async def next_action_gemini(
     ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
 
     manual_context/memory_context/long_term_context/vision_context/current_url/
-    action_history_context: ดู next_action() — เหมือนกัน (vision_context (W9[A]) จะมี
-    ค่าจริงเฉพาะ provider นี้ — orchestrator.py ยิง vision fallback
+    action_history_context/plan_context: ดู next_action() — เหมือนกัน (vision_context
+    (W9[A]) จะมีค่าจริงเฉพาะ provider นี้ — orchestrator.py ยิง vision fallback
     (llm.describe_screenshot()) scope แค่ Gemini เท่านั้นตอนนี้)
     """
     gemini_model = client.GenerativeModel(
@@ -595,7 +648,7 @@ async def next_action_gemini(
             "parts": [{
                 "text": _build_user_turn_text(
                     goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context, current_url, action_history_context,
+                    site_manual_context, current_url, action_history_context, plan_context,
                 )
             }],
         }
@@ -640,11 +693,20 @@ def append_tool_result_gemini(messages: list, tool_use_id: str, result_text: str
             "parts": [{"function_response": {"name": tool_use_id, "response": {"result": result_text}}}],
         }
     ]
+# W43: บังคับ format เลขข้อ "1. ... \n2. ..." ตรงๆ (เดิมขอแค่ "bullet สั้นๆ" ซึ่งไม่ได้
+# การันตี format นี้จริงจัง — โมเดลบังเอิญมักตอบแบบเลขข้อเองอยู่แล้วในทางปฏิบัติ แต่ไม่ใช่
+# สัญญาที่บังคับได้) จำเป็นเพราะตอนนี้ frontend (index.html) ต้อง parse plan text นี้เป็น
+# step แยกทีละข้อเพื่อ render เป็น checklist ที่ติ๊กได้ real-time ระหว่าง task รันจริง (ดู
+# orchestrator.py::completed_plan_step) ถ้า format ไม่ตรง parsing จะแมตช์ index ผิดข้อ
 _PLAN_PROMPT_TEMPLATE = (
     "Goal: {goal}\n\nหน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
-    "เขียนแผนคร่าวๆ เป็น bullet สั้นๆ (ไม่เกิน 5-6 ข้อ) ว่าจะทำ goal นี้ให้สำเร็จด้วย"
-    "ขั้นตอนอะไรบ้าง — สรุประดับสูงพอให้ user อ่านแล้วเข้าใจและตัดสินใจอนุมัติได้ ไม่ต้อง"
-    "เรียก tool ไม่ต้องระบุ index ของ element เป๊ะๆ ตอบเป็นข้อความธรรมดา ไม่ต้องมี markdown"
+    "เขียนแผนคร่าวๆ ว่าจะทำ goal นี้ให้สำเร็จด้วยขั้นตอนอะไรบ้าง (ไม่เกิน 5-6 ข้อ) — สรุป"
+    "ระดับสูงพอให้ user อ่านแล้วเข้าใจและตัดสินใจอนุมัติได้ ไม่ต้องเรียก tool ไม่ต้องระบุ "
+    "index ของ element เป๊ะๆ ตอบเป็นข้อความธรรมดา ไม่ต้องมี markdown\n\n"
+    "*** ต้องตอบเป็นรายการเลขข้อเท่านั้น แต่ละข้อขึ้นต้นด้วยเลข ตามด้วยจุด แล้วเว้นวรรค "
+    "เช่น '1. ค้นหาปุ่ม Login แล้วคลิก' บนบรรทัดของตัวเอง ห้ามใช้ bullet แบบอื่น (-, •, ก., "
+    "ก) ฯลฯ) เด็ดขาด และห้ามมีข้อความอื่นก่อน/หลังรายการเลขข้อเลย เพราะระบบจะ parse แต่ละ"
+    "บรรทัดเป็น step แยกเพื่อโชว์ความคืบหน้าให้ user เห็นทีละข้อระหว่างทำงานจริง ***"
 )
 
 

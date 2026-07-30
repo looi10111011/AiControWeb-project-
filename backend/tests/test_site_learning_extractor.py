@@ -366,3 +366,218 @@ async def test_extract_page_does_not_flag_ordinary_button_as_nav_menu_item():
     page_info, _ = await _extract(_HTML_NAV_VARIETY)
     export_btn = next(b for b in page_info.buttons if b.text == "Export")
     assert export_btn.is_nav_menu_item is False
+
+
+# ---------------- W36: core function classification (tier + is_form_submit) ----------------
+
+_HTML_TIER_CLASSIFICATION = """
+<html><body>
+  <nav><button id="nav-btn">Dashboard</button></nav>
+  <form>
+    <input type="text" name="q">
+    <button id="submit-btn">Continue</button>
+  </form>
+  <button id="core-btn">Search</button>
+  <button id="decorative-btn">Share</button>
+  <button id="fallback-btn">View</button>
+  <button id="page-num-btn">3</button>
+  <button id="outside-form-btn" type="submit">Lonely Submit</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_nav_menu_item_as_nav_tier():
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#nav-btn")
+    assert btn.tier == "nav"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_flags_default_button_in_form_as_form_submit_and_core_tier():
+    """<button> ที่ไม่มี attribute type เลยภายใน <form> เป็น type=submit โดย default ตาม
+    HTML semantics (ดู extractor.py::isFormSubmit) — ต้องเป็นสัญญาณ DOM signal ที่ทำให้
+    classify_button_tier() จัดเป็น "core" ทันที (priority สูงสุดตอนตัด top-K ด้วย — ดู
+    safety.button_core_priority)"""
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#submit-btn")
+    assert btn.is_form_submit is True
+    assert btn.tier == "core"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_is_form_submit_false_when_type_submit_button_has_no_form_ancestor():
+    """type="submit" เฉยๆ ไม่พอ — ต้องอยู่ใน <form> จริงด้วย (ดู extractor.py::isFormSubmit)"""
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#outside-form-btn")
+    assert btn.is_form_submit is False
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_core_keyword_button_as_core_tier():
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#core-btn")
+    assert btn.tier == "core"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_decorative_keyword_button_as_decorative_tier():
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#decorative-btn")
+    assert btn.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_pagination_page_number_greater_than_one_as_decorative():
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#page-num-btn")
+    assert btn.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_unmatched_button_as_core_tier_fallback():
+    """"View" ไม่ตรง CORE_ACTION_KEYWORDS/DECORATIVE_KEYWORDS ตรงๆ เลยสักคำ — fallback ต้อง
+    เป็น "core" (ไม่ใช่ "decorative") มิฉะนั้นความสามารถเดิมของ W16 ("View" ในตารางที่พาไป
+    หน้ารายละเอียด) จะหายไปหมด"""
+    page_info, _ = await _extract(_HTML_TIER_CLASSIFICATION)
+    btn = next(b for b in page_info.buttons if b.selector == "#fallback-btn")
+    assert btn.tier == "core"
+
+
+# ---------------- W37: กันกดดูวีดีโอ (YouTube/Facebook/Instagram ฯลฯ) ----------------
+
+_HTML_VIDEO_BUTTONS = """
+<html><body>
+  <button id="watch-btn">Watch Now</button>
+  <nav><div role="tab" id="reels-tab">Reels</div></nav>
+  <button id="unrelated-btn">Expand</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_watch_button_as_decorative_tier():
+    page_info, _ = await _extract(_HTML_VIDEO_BUTTONS)
+    btn = next(b for b in page_info.buttons if b.selector == "#watch-btn")
+    assert btn.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_video_nav_tab_as_decorative_not_nav():
+    """"Reels" เป็น role="tab" ใน <nav> จริง (is_nav_menu_item=True ตามปกติ) แต่ label บ่ง
+    บอกวีดีโอตรงๆ — ต้องชนะ is_nav_menu_item เป็น "decorative" (ไม่ใช่ "nav") ตามที่ user
+    ยืนยัน: ไม่ต้องการให้กดเข้าไปดูวีดีโอเลยไม่ว่าจะมาในรูปแบบเมนู/tab หรือปุ่มทั่วไปก็ตาม"""
+    page_info, _ = await _extract(_HTML_VIDEO_BUTTONS)
+    tab = next(b for b in page_info.buttons if b.selector == "#reels-tab")
+    assert tab.is_nav_menu_item is True
+    assert tab.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_unrelated_button_as_core_tier_not_affected_by_video_check():
+    page_info, _ = await _extract(_HTML_VIDEO_BUTTONS)
+    btn = next(b for b in page_info.buttons if b.selector == "#unrelated-btn")
+    assert btn.tier == "core"
+
+
+# ---------------- W38: กันกดดูแฮชแท็ก ----------------
+
+_HTML_HASHTAG_BUTTONS = """
+<html><body>
+  <a id="hashtag-link" href="/hashtag/travel">#travel</a>
+  <nav><div role="tab" id="hashtag-tab">#Trending</div></nav>
+  <button id="unrelated-btn">Expand</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_hashtag_link_as_decorative_tier():
+    page_info, _ = await _extract(_HTML_HASHTAG_BUTTONS)
+    btn = next(b for b in page_info.buttons if b.selector == "#hashtag-link")
+    assert btn.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_hashtag_nav_tab_as_decorative_not_nav():
+    """"#Trending" เป็น role="tab" ใน <nav> จริง (is_nav_menu_item=True ตามปกติ) แต่ label
+    ขึ้นต้นด้วย "#" ตรงๆ — ต้องชนะ is_nav_menu_item เป็น "decorative" (ไม่ใช่ "nav") เหมือน
+    วีดีโอ (W37): ไม่ต้องการให้กดเข้าไปดูแฮชแท็กเลยไม่ว่าจะมาในรูปแบบเมนู/tab หรือปุ่มทั่วไป"""
+    page_info, _ = await _extract(_HTML_HASHTAG_BUTTONS)
+    tab = next(b for b in page_info.buttons if b.selector == "#hashtag-tab")
+    assert tab.is_nav_menu_item is True
+    assert tab.tier == "decorative"
+
+
+@pytest.mark.asyncio
+async def test_extract_page_classifies_unrelated_button_as_core_tier_not_affected_by_hashtag_check():
+    page_info, _ = await _extract(_HTML_HASHTAG_BUTTONS)
+    btn = next(b for b in page_info.buttons if b.selector == "#unrelated-btn")
+    assert btn.tier == "core"
+
+
+# ---------------- W39: ปุ่มที่อยู่ใน <iframe> (รวมถึง iframe ซ้อนกันหลายชั้น) ----------------
+
+_HTML_MAIN_FRAME_BUTTON = """
+<html><body>
+  <button id="main-btn">Main Button</button>
+  <iframe id="outer" srcdoc="<html><body><button id='inner-btn'>Inner Button</button></body></html>"></iframe>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_finds_button_inside_single_iframe():
+    """W39: ปุ่มใน <iframe> ต้องถูกเก็บเข้า page_info.buttons ด้วย (เดิม document.
+    querySelectorAll() ของ main frame มองไม่เห็นเลย เพราะเป็นคนละ document object)"""
+    page_info, _ = await _extract(_HTML_MAIN_FRAME_BUTTON)
+    texts = {b.text for b in page_info.buttons}
+    assert "Main Button" in texts
+    assert "Inner Button" in texts
+
+
+@pytest.mark.asyncio
+async def test_extract_page_main_frame_button_has_frame_index_zero():
+    page_info, _ = await _extract(_HTML_MAIN_FRAME_BUTTON)
+    btn = next(b for b in page_info.buttons if b.text == "Main Button")
+    assert btn.frame_index == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_page_iframe_button_has_nonzero_frame_index():
+    """W39: ต้องแปะ frame_index (ตำแหน่งใน page.frames) ไว้กับปุ่มที่มาจาก child frame — ให้
+    crawler.py::_resolve_click_target() รู้ว่าต้องกดผ่าน frame object ไหน (page.click()
+    ธรรมดา query ข้าม frame boundary ไม่ได้)"""
+    page_info, _ = await _extract(_HTML_MAIN_FRAME_BUTTON)
+    btn = next(b for b in page_info.buttons if b.text == "Inner Button")
+    assert btn.frame_index != 0
+
+
+_HTML_NESTED_IFRAME_BUTTONS = """
+<html><body>
+  <h1>Playground</h1>
+  <iframe id="outer" srcdoc="
+    <html><body>
+      <button id='edit1'>Edit</button>
+      <button id='submit1'>Submit</button>
+      <iframe id='inner' srcdoc='&lt;html&gt;&lt;body&gt;&lt;button id=edit2&gt;Edit&lt;/button&gt;&lt;button id=submit2&gt;Submit&lt;/button&gt;&lt;/body&gt;&lt;/html&gt;'></iframe>
+    </body></html>
+  "></iframe>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_page_finds_buttons_inside_nested_iframes_two_levels_deep():
+    """W39: จำลองหน้า test playground จริงที่ user รายงาน (Outer Frame ซ้อน Inner Frame อีก
+    ชั้น แต่ละชั้นมีปุ่ม Edit/Submit ของตัวเอง) — page.frames คืนทุก frame แบบ flat รวม
+    nested เอง (ไม่ต้อง recurse เอง) ต้องเจอปุ่มครบทั้ง 4 ปุ่ม (2 ชั้น x 2 ปุ่ม)"""
+    page_info, _ = await _extract(_HTML_NESTED_IFRAME_BUTTONS)
+    edit_buttons = [b for b in page_info.buttons if b.text == "Edit"]
+    submit_buttons = [b for b in page_info.buttons if b.text == "Submit"]
+    assert len(edit_buttons) == 2
+    assert len(submit_buttons) == 2
+    # ปุ่มจากคนละ frame ต้องได้ frame_index ต่างกัน (ไม่ใช่ frame เดียวกันโดยบังเอิญ)
+    edit_frame_indices = {b.frame_index for b in edit_buttons}
+    assert len(edit_frame_indices) == 2
+    assert 0 not in edit_frame_indices  # ไม่มีตัวไหนอยู่ main frame เลย ทั้งคู่อยู่ใน iframe

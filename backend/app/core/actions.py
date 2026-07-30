@@ -14,13 +14,35 @@ W5: execute() retry click/fill/select/check ให้เองในนี้ (_
 LLM token สักรอบเดียว
 
 ใช้คู่กับ perception.py (ไฟล์เดียวกับ W2)
+
+W40: click/fill/select_option/check เดิม dispatch ผ่าน page.click()/page.fill()/
+page.select_option()/page.check() ตรงๆ เสมอ — ถ้า element ที่ index ชี้ไปอยู่ใน <iframe>
+(perception.py::get_snapshot() ตอนนี้ perceive เห็นแล้วตั้งแต่ W40 ฝั่งนั้น) จะหา element
+ไม่เจอเลย เพราะ page.click(selector) query แค่ document หลัก ข้าม frame boundary ไม่ได้ —
+เพิ่มการเรียก perception.resolve_frame() ก่อน dispatch จริงทุกจุด หา Frame object ที่ถูก
+ต้องแล้วเรียก .click()/.fill()/.select_option()/.check() กับ target นั้นแทน page ตรงๆ
+
+W42: select_option() เดิมเทียบ label ที่ LLM ส่งมากับ option ใน DOM แบบ exact string ผ่าน
+Playwright ตรงๆ (select_option(selector, label=label)) — พังกับเว็บที่ option text ใช้
+non-breaking space (U+00A0, &nbsp; ใน HTML) คั่นคำแทน space ปกติ (พบจริงบน
+uitestingplayground.com/select — ตั้งใจทำมาเทสต์ automation tool โดยเฉพาะ) LLM ส่ง label
+มาด้วย space ปกติเสมอ (เห็นจาก perception.py::get_snapshot() ที่ normalizeข้อความผ่าน
+JS .innerText/label ธรรมดา) ไม่มีทาง match ได้เลยไม่ว่า retry กี่ครั้ง (_dispatch_with_retry
+เดิม — ไม่ได้แตะ) เพราะเป็น deterministic mismatch ไม่ใช่ timing issue — แก้ด้วยการดึง option
+text จริงจาก DOM มาก่อน (target.locator(selector).locator("option").all_text_contents())
+แล้วเทียบแบบ normalize whitespace ทั้งสองฝั่ง (ดู _normalize_option_text) เจอ match แล้วค่อย
+เรียก select_option ด้วย text จริงจาก DOM (ไม่ใช่ label ดิบจาก LLM) กัน mismatch แบบอื่นที่
+อาจเจอเว็บอื่นด้วย (trailing space, case ต่าง ฯลฯ) — หา match ไม่เจอเลยแม้ normalize แล้ว
+คืน [FAIL] พร้อม list ตัวเลือกจริงที่มีอยู่แนบไปด้วย (debug ง่ายกว่า timeout เฉยๆ แบบเดิม)
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
+from backend.app.core.perception import resolve_frame
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
 
 # ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
@@ -46,6 +68,14 @@ class ActionResult:
 # selector ที่ผูกกับ index ที่ perception ติดไว้บน element
 def _sel(index: int) -> str:
     return f'[data-ai-index="{index}"]'
+
+
+def _normalize_option_text(text: str) -> str:
+    """W42: แทน non-breaking space (U+00A0 — &nbsp; ใน HTML) เป็น space ปกติ แล้วยุบ
+    whitespace ที่เหลือ (ซ้ำ/tab/newline) ให้เป็น space เดียว + ตัดช่องว่างหัวท้ายทิ้ง — ใช้
+    เทียบ label ที่ LLM ส่งมากับ option text จริงจาก DOM ใน select_option() ด้านล่าง กัน
+    mismatch จาก whitespace ล้วนๆ (nbsp/trailing space/ซ้ำ) โดยไม่กระทบการเทียบเนื้อหาจริง"""
+    return re.sub(r"\s+", " ", (text or "").replace(" ", " ")).strip()
 
 
 # W5: timeout สั้นลงสำหรับ action ที่ต้องหา/รอ element (click/fill/select/check) — ถ้า
@@ -90,7 +120,9 @@ async def _dispatch_with_retry(action_func, *args) -> ActionResult:
 async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """คลิก element ตาม index"""
     try:
-        await page.click(_sel(index), timeout=timeout)
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=timeout)
         return ActionResult(True, f"click({index})", "คลิกสำเร็จ")
     except PWTimeout:
         return ActionResult(False, f"click({index})", "หา element ไม่เจอ/คลิกไม่ได้ (timeout)")
@@ -101,7 +133,9 @@ async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
     try:
-        await page.fill(_sel(index), text, timeout=timeout)
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.fill(selector, text, timeout=timeout)
         return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ")
     except PWTimeout:
         return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
@@ -110,25 +144,66 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
 
 
 async def select_option(page: Page, index: int, label: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
-    """เลือกตัวเลือกใน dropdown (<select>) ตาม index — เลือกด้วยข้อความที่เห็น"""
+    """เลือกตัวเลือกใน dropdown (<select>) ตาม index — เลือกด้วยข้อความที่เห็น
+
+    W42: ดึง option {text, value} จริงจาก DOM มาก่อนเทียบ text แบบ normalize whitespace
+    (nbsp/ซ้ำ/trailing) กับ label ที่ LLM ส่งมา แทนที่จะยิง select_option(label=label) แบบ
+    exact string ตรงๆ (พังกับเว็บที่ใช้ &nbsp; คั่นคำใน option เช่น
+    uitestingplayground.com/select — ดู docstring หัวไฟล์) เจอ match แล้วเลือกด้วย
+    select_option(value=...) ของ option นั้น (ไม่ใช่ label=matched_text) — ***เหตุผลที่ใช้
+    value ไม่ใช่ text แม้จะ normalize แล้ว: select_option(label=...) ของ Playwright เองก็
+    เทียบแบบ exact string ภายในอีกที ถ้า text จริงมี whitespace ยุ่งๆ (เช่น "  New   York  "
+    จาก HTML indentation) การส่ง text ที่ normalize แล้วหรือ text ดิบกลับไปก็ยังไม่ตรงกับที่
+    Playwright คาดหวังอยู่ดี (เจอจากการทดสอบจริง) — value attribute เป็น token สั้นๆ ที่ไม่มี
+    ปัญหา whitespace แบบนี้ตั้งแต่ต้น (หรือถ้าไม่มี value= ระบุไว้ใน HTML เลย browser จะ
+    default value เป็น text เดียวกันเป๊ะ ก็ยัง match ได้ปกติ) เชื่อถือได้กว่า***"""
+    selector = _sel(index)
+    target = await resolve_frame(page, selector)
+
     try:
-        await page.select_option(_sel(index), label=label, timeout=timeout)
-        return ActionResult(True, f"select({index})", f"เลือก '{label}' สำเร็จ")
-    except PWTimeout:
-        return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
+        options = await target.locator(selector).locator("option").evaluate_all(
+            "elements => elements.map(el => ({text: el.textContent, value: el.value}))"
+        )
     except Exception as e:
-        # เผื่อ label ไม่ตรงเป๊ะ -> ลองเลือกด้วย value แทน
+        return ActionResult(False, f"select({index})", f"error: {e}")
+
+    normalized_target = _normalize_option_text(label)
+    matched = next(
+        (opt for opt in options if _normalize_option_text(opt["text"]) == normalized_target), None,
+    )
+
+    if matched is not None:
         try:
-            await page.select_option(_sel(index), value=label, timeout=timeout)
-            return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ")
-        except Exception as e2:
-            return ActionResult(False, f"select({index})", f"error: {e2}")
+            await target.select_option(selector, value=matched["value"], timeout=timeout)
+            return ActionResult(
+                True, f"select({index})", f"เลือก '{_normalize_option_text(matched['text'])}' สำเร็จ",
+            )
+        except PWTimeout:
+            return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
+        except Exception as e:
+            return ActionResult(False, f"select({index})", f"error: {e}")
+
+    # ไม่เจอ text ที่ตรงกันเลยแม้ normalize แล้ว — เผื่อ label ที่ LLM ส่งมาคือ value
+    # attribute ไม่ใช่ text ที่เห็น (ของเดิมมี fallback นี้อยู่แล้ว ยังคงไว้เหมือนเดิม)
+    try:
+        await target.select_option(selector, value=label, timeout=timeout)
+        return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ")
+    except Exception:
+        options_repr = ", ".join(repr(_normalize_option_text(o["text"])) for o in options)
+        options_repr = options_repr or "(ไม่พบ option ใดๆ ใน dropdown นี้)"
+        return ActionResult(
+            False, f"select({index})",
+            f"ไม่พบตัวเลือกที่ตรงกับ '{label}' แม้ normalize whitespace แล้ว — "
+            f"ตัวเลือกที่มีจริง: {options_repr}",
+        )
 
 
 async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """ติ๊ก checkbox/radio ตาม index"""
     try:
-        await page.check(_sel(index), timeout=timeout)
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.check(selector, timeout=timeout)
         return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ")
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")

@@ -1,14 +1,6 @@
 {
-  "YouTube Home": {
+  "YouTube หน้าแรก": {
     "children": {},
-    "page": "YouTube Home"
-  },
-  "หน้าติดตามช่อง YouTube": {
-    "children": {},
-    "page": "หน้าติดตามช่อง YouTube"
-  },
-  "หน้าประวัติการเข้าชม": {
-    "children": {},
-    "page": "หน้าประวัติการเข้าชม"
+    "page": "YouTube หน้าแรก"
   }
 }

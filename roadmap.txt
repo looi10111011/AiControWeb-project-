@@ -2433,6 +2433,33 @@
            ยืนยัน: 60 เคสผ่าน 1 เคส fail (test_crawl_site_login_bootstrap_fails_gracefully_
            without_submit_button — fail อยู่ก่อนแล้วตั้งแต่ก่อนงานนี้ ไม่เกี่ยวกับงานนี้)
 
+  [x] W40  Website Learning: แก้บั๊ก test_crawl_site_login_bootstrap_fails_gracefully_
+           without_submit_button ที่ fail ค้างมาตั้งแต่ W35 (บันทึกไว้ว่า "ไม่เกี่ยวกับ
+           งานนั้น") — เสร็จแล้ว (2026-07-30)
+
+           อาการ: หน้า login ที่มีช่อง username/password ครบแต่ปุ่ม submit จริงใช้คำว่า
+           "Continue" (ไม่ตรง _LOGIN_SUBMIT_KEYWORDS ใน auto_login.py เลย) คาดหวังว่า
+           attempt_login() ต้องคืน False เงียบๆ แล้ว crawl จบแค่หน้า login หน้าเดียว แต่
+           รันจริงกลับได้ 2 หน้า (หน้าที่ 2 คือ 404 จาก post_login.html)
+
+           วิเคราะห์: attempt_login()/find_login_submit_selector() ทำงานถูกต้องแล้ว (คืน
+           False จริงเพราะหา submit keyword ไม่เจอ) แต่ _record_page() ที่เรียกจาก
+           _login_and_continue() เพื่อบันทึกหน้า login เอง ก่อนเรียก attempt_login() นั้น
+           ไล่กดปุ่ม (_explore_buttons) ของหน้านั้นแบบทั่วไปเสมอไม่มีเงื่อนไข — ปุ่ม
+           "Continue" เข้าข่าย ALLOWED_CRAWL_KEYWORDS ของ safety.py อยู่แล้ว (W20 — เผื่อ
+           multi-step form/wizard ทั่วไป) จึงถูกกดผ่านเส้นทาง _explore_buttons() แทน
+           กลายเป็น login ผ่านไปได้จริงโดยไม่ได้ตั้งใจ ทั้งที่ควรล้มเหลวอย่างเงียบๆ
+
+           แก้ด้วยการเพิ่ม parameter `explore_buttons: bool = True` ให้ _record_page() —
+           เส้นทาง _login_and_continue() ที่บันทึกหน้า login เองส่ง explore_buttons=False
+           (ปุ่มบนหน้า login ควรถูกจัดการผ่าน attempt_login() เท่านั้น ไม่ใช่ไล่กดทั่วไปแบบ
+           หน้าอื่น) ส่วนจุดเรียก _record_page() อื่นๆ ทั้งหมด (BFS loop ปกติ, หน้าหลัง
+           login สำเร็จ, หน้าที่เจอจาก _explore_buttons เอง) ไม่กระทบเลยเพราะยังใช้ default
+           True เหมือนเดิม
+
+           รันจริง `pytest -q backend/tests/test_site_learning_crawler.py` เต็ม suite
+           ยืนยัน: 70 เคสผ่านหมด (รวมเคสที่เคย fail ค้างมาด้วย)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

@@ -73,6 +73,20 @@ def test_browser_action_schema_includes_needs_confirmation_action_types():
         assert risky_type in type_enum
 
 
+# --- W43: completed_plan_step ต้อง optional เสมอ (ad-hoc task ไม่มีแผนต้องยังทำงานได้) ---
+
+
+def test_browser_action_schema_has_completed_plan_step_property():
+    assert "completed_plan_step" in llm._BROWSER_ACTION_PARAMS["properties"]
+    assert llm._BROWSER_ACTION_PARAMS["properties"]["completed_plan_step"]["type"] == "integer"
+
+
+def test_browser_action_schema_does_not_require_completed_plan_step():
+    """ad-hoc task (ไม่ผ่าน Confirm plan) ต้องยังเรียก tool ได้ปกติโดยไม่ต้องระบุ
+    completed_plan_step เลย — ห้ามอยู่ใน "required" เด็ดขาด"""
+    assert "completed_plan_step" not in llm._BROWSER_ACTION_PARAMS["required"]
+
+
 # --- next_action() (Anthropic) — เทสต์ prompt caching wiring + parse tool_use ---
 
 
@@ -190,6 +204,69 @@ async def test_next_action_default_memory_context_omits_section():
     _, kwargs = client.messages.create.call_args
     user_content = kwargs["messages"][-1]["content"]
     assert "ทำซ้ำ" not in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_passes_plan_context_into_prompt():
+    """W43: plan_context (แผนที่ user ยืนยันแล้ว) ต้องโผล่ในข้อความ user turn จริง เป็น
+    section แยก "แพลนปัจจุบัน" """
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(client, "model", "goal", "page", [], plan_context="1. ทำ X\n2. ทำ Y")
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "1. ทำ X" in user_content
+    assert "แพลนปัจจุบัน" in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_default_plan_context_omits_section():
+    """W43: ad-hoc task (ไม่ผ่าน Confirm plan เลย) ไม่ควรมี section "แพลนปัจจุบัน" โผล่มา
+    ปนใน prompt เลย — backward compatible กับ task ที่ไม่มีแผน"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.next_action(client, "model", "goal", "page", [])
+
+    _, kwargs = client.messages.create.call_args
+    user_content = kwargs["messages"][-1]["content"]
+    assert "แพลนปัจจุบัน" not in user_content
+
+
+@pytest.mark.asyncio
+async def test_next_action_tool_input_includes_completed_plan_step_when_llm_provides_it():
+    """W43: LLM ใส่ completed_plan_step มาใน tool call — ต้อง parse ผ่านมาใน tool_input
+    เฉยๆ (ไม่มี logic พิเศษฝั่ง llm.py เลย คืนค่า tool_use.input ดิบๆ เหมือนเดิม)"""
+    block = _fake_anthropic_tool_use_block(
+        "browser_action", {"type": "click", "index": 2, "completed_plan_step": 1},
+    )
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    _, tool_input, _, _, _ = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert tool_input.get("completed_plan_step") == 1
+
+
+@pytest.mark.asyncio
+async def test_next_action_tool_input_completed_plan_step_is_none_when_llm_omits_it():
+    """W43: LLM ไม่ใส่ completed_plan_step มาเลย (ไม่มีแผนให้ทำตาม/action นี้ยังไม่ทำให้
+    step ไหนเสร็จ) — ต้องไม่ throw เลย แค่ .get() คืน None ตามปกติ"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "click", "index": 2})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    _, tool_input, _, _, _ = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert tool_input.get("completed_plan_step") is None
 
 
 def _fake_gemini_function_call_part(name: str, args: dict):
@@ -726,3 +803,23 @@ def test_build_user_turn_text_includes_action_history_section_when_provided():
     assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
     assert "step 3" in result
     assert "Action ล่าสุดที่คุณเพิ่งทำไป" in result
+
+
+# --- W43: plan_context ("แพลนปัจจุบัน") ---
+
+
+def test_build_user_turn_text_omits_plan_section_when_empty():
+    """ad-hoc task (ไม่ผ่าน Confirm plan) ได้ plan_context="" เสมอ — ต้องได้ prompt เดิม
+    เป๊ะทุกตัวอักษร ไม่มี section แผนโผล่มาปนเลย (backward compatible)"""
+    result = llm._build_user_turn_text("goal", "page", plan_context="")
+
+    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+def test_build_user_turn_text_includes_plan_section_when_provided():
+    result = llm._build_user_turn_text("goal", "page", plan_context="1. ทำ X\n2. ทำ Y")
+
+    assert "แพลนปัจจุบัน" in result
+    assert "1. ทำ X\n2. ทำ Y" in result
+    # อยู่ก่อน "หน้าเว็บปัจจุบัน" (เป็นบริบทระดับ task เหมือน Goal ไม่ใช่ข้อมูลเฉพาะ step นี้)
+    assert result.index("แพลนปัจจุบัน") < result.index("หน้าเว็บปัจจุบัน")

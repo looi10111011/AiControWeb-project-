@@ -1,0 +1,615 @@
+{
+  "website": "uitestingplayground.com",
+  "version": 2,
+  "generated_at": 1784802692.6003296,
+  "pages": [
+    {
+      "name": "UI Test Automation Playground Home",
+      "url": "http://uitestingplayground.com/",
+      "description": "หน้าแรกของเว็บไซต์รวมแบบฝึกหัดสำหรับทดสอบระบบอัตโนมัติ",
+      "menu_path": [
+        "UI Test Automation Playground Home"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rubik's Cube",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "CC 4.0 BY-NC",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Row",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Description",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Dynamic ID",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Class Attribute",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(2) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Hidden Layers",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(3) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Load Delay",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(4) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[4]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div > div:nth-of-type(1)",
+          "item_count": 8
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Automation Home",
+      "url": "http://uitestingplayground.com/home",
+      "description": "หน้าแรกของเว็บไซต์รวมแบบฝึกหัดและเครื่องมือสำหรับทดสอบระบบ UI Automation",
+      "menu_path": [
+        "UI Test Automation Home"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rubik's Cube",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "CC 4.0 BY-NC",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section:nth-of-type(1) > div > div > div:nth-of-type(2) > p > small > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/section[1]/div[1]/div[1]/div[2]/p[1]/small[1]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Row",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Description",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Dynamic ID",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[1]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Class Attribute",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(2) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[2]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Hidden Layers",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(3) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[3]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            },
+            {
+              "text": "Load Delay",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(4) > h3 > a",
+              "xpath": "/html/body[1]/section[2]/div[1]/div[1]/div[4]/h3[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section:nth-of-type(2) > div > div:nth-of-type(1)",
+          "item_count": 8
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "UI Test Playground Resources",
+      "url": "http://uitestingplayground.com/resources",
+      "description": "หน้ารวบรวมแหล่งข้อมูล ลิงก์ที่เป็นประโยชน์ และเครื่องมือที่เกี่ยวข้องสำหรับการทดสอบซอฟต์แวร์",
+      "menu_path": [
+        "UI Test Playground Resources"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "UITAP",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.navbar-brand",
+          "xpath": "/html/body[1]/nav[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Home",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Resources",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "nav > div > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/nav[1]/div[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "W3C",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(2) > li > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[2]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Test Pyramid",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(3) > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[3]/li[1]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Where do our flaky tests come from?",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "section > div > ul:nth-of-type(3) > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/section[1]/div[1]/ul[3]/li[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Fork the website on GitHub",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Rapise",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(1)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[1]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Inflectra Corporation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(1) > div:nth-of-type(3) > a:nth-of-type(2)",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[1]/div[3]/a[2]",
+          "is_nav_menu_item": false
+        },
+        {
+          "text": "Apache License 2.0",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > footer > div:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/footer[1]/div[2]/a[1]",
+          "is_nav_menu_item": false
+        }
+      ],
+      "forms": [],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "section > div > h4:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Learning",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "w3schools.com",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[1]/div[1]/ul[1]/li[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Community",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Ministry of Testing",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "section > div > ul:nth-of-type(4) > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/section[1]/div[1]/ul[4]/li[1]/a[1]",
+              "is_nav_menu_item": false
+            }
+          ],
+          "selector": "section > div > ul:nth-of-type(4) > li:nth-of-type(1)",
+          "item_count": 5
+        }
+      ],
+      "filters": [],
+      "search_box": false,
+      "modals": [],
+      "tabs": []
+    }
+  ],
+  "errors": []
+}

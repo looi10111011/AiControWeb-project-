@@ -23,12 +23,26 @@ button เลย — เพิ่ม [role=menuitem]/[role=tab]/router-link เ�
 [role=tablist]/[role=menu] หรือแมตช์ selector ใหม่พวกนี้ตรงๆ) ให้ crawler.py ตัดสินใจ
 default-allow (เหมือน nav link ปกติ) แทนที่จะต้องผ่าน keyword allowlist แบบปุ่มทั่วไป (ดู
 crawler.py::_is_explorable)
+
+W39: user รายงานว่า self-learning "ไม่เห็น" ปุ่มที่อยู่ใน <iframe> เลย (เจอบนหน้า test
+playground ที่มี iframe ซ้อนกัน 2 ชั้น แต่ละชั้นมีปุ่ม Edit/Submit/Click me/Primary ของ
+ตัวเอง) — สาเหตุจริง: _EXTRACT_JS เดิมรันผ่าน page.evaluate() ซึ่ง execute ใน context ของ
+main document เท่านั้น document.querySelectorAll() มองไม่เห็น element ภายใน <iframe> เลย
+(คนละ document object กันโดยสิ้นเชิง แม้จะเป็น same-origin ก็ตาม JS ไม่ query ข้าม frame
+boundary ให้อัตโนมัติ) — แก้ด้วยการเรียก _EXTRACT_JS ซ้ำกับทุก frame ใน page.frames (ไม่ใช่
+แค่ main frame) แล้ว merge ผลลัพธ์เข้าด้วยกัน (ดู extract_page() ด้านล่าง) — page.frames คืน
+ทุก frame แบบ flat อยู่แล้วรวม frame ที่ซ้อนกันกี่ชั้นก็ตาม ไม่ต้อง recurse เอง แต่ละปุ่ม/
+ช่องฟอร์มที่เจอในหน้าอื่นนอกจาก main frame จะถูกแปะ frame_index (ตำแหน่งใน page.frames ตอน
+extract) ไว้ ให้ crawler.py รู้ว่าต้องกดผ่าน frame object ไหน (ดู
+crawler.py::_resolve_click_target — page.click(selector) ธรรมดาหา element ข้าม frame
+boundary ไม่เจอเลย ต้องเรียก frame.click(selector) ตรงๆ กับ frame ที่ถูกต้อง)
 """
 
 from typing import Optional
 
-from playwright.async_api import Page
+from playwright.async_api import Frame, Page
 
+from backend.app.site_learning.safety import classify_button_tier
 from backend.app.site_learning.schema import ButtonInfo, FormFieldInfo, PageInfo, TableInfo, UIPatternInfo
 
 _EXTRACT_JS = r"""
@@ -110,6 +124,22 @@ _EXTRACT_JS = r"""
     return false;
   };
 
+  // W36: True ถ้า element นี้อยู่ใน <form> จริง และเป็นปุ่ม submit ของฟอร์มนั้นตาม HTML
+  // semantics — input[type=submit], button[type=submit], หรือ <button> ที่ไม่มี attribute
+  // type เลยภายใน form (default เป็น type=submit ตามสเปค HTML แม้จะไม่ได้ระบุ attribute
+  // ตรงๆ) ใช้เป็นสัญญาณ DOM หนึ่งใน safety.classify_button_tier()/button_core_priority()
+  // (ดู crawler.py) ไม่เกี่ยวกับ safety.is_crawl_safe() เลย (ปุ่ม submit ยังถูกบล็อกด้วย
+  // BLOCKED_CRAWL_KEYWORDS เหมือนเดิมทุกประการ)
+  const isFormSubmit = (el) => {
+    const form = el.closest('form');
+    if (!form) return false;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input') return type === 'submit';
+    if (tag === 'button') return type === 'submit' || !el.hasAttribute('type');
+    return false;
+  };
+
   const computeXPath = (el) => {
     if (el.id) return `//*[@id="${el.id}"]`;
     let path = '';
@@ -169,6 +199,7 @@ _EXTRACT_JS = r"""
     data_testid: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
     icon_hint: inferIconHint(el),
     is_nav_menu_item: isNavMenuItem(el),
+    is_form_submit: isFormSubmit(el),
     selector: computeSelector(el),
     xpath: computeXPath(el),
   });
@@ -411,34 +442,90 @@ _EXTRACT_JS = r"""
 """
 
 
+def _build_button(b: dict) -> ButtonInfo:
+    """W36: สร้าง ButtonInfo จาก dict ดิบที่ได้จาก JS แล้วเติม tier ทันที (ดู
+    safety.classify_button_tier) — ต้องทำที่นี่ (ฝั่ง Python หลัง JS คืนค่ามาแล้ว) ไม่ใช่
+    ใน JS เอง เพราะ classify_button_tier() เป็นฟังก์ชัน Python ล้วนๆ (heuristic ไม่เรียก
+    LLM) เรียกจาก JS ตรงๆ ไม่ได้ — ใช้ทั้งกับปุ่มระดับหน้าและปุ่มภายใน UI pattern (ดู
+    extract_page ด้านล่าง) เพราะทั้งคู่ถูกส่งเข้า crawler.py::_explore_buttons() เหมือนกัน"""
+    button_info = ButtonInfo(**b)
+    button_info.tier = classify_button_tier(button_info)
+    return button_info
+
+
+async def _extract_frame_data(frame: Frame) -> Optional[dict]:
+    """W39: เรียก _EXTRACT_JS กับ frame ใดก็ได้ (child frame ใน <iframe> — ดู extract_page())
+    คืน None ถ้า evaluate ล้มเหลว (เช่น frame cross-origin ที่ browser บล็อกไม่ให้เข้าถึง
+    DOM ข้าม origin, frame ถูก detach ไปแล้วระหว่างอ่าน ฯลฯ) ไม่ throw ออกไปให้ caller เอง —
+    เฟรมเดียวพังไม่ควรทำทั้งการ extract หน้าล้มเหลวไปด้วย (กฎเดียวกับ describe_page() ใน
+    crawler.py ที่ 1 หน้าพังไม่ควรทำทั้ง crawl ล้ม)"""
+    try:
+        return await frame.evaluate(_EXTRACT_JS)
+    except Exception:
+        return None
+
+
 async def extract_page(page: Page) -> tuple[PageInfo, list[dict]]:
     """สกัดโครงสร้างของหน้าปัจจุบัน — คืน (PageInfo, nav_links) โดย PageInfo ที่คืนมายัง
     ไม่มี name/description (crawler.py เป็นคนเติมทีหลัง — description มาจาก LLM ครั้ง
     เดียวต่อหน้า, name มาจากการอนุมานจาก breadcrumb/title/URL) nav_links คือ
     list[{"text","href","menu_path"}] ที่เจอในหน้านี้ ไว้ให้ crawler.py ต่อคิว BFS
     (ไม่ใช่ส่วนหนึ่งของ PageInfo โดยตรงเพราะเป็นลิงก์ที่ "จะ" ไปเยี่ยม ไม่ใช่โครงสร้าง
-    ของหน้านี้เอง)"""
+    ของหน้านี้เอง)
+
+    W39: นอกจาก main frame แล้ว ไล่ extract ซ้ำในทุก child frame ด้วย (ดู
+    _extract_frame_data) — page.frames คืนทุก frame แบบ flat อยู่แล้ว (รวม frame ที่ซ้อนกัน
+    กี่ชั้นก็ตาม ไม่ต้อง recurse เอง) ปุ่ม/ช่องฟอร์มที่เจอในแต่ละ child frame ถูกแปะ
+    frame_index (ตำแหน่งใน page.frames ตอน extract นี้) ก่อนรวมเข้ากับของ main frame — ตาราง/
+    UI pattern/nav link จาก child frame ก็รวมเข้าด้วยเหมือนกัน (ครบทุกอย่างที่ PageInfo เก็บ
+    ไม่ใช่แค่ปุ่ม เพื่อให้ "โครงสร้างหน้า" ที่ได้ครบถ้วนจริง)"""
     data = await page.evaluate(_EXTRACT_JS)
+    buttons_raw = list(data.get("buttons", []))
+    forms_raw = list(data.get("forms", []))
+    tables_raw = list(data.get("tables", []))
+    ui_patterns_raw = list(data.get("ui_patterns", []))
+    nav_links = list(data.get("nav_links", []))
+
+    main_frame = page.main_frame
+    for frame_index, frame in enumerate(page.frames):
+        if frame == main_frame:
+            continue
+        frame_data = await _extract_frame_data(frame)
+        if not frame_data:
+            continue
+        for b in frame_data.get("buttons", []):
+            b["frame_index"] = frame_index
+            buttons_raw.append(b)
+        for f in frame_data.get("forms", []):
+            f["frame_index"] = frame_index
+            forms_raw.append(f)
+        tables_raw.extend(frame_data.get("tables", []))
+        for up in frame_data.get("ui_patterns", []):
+            for b in up.get("buttons", []):
+                b["frame_index"] = frame_index
+            ui_patterns_raw.append(up)
+        nav_links.extend(frame_data.get("nav_links", []))
+
     page_info = PageInfo(
         url=page.url,
         breadcrumb=data.get("breadcrumb", []),
-        buttons=[ButtonInfo(**b) for b in data.get("buttons", [])],
-        forms=[FormFieldInfo(**f) for f in data.get("forms", [])],
-        tables=[TableInfo(**t) for t in data.get("tables", [])],
+        buttons=[_build_button(b) for b in buttons_raw],
+        forms=[FormFieldInfo(**f) for f in forms_raw],
+        tables=[TableInfo(**t) for t in tables_raw],
         ui_patterns=[
             UIPatternInfo(
                 name=up.get("name", ""),
                 ui_type=up.get("ui_type", ""),
                 components=up.get("components", []),
-                buttons=[ButtonInfo(**b) for b in up.get("buttons", [])],
+                buttons=[_build_button(b) for b in up.get("buttons", [])],
                 selector=up.get("selector", ""),
                 item_count=int(up.get("item_count", 0)),
             )
-            for up in data.get("ui_patterns", [])
+            for up in ui_patterns_raw
         ],
         filters=data.get("filters", []),
         search_box=bool(data.get("search_box", False)),
         modals=data.get("modals", []),
         tabs=data.get("tabs", []),
     )
-    return page_info, data.get("nav_links", [])
+    return page_info, nav_links

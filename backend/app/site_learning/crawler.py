@@ -147,15 +147,112 @@ manual เลย + เพิ่ม guard เดียวกันในเส้
 ดัน redirect ออกนอกโดเมนเองระหว่างโหลดจริง เช่น URL shortener/OAuth bounce) — ตรงนั้นแค่
 ข้าม URL นี้ไปหน้าถัดไปใน queue เฉยๆ พอ ไม่ต้อง goto กลับเพราะ BFS ไม่มี "หน้าเดิม" ที่ต้อง
 กลับไปเหมือน DFS-click
+
+W36: user รายงานว่า self-learning ยัง "กดปุ่มเยอะเกินความจำเป็น" บนหน้าที่มีปุ่มรอง/ตกแต่ง
+เยอะ (filter/sort/share/like/notification ฯลฯ) — W28-W35 (ข้างบนทั้งหมด) แก้ปัญหา "วนลูป"
+(ปุ่ม/หน้าที่ซ้ำกันข้ามหลาย URL) แต่ไม่เคยแยกแยะว่าปุ่มไหน "สำคัญ" กับ "ไม่สำคัญ" เลย — ทุก
+element ที่ผ่าน safety.is_crawl_safe() ถูกไล่กดเท่าเทียมกันหมด ทำให้หน้าที่มีปุ่มปลอดภัย
+(ตาม allowlist เดิม) จำนวนมากแต่ส่วนใหญ่เป็นแค่ decoration (share/like/notification
+bell/theme switch/pagination เลขหน้า) กินเวลา/LLM describe call ไปกับปุ่มที่ไม่ได้พาไปหน้า
+ใหม่ที่มีความหมายจริง
+
+แก้ด้วยชั้น "core function classification" ใหม่ (ดู safety.py::classify_button_tier/
+button_core_priority, extractor.py::_build_button/isFormSubmit, schema.py::ButtonInfo.tier/
+is_form_submit) — ทุกปุ่มถูกจัดเป็น 1 ใน 3 tier ตอน extract_page(): "nav" (=
+is_nav_menu_item เดิม), "core" (ฟังก์ชันหลักของหน้า เช่น search/filter/sort/submit ในฟอร์ม
+— เป็น fallback เริ่มต้นด้วยตั้งใจ กัน "View"/"Expand"/"Next" ที่ W16 พึ่งพาอยู่หายไป), หรือ
+"decorative" (share/like/notification/theme switch/pagination เลขหน้า>1 ฯลฯ) —
+_explore_buttons() (ดูด้านล่าง) ตัด tier="decorative" ออกตั้งแต่ต้นก่อนถึง _is_explorable()
+เลย (ไม่ต้องเช็ค is_crawl_safe() ด้วยซ้ำ) แล้วถ้าปุ่ม tier="core" ที่เหลือเกินเพดานใหม่
+settings.site_learning_max_core_buttons_per_page ต่อหน้า จะตัดเอาแค่ top-K ตาม priority
+(form-submit > exact keyword match > partial match) — tier ไม่ใช่ safety gate ตัวใหม่
+(is_crawl_safe() ไม่ถูกแก้เลย ยังเป็นตัวตัดสินสุดท้ายว่ากดได้จริงไหมเหมือนเดิมทุกประการ) แค่
+ลดจำนวน candidate ที่ต้องพิจารณาต่อหน้าลงอีกชั้นก่อนถึงขั้นตอนนั้น
+
+tier="nav" ยังคงไหลผ่าน _explore_buttons() เหมือนเดิมทุกประการ (ไม่ได้ถูกกรองออกแม้ตาม
+requirement เดิมจะระบุว่า "nav ไปทาง BFS queue ตามปกติ ไม่แตะ") — เหตุผล: W24 ทำให้เมนู/tab
+แบบ SPA ที่ไม่มี href จริง (<div role=menuitem>) ต้องพึ่ง _explore_buttons() (DFS-click)
+เป็นเส้นทางเดียวที่สำรวจได้ (ไม่มี href ให้ BFS queue เดินตามตรงๆ) ถ้ากรอง tier="core"
+เท่านั้นจริงๆ จะตัด SPA menu พวกนี้ออกจากการสำรวจไปเลย เป็น regression ของ W24 — ยืนยันกับ
+user แล้วว่าให้คงพฤติกรรมเดิมไว้ (กรองแค่ตัด decorative ออก ไม่ใช่จำกัดเหลือแค่ core)
+
+explored_button_signatures (W28/W29) และ known_page_templates (W33)/
+consecutive_same_name_count (W35) ทำงานต่อจาก safe_buttons ที่ผ่าน tier filter มาแล้วโดยไม่
+ถูกแก้ logic เลย — tier filter คำนวณ candidate list เสร็จสมบูรณ์ก่อน loop `for button in
+safe_buttons` จะเริ่มด้วยซ้ำ (ดูโค้ดด้านล่าง)
+
+W37: user ระบุตรงๆ ว่าแค่ต้องการเรียนรู้ "โครงสร้างของหน้าเว็บ" ไม่ต้องการให้ crawler กดดู
+วีดีโอเลย (ยกตัวอย่าง YouTube/Facebook/Instagram) เพราะคลิปวีดีโอแนะนำคลิปถัดไปต่อเรื่อยๆ ไม่
+รู้จบ พาให้เดินเข้าไปแล้วไม่ถอยกลับมาสำรวจส่วนอื่นของเว็บอีกเลย — W28-W36 (ข้างบนทั้งหมด) แค่
+จำกัดจำนวนครั้ง/ตัดปุ่มรอง ยังปล่อยให้เข้าไปดูวีดีโอได้บ้างอยู่ดี ไม่ตรงกับที่ user ต้องการรอบ
+นี้ (ไม่กดเข้าไปเลยแม้แต่ครั้งเดียว) — เพิ่ม safety.is_video_content_url()/
+is_video_content_label() (ดู docstring ของทั้งคู่สำหรับรายละเอียด path/label ที่ตรวจ) ใช้ 3 จุด:
+  1. _record_page(): nav_links loop กรอง href ที่ตรง video pattern ออกก่อนต่อคิว BFS เลย
+     (เหมือนที่กรอง cross-origin อยู่แล้ว)
+  2. safety.classify_button_tier(): label ที่บ่งบอกวีดีโอ -> tier="decorative" ทันที (ก่อน
+     เช็ค is_nav_menu_item ด้วยซ้ำ — ตั้งใจให้ชนะแม้เป็นเมนู/tab วีดีโอโดยตรง เช่น tab
+     "Watch" ของ Facebook) กัน _explore_buttons() กดเข้าไปเลย
+  3. _explore_buttons(): หลัง DFS-click navigate ไปหน้าใหม่ในโดเมนเดียวกันสำเร็จแล้ว เช็ค URL
+     ปลายทางอีกชั้น (เผื่อ label ไม่มีคำใบ้ตรงๆ เช่น thumbnail ที่ label เป็นแค่ชื่อคลิป ไม่มี
+     คำว่า "watch"/"shorts" เลย) — ถ้าตรง video pattern ไม่ extract/describe/บันทึกเป็นหน้า
+     เลย (ไม่ใช่แค่ไม่ไล่กดต่อ) แล้ว go_back()/goto(before_url) กลับทันที เหมือนวิธีจัดการ
+     off-domain navigation (W34) แค่ไม่ใช่ error (ยิง event "video_content_skipped" แทน
+     "off_domain_navigation" — ทำงานตามที่ตั้งใจ ไม่ใช่ปัญหา)
+
+W38: user ยืนยันว่า W37 แก้ปัญหาวีดีโอได้ถูกต้องแล้ว แต่รายงานปัญหาคล้ายกันแบบใหม่ — ติดลูป
+"กดดูแฮชแท็ก" แทน (กด "#คำ" ในโพสต์ -> หน้ารวมโพสต์ที่ติดแฮชแท็กเดียวกันนับพัน -> มีแฮชแท็ก
+อื่นให้กดต่อในหน้านั้นอีก -> ไม่รู้จบ เหมือนปัญหาวีดีโอเป๊ะ) — เพิ่ม safety.is_hashtag_url()/
+is_hashtag_label() ใช้ที่ 3 จุดเดียวกับ W37 เป๊ะๆ (nav_links loop/classify_button_tier/
+post-click safety net ใน _explore_buttons) รวม logic การเช็คทั้ง video (W37) และ hashtag
+(W38) ไว้ที่ _excluded_content_reason() ตัวเดียว (ดูฟังก์ชันนั้น) คืนชื่อประเภทเนื้อหาที่ควร
+ข้าม ("video"/"hashtag") หรือ None แทนที่จะเช็คแยกทีละเงื่อนไขซ้ำ 2 รอบในทั้ง nav_links loop
+และ post-click safety net — event ที่ยิงออกไปเปลี่ยนจาก "video_content_skipped" คงที่ เป็น
+f"{reason}_content_skipped" แบบไดนามิก (ได้ "video_content_skipped"/"hashtag_content_skipped"
+ตามประเภทจริง) ไม่กระทบ event เดิมของ W37 เลย (ชื่อ event เหมือนเดิมทุกประการสำหรับกรณีวีดีโอ)
+
+W39: user รายงานว่า self-learning "ไม่เห็น"/ไม่กดปุ่มที่อยู่ใน <iframe> เลย (เจอบนหน้า test
+playground ที่มี iframe ซ้อนกัน 2 ชั้น แต่ละชั้นมีปุ่ม Edit/Submit/Click me/Primary ของ
+ตัวเอง) — สาเหตุจริง: extractor.py::_EXTRACT_JS เดิมรันผ่าน page.evaluate() ซึ่ง execute ใน
+context ของ main document เท่านั้น document.querySelectorAll() มองไม่เห็น element ภายใน
+<iframe> เลย (คนละ document object กันโดยสิ้นเชิง แม้ same-origin ก็ตาม) — ต่อให้แก้แค่ฝั่ง
+extraction ก็ยังกดไม่ได้อยู่ดี เพราะ page.click(selector) (ที่ crawler.py ใช้ทุกจุด) ก็ query
+ข้าม frame boundary ไม่ได้เหมือนกัน ต้องแก้ทั้ง 2 ฝั่งคู่กัน:
+  1. extractor.py::extract_page() — ไล่ extract ซ้ำในทุก frame (page.frames คืนทุก frame
+     แบบ flat รวม nested เองอยู่แล้ว) แปะ frame_index (ตำแหน่งใน page.frames ตอน extract) ไว้
+     กับปุ่ม/ช่องฟอร์มที่เจอในแต่ละ child frame (ดู schema.py::ButtonInfo.frame_index/
+     FormFieldInfo.frame_index — 0 = main frame ตลอด เข้ากันได้กับ manual เก่าที่ไม่มีฟิลด์
+     นี้เลย default เป็น main frame ถูกต้องเหมือนพฤติกรรมเดิมทุกประการ) *** ตั้งใจใช้ index
+     แทน frame.url ตรงๆ เพราะทดสอบแล้วพบว่า <iframe srcdoc="..."> ที่ซ้อนกัน (พบได้ในเว็บ
+     demo/testing) ทุกตัวได้ frame.url เป็น "about:srcdoc" เหมือนกันหมด ไม่ unique พอให้
+     แยกแยะได้ — page.frames เป็น flat list ที่ตำแหน่งเดียวกันภายในการ visit หน้าเดียวกัน
+     เชื่อถือได้กว่า (ยอมรับความเสี่ยงที่ index อาจไม่ตรงแล้วถ้าโครงสร้าง frame เปลี่ยนไป
+     ระหว่าง extract กับตอนกดจริง เช่น หน้าที่เพิ่ม/ลบ iframe แบบ dynamic — กรณีนี้พบไม่บ่อย
+     สำหรับหน้าที่กำลังสำรวจซึ่งยังไม่ navigate ไปไหนระหว่างนั้น) ***
+  2. crawler.py::_resolve_click_target() (ใหม่) — แปลง frame_index กลับเป็น Frame object
+     จริงตอนจะกด เรียกก่อน _click_with_retry() ทุกครั้งใน _explore_buttons() — _click_with_
+     retry() เปลี่ยน parameter จาก page ตรงๆ เป็น ClickTarget (Union[Page, Frame] — ทั้งคู่มี
+     .click()/.wait_for_timeout() หน้าตาเหมือนกันเป๊ะสำหรับ use case นี้ ใช้แทนกันได้ตรงๆ ไม่
+     ต้องเขียน logic แยก 2 ชุด)
+
+*** ขอบเขตที่ตั้งใจไม่แตะ: auto_login.py ยังกรอกฟอร์มผ่าน page ตรงๆ เหมือนเดิม ไม่รองรับฟอร์ม
+login ที่อยู่ใน iframe (นอกขอบเขตที่ user รายงานรอบนี้ — ปัญหาที่รายงานเป็นเรื่องปุ่มเท่านั้น)
+ฟอร์มใน iframe ตอนนี้แค่ "มองเห็นได้"/บันทึกลง SiteManual ถูกต้อง (มีประโยชน์ต่อ manual) ไม่ได้
+แก้ auto-fill ให้ทำงานข้าม frame ได้จริง — เช่นเดียวกัน main BFS loop/after_url comparison
+logic ใน _explore_buttons() ยังอ้างอิง page.url (main frame) เหมือนเดิมทุกประการ ไม่แก้ให้ตาม
+ติด navigation ที่เกิด "ภายใน" iframe เอง (เช่น iframe เปลี่ยน src โดยไม่กระทบ top-level URL)
+เพราะกรณีนี้จะถูกจัดการเหมือน "modal/panel เปิดในหน้าเดิม" อยู่แล้วโดยธรรมชาติ (re-extract
+ทุก frame ใหม่ทั้งหมด รวม frame ที่เพิ่งเปลี่ยนไปด้วย แล้ว merge เข้า base_page_info) ซึ่งเพียง
+พอสำหรับเป้าหมายที่ user ระบุ (ให้ "เห็น"/"กด" ปุ่มใน iframe ได้ ไม่ใช่ให้ iframe navigation
+กลายเป็นหน้าใหม่แยกต่างหากใน manual)
 """
 
 import json
 import re
 import time
 import urllib.parse
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Union
 
-from playwright.async_api import Browser, Page
+from playwright.async_api import Browser, Frame, Page
 
 from backend.app.config import settings
 from backend.app.core import llm
@@ -163,7 +260,15 @@ from backend.app.core.orchestrator import Orchestrator
 from backend.app.permission.rules import extract_domain
 from backend.app.site_learning.auto_login import attempt_login, find_login_fields
 from backend.app.site_learning.extractor import extract_page
-from backend.app.site_learning.safety import is_crawl_safe, is_safe_nav_link
+from backend.app.site_learning.safety import (
+    button_core_priority,
+    is_crawl_safe,
+    is_hashtag_label,
+    is_hashtag_url,
+    is_safe_nav_link,
+    is_video_content_label,
+    is_video_content_url,
+)
 from backend.app.site_learning.schema import PageInfo, SiteManual
 
 OnProgressFunc = Callable[[dict], Awaitable[None]]
@@ -353,6 +458,21 @@ def _page_template(page_info: PageInfo) -> frozenset[str]:
     return button_sigs | pattern_sigs | coarse
 
 
+def _excluded_content_reason(url: str, label: str = "") -> Optional[str]:
+    """W37/W38: คืนเหตุผลที่ควร "ข้าม" ไม่สำรวจ URL/label นี้เลย ("video"/"hashtag") หรือ
+    None ถ้าไม่เข้าเงื่อนไขไหนเลย — รวม logic การเช็คของทั้ง W37 (วีดีโอ) และ W38 (แฮชแท็ก)
+    ไว้จุดเดียว ใช้ทั้งใน nav_links loop (_record_page) และ post-click safety net
+    (_explore_buttons) กันเช็คซ้ำ 2 เงื่อนไข x 2 จุด แบบแยกกัน (classify_button_tier ใน
+    safety.py เรียก is_video_content_label/is_hashtag_label ตรงๆ เอง ไม่ผ่านฟังก์ชันนี้
+    เพราะอยู่คนละไฟล์ และไม่ต้องการ "reason" มาแยกแยะ แค่ต้องการ True/False ว่า decorative
+    ไหมเฉยๆ)"""
+    if is_video_content_url(url) or is_video_content_label(label):
+        return "video"
+    if is_hashtag_url(url) or is_hashtag_label(label):
+        return "hashtag"
+    return None
+
+
 def _normalize_url(url: str) -> str:
     """ตัด fragment ออกกันนับซ้ำ (URL ต่างกันแค่ #section ไม่ควรถือว่าเป็นคนละหน้า) และ
     ตัด trailing slash ให้เหมือนกันเสมอ"""
@@ -469,12 +589,39 @@ async def _goto_with_retry(page: Page, url: str, retries: int) -> Optional[str]:
     return last_error
 
 
-async def _click_with_retry(page: Page, selector: str, retries: int) -> Optional[str]:
-    """W24: เหมือน _goto_with_retry() แค่สำหรับ page.click() ระหว่างไล่สำรวจปุ่ม — คืน
-    None ถ้าสำเร็จ, ข้อความ error ตัวสุดท้ายถ้าล้มเหลวครบทุกครั้ง
+# W39: ปุ่มที่ extract มาอาจอยู่ใน <iframe> — ButtonInfo.frame_index บอกว่าต้องกดผ่าน
+# frame ไหน (0 = main frame = page เอง) ClickTarget/​_resolve_click_target ด้านล่างจับคู่กับ
+# frame_index นั้น Page และ Frame ของ Playwright มี .click()/.evaluate() หน้าตาเหมือนกันเป๊ะ
+# สำหรับ use case นี้ (แค่ต้องมี element ให้กดในเอกสารของตัวเอง) ใช้แทนกันได้ตรงๆ
+ClickTarget = Union[Page, Frame]
+
+
+def _resolve_click_target(page: Page, frame_index: int) -> ClickTarget:
+    """W39: คืน Frame object ที่ตรงกับ frame_index (ตำแหน่งใน page.frames ตอน extract_page()
+    เรียก — ดู extractor.py) หรือคืน page เอง (main frame) ถ้า frame_index เป็น 0 (default
+    ของปุ่มทั่วไปที่ไม่ได้อยู่ใน iframe — ไม่ต้องเสียเวลาเรียก page.frames เลยด้วยซ้ำ ทางลัด
+    สำหรับกรณีส่วนใหญ่) — ปุ่มที่ selector ถูก compute มาจาก document ของ frame หนึ่งๆ
+    page.click(selector) ธรรมดา (query แค่ document หลัก) จะหา element ไม่เจอเลย ต้องเรียก
+    frame.click(selector) ตรงๆ กับ Frame object ที่ถูกต้องแทน — ถ้า index เกินขอบเขต
+    page.frames ตอนนี้แล้ว (โครงสร้าง frame ของหน้าเปลี่ยนไปหลัง extract เช่น iframe ถูกลบ/
+    เพิ่มแบบ dynamic) fallback กลับไปที่ page เฉยๆ ดีกว่าโยน exception ออกไปเลย (ให้
+    _click_with_retry ไปเจอ error จากการหา selector ไม่เจอตามปกติ จัดการเหมือนปุ่มอื่นที่
+    กดไม่ได้ทั่วไป)"""
+    if not frame_index:
+        return page
+    frames = page.frames
+    if 0 <= frame_index < len(frames):
+        return frames[frame_index]
+    return page
+
+
+async def _click_with_retry(target: ClickTarget, selector: str, retries: int) -> Optional[str]:
+    """W24: เหมือน _goto_with_retry() แค่สำหรับ click() ระหว่างไล่สำรวจปุ่ม — คืน
+    None ถ้าสำเร็จ, ข้อความ error ตัวสุดท้ายถ้าล้มเหลวครบทุกครั้ง (W39: target เป็น Page
+    หรือ Frame ก็ได้ — ดู _resolve_click_target ด้านบน)
 
     W34: ปุ่มที่ onclick สั่ง navigate ทันที (เช่น window.location.href=...) บางครั้งทำให้
-    page.click() รอบแรก "ดูเหมือน fail" (execution context ของ frame ถูกทำลายกลางคันตอน
+    click() รอบแรก "ดูเหมือน fail" (execution context ของ frame ถูกทำลายกลางคันตอน
     หน้าเริ่ม navigate ระหว่างที่ click() กำลังรอ post-click stability ตาม default) ทั้งที่
     คลิกสำเร็จและ navigate ไปแล้วจริง แล้ว retry รอบถัดไปหา selector เดิมบนหน้าใหม่ (ที่ไม่มี
     element นั้นแล้ว) ไม่เจอ กลายเป็น timeout ซ้อนอีกที (ลองแก้ด้วย no_wait_after=True แล้ว
@@ -485,12 +632,12 @@ async def _click_with_retry(page: Page, selector: str, retries: int) -> Optional
     last_error = ""
     for attempt in range(retries + 1):
         try:
-            await page.click(selector, timeout=5000)
+            await target.click(selector, timeout=5000)
             return None
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}"
             if attempt < retries:
-                await page.wait_for_timeout(settings.site_learning_retry_backoff_ms)
+                await target.wait_for_timeout(settings.site_learning_retry_backoff_ms)
     return last_error
 
 
@@ -583,6 +730,7 @@ async def crawl_site(
 
         async def _record_page(
             page_info: PageInfo, nav_links: list[dict], check_page_template: bool = True,
+            explore_buttons: bool = True,
         ) -> None:
             """describe + เก็บเข้า pages + ยิง progress event + ไล่กดปุ่มปลอดภัย + ต่อคิว
             nav link ที่ปลอดภัย — logic ร่วมที่ใช้ทั้งกับหน้าที่เจอจาก BFS ปกติ, หน้าหลัง
@@ -658,7 +806,7 @@ async def crawl_site(
                     })
                 return
 
-            if len(pages) < effective_max_pages:
+            if explore_buttons and len(pages) < effective_max_pages:
                 await _explore_buttons(page_info)
 
             for link in nav_links:
@@ -670,6 +818,11 @@ async def crawl_site(
                 absolute = urllib.parse.urljoin(page.url, href)
                 if extract_domain(absolute) != domain:
                     continue  # ข้าม cross-origin เด็ดขาด — นอกขอบเขตการเรียนรู้เว็บนี้
+                # W37/W38: ลิงก์ไปหน้า "ดูวีดีโอ"/"แฮชแท็ก" ไม่ต่อคิว BFS เลย — เป็นเนื้อหา ไม่
+                # ใช่โครงสร้างเว็บที่ user ต้องการเรียนรู้ + แนะนำเนื้อหาถัดไปต่อเรื่อยๆ ไม่รู้จบ
+                # ถ้าเดินเข้าไป (ดู _excluded_content_reason)
+                if _excluded_content_reason(absolute, link.get("text", "")):
+                    continue
                 normalized_link = _normalize_url(absolute)
                 if normalized_link in visited or normalized_link in queued:
                     continue
@@ -706,9 +859,33 @@ async def crawl_site(
             candidate_buttons = list(base_page_info.buttons)
             for pattern in base_page_info.ui_patterns:
                 candidate_buttons.extend(pattern.buttons)
-            safe_buttons = [
-                b for b in candidate_buttons if b.selector and _is_explorable(b)
-            ][:settings.site_learning_max_buttons_per_page]
+
+            # W36: tier="decorative" (share/like/notification/theme switch/pagination
+            # page>1 ฯลฯ — ดู safety.classify_button_tier) ข้ามตั้งแต่ต้นเลย ไม่ต้องเช็ค
+            # is_crawl_safe()/selector อะไรทั้งสิ้น เหลือแค่ tier="nav"/"core" ให้ผ่าน
+            # _is_explorable() ตามเดิมทุกประการ (ไม่ได้ลด/เพิ่มความเข้มงวดของ is_crawl_safe
+            # เลย — แค่ตัดปุ่มรอง/ตกแต่งออกจากการพิจารณาไปก่อนที่จะถึงขั้นตอนนั้น) — nav ยัง
+            # ต้องผ่านชั้นนี้ด้วย (ไม่ใช่แค่ core) เพราะเมนู/tab แบบ SPA ที่ไม่มี href จริง
+            # (เช่น <div role=menuitem>) พึ่งพา _explore_buttons() (DFS-click) เป็นเส้นทาง
+            # เดียวที่สำรวจได้ (ดู W24 — BFS queue เดินตาม href เท่านั้น ไม่มี href ให้เดิน)
+            tier_filtered = [b for b in candidate_buttons if b.tier != "decorative"]
+            safe_buttons = [b for b in tier_filtered if b.selector and _is_explorable(b)]
+
+            # W36: ปุ่ม tier="core" เกินเพดานต่อหน้าไหม (settings.
+            # site_learning_max_core_buttons_per_page) — นับเฉพาะ core ไม่รวม nav (nav ไม่มี
+            # เพดานนี้ ยังไล่กดครบตาม site_learning_max_buttons_per_page เดิมด้านล่างเหมือน
+            # ไม่มีฟีเจอร์นี้) ถ้าเกิน ตัดเอาแค่ top-K ตาม priority (ดู
+            # safety.button_core_priority — form-submit > exact keyword match > partial
+            # match > fallback) ใช้ id() เทียบ object แทน equality เพราะ ButtonInfo ไม่ได้
+            # กำหนด __eq__/__hash__ พิเศษ (dataclass default compare ด้วยค่าฟิลด์ อาจชนกันได้
+            # ถ้าปุ่ม 2 ตัวมีค่าฟิลด์เหมือนกันเป๊ะทั้งที่เป็นคนละ element จริง)
+            core_buttons = [b for b in safe_buttons if b.tier == "core"]
+            if len(core_buttons) > settings.site_learning_max_core_buttons_per_page:
+                ranked_core = sorted(core_buttons, key=button_core_priority)
+                keep_core_ids = {id(b) for b in ranked_core[:settings.site_learning_max_core_buttons_per_page]}
+                safe_buttons = [b for b in safe_buttons if b.tier != "core" or id(b) in keep_core_ids]
+
+            safe_buttons = safe_buttons[:settings.site_learning_max_buttons_per_page]
 
             for button in safe_buttons:
                 if len(pages) >= effective_max_pages:
@@ -725,7 +902,10 @@ async def crawl_site(
                 if on_progress:
                     await on_progress({"kind": "button_explored", "url": before_url, "button": label})
 
-                click_error = await _click_with_retry(page, button.selector, settings.site_learning_click_retries)
+                # W39: ปุ่มนี้อาจอยู่ใน <iframe> (button.frame_index != 0) — ต้องกดผ่าน
+                # Frame object ที่ถูกต้อง ไม่ใช่ page ตรงๆ เสมอไป (ดู _resolve_click_target)
+                click_target = _resolve_click_target(page, getattr(button, "frame_index", 0))
+                click_error = await _click_with_retry(click_target, button.selector, settings.site_learning_click_retries)
                 # W34: click_error ไม่ None ไม่ได้แปลว่ากดไม่สำเร็จเสมอไป — ปุ่มที่ onclick
                 # สั่ง navigate ทันที (window.location.href=...) มักทำให้ page.click() รอบ
                 # แรก "ดูเหมือน fail" เพราะ execution context ถูกทำลายกลางคันตอนหน้าเริ่ม
@@ -784,7 +964,21 @@ async def crawl_site(
                     await _settle_url(page)
                     after_url = _normalize_url(page.url)
                 if after_url != before_url and extract_domain(page.url) == domain:
-                    if after_url not in visited and after_url not in queued:
+                    # W37/W38: หน้า "ดูวีดีโอ"/"แฮชแท็ก" — ปุ่ม/thumbnail ที่ label ไม่มีคำใบ้
+                    # ตรงๆ (เช่น aria-label เป็นแค่ชื่อคลิป) หลุดผ่าน tier filter
+                    # (safety.classify_button_tier) มาได้ เช็ค URL ปลายทางอีกชั้นหลัง navigate
+                    # จริง (ดู _excluded_content_reason) — ไม่ extract/describe/บันทึกเป็นหน้า
+                    # เลย (เป็นเนื้อหา ไม่ใช่โครงสร้างเว็บ) ทำงานตามที่ตั้งใจ ไม่ใช่ error
+                    # (ต่างจาก off-domain ด้านล่าง) แค่ยิง event ให้เห็นแล้ว go_back()/
+                    # goto(before_url) กลับทันที (โค้ดร่วมด้านล่างเหมือนกรณีปกติ)
+                    excluded_reason = _excluded_content_reason(page.url)
+                    if excluded_reason:
+                        if on_progress:
+                            await on_progress({
+                                "kind": f"{excluded_reason}_content_skipped", "url": before_url,
+                                "button": label, "landed_on": page.url,
+                            })
+                    elif after_url not in visited and after_url not in queued:
                         visited.add(after_url)
                         await _reveal_dynamic_content(page)
                         new_page_info, new_nav_links = await extract_page(page)
@@ -880,8 +1074,17 @@ async def crawl_site(
             informational แนบไปกับ event "login_result" เท่านั้น *** ไม่ใช้ตัดสิน pass/fail
             เพราะเว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย (fixture ทดสอบในโปรเจกต์
             นี้เองก็ไม่มี server จริงตั้ง cookie ให้ — ถ้าเอา cookie เป็นเงื่อนไขบังคับจะทำให้
-            false-negative ทุกเว็บที่ไม่ใช้ cookie ทันที) ***"""
-            await _record_page(page_info, nav_links)
+            false-negative ทุกเว็บที่ไม่ใช้ cookie ทันที) ***
+
+            W40: _record_page() ของหน้า login เอง (บรรทัดถัดไป) ต้องส่ง explore_buttons=
+            False เสมอ — ปุ่ม submit จริงบนหน้า login บางเว็บใช้คำที่ไม่ตรง
+            _LOGIN_SUBMIT_KEYWORDS เป๊ะ (เช่น "Continue" ซึ่งอยู่ใน ALLOWED_CRAWL_KEYWORDS
+            ของ safety.py ด้วยเหตุผลอื่น — multi-step form/wizard) ทำให้ attempt_login()
+            คืน False ถูกต้องแล้ว (หา submit ไม่เจอ) แต่ _explore_buttons() เดิมยังไล่กดปุ่ม
+            "ปลอดภัย" ทุกตัวบนหน้า login ต่อแบบทั่วไปอยู่ดี รวมถึงปุ่ม "Continue" ตัวนี้ —
+            กลายเป็นกด submit แทนที่ผ่านเส้นทางอื่นทั้งที่ตั้งใจให้ล้มเหลวอย่างเงียบๆ ไม่สำรวจ
+            ต่อ (ดู test_crawl_site_login_bootstrap_fails_gracefully_without_submit_button)"""
+            await _record_page(page_info, nav_links, explore_buttons=False)
             pre_login_url = _normalize_url(page.url)
             did_login = await attempt_login(page, page_info, login_username, login_password)
 

@@ -175,6 +175,16 @@
   .plan-badge.ok{ background:var(--accent); color:var(--accent-ink); }
   .plan-badge.fail{ background:var(--critical-soft); color:var(--critical); }
   .plan-bubble-text{ font-size:13px; line-height:1.6; white-space:pre-wrap; color:var(--ink); margin-bottom:8px; }
+  /* W43: real-time checklist rendering of a numbered plan ("1. ... \n2. ...") — each line
+     becomes its own row with a checkbox-style marker that fills in as the agent completes
+     that step during the run (see plan_step_done handling in handleStreamEvent()). Falls
+     back to the plain .plan-bubble-text block above when the plan text doesn't parse into
+     numbered steps at all (e.g. an older/malformed plan), so nothing silently disappears. */
+  .plan-checklist{ list-style:none; margin:0 0 8px; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .plan-checklist-item{ display:flex; align-items:flex-start; gap:8px; font-size:13px; line-height:1.5; color:var(--ink); }
+  .plan-checklist-box{ flex:0 0 auto; width:16px; height:16px; margin-top:1px; border-radius:4px; border:1.5px solid var(--faint); display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1; color:var(--accent-ink); transition:background-color .15s, border-color .15s; }
+  .plan-checklist-item.done .plan-checklist-box{ background:var(--accent); border-color:var(--accent); }
+  .plan-checklist-item.done .plan-checklist-text{ color:var(--muted); text-decoration:line-through; text-decoration-color:var(--faint); }
   .plan-edit-textarea{ width:100%; background:var(--surface); border:1px solid var(--border); color:var(--ink); border-radius:6px; padding:8px; font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; min-height:110px; margin-bottom:8px; }
   .plan-edit-textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
 
@@ -400,6 +410,11 @@ const runningPlans = {};     // task_id -> plan text, set right when execute_pla
                               // running (task.result.plan only exists once it's done)
 const liveConnections = {};  // task_id -> EventSource, one live stream per running task
 const liveChatReplies = {};  // task_id -> chat reply message for Q&A summarization intent
+// W43: task_id -> Set of plan step indices (1-based) the agent has confirmed complete via
+// real-time "plan_step_done" SSE events (see handleStreamEvent()/parsePlanSteps()) — never
+// removed from once added, even if the agent later revisits/retries an action related to
+// that step, so a checked box doesn't flicker back to unchecked mid-run.
+const completedPlanSteps = {};
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
 
 
@@ -504,6 +519,22 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
+}
+
+// W43: parse a plan's numbered-list text ("1. ... \n2. ...", the format the backend's
+// plan prompt now enforces — see llm.py::_PLAN_PROMPT_TEMPLATE) into individual steps so
+// renderTaskTurn() can show each as its own checklist row and tick it off in real time as
+// "plan_step_done" events arrive (see handleStreamEvent()). Returns [] for text that
+// doesn't match the numbered format at all (e.g. an older plan generated before this
+// format was enforced, or a malformed one) — the caller falls back to the old plain-text
+// rendering in that case so nothing silently disappears.
+function parsePlanSteps(planText) {
+  const steps = [];
+  for (const line of String(planText || "").split("\n")) {
+    const m = line.match(/^\s*(\d+)\.\s*(.+)$/);
+    if (m) steps.push({ index: parseInt(m[1], 10), text: m[2].trim() });
+  }
+  return steps;
 }
 
 function fmtTime(epochSeconds) {
@@ -653,6 +684,10 @@ function handleStreamEvent(taskId, event) {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push({
       step: null, cmd: event.cmd, result: "Auto-approved (auto-approve enabled)", success: true,
     });
+  } else if (event.kind === "plan_step_done") {
+    // W43: never delete/unset once added (see completedPlanSteps declaration) — a
+    // checked box should stay checked even if the agent revisits that part of the page.
+    (completedPlanSteps[taskId] || (completedPlanSteps[taskId] = new Set())).add(event.step);
   } else if (event.kind === "approval_timeout") {
     // Nobody answered the plan/permission prompt in time — the backend already
     // resolved it as denied, so just drop the stale prompt from the UI too.
@@ -1286,13 +1321,27 @@ function renderTaskTurn(task) {
     const badge = task.result
       ? `<span class="plan-badge ${task.result.success ? "ok" : "fail"}">${task.result.success ? "succeeded" : "did not finish"}</span>`
       : "";
+    // W43: render each numbered plan line as its own checklist row, ticked off in real
+    // time as "plan_step_done" events arrive (see parsePlanSteps()/completedPlanSteps) —
+    // falls back to the old plain-text block for plans that don't parse into numbered
+    // steps at all (e.g. one generated before the numbered format was enforced).
+    const planSteps = parsePlanSteps(planText);
+    const doneSteps = completedPlanSteps[task.task_id] || new Set();
+    const planBodyHtml = planSteps.length
+      ? `<ul class="plan-checklist">${planSteps.map((step) => `
+            <li class="plan-checklist-item${doneSteps.has(step.index) ? " done" : ""}">
+              <span class="plan-checklist-box">${doneSteps.has(step.index) ? "✓" : ""}</span>
+              <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
+            </li>`).join("")}
+          </ul>`
+      : `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`;
     html += `
       <div class="msg agent">
         <div class="avatar">${agentIcon}</div>
         <div>
           <div class="bubble plan-bubble">
             <div class="plan-bubble-title">Plan${badge}</div>
-            <div class="plan-bubble-text">${escapeHtml(planText)}</div>
+            ${planBodyHtml}
           </div>
         </div>
       </div>`;
