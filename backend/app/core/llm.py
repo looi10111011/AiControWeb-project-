@@ -731,3 +731,82 @@ async def describe_screenshot(client, model: str, screenshot_png: bytes, action_
     except Exception as e:
         print(f"⚠️ Vision fallback error: {e}", flush=True)
         return ""
+
+
+# --- Intent Classification & Page Summarization ---
+_CLASSIFY_INTENT_PROMPT = """วิเคราะห์ความต้องการ (Intent) ของผู้ใช้จากคำขอ (User Goal/Question) ด้านล่างนี้:
+- ตอบว่า "qa_summary" หากผู้ใช้ต้องการถามคำถาม, สรุปเนื้อหา, อ่านข้อมูล, แปลความหมาย, สอบถามราคา/รายละเอียด, สอบถามสินค้า/ข้อมูล หรือประมวลผลข้อมูลจากหน้าเว็บ โดยไม่ต้องการให้ทำการคลิก/กรอกฟอร์ม/นำทาง
+- ตอบว่า "action_task" หากผู้ใช้สั่งให้เบราว์เซอร์ทำ Action หรือกระบวนการใดๆ บนหน้าเว็บ เช่น คลิกปุ่ม, กรอกฟอร์ม, ค้นหา, สั่งซื้อสินค้า, ล็อกอิน, นำทางไปหน้าอื่น
+
+User Goal/Question: {goal}
+Page Content (ย่อ): {page_text_short}
+
+ตอบเพียงคำเดียวเท่านั้น: qa_summary หรือ action_task"""
+
+
+async def classify_intent(client, model: str, goal: str, page_text: str = "", provider: str = "gemini") -> str:
+    """วิเคราะห์ Intent ของผู้ใช้ว่าเป็น qa_summary (การถามตอบ/ขอสรุปเนื้อหา) หรือ action_task (การสั่งงาน/automation บนเว็บ)"""
+    goal_lower = goal.lower().strip()
+
+    # Action imperatives (สั่งให้เบราว์เซอร์กระทำ)
+    action_keywords = [
+        "คลิก", "click", "กด", "กรอก", "fill", "พิมพ์", "type", "ซื้อ", "buy", "submit",
+        "login", "ล็อกอิน", "เข้าสู่ระบบ", "สมัคร", "register", "search", "ค้นหา",
+        "select", "เลือก", "check", "uncheck", "scroll", "ไปที่", "goto", "go to",
+        "ป้อน", "ใส่ข้อมูล", "สั่งซื้อ", "เพิ่มลงตะกร้า", "add to cart", "checkout"
+    ]
+
+    # Q&A & Summarization markers (ถาม/ขอสรุปข้อมูล)
+    qa_keywords = [
+        "สรุป", "คืออะไร", "หมายถึงอะไร", "ราคากี่บาท", "ราคาเท่าไหร่", "มีรายละเอียดอะไรบ้าง",
+        "อ่าน", "แปล", "แปลภาษา", "ตอบคำถาม", "ช่วยอ่าน", "ย่อความ", "หน้านี้เกี่ยวกับอะไร",
+        "มีสินค้าอะไรบ้าง", "สรุปข้อมูล", "บอกหน่อย", "มีอะไรบ้าง", "ใคร", "ที่ไหน", "เมื่อไหร่",
+        "ทำไม", "อย่างไร", "เท่าไร", "กี่", "รายละเอียด", "รายละเอียดสินค้า", "รายละเอียดของ",
+        "summarize", "explain", "what is", "how much", "tell me", "what does", "describe"
+    ]
+
+    has_action = any(kw in goal_lower for kw in action_keywords)
+    has_qa = any(kw in goal_lower for kw in qa_keywords)
+
+    # 1. Clear Intent via heuristics
+    if has_qa and not has_action:
+        return "qa_summary"
+    if has_action and not has_qa:
+        return "action_task"
+
+    # 2. Priority heuristic when both or neither match
+    # If starting with pure question phrase
+    if any(goal_lower.startswith(kw) for kw in ["สรุป", "หน้านี้", "คืออะไร", "มีอะไร", "ราคา", "แปล", "what", "how", "tell"]):
+        if not any(goal_lower.startswith(kw) for kw in ["คลิก", "กด", "กรอก", "ค้นหา", "ไปที่", "click", "fill"]):
+            return "qa_summary"
+
+    # 3. LLM classification fallback for ambiguous/conversational cases
+    try:
+        page_text_short = page_text[:500] if page_text else ""
+        prompt = _CLASSIFY_INTENT_PROMPT.format(goal=goal, page_text_short=page_text_short)
+        result = await generate_text(client, model, prompt, provider)
+        result_clean = result.strip().lower()
+        if "qa_summary" in result_clean or "qa" in result_clean or "summary" in result_clean:
+            return "qa_summary"
+        return "action_task"
+    except Exception as e:
+        print(f"⚠️ classify_intent error ({e}) — fallback to action_task", flush=True)
+        return "action_task"
+
+
+_SUMMARIZE_SYSTEM_PROMPT = (
+    "คุณคือ AI Assistant ที่มีความสามารถในการอ่านหน้าเว็บ ปัจจุบันผู้ใช้อยู่ที่หน้าเว็บนี้ และต้องการถามคำถามหรือขอสรุปข้อมูล\n"
+    "โปรดอ่านเนื้อหาเว็บต่อไปนี้แล้วตอบคำถามของผู้ใช้ให้กระชับ เข้าใจง่าย และใช้ภาษาไทยที่เป็นกันเอง"
+)
+
+
+async def summarize_page(client, model: str, page_text: str, user_prompt: str, provider: str = "gemini") -> str:
+    """สรุปเนื้อหาหน้าเว็บหรือตอบคำถามตาม Prompt รูปแบบเฉพาะที่กำหนดให้ออกมาเป็นภาษาไทยอย่างเป็นธรรมชาติ"""
+    full_prompt = f"{_SUMMARIZE_SYSTEM_PROMPT}\n\nPage Content: {page_text}\n\nUser Question: {user_prompt}"
+    try:
+        return await generate_text(client, model, full_prompt, provider)
+    except Exception as e:
+        print(f"⚠️ summarize_page error: {e}", flush=True)
+        return f"ขออภัยด้วยครับ ไม่สามารถสรุปข้อมูลจากหน้าเว็บได้ในขณะนี้เนื่องจากเกิดข้อผิดพลาด: {e}"
+
+

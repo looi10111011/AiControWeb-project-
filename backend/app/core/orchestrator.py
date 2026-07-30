@@ -525,7 +525,7 @@ class Orchestrator:
     async def generate_plan(
         self, url: str, goal: str, provider: Optional[str] = None, page: Optional[Page] = None,
         site_manual_context: str = "",
-    ) -> str:
+    ) -> tuple[str, bool]:
         """W13: ร่างแผนคร่าวๆ (llm.generate_plan) แยกเป็นเฟสของตัวเอง ไม่ผูกกับ
         run_task() เลย — ต่างจาก confirm_plan=True เดิมที่ต้อง acquire/launch/connect
         browser ก่อนแล้วค่อย goto+perceive มาร่างแผน ฟังก์ชันนี้ "ไม่เปิด/ไม่ connect
@@ -541,9 +541,8 @@ class Orchestrator:
         แปะไว้ก่อน page_text ให้ LLM เห็นโครงสร้างเว็บที่รู้จักอยู่แล้วตอนร่างแผน (ไม่ต้อง
         เดาจาก page_text อย่างเดียว) ว่างเปล่า (default) ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้
 
-        คืนแผนเป็น plain text — ผู้เรียกเป็นคนตัดสินใจเองว่าจะให้ user อนุมัติยังไง แล้ว
-        ค่อยส่งกลับเข้า run_task(approved_plan=...) เพื่อรันจริงทีหลัง (ดู docstring ของ
-        approved_plan ใน run_task())"""
+        คืนค่าเป็น tuple (plan_text, is_qa) — ถ้า Intent เป็น qa_summary จะคืน (" ", True)
+        เพื่อให้ frontend ข้ามหน้าต่างอนุมัติ PLAN แล้วตอบคำถามได้ทันที"""
         resolved_provider = provider or settings.llm_provider
         client, model, _, _, _ = self._llm_backend(resolved_provider)
         page_text = ""
@@ -551,14 +550,17 @@ class Orchestrator:
             try:
                 _, page_text = await get_snapshot(page)
             except Exception as e:
-                # page จาก session_id เดิม (เทิร์นก่อนหน้า) อาจถูกปิด/นำทางออกไปแล้วโดย
-                # user เอง หรืออยู่ระหว่าง navigate ตอน perceive พอดี — ไม่ควรทำให้ทั้ง
-                # endpoint พังแค่เพราะ snapshot หน้าปัจจุบันไม่ได้ (เหมือนเหตุผลเดียวกับ
-                # llm.describe_screenshot()) ร่างแผนจาก goal เพียวๆ ต่อไปได้เลย
                 print(f"⚠️ generate_plan: get_snapshot ล้มเหลว ({e!r}) — ใช้ page_text ว่างแทน", flush=True)
+
+        user_intent = await llm.classify_intent(client, model, goal, page_text=page_text, provider=resolved_provider)
+        if user_intent == "qa_summary":
+            return "", True
+
         if site_manual_context:
             page_text = f"[คู่มือเว็บไซต์ที่เรียนรู้มาก่อนแล้ว]\n{site_manual_context}\n\n{page_text}".strip()
-        return await llm.generate_plan(client, model, goal, page_text, resolved_provider)
+        plan_text = await llm.generate_plan(client, model, goal, page_text, resolved_provider)
+        return plan_text, False
+
 
     async def run_task(
         self,
@@ -937,6 +939,38 @@ class Orchestrator:
             # หน้า login พอดี เช่น session หลุด) ไม่มีผลอะไรถ้าหน้าปัจจุบันไม่ใช่หน้า login
             # หรือไม่มี credential เก็บไว้สำหรับโดเมนนี้ (ดู _maybe_auto_login())
             await _maybe_auto_login(page, verbose)
+
+            # Intent Classification: ตรวจจับ Intent ของผู้ใช้ก่อนเริ่ม Planner Loop
+            _, initial_page_text = await get_snapshot(page)
+            user_intent = await llm.classify_intent(client, model, goal, page_text=initial_page_text, provider=resolved_provider)
+            if user_intent == "qa_summary":
+                if verbose:
+                    print(f"[intent] ตรวจพบ Intent: qa_summary — สรุปข้อมูล/ตอบคำถามจากหน้าเว็บ", flush=True)
+                summary_text = await llm.summarize_page(
+                    client, model, page_text=initial_page_text, user_prompt=goal, provider=resolved_provider
+                )
+                self.memory.record({
+                    "step": 1,
+                    "cmd": {"type": "chat_reply"},
+                    "result": summary_text,
+                    "success": True,
+                })
+                await _emit({
+                    "kind": "chat_reply",
+                    "message": summary_text,
+                    "status": "chat_reply",
+                })
+                return {
+                    "status": "chat_reply",
+                    "success": True,
+                    "steps": 1,
+                    "message": summary_text,
+                    "history": self.memory.recent(max_steps),
+                    "tokens": _tokens_dict(total_usage),
+                    "plan": None,
+                    "final_page_state": initial_page_text,
+                }
+
 
             if approved_plan:
                 # W13: แผนถูกอนุมัติไปแล้วจากภายนอก (routes.py::POST /api/generate_plan

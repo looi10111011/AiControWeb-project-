@@ -226,13 +226,8 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     domain = extract_domain(req.url)
     matched = plan_memory.find_matching_plan(domain, req.goal)
     if matched is not None:
-        return GeneratePlanResponse(plan=matched["plan"])
+        return GeneratePlanResponse(plan=matched["plan"], is_qa=False)
 
-    # W19: เช็ค is_healthy() ก่อนหยิบ page มาใช้ — session ที่ browser/page ถูกปิดไปแล้ว
-    # จริง (user ปิดหน้าต่าง/tab เอง, crash) จะถูกมองเหมือนไม่มี session เลย (page=None)
-    # ไม่ใช่ auto-recover ที่นี่ (endpoint นี้ต้อง "ไม่แตะ browser เองเด็ดขาด" ตาม
-    # docstring ด้านบน — recovery จริงเกิดตอน execute_plan()/create_task() ผ่าน
-    # session_registry.get_or_create() เท่านั้น)
     page = None
     if req.session_id:
         session_registry = request.app.state.session_registry
@@ -241,15 +236,21 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
             page = session.page
     site_manual_context = load_knowledge_text(domain)
     try:
-        plan = await Orchestrator().generate_plan(
+        res = await Orchestrator().generate_plan(
             req.url, req.goal, provider=req.provider, page=page, site_manual_context=site_manual_context,
         )
+        if isinstance(res, tuple):
+            plan, is_qa = res
+        else:
+            plan, is_qa = str(res), False
     except Exception as e:
         # ห่อ exception ทุกชนิด (LLM API error, page เดิมจาก session_id ถูกปิด/นำทางไปแล้ว
         # ระหว่าง perceive ฯลฯ) เป็น HTTPException ที่มี detail จริง — ไม่งั้น FastAPI จะคืน
         # 500 เปล่าๆ ("Internal Server Error" ไม่มี context) ให้ frontend เห็นแค่นั้น
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
-    return GeneratePlanResponse(plan=plan)
+    return GeneratePlanResponse(plan=plan, is_qa=is_qa)
+
+
 
 
 @router.post("/api/execute_plan", response_model=TaskCreatedResponse, status_code=202)
