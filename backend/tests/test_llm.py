@@ -129,6 +129,19 @@ def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
     assert "นับเป็นคำสั่งให้ค้นหาโดยปริยาย" in llm.SYSTEM_PROMPT
 
 
+# --- hover: ปุ่ม hover-to-reveal ที่ perception.py ติด label marker ให้แล้ว ---
+
+
+def test_browser_action_schema_includes_hover_type():
+    type_enum = llm._BROWSER_ACTION_PARAMS["properties"]["type"]["enum"]
+    assert "hover" in type_enum
+
+
+def test_system_prompt_instructs_hover_before_clicking_hidden_reveal_elements():
+    assert "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" in llm.SYSTEM_PROMPT
+    assert '"hover"' in llm.SYSTEM_PROMPT
+
+
 # --- next_action() (Anthropic) — เทสต์ prompt caching wiring + parse tool_use ---
 
 

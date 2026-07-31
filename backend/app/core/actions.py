@@ -130,6 +130,65 @@ async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         return ActionResult(False, f"click({index})", f"error: {e}")
 
 
+# W47: hover-to-reveal action buttons (เช่น flag icon ที่โผล่มาตอน hover แถวแม่ในอีเมล
+# client ทั่วไป — เจอจริงบน uitestingplayground.com/scrolltoclick Case 4) มี
+# data-ai-index แล้วจาก perception.py (แก้ไปแล้วให้ไม่กรอง element ที่ซ่อนด้วย
+# opacity:0/visibility:hidden ของตัวเองทิ้ง ตราบใดที่ bounding box ไม่เป็น 0x0) แต่คลิก
+# ตรงๆ รอบแรกจะพลาดเสมอเพราะ CSS ยังไม่เปลี่ยนสถานะจาก hover จริง — Playwright's
+# locator.click() เองไม่ trigger :hover ของ ancestor ให้ก่อนอัตโนมัติ (มันเล็ง element
+# เป้าหมายแล้วคลิกตรงจุดกึ่งกลางทันที ไม่ได้จำลอง mouse move ผ่าน ancestor เหมือนคนจริง)
+async def hover(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
+    """เลื่อนเมาส์ไปวางไว้บน element ตาม index (ไม่คลิก) — trigger CSS :hover ของ element
+    เอง/บรรพบุรุษทั้งสาย (ไม่ต้องหา parent row เอง แค่ hover ตัว element เป้าหมายตรงๆ ก็พอ
+    เพราะ browser จะ trigger :hover ของ ancestor ทั้งสายตามธรรมชาติของการขยับเมาส์จริง)
+
+    force=True จำเป็นมาก — พิสูจน์จริงบน uitestingplayground.com/scrolltoclick Case 4 ว่า
+    ถ้าไม่ใส่ .hover() ธรรมดาจะ timeout เหมือน click() ทุกประการ เพราะ Playwright เองมี
+    actionability check ภายใน (รอ element "visible" ตามนิยามของ Playwright เอง) ก่อนจะ
+    ยอมส่ง mouse event เข้าไปจริง — element ที่ visibility:hidden (เจอจริงบนเว็บนี้ ต่างจาก
+    opacity:0 ที่ Playwright ยัง "visible" ปกติเพราะไม่เช็ค opacity) ไม่ผ่านเงื่อนไขนี้เลย
+    ไม่ว่าจะ retry กี่ครั้ง — force=True ข้าม actionability check พวกนี้ทั้งหมด ส่ง mouse
+    move ไปที่พิกัดกึ่งกลางของ element ตรงๆ (ไปโดน parent ที่ visible จริงแทนถ้าตัว element
+    เองไม่ hit-testable) trigger :hover ของ ancestor ได้จริงเหมือนเมาส์ขยับจริง แล้วค่อยให้
+    click() รอบถัดไปเจอ element ที่ visibility เปลี่ยนเป็น visible แล้วสำเร็จตามปกติ"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.hover(selector, timeout=timeout, force=True)
+        return ActionResult(True, f"hover({index})", "hover สำเร็จ")
+    except PWTimeout:
+        return ActionResult(False, f"hover({index})", "หา element ไม่เจอ/hover ไม่ได้ (timeout)")
+    except Exception as e:
+        return ActionResult(False, f"hover({index})", f"error: {e}")
+
+
+async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
+    """เหมือน _dispatch_with_retry() ทั่วไป (ครั้งแรก + retry อีก _ACTION_RETRIES-1 ครั้ง)
+    แต่เฉพาะ click(): ตั้งแต่รอบ retry ที่ 2 เป็นต้นไป hover() บน element เป้าหมายก่อนคลิก
+    ซ้ำเสมอ 1 ครั้ง — แก้ปัญหาปุ่ม hover-to-reveal ที่ perception.py ติด index ให้แล้วแต่
+    คลิกตรงๆ รอบแรกจะพลาดเพราะ CSS ยังไม่เปลี่ยนสถานะจาก hover จริง (ดู hover() ด้านบน)
+
+    รอบแรกยังคลิกตรงๆ เหมือนเดิมทุกประการ ไม่ hover ก่อนเด็ดขาด — กัน overhead (เวลา +
+    round-trip ไป Playwright เพิ่ม) กับปุ่มทั่วไปที่ไม่ต้อง hover เลยตั้งแต่แรก (ส่วนใหญ่
+    ของ click ทั้งหมด) ผลของ hover() เองไม่ถูกนำมาตัดสิน success/fail ของรอบนั้น (แค่เป็น
+    ขั้นเตรียมก่อนคลิก — hover ไม่เจอ/ล้มเหลวก็ปล่อยให้ click() ลองต่อแล้วรายงานผลจริงของ
+    click() เอง ไม่ใช่ของ hover())"""
+    result: ActionResult = None
+    for attempt in range(1, _ACTION_RETRIES + 1):
+        if attempt > 1:
+            await hover(page, index)
+        result = await click(page, index)
+        if result.success:
+            if attempt > 1:
+                result = ActionResult(
+                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                )
+            return result
+        if attempt < _ACTION_RETRIES:
+            await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
+    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+
+
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
     try:
@@ -385,7 +444,12 @@ async def execute(
         # click/fill/select/check ผ่าน retry wrapper (W5) เพราะพังบ่อยจาก DOM ยังไม่นิ่ง
         # ไม่ใช่ index ผิดเสมอไป — scroll/goto/go_back/switch_tab/wait ไม่ retry เพราะ
         # failure mode ต่างกัน (เช่น goto ผิด URL ก็จะผิดซ้ำทุกครั้ง ไม่ใช่เรื่อง timing)
-        if t == "click":       return await _dispatch_with_retry(click, page, cmd["index"])
+        # click ใช้ _dispatch_click_with_retry() แยกต่างหาก (ไม่ใช่ _dispatch_with_retry()
+        # ทั่วไป) เพราะตั้งแต่รอบ retry ที่ 2 เป็นต้นไปต้อง hover() บน element เป้าหมายก่อน
+        # คลิกซ้ำเสมอ (ดู hover-to-reveal action button — hover()/_dispatch_click_with_retry()
+        # ด้านบน) fill/select/check ไม่ต้องการ hover ก่อนเลย ยังใช้ _dispatch_with_retry()
+        # ทั่วไปเหมือนเดิมทุกประการ
+        if t == "click":       return await _dispatch_click_with_retry(page, cmd["index"])
         if t == "fill":        return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
         if t == "select":      return await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
         if t == "check":       return await _dispatch_with_retry(check, page, cmd["index"])
@@ -394,6 +458,7 @@ async def execute(
         if t == "go_back":     return await go_back(page)
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
         if t == "wait":        return await wait_stable(page)
+        if t == "hover":       return await hover(page, cmd["index"])
         if t == "read_page_data":
             return await read_page_data(page, cmd.get("query", ""), cmd.get("target_hint", ""))
         if t in DEFAULT_NEEDS_CONFIRMATION:
@@ -401,7 +466,9 @@ async def execute(
             # category ของ classify_action() (เช็คผ่านไปแล้วด้านบนตอนมาถึงตรงนี้) ที่จริง
             # แล้วคือคลิก element ตัวเดิม แค่ต้องขอยืนยันจาก human ก่อนเพราะเสี่ยงกว่า
             # click ธรรมดา — คืน label เดิม (เช่น "submit(2)") ไม่ใช่ "click(2)" กันสับสน
-            result = await _dispatch_with_retry(click, page, cmd["index"])
+            # (ใช้ retry wrapper เดียวกับ click ปกติ รวม hover-on-retry ด้วย — ปุ่ม hover-to-
+            # reveal ก็อาจเป็นปุ่มความเสี่ยงสูงได้เหมือนกัน เช่น "Delete" ที่โผล่มาตอน hover)
+            result = await _dispatch_click_with_retry(page, cmd["index"])
             return ActionResult(result.success, f"{t}({cmd['index']})", result.message)
         return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
     except KeyError as e:

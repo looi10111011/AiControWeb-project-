@@ -102,6 +102,80 @@ async def test_execute_select_and_check_also_get_retried(_no_real_sleep):
     assert mock_page2.check.await_count == 2
 
 
+# ---------------- hover: ปุ่ม hover-to-reveal (opacity:0/visibility:hidden จนกว่าจะ hover แถวแม่) ----------------
+# บั๊กที่ user รายงานจริงบน uitestingplayground.com/scrolltoclick Case 4 — perception.py
+# ตอนนี้ยังติด data-ai-index ให้ปุ่มพวกนี้แล้ว (ไม่กรองทิ้งเหมือนเดิม) แต่คลิกตรงๆ รอบแรกจะ
+# พลาดเพราะ CSS ยังไม่เปลี่ยนสถานะจาก hover จริง — click retry ตั้งแต่รอบ 2 เป็นต้นไปต้อง
+# hover() บน element เป้าหมายก่อนคลิกซ้ำเสมอ
+
+
+@pytest.mark.asyncio
+async def test_execute_hover_succeeds():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "hover", "index": 4})
+
+    assert result.success is True
+    mock_page.hover.assert_awaited_once_with('[data-ai-index="4"]', timeout=_ELEMENT_ACTION_TIMEOUT_MS, force=True)
+
+
+@pytest.mark.asyncio
+async def test_execute_hover_fails_gracefully_on_timeout():
+    mock_page = AsyncMock()
+    mock_page.hover = AsyncMock(side_effect=PWTimeout("not found"))
+
+    result = await execute(mock_page, {"type": "hover", "index": 4})
+
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_execute_click_does_not_hover_on_first_attempt():
+    """รอบแรกยังคลิกตรงๆ เหมือนเดิม ไม่ hover ก่อน — กัน overhead กับปุ่มทั่วไปที่ไม่ต้อง
+    hover เลยตั้งแต่แรก (ส่วนใหญ่ของ click ทั้งหมด)"""
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    mock_page.hover.assert_not_awaited()
+    mock_page.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_hovers_before_retrying_on_second_attempt(_no_real_sleep):
+    """ปุ่ม hover-to-reveal: คลิกตรงๆ รอบแรกพลาด (CSS ยังไม่เปลี่ยนสถานะ) — รอบ retry ที่ 2
+    ต้อง hover() บน element เป้าหมายก่อนคลิกซ้ำเสมอ (ยืนยัน call order: click -> hover -> click)"""
+    mock_page = AsyncMock()
+    mock_page.click = AsyncMock(side_effect=[PWTimeout("not ready yet"), None])
+
+    result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    mock_page.hover.assert_awaited_once_with('[data-ai-index="5"]', timeout=_ELEMENT_ACTION_TIMEOUT_MS, force=True)
+    assert mock_page.click.await_count == 2
+    # กรองเอาแค่ click/hover (ตัด query_selector ที่ resolve_frame() เรียกแทรกก่อนทุกครั้งออก)
+    call_order = [c[0] for c in mock_page.method_calls if c[0] in ("click", "hover")]
+    assert call_order == ["click", "hover", "click"]
+
+
+@pytest.mark.asyncio
+async def test_execute_click_hovers_before_every_retry_attempt_until_giving_up(_no_real_sleep):
+    """ถ้าคลิกพลาดต่อเนื่องจนครบโควตา ต้อง hover ก่อนคลิกทุกรอบตั้งแต่รอบ 2 เป็นต้นไป (ไม่ใช่
+    แค่รอบแรกที่พลาดครั้งเดียว)"""
+    mock_page = AsyncMock()
+    mock_page.click = AsyncMock(side_effect=PWTimeout("still not there"))
+
+    result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is False
+    assert mock_page.click.await_count == 3
+    assert mock_page.hover.await_count == 2  # ก่อนรอบ 2 และรอบ 3 (ไม่ใช่ก่อนรอบแรก)
+    # กรองเอาแค่ click/hover (ตัด query_selector ที่ resolve_frame() เรียกแทรกก่อนทุกครั้งออก)
+    call_order = [c[0] for c in mock_page.method_calls if c[0] in ("click", "hover")]
+    assert call_order == ["click", "hover", "click", "hover", "click"]
+
+
 @pytest.mark.asyncio
 async def test_execute_does_not_retry_goto_on_failure():
     """goto/scroll/go_back/switch_tab/wait ไม่ retry เพราะ fail มักไม่ใช่เรื่อง DOM-timing

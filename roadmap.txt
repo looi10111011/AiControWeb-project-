@@ -2569,6 +2569,58 @@
            เลย — ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ ไม่เกี่ยวกับ
            งานนี้)
 
+  [x] W47  agent คลิกปุ่มที่ซ่อนด้วย hover-to-reveal (ปุ่ม action ที่โผล่มาตอน hover แถวแม่
+           เท่านั้น เช่น ไอคอนตะกร้า/flag ในแถวอีเมล) ไม่ได้เลย — เสร็จแล้ว (2026-07-31)
+
+           อาการ: ทดสอบบน uitestingplayground.com/scrolltoclick Case 4 "Hover to Reveal"
+           (ปุ่ม flag ที่โผล่มาตอน hover แถว "Weekly status report") — รัน _COLLECT_JS จริง
+           บนหน้านี้ก่อน hover เลย ยืนยันว่าปุ่มไม่มี data-ai-index ให้เห็นเลยสักตัว (0 ใน 6
+           element ที่ index ได้) เพราะ perception.py::_COLLECT_JS เดิมเช็ค
+           "st.visibility !== 'hidden' && st.opacity !== '0'" เป็นเงื่อนไข "มองเห็น" —
+           element ที่ซ่อนด้วย visibility:hidden (เจอจริงบนเว็บนี้ — ไม่ใช่ opacity:0 ตามที่
+           สันนิษฐานไว้แต่แรก คนละ CSS property แต่โค้ดเดิมเช็คทั้งคู่เหมือนกันอยู่แล้ว) แม้
+           bounding box จะไม่เป็น 0x0 เลยก็ยังถูกกรองทิ้งไปเลย agent จึงไม่มีทาง index ให้กด
+           ได้ตั้งแต่ต้น (ยืนยันด้วย 3 อื่นในแถวเดียวกันที่ genuinely disabled จริงๆ — ไม่ใช่
+           บั๊ก แค่ decoy ของหน้าทดสอบ ต่างจากปุ่มเป้าหมายที่ enabled แต่ถูกซ่อนด้วย CSS)
+
+           แก้ด้วย 3 จุด: (1) perception.py — ผ่อนกฎให้ปุ่ม/ลิงก์ (a/button/[role=button]
+           เท่านั้น กัน hidden <input> honeypot/CSRF token ที่ตั้งใจซ่อนถาวรไม่ให้ agent
+           เผลอกรอก) ที่ opacity:0/visibility:hidden แต่ bounding box ไม่เป็น 0x0 และไม่ใช่
+           display:none ยังติด data-ai-index ตามปกติ พร้อม label suffix "[ซ่อนอยู่ — อาจ
+           ต้อง hover แถวก่อน]" — ต้องแก้เพิ่มอีก 2 จุดที่ไม่ได้คาดไว้แต่แรกระหว่างทดสอบจริง:
+           innerText คืนค่าว่างเปล่าเสมอสำหรับ element ที่ visibility:hidden แม้จะมี text
+           node จริงใน DOM (fallback ไป textContent เฉพาะกรณีนี้) และ overlay detection
+           เดิมจาก W9[A] (document.elementFromPoint()) false-positive ว่า "ถูกบังอยู่" กับ
+           element เหล่านี้เสมอ (browser ไม่ hit-test element ที่ visibility:hidden ให้เลย
+           topEl เลยกลายเป็น element อื่นที่ตำแหน่งเดียวกันแทนทุกครั้ง) ต้องข้าม overlay
+           check ไปเลยสำหรับ element กลุ่มนี้ (2) actions.py — เพิ่ม hover() action +
+           _dispatch_click_with_retry() (แยกจาก _dispatch_with_retry() ทั่วไป เฉพาะ click)
+           hover element เป้าหมายก่อนคลิกซ้ำตั้งแต่ retry รอบ 2 เป็นต้นไป — ต้องใช้
+           hover(..., force=True) เท่านั้น (พิสูจน์จริงบนเว็บทดสอบว่า hover ธรรมดาจะ timeout
+           เหมือน click() ทุกประการ เพราะ Playwright เองมี actionability check ภายในที่รอ
+           element "visible" ตามนิยามของตัวเอง — visibility:hidden ไม่ผ่านเงื่อนไขนี้เลยไม่
+           ว่าจะ retry กี่ครั้ง force=True ข้ามเช็คนี้ไปส่ง mouse event ตรงๆ) (3) llm.py —
+           เพิ่ม "hover" เข้า tool schema + กติกาใน SYSTEM_PROMPT ให้เรียก hover ก่อนตอนเห็น
+           label marker ใหม่นี้ (ไม่บังคับเพราะ click retry hover ให้อัตโนมัติอยู่แล้ว)
+
+           ยืนยัน end-to-end จริงบน uitestingplayground.com/scrolltoclick (ไม่ใช่แค่ mock):
+           get_snapshot() เจอปุ่ม flag ที่ label มี marker ใหม่ -> execute({"type":"click"})
+           ตรงๆ (agent เรียกปกติ ไม่ hover เองก่อน) -> retry รอบ 2 hover(force=True) ให้เอง
+           แล้วคลิกสำเร็จ -> หน้าเว็บจริงยืนยัน "Buttons clicked: 1 / 4"
+
+           unit test ใหม่: opacity:0/visibility:hidden ที่ bounding box ไม่เป็น 0x0 ได้
+           index+marker ทั้งคู่, display:none ยังถูกกรองเหมือนเดิม, hidden <input> ไม่ถูก
+           ผ่อนกฎ, overlay detection เดิมไม่ถูกกระทบ (test_perception.py) — hover() คืน
+           [OK]/[FAIL], click รอบแรกไม่ hover ก่อน, รอบ retry 2 เป็นต้นไป hover ก่อนคลิกทุก
+           รอบ (เช็ค call order จริงผ่าน mock) (test_actions.py) — tool schema มี "hover" +
+           SYSTEM_PROMPT มีกติกาเรียก hover ก่อน (test_llm.py)
+
+           รันจริง `pytest -q backend/tests/test_perception.py backend/tests/test_actions.py
+           backend/tests/test_llm.py backend/tests/test_orchestrator.py
+           backend/tests/test_intent_and_summarization.py` ยืนยัน: 242 เคสผ่าน, เหลือ 3 เคส
+           fail เดิมที่ไม่เกี่ยวกับงานนี้ (ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ใน
+           เครื่อง dev นี้ — ยืนยันมาแล้วตั้งแต่ W46)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
