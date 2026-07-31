@@ -451,6 +451,12 @@ try {
   deletedConvs = {};
 }
 
+// 🔥 เพิ่ม: sync deletedConvs → deletedTaskIds Set สำหรับ filter ใน refreshTasks()
+let deletedTaskIds = new Set();
+for (const key in deletedConvs) {
+  if (deletedConvs[key]) deletedTaskIds.add(key);
+}
+
 function saveConversations() {
   try { localStorage.setItem(CONV_STORAGE_KEY, JSON.stringify(conversations)); } catch (e) {}
 }
@@ -495,11 +501,11 @@ function conversationIdForTask(taskId) {
 // time seeing them — e.g. created before this feature existed, or from another tab)
 // each get their own solo conversation so they still show up in the history list.
 function ensureConversationFor(taskId) {
-  if (deletedConvs[taskId] || deletedConvs["conv-" + taskId] || deletedConvs["task-" + taskId]) return null;
+  if (deletedTaskIds.has(taskId)) return null;
   const existing = conversationIdForTask(taskId);
   if (existing) return existing;
   const convId = "conv-" + taskId;
-  if (deletedConvs[convId]) return null;
+  if (deletedTaskIds.has(convId)) return null;
   conversations[convId] = [taskId];
   saveConversations();
   return convId;
@@ -615,6 +621,7 @@ async function refreshPool() {
   } catch (e) {}
 }
 
+// 🔥 แก้ไข: refreshTasks() — ใช้ deletedTaskIds Set ที่ sync กับ deletedConvs แล้ว
 async function refreshTasks() {
   try {
     const r = await fetch(API + "/tasks");
@@ -622,7 +629,7 @@ async function refreshTasks() {
     tasks = await r.json();
     tasks.sort((a, b) => b.created_at - a.created_at);
 
-    // กรอง tasks ที่ถูก user ลบไปแล้วออกก่อน
+    // 🔥 กรอง tasks ที่ถูกลบออก (ใช้ deletedTaskIds)
     tasks = tasks.filter(t => !deletedTaskIds.has(t.task_id));
 
     for (const t of tasks) {
@@ -636,7 +643,7 @@ async function refreshTasks() {
     const currentTaskIds = new Set(tasks.map(t => t.task_id));
     for (const taskId of deletedTaskIds) {
       if (!currentTaskIds.has(taskId)) {
-        deletedTaskIds.delete(taskId);
+        // เก็บไว้ก่อน เผื่อ backend restart แล้ว task กลับมาใหม่
       }
     }
 
@@ -670,6 +677,7 @@ function closeStream(taskId) {
   }
 }
 
+// 🔥 แก้ไข: อัพเดท task status ทันทีเมื่อได้รับ task_done event
 function handleStreamEvent(taskId, event) {
   if (event.kind === "step") {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push(event);
@@ -695,6 +703,13 @@ function handleStreamEvent(taskId, event) {
   } else if (event.kind === "task_done") {
     delete pendingApprovals[taskId];
     closeStream(taskId);
+    // 🔥 แก้ไข: อัพเดท task status ทันที
+    const task = tasks.find(t => t.task_id === taskId);
+    if (task) {
+      task.status = event.status || "done";
+      task.result = event.result;
+      task.error = event.error;
+    }
     refreshTasks();
   }
   if (selectedConvId && conversationIdForTask(taskId) === selectedConvId) renderSelected();
@@ -731,6 +746,7 @@ async function stopTask(taskId) {
 // first so the browser isn't yanked out from under an active step. The conversation
 // is permanently removed from the UI by adding its task_ids to deletedTaskIds,
 // preventing refreshTasks() from recreating them.
+// 🔥 แก้ไข: killSession() — sync deletedConvs → deletedTaskIds
 async function killSession(convId) {
   // 1. หยุด task ที่กำลังรันอยู่ (ถ้ามี)
   const latest = latestTaskInConversation(convId);
@@ -755,9 +771,15 @@ async function killSession(convId) {
     deletedConvs[taskId] = true;
     deletedConvs["task-" + taskId] = true;
     deletedConvs["conv-" + taskId] = true;
+    // 🔥 sync เข้า deletedTaskIds
+    deletedTaskIds.add(taskId);
+    deletedTaskIds.add("task-" + taskId);
+    deletedTaskIds.add("conv-" + taskId);
   });
   deletedConvs[convId] = true;
   deletedConvs["conv-" + convId] = true;
+  deletedTaskIds.add(convId);
+  deletedTaskIds.add("conv-" + convId);
 
   // 4. ลบ conversation ออกจาก localStorage
   delete conversations[convId];
@@ -1177,6 +1199,7 @@ async function respondLearnCredentials(username, password) {
 
 // ---------------- Rendering ----------------
 
+// 🔥 แก้ไข: renderHistory() — แสดง badge ตาม result จริง
 function renderHistory() {
   $("btnNewSession").classList.toggle("active", selectedConvId === null);
   const list = $("historyList");
@@ -1199,7 +1222,11 @@ function renderHistory() {
       html += `<div class="history-group">${group}</div>`;
       lastGroup = group;
     }
-    const status = (latest.status || "running").toLowerCase();
+    // 🔥 ตรวจสอบ status จาก task จริง + result
+    let status = (latest.status || "running").toLowerCase();
+    if (status === "running" && latest.result) {
+      status = latest.result.success ? "done" : "error";
+    }
     const needsApproval = !!pendingApprovals[latest.task_id];
     const badge = needsApproval
       ? '<span class="badge needs-approval">action needed</span>'
@@ -1246,6 +1273,7 @@ function renderHistory() {
   });
 }
 
+// 🔥 แก้ไข: statusMeta() — เช็ค task.result โดยตรง
 function statusMeta(task) {
   if (!task) {
     if (pendingPlan && pendingPlan.sessionId === selectedConvId) return { cls: "running", label: "Reviewing plan" };
@@ -1253,13 +1281,21 @@ function statusMeta(task) {
   }
   if (pendingApprovals[task.task_id]) return { cls: "error", label: "Needs approval" };
   const s = (task.status || "running").toLowerCase();
-  if (s === "running") return { cls: "running", label: "Running" };
+  // 🔥 ถ้า status ยังเป็น "running" แต่มี result แล้ว → แสดงตาม result
+  if (s === "running") {
+    if (task.result) {
+      if (task.result.status === "chat_reply") return { cls: "done", label: "Done" };
+      return task.result.success ? { cls: "done", label: "Done" } : { cls: "error", label: "Failed" };
+    }
+    return { cls: "running", label: "Running" };
+  }
   if (s === "cancelled") return { cls: "cancelled", label: "Stopped" };
   if (s === "error") return { cls: "error", label: "Error" };
   if (task.result && task.result.success === false) return { cls: "error", label: "Failed" };
   return { cls: "done", label: "Done" };
 }
 
+// 🔥 แก้ไข: renderTopbar() — จัดการปุ่ม Stop/Send ตามสถานะจริง
 function renderTopbar(convTasks) {
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
   const first = convTasks.length ? convTasks[0] : pending;
@@ -1272,13 +1308,55 @@ function renderTopbar(convTasks) {
   pill.className = "status-pill " + meta.cls;
   $("statusText").textContent = meta.label;
 
+  // 🔥 จัดการปุ่ม Stop/Send ตามสถานะจริง
   const stopBtn = $("btnStop");
+  const goalInput = $("goal");
+  
   if (latest && latest.status === "running") {
+    // กำลังรัน → แสดงปุ่ม Stop
     stopBtn.style.display = "";
     stopBtn.dataset.task = latest.task_id;
-  } else {
-    stopBtn.style.display = "none";
+    stopBtn.title = "Stop task";
+    stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
+    stopBtn.onclick = () => {
+      const taskId = stopBtn.dataset.task;
+      if (taskId) stopTask(taskId);
+    };
+    goalInput.placeholder = "Task is running...";
+  } else if (latest && latest.status !== "running") {
+    // 🔥 Task จบแล้ว → แสดงปุ่ม Send
+    stopBtn.style.display = "";
     delete stopBtn.dataset.task;
+    stopBtn.title = "Send command (Enter)";
+    stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
+    stopBtn.style.background = "var(--accent)";
+    stopBtn.style.color = "var(--accent-ink)";
+    stopBtn.onclick = () => {
+      if (!planRequestInFlight) requestPlan();
+    };
+    // 🔥 แสดงสถานะใน placeholder
+    const s = (latest.status || "").toLowerCase();
+    if (s === "done" || (latest.result && latest.result.success)) {
+      goalInput.placeholder = "Task completed! Enter a follow-up command...";
+    } else if (s === "cancelled") {
+      goalInput.placeholder = "Task was stopped. Enter a new command...";
+    } else if (s === "error" || (latest.result && latest.result.success === false)) {
+      goalInput.placeholder = "Task failed. Enter a new command...";
+    } else {
+      goalInput.placeholder = "e.g. add the first item to cart and checkout";
+    }
+  } else {
+    // ไม่มี task เลย → แสดงปุ่ม Send
+    stopBtn.style.display = "";
+    delete stopBtn.dataset.task;
+    stopBtn.title = "Send command (Enter)";
+    stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
+    stopBtn.style.background = "var(--accent)";
+    stopBtn.style.color = "var(--accent-ink)";
+    stopBtn.onclick = () => {
+      if (!planRequestInFlight) requestPlan();
+    };
+    goalInput.placeholder = "e.g. add the first item to cart and checkout";
   }
 }
 
