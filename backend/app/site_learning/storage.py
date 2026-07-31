@@ -5,8 +5,10 @@ embedding เกี่ยวข้องเลย (คนละระบบก�
 จับจองความหมายไว้แล้ว)
 
 โครงสร้างโฟลเดอร์ต่อโดเมน (settings.site_manuals_dir/{domain}/):
-    latest.json    — version ล่าสุดเสมอ, ตัวที่ orchestrator โหลดไปใช้จริง
-    v1.json, v2.json, ...  — ประวัติทุกเวอร์ชัน ไม่เคยลบทิ้ง
+    latest.json    — version ล่าสุดเสมอ, ตัวที่ orchestrator โหลดไปใช้จริง — save_manual()
+                     เขียนทับไฟล์นี้ตรงๆ ทุกครั้ง ไม่เก็บไฟล์ประวัติแยกต่อเวอร์ชัน (vN.json)
+                     อีกต่อไป (ตามที่ user ขอ — กันไฟล์สะสมไม่รู้จบบนดิสก์ที่ commit เข้า
+                     git) manual.version ยังนับเพิ่มไว้เป็น metadata ปกติ แค่ไม่มีไฟล์แยก
     ui-map.json    — tree โครงสร้างเมนู (derive จาก menu_path ของทุกหน้า)
     selectors.json — flat lookup {"หน้า > ปุ่ม": {css, xpath, aria, data_testid}}
     knowledge.json — {page_name: description} ฉบับย่อ ไว้ยัด prompt ถูกๆ
@@ -96,10 +98,12 @@ def _build_knowledge(manual: SiteManual) -> dict:
 
 
 def save_manual(manual: SiteManual) -> int:
-    """บันทึก manual ใหม่ทั้งก้อน — bump version ต่อจาก version ล่าสุดที่มีอยู่จริงบน
-    ดิสก์เสมอ (ไม่ใช่แค่ manual.version ที่ caller ส่งมา กันลืมอัปเดต) เขียน
-    latest.json + v{N}.json (ประวัติ ไม่เคยลบ) + ui-map/selectors/knowledge.json คืน
-    version number ใหม่"""
+    """บันทึก manual ใหม่ทั้งก้อน ทับ latest.json ตัวเดิมตรงๆ ไม่เก็บไฟล์ประวัติ vN.json
+    แยกต่างหากอีกต่อไป (เดิมเขียน v{N}.json ทุกครั้งที่ save ไม่เคยลบ — ไฟล์สะสมไม่รู้จบ
+    บนดิสก์ที่ commit เข้า git ตามที่ user ขอให้เปลี่ยน) bump version ต่อจาก version
+    ล่าสุดที่มีอยู่จริงบนดิสก์เสมอ (ไม่ใช่แค่ manual.version ที่ caller ส่งมา กันลืม
+    อัปเดต) — ยังคงเลขเวอร์ชันไว้เป็น metadata (ใช้แสดงผล/comparison เท่านั้น ไม่มีไฟล์
+    ต่อเวอร์ชันให้ย้อนดูอีกแล้ว) คืน version number ใหม่"""
     domain_dir = _domain_dir(manual.website)
     existing = load_manual(manual.website)
     new_version = (existing.version + 1) if existing else 1
@@ -108,7 +112,6 @@ def save_manual(manual: SiteManual) -> int:
 
     data = manual.to_dict()
     _write_json(domain_dir / "latest.json", data)
-    _write_json(domain_dir / f"v{new_version}.json", data)
     _write_json(domain_dir / "ui-map.json", _build_ui_map(manual))
     _write_json(domain_dir / "selectors.json", _build_selectors(manual))
     _write_json(domain_dir / "knowledge.json", _build_knowledge(manual))
@@ -139,9 +142,9 @@ def _credentials_path(domain: str) -> Path:
 def save_credentials(domain: str, username: str, password: str) -> None:
     """W17: เก็บ username/password สำหรับโดเมนนี้ไว้ให้ orchestrator ดึงไปใช้ auto-login
     ตอนรัน task จริง (ดู core/orchestrator.py::_maybe_auto_login, site_learning/
-    auto_login.py) — เขียนคนละไฟล์ (credentials.json) แยกจาก latest.json/vN.json ของ
-    manual โดยเจตนา: manual มีระบบ versioning (v1.json, v2.json, ... ไม่เคยลบทิ้ง) ถ้าฝัง
-    credential ปนไปด้วยจะมีสำเนารหัสผ่านกระจายอยู่หลายไฟล์บนดิสก์ตลอดกาล — ไฟล์นี้เขียนทับ
+    auto_login.py) — เขียนคนละไฟล์ (credentials.json) แยกจาก latest.json ของ manual โดย
+    เจตนา ไม่ปนกับ manual ที่ save_manual() เขียนทับ (กันหลุดปนไปด้วยความไม่ตั้งใจถ้ามีคน
+    แก้ save_manual()/schema ในอนาคต) — ไฟล์นี้เขียนทับ
     ตัวเดิมเสมอ ไม่มีประวัติเวอร์ชัน"""
     _write_json(_credentials_path(domain), {"username": username, "password": password})
 

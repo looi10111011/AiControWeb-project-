@@ -62,17 +62,36 @@ def _manual_requires_confirmation(manual_guidance: str) -> bool:
     return any(keyword in lower for keyword in MANUAL_CONFIRMATION_KEYWORDS)
 
 
+def normalize_domain(domain: str) -> str:
+    """lowercase + ตัด "www." นำหน้าออก — ใช้กับ domain string ที่เป็น hostname ล้วนๆ
+    อยู่แล้ว (เช่น path param ของ REST endpoint อย่าง /api/site-manual/{domain}/...) ต่าง
+    จาก extract_domain() ด้านล่างที่รับ URL เต็มรูปแบบ (มี scheme) แล้ว parse หา netloc
+    เอง — แยกออกมาเป็นฟังก์ชันกลางให้ทั้งคู่เรียกใช้ร่วมกัน กันไม่ให้กติกา "www. กับไม่มี
+    www. ถือเป็นโดเมนเดียวกัน" ไป drift กันระหว่าง 2 จุด"""
+    domain = domain.lower()
+    if domain.startswith("www."):
+        domain = domain[len("www."):]
+    return domain
+
+
 def extract_domain(url: str) -> str:
-    """แยก domain ล้วนๆ ออกจาก URL (lowercase, ตัด port ออก) — ใช้ร่วมกันทั้ง
-    classify_action() (เช็ค goto) และ core/user_browser.py (จับคู่ tab ที่เปิดอยู่กับ
-    target domain ตอนต่อเข้า browser จริงของ user) กันไม่ให้ logic parse URL ซ้ำกัน
-    2 ที่ ถ้า URL ผิดรูปแบบมากๆ คืนสตริงว่างเปล่า (ให้ผู้เรียกตัดสินใจเองว่าจะปฏิบัติ
-    ยังไงกับ domain ว่าง แทนที่จะ throw ออกไป)"""
+    """แยก domain ล้วนๆ ออกจาก URL (lowercase, ตัด port ออก, ตัด "www." นำหน้าออก) — ใช้
+    ร่วมกันทุกจุดที่ต้องเทียบ/เก็บ domain ในระบบ (classify_action() เช็ค goto,
+    core/user_browser.py จับคู่ tab ที่เปิดอยู่, site_learning/storage.py เก็บ/ค้นหา
+    credential ต่อโดเมน ฯลฯ) กันไม่ให้ logic parse URL ซ้ำกันหลายที่ ถ้า URL ผิดรูปแบบ
+    มากๆ คืนสตริงว่างเปล่า (ให้ผู้เรียกตัดสินใจเองว่าจะปฏิบัติยังไงกับ domain ว่าง แทนที่จะ
+    throw ออกไป)
+
+    ตัด "www." ออกโดยเจตนา (ไม่ใช่แค่ lowercase+ตัด port): ก่อนหน้านี้ "www.example.com"
+    กับ "example.com" ถูกมองเป็นคนละ domain กันเป๊ะๆ ทำให้ credential ที่บันทึกไว้ตอน
+    login bootstrap ผ่าน URL หนึ่ง (เช่น มี www.) หาไม่เจอตอนรัน task จริงที่เริ่มจาก URL
+    อีกแบบ (ไม่มี www.) ของเว็บเดียวกัน — เห็นได้จาก storage.py::save_credentials/
+    load_credentials ที่ key ด้วยค่าจากฟังก์ชันนี้ตรงๆ"""
     try:
         domain = urllib.parse.urlparse(url).netloc.lower()
         if ":" in domain:
             domain = domain.split(":")[0]
-        return domain
+        return normalize_domain(domain)
     except Exception:
         return ""
 
