@@ -87,6 +87,48 @@ def test_browser_action_schema_does_not_require_completed_plan_step():
     assert "completed_plan_step" not in llm._BROWSER_ACTION_PARAMS["required"]
 
 
+# --- read_page_data: อ่านเนื้อหาหน้าเว็บ (นับ/ตาราง) — Lane 1/2 (ดู actions.py) ---
+
+
+def test_browser_action_schema_includes_read_page_data_type():
+    type_enum = llm._BROWSER_ACTION_PARAMS["properties"]["type"]["enum"]
+    assert "read_page_data" in type_enum
+
+
+def test_browser_action_schema_has_query_and_target_hint_properties():
+    props = llm._BROWSER_ACTION_PARAMS["properties"]
+    assert props["query"]["type"] == "string"
+    assert props["target_hint"]["type"] == "string"
+
+
+def test_browser_action_schema_does_not_require_query_or_target_hint():
+    """ad-hoc action ทั่วไป (click/fill/...) ต้องยังเรียกได้ปกติโดยไม่ต้องมี query/
+    target_hint เลย — ทั้งคู่มีความหมายเฉพาะตอน type="read_page_data" เท่านั้น"""
+    required = llm._BROWSER_ACTION_PARAMS["required"]
+    assert "query" not in required
+    assert "target_hint" not in required
+
+
+def test_system_prompt_instructs_read_page_data_and_favors_counting():
+    assert "read_page_data" in llm.SYSTEM_PROMPT
+    assert "target_hint" in llm.SYSTEM_PROMPT
+    assert "favor การนับตรงๆ เสมอ" in llm.SYSTEM_PROMPT
+
+
+# --- ป้องกัน agent ยอมแพ้เร็วเกินไป: ต้องลองค้นหาก่อนสรุปว่า "ไม่พบ" ---
+
+
+def test_system_prompt_requires_trying_search_before_reporting_not_found():
+    assert "ก่อนเรียก finish_task พร้อมข้อความทำนอง" in llm.SYSTEM_PROMPT
+    assert "ต้องเรียก action ที่มีอยู่" in llm.SYSTEM_PROMPT
+    assert "อย่างน้อย 1 ครั้งก่อนเสมอ ถึงจะ finish_task ว่าไม่พบได้" in llm.SYSTEM_PROMPT
+
+
+def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
+    assert 'ห้ามตีความว่าเป็น' in llm.SYSTEM_PROMPT
+    assert "นับเป็นคำสั่งให้ค้นหาโดยปริยาย" in llm.SYSTEM_PROMPT
+
+
 # --- next_action() (Anthropic) — เทสต์ prompt caching wiring + parse tool_use ---
 
 

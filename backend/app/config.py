@@ -112,6 +112,17 @@ class Settings(BaseSettings):
     # threshold ตั้งผิด — ปรับค่านี้ได้ถ้าพบว่า reuse ผิด/ไม่ยอม reuse ที่ควร reuse บ่อยไป
     plan_memory_max_distance: float = 0.5
 
+    # W46: perception.py::fuzzy_find() — ใช้ตอน read_page_data (actions.py) หา exact match ใน
+    # ตาราง/list ไม่เจอ (เช่น user พิมพ์ชื่อผิดเล็กน้อย "Cierra Vaga" แทน "Cierra Vega") ค่า
+    # นี้คือ difflib.SequenceMatcher.ratio() ขั้นต่ำที่ยังยอมรับว่า "ใกล้เคียงพอ" จะเสนอเป็น
+    # fuzzy match กลับไป (1.0 = เหมือนกันเป๊ะ) — trade-off สำคัญ: ตั้งต่ำเกินไปจะ
+    # false-positive จับคนละคน/คนละชื่อที่บังเอิญคล้ายกันเป็นตัวเดียวกัน (อันตรายกว่า เพราะ
+    # agent จะตอบข้อมูลผิดคนให้ user แบบมั่นใจโดยไม่รู้ตัว) ตั้งสูงเกินไปจะพลาดคำที่พิมพ์ผิด
+    # เล็กน้อยจริงๆ (false negative — กลับไปตอบ "ไม่พบ" ทั้งที่มีจริง) ค่า default นี้กลางๆ
+    # พอให้ผ่านการพิมพ์ผิด 1-2 ตัวอักษรในคำสั้นๆ ได้ แต่ยังกันชื่อคนละคนที่ขึ้นต้น/ลงท้าย
+    # คล้ายกันได้ระดับหนึ่ง ปรับได้ถ้าพบว่า fuzzy match หลวม/เข้มไปสำหรับข้อมูลจริงของ user
+    agent_fuzzy_match_threshold: float = 0.75
+
 
 settings = Settings()
 

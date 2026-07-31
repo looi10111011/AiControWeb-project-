@@ -52,6 +52,59 @@ _PREMATURE_FALSE_FINISH_NUDGE = (
 # แต่ไม่เคยมีการบังคับด้วยโค้ดเลย ไม่ block เด็ดขาด (บาง goal อาจสำเร็จอยู่แล้วตั้งแต่
 # page แรกจริงๆ เช่น "verify ว่าอยู่หน้า login") แค่ให้ยืนยันอีกครั้งก่อนเหมือนกัน
 _MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
+
+# W44: qa_summary เดิมตอบด้วย llm.summarize_page() ตัวเดียว (ไม่มี tool ให้เรียกเลย) เห็น
+# แค่ page_text จาก get_snapshot() (interactive elements ล้วนๆ ไม่มีเนื้อหาตาราง/list) —
+# คำถามแบบ "เห็นชื่อ X ในตารางไหม" เลยตอบไม่ได้เสมอแม้ read_page_data/extract_table_data()
+# จะมีอยู่แล้วก็ตาม (unreachable เพราะ path นี้ไม่เคยเข้า next_action()/execute() loop เลย)
+# ตอนนี้ให้ qa_summary วน next_action() แบบจำกัดสูงสุด _QA_SUMMARY_MAX_STEPS รอบแทน
+# อนุญาตแค่ type="read_page_data" (ไม่ mutate อะไรบนหน้าเว็บ) + finish_task เท่านั้น —
+# action อื่น (click/fill/...) ถูกปฏิเสธเงียบๆ ไม่ dispatch จริง (แค่ tool_result บอกเหตุผล)
+# กันโมเดลหลุดไปทำ action ทั้งที่ user แค่ถามคำถาม ถ้าครบโควตาแล้วยังไม่เรียก finish_task
+# เลย fallback กลับไปใช้ summarize_page() แบบเดิมเป็น safety net (ไม่แย่ไปกว่าพฤติกรรมเดิม)
+#
+# W46 (ต่อยอด W44) user รายงานว่า agent ยอมแพ้เร็วเกินไป (finish_task บอก "ไม่มีข้อมูล" ทั้งที่
+# ยังไม่เคยลองค้นหาเลย) — สาเหตุหนึ่งคือ loop นี้ห้าม fill/click เด็ดขาดแม้แต่การกรอกช่อง
+# ค้นหา/กดปุ่มค้นหา (คำถามที่คำตอบอยู่หลัง search flow ตอบไม่ได้เลยไม่ว่ากรณีไหน) — ผ่อนให้
+# "fill"/"click" ทำได้เพิ่มเติม "เฉพาะ" ตอน label ของ element เป้าหมายดูเป็นช่อง/ปุ่มค้นหา/
+# กรองข้อมูลจริงๆ เท่านั้น (ดู _label_looks_like_search()) ยังคงกันโมเดลไม่ให้หลุดไปกด
+# element อื่นที่ไม่เกี่ยวกับการค้นหา (เช่น login/checkout/delete) เหมือนเจตนาเดิมของ W44
+# ทุกประการ — เพิ่ม _QA_SUMMARY_MAX_STEPS จาก 3 เป็น 4 ด้วย เพราะ flow ค้นหาจริงต้องใช้อย่าง
+# น้อย 3 turn (fill -> click -> read_page_data) ก่อนจะเหลือ turn ให้เรียก finish_task ได้
+_QA_SUMMARY_MAX_STEPS = 4
+_QA_SUMMARY_ACTION_REJECTED_NUDGE = (
+    "[ปฏิเสธ] คำถามนี้คือ qa_summary (ถามข้อมูล ไม่ใช่สั่งงาน) ไม่อนุญาตให้ทำ action ที่มีผล"
+    "ต่อหน้าเว็บ (click/fill/select/goto/...) ยกเว้น fill/click กับช่องค้นหา/ปุ่มค้นหา/ตัวกรอง"
+    "ข้อมูลเท่านั้น — ถ้าต้องการอ่านเนื้อหาเพิ่มเติมให้ใช้ type: 'read_page_data' แล้วเรียก "
+    "finish_task พร้อมคำตอบสุดท้ายทันทีที่พอตอบคำถามได้ ห้ามสรุปว่า 'ไม่มีข้อมูล' ก่อนลองค้นหา"
+    "อย่างน้อย 1 ครั้ง ถ้ายังไม่เคยลองเลย"
+)
+
+# label ที่บ่งบอกว่า element เป้าหมายเป็นช่อง/ปุ่มค้นหา/กรองข้อมูลจริงๆ — ใช้เป็นชั้นสำรอง
+# ระดับโค้ด (ไม่พึ่ง LLM เลือกถูกเพียงอย่างเดียว เหมือน pattern เดียวกับ RISKY_LABEL_KEYWORDS
+# ใน permission/rules.py) จำกัดคำให้เจาะจงพอ ไม่เอาคำสั้นๆ ที่ match ผิดคำอื่นได้ง่าย (เช่น
+# "หา" เดี่ยวๆ จะไปแมตช์ "หาย"/"หาก" โดยไม่ตั้งใจ)
+_QA_SUMMARY_SEARCH_LABEL_KEYWORDS = ("search", "ค้นหา", "filter", "กรอง", "find", "query")
+
+
+def _label_looks_like_search(label: str) -> bool:
+    lower = (label or "").lower()
+    return any(keyword in lower for keyword in _QA_SUMMARY_SEARCH_LABEL_KEYWORDS)
+
+
+# user รายงานว่า agent ตอบ "list รายชื่อ" ด้วยการแปะรายละเอียดอื่นที่ไม่มีใครถาม (ตำแหน่ง/
+# office/salary) ปนมาด้วยทุกคน และเขียนรวมเป็นย่อหน้าเดียวยาว ("1. X (...) 2. Y (...)")
+# แทนที่จะขึ้นบรรทัดใหม่ทีละข้อ — แปะ guidance นี้ต่อท้าย goal เฉพาะตอนเข้า qa_summary
+# mini-loop เท่านั้น (ไม่แตะ SYSTEM_PROMPT หลักที่ action_task ทั่วไปก็ใช้ร่วมกัน เพราะ
+# guidance นี้เกี่ยวกับ "การตอบคำถาม" ล้วนๆ ไม่เกี่ยวกับ action_task ที่ finish_task แค่สรุป
+# สั้นๆ ว่าทำอะไรไป)
+_QA_ANSWER_FORMAT_GUIDANCE = (
+    "\n\n[คำแนะนำการตอบ — สำคัญ]: ตอบเฉพาะข้อมูลที่ผู้ใช้ถามจริงๆ เท่านั้น อย่าแปะรายละเอียด"
+    "อื่นที่ไม่มีใครถามมาด้วย (เช่น ถ้าถามแค่ \"รายชื่อ\" ให้ตอบแค่ชื่อ ไม่ต้องพ่วงตำแหน่ง/"
+    "office/salary ที่ไม่ได้ถาม) ถ้าคำตอบมีหลายรายการ ให้จัดเป็นลิสต์แบบขึ้นบรรทัดใหม่ทีละข้อ"
+    "เสมอ (เช่น \"1. ...\\n2. ...\\n3. ...\") ห้ามเขียนรวมเป็นย่อหน้าเดียวยาวๆ"
+)
+
 _PREMATURE_TRUE_FINISH_NUDGE = (
     "การเรียก finish_task(success=true) นี้ยังไม่มี action ใดๆ เกิดขึ้นเลยใน task นี้ "
     "(steps_taken=0) — ก่อนยืนยัน success ให้ตรวจสอบอีกครั้งว่า indexed elements ล่าสุด "
@@ -976,14 +1029,66 @@ class Orchestrator:
             await _maybe_auto_login(page, verbose)
 
             # Intent Classification: ตรวจจับ Intent ของผู้ใช้ก่อนเริ่ม Planner Loop
-            _, initial_page_text = await get_snapshot(page)
+            initial_elements, initial_page_text = await get_snapshot(page)
             user_intent = await llm.classify_intent(client, model, goal, page_text=initial_page_text, provider=resolved_provider)
             if user_intent == "qa_summary":
                 if verbose:
-                    print(f"[intent] ตรวจพบ Intent: qa_summary — สรุปข้อมูล/ตอบคำถามจากหน้าเว็บ", flush=True)
-                summary_text = await llm.summarize_page(
-                    client, model, page_text=initial_page_text, user_prompt=goal, provider=resolved_provider
-                )
+                    print(f"[intent] ตรวจพบ Intent: qa_summary — ตอบคำถาม/สรุปข้อมูลจากหน้าเว็บ (read_page_data + ค้นหา)", flush=True)
+                qa_messages: list = []
+                summary_text = ""
+                # เก็บ elements/page_text ล่าสุดไว้ใช้ต่อ (ทั้ง lookup label ของ fill/click รอบ
+                # ถัดไป และ fallback/final_page_state ท้ายบล็อกนี้) — ต้องอัปเดตทุกครั้งที่ทำ
+                # action ที่เปลี่ยนหน้าเว็บจริง (fill/click) ไม่งั้น next_action() รอบถัดไปจะ
+                # เห็น page_text เดิมก่อนค้นหาอยู่ ทั้งที่หน้าเปลี่ยนไปแล้วจริงหลัง submit ค้นหา
+                qa_elements, qa_page_text = initial_elements, initial_page_text
+                qa_goal = f"{goal}{_QA_ANSWER_FORMAT_GUIDANCE}"
+                for _ in range(_QA_SUMMARY_MAX_STEPS):
+                    qa_tool_name, qa_tool_input, qa_tool_use_id, qa_messages, qa_usage = await next_action(
+                        client, model, qa_goal, qa_page_text, qa_messages, plan_context="",
+                    )
+                    total_usage += qa_usage
+                    if qa_tool_name == "finish_task":
+                        summary_text = qa_tool_input.get("message", "")
+                        break
+
+                    qa_action_type = qa_tool_input.get("type")
+                    if qa_action_type == "read_page_data":
+                        qa_result: ActionResult = await execute(
+                            page, qa_tool_input, ask_user_func=ask_user_func, label="",
+                            manual_guidance="", allowed_domains=effective_allowed_domains,
+                        )
+                        qa_messages = append_tool_result(qa_messages, qa_tool_use_id, str(qa_result))
+                        continue
+
+                    # ผ่อนให้ fill/click ทำได้เพิ่ม "เฉพาะ" ตอน label ของ element เป้าหมายดู
+                    # เป็นช่อง/ปุ่มค้นหา/กรองข้อมูลจริงๆ (ดู _label_looks_like_search() —
+                    # ต่อยอด W44) action อื่นที่ไม่เข้าเงื่อนไขนี้ยังถูกปฏิเสธเหมือนเดิมทุก
+                    # ประการ (login/checkout/delete/... ยังทำไม่ได้จาก intent นี้)
+                    qa_index = qa_tool_input.get("index")
+                    qa_label = next(
+                        (e["label"] for e in qa_elements if e["index"] == qa_index), ""
+                    ) if qa_index is not None else ""
+                    if qa_action_type in ("fill", "click") and _label_looks_like_search(qa_label):
+                        qa_result: ActionResult = await execute(
+                            page, qa_tool_input, ask_user_func=ask_user_func, label=qa_label,
+                            manual_guidance="", allowed_domains=effective_allowed_domains,
+                        )
+                        qa_messages = append_tool_result(qa_messages, qa_tool_use_id, str(qa_result))
+                        if qa_action_type in _PAGE_CHANGING_ACTIONS:
+                            await wait_stable(page)
+                        qa_elements, qa_page_text = await get_snapshot(page)
+                        continue
+
+                    qa_messages = append_tool_result(qa_messages, qa_tool_use_id, _QA_SUMMARY_ACTION_REJECTED_NUDGE)
+                if not summary_text:
+                    # ครบโควตาแล้วยังไม่เรียก finish_task (หรือโมเดลไม่ยอมเรียก tool ที่
+                    # อนุญาตเลยสักครั้ง) — fallback กลับไปใช้ summarize_page() เดิม แทนที่
+                    # จะคืนคำตอบว่างเปล่าให้ user ใช้ qa_page_text ล่าสุด (หลังลองค้นหาไปแล้ว
+                    # ถ้ามี) ไม่ใช่ initial_page_text เดิมก่อนค้นหา ไม่งั้นจะเสียผลลัพธ์การ
+                    # ค้นหาที่เพิ่งทำไปทิ้งไปเฉยๆ
+                    summary_text = await llm.summarize_page(
+                        client, model, page_text=qa_page_text, user_prompt=qa_goal, provider=resolved_provider
+                    )
                 self.memory.record({
                     "step": 1,
                     "cmd": {"type": "chat_reply"},
@@ -1003,7 +1108,7 @@ class Orchestrator:
                     "history": self.memory.recent(max_steps),
                     "tokens": _tokens_dict(total_usage),
                     "plan": None,
-                    "final_page_state": initial_page_text,
+                    "final_page_state": qa_page_text,
                 }
 
 

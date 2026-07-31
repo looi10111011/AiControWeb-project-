@@ -1,7 +1,9 @@
+import json
+
 import pytest
 from playwright.async_api import async_playwright
 
-from backend.app.core.perception import get_snapshot, resolve_frame
+from backend.app.core.perception import count_elements, extract_table_data, fuzzy_find, get_snapshot, resolve_frame
 
 # เทสต์กลุ่มนี้เปิด chromium จริง (ไม่ mock) เพราะ get_snapshot() พึ่ง page.evaluate()
 # รัน JS จริงบน DOM จริง — mock DOM API ยากกว่าเปิด browser เปล่าตรงๆ
@@ -115,6 +117,121 @@ async def test_get_snapshot_falls_back_to_data_test_and_id_for_icon_only_element
     assert "shopping cart link" in labels
     assert "close modal" in labels
     assert "menu toggle button" in labels
+
+
+# บั๊กที่เจอจริงบน demoqa.com/webtables: ปุ่มแก้ไข/ลบในคอลัมน์ Action เป็น
+# <span title="Edit"><svg>...</svg></span> ล้วนๆ ไม่มี role="button"/tabindex/onclick
+# attribute เลยตาม a11y spec (แค่ title + cursor:pointer ที่ตั้งไว้เอง) — selectors เดิม
+# (a/button/[role=button]/[onclick]/[tabindex]/...) มองไม่เห็น element แบบนี้เลยทั้งที่
+# กดได้จริงในเบราว์เซอร์ (คลิกจริงกระตุ้น handler ผ่าน event bubbling ปกติ)
+_HTML_ICON_SPAN_WITH_TITLE_AND_POINTER_CURSOR = """
+<html><body>
+  <div class="action-buttons">
+    <span title="Edit" id="edit-record-1" style="cursor:pointer;display:inline-block;width:16px;height:16px">
+      <svg viewBox="0 0 1024 1024"><path d="M1 1"></path></svg>
+    </span>
+    <span title="Delete" id="delete-record-1" style="cursor:pointer;display:inline-block;width:16px;height:16px">
+      <svg viewBox="0 0 1024 1024"><path d="M2 2"></path></svg>
+    </span>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_finds_icon_only_span_with_title_and_pointer_cursor():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_ICON_SPAN_WITH_TITLE_AND_POINTER_CURSOR)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Edit" in labels
+    assert "Delete" in labels
+    assert len(elements) == 2
+
+
+# element ที่มี title แต่ "ไม่ได้" ตั้ง cursor:pointer (เช่น title ไว้โชว์ tooltip ของ
+# ข้อความยาวๆ ในตาราง ไม่ใช่ปุ่มกดได้) ต้องไม่ถูกนับเป็น element กดได้ — กัน noise ที่จะ
+# ทำให้ token cost ต่อ step โตขึ้นโดยไม่จำเป็นจาก tooltip ทั่วๆ ไปที่มีอยู่เกลื่อนหน้าเว็บ
+_HTML_TITLE_WITHOUT_POINTER_CURSOR = """
+<html><body>
+  <td title="This is just a tooltip, not a button">Some truncated cell text</td>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_ignores_title_elements_without_pointer_cursor():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_TITLE_WITHOUT_POINTER_CURSOR)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements == []
+
+
+# container ที่ตั้ง title + cursor:pointer ไว้เอง แต่ข้างในมีปุ่มจริง (<button>) ซ้อนอยู่ —
+# ต้องได้ index แค่ปุ่มจริงข้างในตัวเดียว ไม่ใช่ทั้ง container ด้วย (กันได้ index ซ้ำสอง
+# อันสำหรับพื้นที่คลิกเดียวกัน)
+_HTML_ICON_CONTAINER_WRAPS_REAL_BUTTON = """
+<html><body>
+  <div title="Actions" style="cursor:pointer">
+    <button id="real-btn">Real Button</button>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_duplicate_icon_container_wrapping_real_button():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_ICON_CONTAINER_WRAPS_REAL_BUTTON)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["tag"] == "button"
+    assert "Actions" not in [e["label"] for e in elements]
+
+
+# <img title="..." style="cursor:pointer"> ที่ซ้อนอยู่ใน <a> ที่คลิกได้จริงอยู่แล้ว —
+# ต้องได้ index แค่ตัว <a> (จาก selectors มาตรฐาน) ไม่ใช่ img ข้างในด้วย (กันได้ index
+# ซ้ำสองอันสำหรับพื้นที่คลิกเดียวกัน เหมือนเคส container-wraps-button ด้านบน)
+_HTML_ICON_IMG_NESTED_INSIDE_ANCHOR = """
+<html><body>
+  <a href="/" title="Home" style="display:inline-block;width:20px;height:20px">
+    <img src="logo.png" alt="Logo" title="Home Logo" style="cursor:pointer">
+  </a>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_duplicate_icon_img_nested_inside_anchor():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_ICON_IMG_NESTED_INSIDE_ANCHOR)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["tag"] == "a"
 
 
 # หลังใส่สินค้าลงตะกร้าจริง ปุ่มตะกร้าจะมี badge span ลูกที่มีแค่ตัวเลข (เช่น
@@ -401,3 +518,366 @@ async def test_resolve_frame_falls_back_to_page_when_selector_not_found_anywhere
         await browser.close()
 
     assert target is page
+
+
+# ---------------- Lane 1/2: อ่าน "เนื้อหา" หน้าเว็บ (นับ/ตาราง) ----------------
+# get_snapshot() ด้านบนกรองเอาเฉพาะ element ที่คลิกได้ ไม่มีเส้นทางอ่านเนื้อหาเลย —
+# count_elements()/extract_table_data() เป็นเส้นทางแยกที่ agent เรียกผ่าน tool
+# "read_page_data" (backend/app/core/actions.py) เฉพาะตอนจำเป็นจริงๆ เท่านั้น
+
+_HTML_PRODUCT_TABLE = """
+<html><body>
+  <table id="products">
+    <tr><th>Name</th><th>Price</th></tr>
+    <tr><td>Widget</td><td>$9.99</td></tr>
+    <tr><td>Gadget</td><td>$19.99</td></tr>
+    <tr><td>Gizmo</td><td>$29.99</td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_count_elements_counts_table_rows():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_TABLE)
+
+        count = await count_elements(page, "#products tr")
+
+        await browser.close()
+
+    assert count == 4  # 1 header row + 3 product row
+
+
+@pytest.mark.asyncio
+async def test_count_elements_returns_zero_for_selector_with_no_match():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_TABLE)
+
+        count = await count_elements(page, ".does-not-exist")
+
+        await browser.close()
+
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_count_elements_does_not_throw_on_invalid_css_selector():
+    """selector ผิดรูปแบบ (invalid CSS) ต้องไม่ throw ออกไป — deterministic, ไม่ควรทำให้
+    ทั้ง action ล้มเหลวเพราะ syntax error ของ selector ที่ LLM เดามาผิด"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_TABLE)
+
+        count = await count_elements(page, "###not-valid-css(((")
+
+        await browser.close()
+
+    assert count == 0
+
+
+_HTML_TABLE_INSIDE_IFRAME = """
+<html><body>
+  <iframe srcdoc="<html><body><table id='inner-products'><tr><td>A</td></tr><tr><td>B</td></tr></table></body></html>"></iframe>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_count_elements_counts_across_iframes():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_TABLE_INSIDE_IFRAME)
+
+        count = await count_elements(page, "#inner-products tr")
+
+        await browser.close()
+
+    assert count == 2
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_returns_markdown_table():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_TABLE)
+
+        result = await extract_table_data(page, "#products")
+
+        await browser.close()
+
+    assert result == (
+        "| Name | Price |\n"
+        "| --- | --- |\n"
+        "| Widget | $9.99 |\n"
+        "| Gadget | $19.99 |\n"
+        "| Gizmo | $29.99 |"
+    )
+
+
+_HTML_MESSY_TABLE = """
+<html><body>
+  <table id="messy">
+    <tr><th>   Name  </th><th>Price</th></tr>
+    <tr><td>
+      Widget
+    </td><td>  $9.99  </td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_strips_extra_whitespace():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_MESSY_TABLE)
+
+        result = await extract_table_data(page, "#messy")
+
+        await browser.close()
+
+    assert result == "| Name | Price |\n| --- | --- |\n| Widget | $9.99 |"
+
+
+# Text Normalization: ตัด whitespace ส่วนเกินเท่านั้น (clean() ใน _EXTRACT_TABLE_JS) ต้อง
+# ไม่เผลอตัดอักขระพิเศษที่มีความหมายจริงทิ้งไปด้วย เช่น "@"/"." ในอีเมล หรือ ","/"." ในตัวเลข
+# เงินเดือน — บั๊กที่ user รายงานจริง (มองไม่เห็นอีเมลในตาราง)
+_HTML_TABLE_WITH_EMAIL_AND_SALARY = """
+<html><body>
+  <table id="employees">
+    <tr><th>Email</th><th>Salary</th></tr>
+    <tr><td>cierra.vega@example.com</td><td>$12,345.67</td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_preserves_email_and_currency_special_characters():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_TABLE_WITH_EMAIL_AND_SALARY)
+
+        result = await extract_table_data(page, "#employees")
+
+        await browser.close()
+
+    assert "cierra.vega@example.com" in result
+    assert "$12,345.67" in result
+
+
+_HTML_PRODUCT_LIST = """
+<html><body>
+  <ul id="cart-items">
+    <li>Widget x2</li>
+    <li>Gadget x1</li>
+  </ul>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_returns_compact_json_for_non_table_list():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_LIST)
+
+        result = await extract_table_data(page, "#cart-items")
+
+        await browser.close()
+
+    assert json.loads(result) == ["Widget x2", "Gadget x1"]
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_falls_back_to_real_table_when_hint_selector_does_not_match():
+    """Fallback Extraction Protocol: LLM เดา target_hint ผิด (get_snapshot() ไม่เคยโชว์
+    class/id ของตารางให้เห็นเลย เดาได้แค่จาก context อื่น) แต่หน้านี้มีตารางข้อมูลจริงอยู่
+    (#products) — ต้องอ่าน td/th ของตารางจริงมาตอบ ไม่ใช่ยอมแพ้บอกว่า "ไม่พบข้อมูล" ทั้งที่
+    มีข้อมูลอยู่บนหน้าจริงๆ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_PRODUCT_TABLE)
+
+        result = await extract_table_data(page, "#does-not-exist")
+
+        await browser.close()
+
+    assert "| Widget | $9.99 |" in result
+    assert not result.startswith("[FAIL]")
+
+
+_HTML_NO_TABLE_OR_LIST = """
+<html><body>
+  <p>ไม่มีตารางหรือ list อะไรบนหน้านี้เลย</p>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_fails_gracefully_when_page_has_no_table_or_list_at_all():
+    """selector เดาผิด "และ" ไม่มีตาราง/list จริงอยู่บนหน้าเลยสักอัน (fallback ก็หาไม่เจอ) —
+    กรณีนี้ต้องยัง fail อยู่เหมือนเดิม ไม่ใช่ fallback ไปเจออะไรมั่วๆ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_NO_TABLE_OR_LIST)
+
+        result = await extract_table_data(page, "#does-not-exist")
+
+        await browser.close()
+
+    assert result.startswith("[FAIL]")
+
+
+_HTML_MULTIPLE_TABLES = """
+<html><body>
+  <table id="tiny"><tr><th>X</th></tr><tr><td>1</td></tr></table>
+  <table id="real-data">
+    <tr><th>First Name</th><th>Last Name</th><th>Email</th></tr>
+    <tr><td>Cierra</td><td>Vega</td><td>cierra@example.com</td></tr>
+    <tr><td>Alden</td><td>Cantrell</td><td>alden@example.com</td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_fallback_picks_table_with_most_rows_when_several_exist():
+    """หน้าเดียวกันมีหลายตาราง (เช่น ตารางเล็กๆ ตกแต่ง layout ปนกับตารางข้อมูลจริง) — fallback
+    ต้องเลือกตัวที่มีข้อมูลเยอะที่สุด (น่าจะเป็นตารางข้อมูลจริง) ไม่ใช่ตัวแรกที่เจอเฉยๆ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_MULTIPLE_TABLES)
+
+        result = await extract_table_data(page, "#does-not-exist")
+
+        await browser.close()
+
+    assert "cierra@example.com" in result
+    assert "alden@example.com" in result
+
+
+# ---------------- fuzzy_find: กันพิมพ์ผิดเล็กน้อยที่ชั้น data lookup ----------------
+
+
+def test_fuzzy_find_returns_closest_match_for_minor_typo():
+    """SequenceMatcher.ratio() คิดจากความยาวรวมทั้งสองฝั่งด้วย เทียบ query สั้นๆ กับ
+    candidate เต็มชื่อยาวๆ ตรงๆ จะได้ ratio ต่ำเกินจริงเสมอ (ไม่ว่า partial match จะดีแค่ไหน)
+    — เทียบกับ token เดี่ยวๆ ที่ความยาวใกล้เคียงกันแทน (เหมือนตัวอย่างจริงที่ user รายงาน:
+    "vaga"/"Vega")"""
+    result = fuzzy_find("vaga", ["Vega", "Smith", "Patel"])
+
+    assert result == "Vega"
+
+
+def test_fuzzy_find_matches_full_name_with_minor_typo():
+    result = fuzzy_find("Cierra Vaga", ["Cierra Vega", "John Smith", "Priya Patel"])
+
+    assert result == "Cierra Vega"
+
+
+def test_fuzzy_find_returns_none_when_nothing_passes_threshold():
+    """กันจับผิดคนข้าม record — ชื่อที่ไม่เกี่ยวข้องกันเลยต้องไม่ถูกเสนอเป็น match"""
+    result = fuzzy_find("xyz completely unrelated", ["Cierra Vega", "John Smith"])
+
+    assert result is None
+
+
+def test_fuzzy_find_respects_custom_threshold():
+    """threshold สูงขึ้น = เข้มขึ้น — คำที่เคยผ่าน threshold ต่ำ อาจไม่ผ่าน threshold สูงกว่า
+    ("vaga" vs "Vega" ให้ ratio = 0.75 พอดี — ผ่าน threshold 0.5 แต่ไม่ผ่าน 0.9)"""
+    assert fuzzy_find("vaga", ["Vega"], threshold=0.5) == "Vega"
+    assert fuzzy_find("vaga", ["Vega"], threshold=0.9) is None
+
+
+# ---------------- extract_table_data(query=...): exact match ก่อนเสมอ ไม่ข้ามไป fuzzy ----------------
+
+_HTML_USER_TABLE = """
+<html><body>
+  <table id="users">
+    <tr><th>Name</th><th>Age</th></tr>
+    <tr><td>Cierra Vega</td><td>32</td></tr>
+    <tr><td>John Smith</td><td>45</td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_returns_untouched_when_query_matches_exactly():
+    """query ที่ match ตรงเป๊ะ (substring) ต้องไม่ถูกแปะ annotation fuzzy ใดๆ เลย — พิสูจน์ว่า
+    ลอง exact ก่อนเสมอ ไม่ข้ามไป fuzzy ทันทีทั้งที่ไม่จำเป็น"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+
+        result = await extract_table_data(page, "#users", query="Cierra Vega")
+
+        await browser.close()
+
+    assert "ใกล้เคียงกับคำค้น" not in result
+    assert "| Cierra Vega | 32 |" in result
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_falls_back_to_fuzzy_when_exact_match_missing():
+    """query สะกดผิดเล็กน้อย ("Cierra Vaga") ไม่ตรง exact กับแถวไหนเลย — ต้อง fallback ไป
+    fuzzy_find แล้วแนบ annotation บอกความต่างชัดเจน ไม่ใช่แกล้งทำเป็นตรงกันเป๊ะ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+
+        result = await extract_table_data(page, "#users", query="Cierra Vaga")
+
+        await browser.close()
+
+    assert "พบ 'Cierra Vega' ใกล้เคียงกับคำค้น 'Cierra Vaga'" in result
+    assert "| Cierra Vega | 32 |" in result
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_fails_when_query_matches_nothing_even_fuzzy():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+
+        result = await extract_table_data(page, "#users", query="ไม่เกี่ยวข้องกันเลยสักนิด")
+
+        await browser.close()
+
+    assert result.startswith("[FAIL]")
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_without_query_keeps_old_behavior():
+    """ไม่ส่ง query มาเลย (default "") ต้องได้ผลลัพธ์เดิมทุกประการ (ไม่มี lookup/annotation
+    ใดๆ ปนมา) — regression check กับพฤติกรรมเดิมก่อนเพิ่ม fuzzy matching"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+
+        result = await extract_table_data(page, "#users")
+
+        await browser.close()
+
+    assert "ใกล้เคียงกับคำค้น" not in result
+    assert "| Cierra Vega | 32 |" in result
+    assert "| John Smith | 45 |" in result

@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
-from backend.app.core.perception import resolve_frame
+from backend.app.core.perception import count_elements, extract_table_data, resolve_frame
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
 
 # ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
@@ -262,6 +262,49 @@ async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
         return ActionResult(False, "wait_stable", f"error: {e}")
 
 
+# W45: อ่านเนื้อหาบนหน้าเว็บตอบคำถามที่ perception.py::get_snapshot() (กรองเฉพาะ element
+# คลิกได้) ตอบไม่ได้เลย — แยกเป็น 2 lane คนละแบบเพราะต้นทุน token ต่างกันมาก: Lane 1 นับ/
+# lookup ตรงไปตรงมา (count_elements — deterministic, token แทบเป็นศูนย์) vs Lane 2 อ่าน/
+# สรุปเนื้อหาที่ต้องตีความ (extract_table_data — LLM ต้องอ่านผลลัพธ์ไปตีความเองต่อ) —
+# ตัดสินใจเลือก lane ที่นี่ (ระดับโค้ด ไม่ใช่ให้ LLM สั่งตรงๆ ว่าจะเรียกตัวไหน) เพราะ query
+# ที่ตอบได้ด้วยการนับล้วนๆ ควรนับตรงๆ เสมอ ถูกกว่าให้ LLM อ่านตารางทั้งก้อนมานับเอง — เป็น
+# ชั้นสำรองระดับโค้ดคู่กับกติกาเดียวกันใน llm.py::SYSTEM_PROMPT (defense-in-depth เหมือน
+# pattern อื่นในไฟล์นี้ เช่น RISKY_LABEL_KEYWORDS — ไม่พึ่ง LLM เลือกถูกเพียงอย่างเดียว)
+_COUNT_QUERY_KEYWORDS = ("กี่", "จำนวน", "นับ", "how many", "count", "number of")
+
+
+async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResult:
+    """query: คำถามที่ต้องการคำตอบ — ใช้ตัดสินใจเลือก lane ด้านล่าง (นับ vs อ่านตาราง) และ
+    ถ้าไม่ใช่คำถามเชิงนับ ยังถูกส่งต่อเข้า extract_table_data() เป็นค่าที่จะ lookup ในแถว/
+    รายการด้วย (exact match ก่อน ไม่เจอค่อย fuzzy_find — ดู perception.py) ไม่ถูกส่งเข้า LLM
+    เพิ่มรอบใหม่เอง — target_hint: CSS selector ที่คาดว่าตรงกับ element/แถวตาราง/รายการที่มี
+    ข้อมูลนั้นจริง (LLM เป็นคนเดามาจาก indexed elements/URL ที่เห็น)
+
+    ไม่ผ่าน _dispatch_with_retry เหมือน click/fill — query ที่ตอบไม่ได้เพราะ target_hint
+    ไม่ตรงกับอะไรเลยเป็น deterministic mismatch (เหมือนกันทุกครั้ง) ไม่ใช่ timing issue
+    ที่ retry แล้วจะเปลี่ยนผลลัพธ์
+
+    รอหน้านิ่งก่อนอ่านเสมอ (wait_stable) — ถ้าเพิ่ง edit/submit ข้อมูลในตารางไปเมื่อ step
+    ก่อนหน้า (เช่น React re-render/re-fetch ข้อมูลใหม่หลัง submit form) DOM อาจยังไม่ bind
+    ค่าใหม่เสร็จตอนที่ LLM สั่ง read_page_data ตามมาติดๆ กัน อ่านทันทีอาจได้ข้อมูลเก่า/ว่าง
+    เปล่า — wait_stable() timeout แล้วเดินต่อได้เสมอ (ไม่ throw) ไม่ทำให้ query ที่หน้านิ่ง
+    อยู่แล้วช้าลงมาก"""
+    if not target_hint:
+        return ActionResult(False, "read_page_data", "ต้องระบุ target_hint (CSS selector)")
+
+    await wait_stable(page)
+
+    is_count_query = any(kw in query.lower() for kw in _COUNT_QUERY_KEYWORDS)
+    try:
+        if is_count_query:
+            count = await count_elements(page, target_hint)
+            return ActionResult(True, "read_page_data", f"พบ {count} รายการที่ตรงกับ '{target_hint}'")
+        data = await extract_table_data(page, target_hint, query)
+        return ActionResult(not data.startswith("[FAIL]"), "read_page_data", data)
+    except Exception as e:
+        return ActionResult(False, "read_page_data", f"error: {e}")
+
+
 # ------------------------------------------------------------
 # Permission layer: กัน action เสี่ยง/บล็อก ก่อนถึง dispatch จริง
 # adapted จาก PR "permission-ab" — จุดต่างจาก PR เดิม: ask_user_func ถูกใช้งานจริง
@@ -351,6 +394,8 @@ async def execute(
         if t == "go_back":     return await go_back(page)
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
         if t == "wait":        return await wait_stable(page)
+        if t == "read_page_data":
+            return await read_page_data(page, cmd.get("query", ""), cmd.get("target_hint", ""))
         if t in DEFAULT_NEEDS_CONFIRMATION:
             # submit/delete/purchase/pay ไม่ใช่ action จริงแยกต่างหาก — เป็นแค่ risk
             # category ของ classify_action() (เช็คผ่านไปแล้วด้านบนตอนมาถึงตรงนี้) ที่จริง

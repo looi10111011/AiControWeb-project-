@@ -39,9 +39,13 @@ object ที่ถูกต้องก่อนกดทุกครั้ง
 """
 
 import asyncio
-from typing import Union
+import difflib
+import json
+from typing import Optional, Union
 
 from playwright.async_api import async_playwright, Frame, Page
+
+from backend.app.config import settings
 
 
 # --- JS ที่ inject เข้าไปเก็บ element โต้ตอบได้ที่มองเห็นบนหน้าจอ ---
@@ -114,6 +118,27 @@ _COLLECT_JS = r"""
   document.querySelectorAll('[data-ai-index]').forEach((el) => el.removeAttribute('data-ai-index'));
 
   const nodes = Array.from(document.querySelectorAll(selectors));
+
+  // icon-only clickable elements: <span>/<div> ที่มี title/aria-label/data-test* (สื่อว่า
+  // เป็น element ที่มีความหมาย ไม่ใช่แค่ container เปล่าๆ) และ cursor:pointer จริง (สื่อว่า
+  // ผู้พัฒนาตั้งใจให้กดได้) แต่ไม่ตรงกับ selectors มาตรฐานด้านบนเลย (ไม่มี role="button"/
+  // tabindex/onclick attribute ตาม a11y spec) — เจอบ่อยมากในเว็บที่ implement ปุ่ม icon เอง
+  // ด้วย SVG/icon-font ตรงๆ แทนที่จะใช้ <button> จริง (เช่น demoqa.com/webtables คอลัมน์
+  // Action: <span title="Edit"><svg>...</svg></span>, <span title="Delete">...) ทำให้
+  // selectors เดิมด้านบนมองไม่เห็นปุ่มพวกนี้เลยทั้งที่กดได้จริงในเบราว์เซอร์ — ไม่ต้องแก้ label
+  // logic ด้านล่างเลย (title/aria-label กลายเป็น label ผ่าน `semantic` อยู่แล้ว)
+  const ICON_LABEL_SELECTOR = '[title], [aria-label], [data-test], [data-testid], [data-qa]';
+  for (const cand of document.querySelectorAll(ICON_LABEL_SELECTOR)) {
+    if (window.getComputedStyle(cand).cursor !== 'pointer') continue;
+    // ตัวเองหรือบรรพบุรุษตรงกับ selectors มาตรฐานอยู่แล้ว (เช่น <button title="Edit">, หรือ
+    // <img title="Logo"> ที่ซ้อนอยู่ใน <a>) -> pass ปกติจัดการไปแล้ว ไม่ต้องเพิ่มซ้ำ
+    if (cand.closest(selectors)) continue;
+    // ตัวเองห่อ element ที่ตรงกับ selectors มาตรฐานไว้ข้างใน (เช่น container กว้างๆ ที่มีปุ่ม
+    // จริงซ้อนอยู่) -> ให้ปุ่มจริงข้างในได้ index ของตัวเองแทน ไม่ต้องนับ container ด้วย
+    if (cand.querySelector(selectors)) continue;
+    nodes.push(cand);
+  }
+
   const out = [];
   let idx = startIndex;
 
@@ -266,6 +291,197 @@ async def resolve_frame(page: Page, selector: str) -> Union[Page, Frame]:
         except Exception:
             continue
     return page
+
+
+# --- W45: Lane 1/2 อ่าน "เนื้อหา" หน้าเว็บ (นับ/ตาราง) — แยกจาก get_snapshot() ด้านบนซึ่ง
+# กรองเอาเฉพาะ element ที่คลิกได้ ไม่มีเส้นทางอ่านเนื้อหา (ตาราง/ตัวเลข/text) เลย —
+# ทั้งสองฟังก์ชันนี้ "ไม่" ถูกเรียกอัตโนมัติทุก step เหมือน get_snapshot() ต้องถูกเรียกผ่าน
+# tool "read_page_data" เท่านั้น (ดู backend/app/core/actions.py::read_page_data ที่เป็น
+# จุดตัดสินใจว่าจะเรียกตัวไหน + backend/app/core/llm.py สำหรับ tool schema/SYSTEM_PROMPT
+# ที่ให้ LLM เรียกเอง) กันไม่ให้ token cost ต่อ step โตขึ้นถาวรเหมือนที่ get_snapshot() ระวัง
+# ไว้อยู่แล้ว (trim system prompt/filter footer/prompt caching)
+
+_COUNT_ELEMENTS_JS = r"""
+(selector) => {
+  try {
+    return document.querySelectorAll(selector).length;
+  } catch (e) {
+    return 0;
+  }
+}
+"""
+
+
+async def count_elements(page: Page, selector_hint: str) -> int:
+    """Lane 1: นับจำนวน element ที่ตรงกับ selector_hint (CSS selector) รวมทุก frame
+    (เหมือน get_snapshot() — เนื้อหาที่ต้องนับอาจอยู่ใน <iframe>) ใช้ JS query ล้วนๆ
+    (document.querySelectorAll(...).length) ไม่เรียก LLM เลย ไม่ส่งเนื้อหาดิบกลับมาด้วย
+    คืนแค่ตัวเลข (token แทบเป็นศูนย์ เร็วกว่าให้ LLM อ่านตารางทั้งก้อนมานับเอง — ดู
+    actions.py::read_page_data ที่ favor ฟังก์ชันนี้ก่อน extract_table_data() เสมอตอน
+    query เป็นคำถามเชิงนับ)
+
+    selector_hint ที่ผิดรูปแบบ (invalid CSS) นับเป็น 0 ที่ frame นั้นเงียบๆ ไม่ throw
+    ออกไป เหมือน pattern ที่ get_snapshot()/resolve_frame() ใช้อยู่แล้ว (frame เดียวพัง/
+    query ไม่ได้ไม่ควรทำให้ทั้งฟังก์ชันล้มเหลว)"""
+    total = 0
+    main_frame = page.main_frame
+    frames = [main_frame] + [f for f in page.frames if f != main_frame]
+    for frame in frames:
+        try:
+            total += await frame.evaluate(_COUNT_ELEMENTS_JS, selector_hint)
+        except Exception:
+            continue
+    return total
+
+
+_EXTRACT_TABLE_JS = r"""
+(hint) => {
+  const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+  const extractTable = (el) => {
+    const rows = Array.from(el.querySelectorAll("tr"))
+      .map((tr) => Array.from(tr.querySelectorAll("th,td")).map((cell) => clean(cell.innerText)))
+      .filter((row) => row.length > 0);
+    return rows.length > 0 ? { kind: "table", rows } : null;
+  };
+
+  const extractList = (el) => {
+    const liChildren = el.querySelectorAll(":scope > li");
+    const itemNodes = liChildren.length > 0 ? liChildren : el.children;
+    const items = Array.from(itemNodes).map((node) => clean(node.innerText)).filter(Boolean);
+    return items.length > 0 ? { kind: "list", items } : null;
+  };
+
+  const extractFrom = (el) => {
+    if (!el) return null;
+    return el.tagName.toLowerCase() === "table" ? extractTable(el) : extractList(el);
+  };
+
+  const direct = extractFrom(document.querySelector(hint));
+  if (direct) return direct;
+
+  // Fallback Extraction Protocol: target_hint ที่ LLM เดามาไม่ตรง/ไม่มีข้อมูลเลย (get_snapshot()
+  // กรองเฉพาะ element คลิกได้ ไม่เคยโชว์โครงสร้างตาราง/class name จริงให้ LLM เห็นเลย เดาได้
+  // แค่จาก URL/context อื่น) — ก่อนจะยอม fail ให้บังคับหาตาราง <table>/list (<ul>,<ol>) จริง
+  // บนหน้านี้ตรงๆ แล้วอ่าน td/th (หรือ li) ทุกอันตรงๆ ก่อน (เอาตัวที่มีแถว/รายการเยอะที่สุด
+  // ถ้ามีหลายอัน) แทนที่จะตอบว่า "ไม่พบข้อมูล" ทั้งที่จริงๆ มีตาราง/list อยู่บนหน้านี้ แค่เดา
+  // selector ผิดเฉยๆ
+  let best = null;
+  for (const t of document.querySelectorAll("table")) {
+    const r = extractTable(t);
+    if (r && (!best || r.rows.length > best.rows.length)) best = r;
+  }
+  if (best) return best;
+  for (const l of document.querySelectorAll("ul, ol")) {
+    const r = extractList(l);
+    if (r && (!best || r.items.length > best.items.length)) best = r;
+  }
+  return best;
+}
+"""
+
+
+def fuzzy_find(query: str, candidates: list[str], threshold: float = 0.75) -> Optional[str]:
+    """W46: เทียบ query กับแต่ละ candidate ด้วย difflib.SequenceMatcher.ratio() (stdlib ล้วนๆ
+    ไม่ต้องเพิ่ม dependency ใหม่ — candidates ในบริบทนี้คือ label/ชื่อในตาราง 1 หน้า ไม่เยอะ
+    พอที่ performance ของ difflib จะเป็นปัญหาจริง) คืน candidate ที่ score สูงสุดถ้าเกิน
+    threshold เท่านั้น ไม่งั้นคืน None (ไม่มีตัวไหนใกล้เคียงพอ) — เทียบแบบไม่สนตัวพิมพ์ใหญ่
+    เล็ก (lowercase ทั้งสองฝั่งก่อนเทียบ)
+
+    threshold (ดู settings.agent_fuzzy_match_threshold สำหรับค่า default ที่ปรับได้จริงใน
+    ระบบ — ฟังก์ชันนี้เก็บ default ของตัวเองแยกเป็น literal ให้เรียกตรงๆ/เทสต์ได้โดยไม่ต้อง
+    พึ่ง settings) ตั้งต่ำไปจะ false-positive จับคนละคน/คนละชื่อที่บังเอิญคล้ายกันเป็นตัว
+    เดียวกัน (อันตรายกว่า false negative เพราะตอบข้อมูลผิดคนแบบมั่นใจ) ตั้งสูงไปจะพลาดคำที่
+    พิมพ์ผิดจริงๆ"""
+    best_candidate: Optional[str] = None
+    best_score = 0.0
+    for candidate in candidates:
+        score = difflib.SequenceMatcher(None, query.lower(), candidate.lower()).ratio()
+        if score > best_score:
+            best_score = score
+            best_candidate = candidate
+    if best_candidate is not None and best_score >= threshold:
+        return best_candidate
+    return None
+
+
+def _lookup_annotation(query: str, candidates: list[str]) -> tuple[str, bool]:
+    """ใช้ตอน extract_table_data() ได้ query มาด้วย (ไม่ใช่แค่ table_hint) แปลว่าผู้เรียก
+    กำลังหา "ค่าเฉพาะเจาะจง" ในตาราง/list (เช่น ชื่อคน) ไม่ใช่แค่ขอสรุปทั้งก้อนเฉยๆ — ต้อง
+    ลอง exact substring match (case-insensitive ทั้ง 2 ทิศทาง) ก่อนเสมอ ถ้าเจอแล้ว (หรือ
+    ไม่มี query มาตั้งแต่แรก) ไม่ต้องทำอะไรต่อ ถ้าไม่เจอเลยค่อย fuzzy_find เป็นชั้นสำรอง
+
+    คืน (annotation_text, found_anything) — annotation_text ใช้แปะนำหน้าผลลัพธ์ตอนเจอ
+    fuzzy match (ให้ LLM เห็นชัดว่าเป็นการเดา ไม่ใช่ตรงกันเป๊ะ ไม่ใช่แกล้งทำเป็นตรงกัน — ดู
+    "Cierra Vaga"/"Cierra Vega" ในตัวอย่างจริงที่ user รายงาน) found_anything=False เฉพาะ
+    ตอนมี query แต่ไม่เจอทั้ง exact และ fuzzy เลย — ให้ผู้เรียกตัดสินใจคืน [FAIL] แทนที่จะ
+    คืนตารางทั้งก้อนที่ไม่เกี่ยวข้องกับสิ่งที่ถามจริงๆ"""
+    if not query:
+        return "", True
+    lower_query = query.lower()
+    if any(lower_query in c.lower() or c.lower() in lower_query for c in candidates):
+        return "", True
+    match = fuzzy_find(query, candidates, threshold=settings.agent_fuzzy_match_threshold)
+    if match is None:
+        return "", False
+    return f"[พบ '{match}' ใกล้เคียงกับคำค้น '{query}' ที่คุณพิมพ์ — ไม่ตรงกันเป๊ะ ตรวจสอบก่อนใช้คำตอบ]\n\n", True
+
+
+async def extract_table_data(page: Page, table_hint: str, query: str = "") -> str:
+    """Lane 2: ดึงตาราง/list ที่ตรงกับ table_hint (CSS selector) มาแปลงเป็น markdown
+    table (ถ้าเป็น <table>) หรือ JSON list กระชับ (ถ้าเป็น container อื่นที่มี item ลูก
+    เช่น <ul>) — ตัด whitespace ส่วนเกิน/attribute ที่ไม่จำเป็นออกหมด (คล้ายแนวที่ทำกับ
+    footer filter ใน get_snapshot() เดิม) เพื่อไม่ให้กินเนื้อที่ context เกินจำเป็น
+
+    "ไม่" ถูกเรียกอัตโนมัติทุก step (ต่างจาก get_snapshot()) เป็น Lane 2 ที่ LLM ต้อง
+    ตีความเนื้อหาที่ดึงมาเองต่อ — ถูกเรียกเฉพาะผ่าน tool "read_page_data" ตอนคำถามตอบด้วย
+    การนับล้วนๆ ไม่ได้ (ดู count_elements() ด้านบนสำหรับกรณีนับ)
+
+    query (optional): ค่าเฉพาะเจาะจงที่กำลังหา (เช่น ชื่อคน) — ว่างเปล่า (default) = แค่ขอ
+    สรุปทั้งตาราง/list ไม่ต้องเช็ค lookup อะไรเลย (พฤติกรรมเดิมทุกประการ) มีค่า = เช็ค exact
+    match ในแถว/รายการก่อน ไม่เจอค่อย fuzzy_find (ดู _lookup_annotation() ด้านบน) — ถ้าไม่
+    เจอทั้ง exact และ fuzzy เลย คืน "[FAIL] ..." แทนที่จะคืนตารางทั้งก้อนที่ไม่ตรงกับที่ถาม
+
+    table_hint ที่ไม่ตรงกับ element ไหนเลย (หรือตรงแต่ไม่มีข้อมูล เช่น table ว่างเปล่า) จะ
+    fallback ไปหาตาราง/list จริงบนหน้านั้นเอง (เอาตัวที่มีแถว/รายการเยอะที่สุดถ้ามีหลายอัน)
+    ก่อนจะยอม fail (ดู _EXTRACT_TABLE_JS) — กันกรณี LLM เดา table_hint ผิดทั้งที่มีข้อมูลอยู่
+    บนหน้าจริงๆ (get_snapshot() ไม่เคยโชว์โครงสร้างตาราง/class name ให้ LLM เห็นเลย)
+
+    ไม่พบ element/ตาราง/list ใดๆ ในทุก frame เลย (แม้ fallback แล้ว) คืนข้อความ "[FAIL] ..."
+    อธิบายเหตุผล (ไม่ throw ออกไป เหมือน action อื่นๆ ในระบบ — ดู actions.py::ActionResult)"""
+    main_frame = page.main_frame
+    frames = [main_frame] + [f for f in page.frames if f != main_frame]
+    for frame in frames:
+        try:
+            data = await frame.evaluate(_EXTRACT_TABLE_JS, table_hint)
+        except Exception:
+            continue
+        if data is None:
+            continue
+
+        if data["kind"] == "table":
+            rows = data["rows"]
+            if not rows:
+                return ""
+            header, *body = rows
+            candidates = [cell for row in body for cell in row]
+            annotation, found = _lookup_annotation(query, candidates)
+            if not found:
+                return f"[FAIL] ไม่พบข้อมูลที่ตรงหรือใกล้เคียงกับ '{query}' ใน '{table_hint}'"
+            lines = [
+                "| " + " | ".join(header) + " |",
+                "| " + " | ".join("---" for _ in header) + " |",
+            ]
+            lines += ["| " + " | ".join(row) + " |" for row in body]
+            return annotation + "\n".join(lines)
+
+        items = data["items"]
+        annotation, found = _lookup_annotation(query, items)
+        if not found:
+            return f"[FAIL] ไม่พบข้อมูลที่ตรงหรือใกล้เคียงกับ '{query}' ใน '{table_hint}'"
+        return annotation + json.dumps(items, ensure_ascii=False)
+
+    return f"[FAIL] ไม่พบ element ที่ตรงกับ '{table_hint}'"
 
 
 # --- helper: ให้ agent สั่งงานกลับด้วย "หมายเลข" ที่ perception ให้มา ---
