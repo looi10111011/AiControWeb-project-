@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-24)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-31)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -2459,6 +2459,115 @@
 
            รันจริง `pytest -q backend/tests/test_site_learning_crawler.py` เต็ม suite
            ยืนยัน: 70 เคสผ่านหมด (รวมเคสที่เคย fail ค้างมาด้วย)
+
+  [x] W44  qa_summary: ให้ agent ตอบคำถามที่ต้องอ่าน "เนื้อหา" ตาราง/list ได้จริง แทนที่จะ
+           ตอบจาก page_text ของ get_snapshot() (interactive elements ล้วนๆ) เพียวๆ —
+           เสร็จแล้ว (2026-07-31)
+
+           อาการ: classify_intent() ตัดสินว่า goal เป็น "qa_summary" แล้วตอบด้วย
+           llm.summarize_page() ตัวเดียว ไม่มี tool ให้เรียกเลย เห็นแค่ page_text จาก
+           get_snapshot() (มีแค่ element ที่คลิกได้ ไม่มีเนื้อหาตาราง/list) — คำถามแบบ
+           "เห็นชื่อ X ในตารางไหม" เลยตอบไม่ได้เสมอ แม้ read_page_data/extract_table_data()
+           (W45) จะมีอยู่แล้วก็ตาม เพราะ path นี้ไม่เคยเข้า next_action()/execute() loop เลย
+
+           แก้ด้วยการให้ qa_summary วน next_action() แบบจำกัดสูงสุด _QA_SUMMARY_MAX_STEPS
+           รอบแทน (เดิม 3 รอบ) อนุญาตแค่ type="read_page_data" (ไม่ mutate อะไรบนหน้าเว็บ) +
+           finish_task เท่านั้น — action อื่น (click/fill/...) ถูกปฏิเสธเงียบๆ ไม่ dispatch
+           จริง (แค่ tool_result บอกเหตุผล) กันโมเดลหลุดไปทำ action ทั้งที่ user แค่ถาม
+           คำถาม ถ้าครบโควตาแล้วยังไม่เรียก finish_task เลย fallback กลับไปใช้
+           summarize_page() แบบเดิมเป็น safety net (ไม่แย่ไปกว่าพฤติกรรมเดิม)
+
+  [x] W45  เพิ่มเส้นทางอ่าน "เนื้อหา" หน้าเว็บ (นับ/ตาราง) แยกจากเส้นทางหา element ที่คลิกได้
+           เดิม โดยไม่ให้ token cost ต่อ step โตขึ้นถาวร — เสร็จแล้ว (2026-07-31)
+
+           อาการ: perception.py::get_snapshot() อ่านหน้าเว็บทุก step อยู่แล้ว แต่กรองเอาเฉพาะ
+           element ที่คลิกได้ (ให้ LLM เลือก action) — ไม่มีเส้นทางอ่าน "เนื้อหา" (ตาราง/
+           ตัวเลข/text) เลย ทำให้ตอบคำถามแบบ "มีสินค้ากี่ชิ้น"/"สรุปตารางให้หน่อย" ไม่ได้
+
+           แก้ด้วยการแยกเป็น 2 lane คนละแบบเพราะต้นทุน token ต่างกันมาก: Lane 1
+           (count_elements — นับ/lookup ตรงไปตรงมา, JS query ล้วนๆ ไม่เรียก LLM เลย token
+           แทบเป็นศูนย์) กับ Lane 2 (extract_table_data — อ่าน/สรุปเนื้อหาที่ต้องตีความ แปลง
+           ตาราง/list เป็น markdown/JSON กระชับ ตัด whitespace ส่วนเกินออก) — ทั้งคู่ "ไม่" ถูก
+           เรียกอัตโนมัติทุก step เหมือน get_snapshot() ต้องถูกเรียกผ่าน tool ใหม่
+           "read_page_data" (llm.py เพิ่มเข้า tool schema/SYSTEM_PROMPT เดิม pattern เดียวกับ
+           click/fill) เท่านั้น — actions.py::read_page_data() เป็นจุดตัดสินใจเลือก lane
+           ระดับโค้ด (query มีคำเชิงนับ เช่น "กี่"/"จำนวน"/"count" -> favor count_elements
+           ก่อนเสมอ) ไม่พึ่ง LLM เลือกถูกเพียงอย่างเดียว — dispatch ผ่าน execute() แบบเดียวกับ
+           action อื่น คืน [OK]/[FAIL] ตาม pattern เดิม ไม่ raise exception
+
+           ยืนยันแล้วว่า context compaction (W7[A]/W22) และ loop-detection guard (W31) ที่มี
+           อยู่แล้วครอบคลุม read_page_data โดยไม่ต้องแก้เพิ่ม: compaction ตัด/ย่อ messages ตาม
+           step-boundary count ไม่สนใจชนิดเนื้อหา ส่วน loop-guard เทียบ tool_input ทั้ง dict
+           (รวม query/target_hint) query ที่ต่างกันจึงไม่ถูกนับเป็น action ซ้ำโดยธรรมชาติ
+           อยู่แล้ว — เพิ่ม regression test ยืนยันพฤติกรรมนี้แทนที่จะแก้ guard logic ที่ทำงาน
+           ถูกอยู่แล้ว
+
+           unit test ใหม่: count_elements/extract_table_data (test_perception.py, เปิด
+           chromium จริง), tool schema มี read_page_data/query/target_hint ถูกต้อง +
+           SYSTEM_PROMPT มีกติกา favor count ก่อน extract (test_llm.py), execute()
+           dispatch ถูกต้อง + ไม่ retry (test_actions.py), loop-guard ไม่ false-positive กับ
+           query ต่างกัน + ยัง trigger ปกติกับ query เดิมซ้ำจริง (test_orchestrator.py)
+
+           รันจริง `pytest -q backend/tests/test_perception.py
+           backend/tests/test_actions.py backend/tests/test_llm.py` ยืนยัน: 102 เคสผ่านหมด
+
+  [x] W46  แก้ 3 เรื่องจาก user รายงาน: agent ยอมแพ้เร็วเกินไป, state หาย/navigate ซ้ำข้าม
+           turn ใน session เดียวกัน, พิมพ์ผิดเล็กน้อยหาข้อมูลไม่เจอ — เสร็จแล้ว (2026-07-31)
+
+           อาการ (1): finish_task บอก "ไม่มีข้อมูล"/"ไม่พบ" ทั้งที่ยังไม่เคยลองค้นหาเลย — ทั้ง
+           SYSTEM_PROMPT ของ agent loop หลัก และ qa_summary mini-loop (W44) ที่จำกัดไว้แค่
+           read_page_data (ห้าม fill/click เด็ดขาด) ทำให้คำถามที่คำตอบอยู่หลัง search flow
+           จริง (ต้อง fill ช่องค้นหา + click ปุ่มค้นหาก่อน) ตอบไม่ได้เลยไม่ว่ากรณีไหน
+
+           แก้ (1): เพิ่มกติกาใน SYSTEM_PROMPT บังคับตรวจ conversation history + ต้องลองเรียก
+           action (fill ช่องค้นหา/read_page_data) อย่างน้อย 1 ครั้งก่อน finish_task ว่าไม่พบ
+           ได้ + ห้ามตีความคำถามไม่มี verb สั่งงาน ("อายุเท่าไหร่") ว่าแค่ถามเฉยๆ ไม่ต้องทำ
+           อะไร — ต่อยอด W44: ผ่อนให้ qa_summary mini-loop ทำ fill/click ได้เพิ่มเติม "เฉพาะ"
+           ตอน label ของ element เป้าหมายดูเป็นช่อง/ปุ่มค้นหา/ตัวกรองข้อมูลจริงๆ
+           (_label_looks_like_search — ชั้นสำรองระดับโค้ด ไม่พึ่ง LLM เลือกถูกอย่างเดียว
+           เหมือน RISKY_LABEL_KEYWORDS) action อื่นที่ไม่เข้าเงื่อนไขยังถูกปฏิเสธเหมือนเดิม
+           ทุกประการ (login/checkout/delete ยังทำไม่ได้จาก intent นี้) — re-snapshot หน้าเว็บ
+           หลัง fill/click ทุกครั้งให้ next_action() รอบถัดไปเห็น state จริงหลังค้นหา (ไม่ใช่
+           page_text เดิมก่อนค้นหาซ้ำ) + เพิ่ม _QA_SUMMARY_MAX_STEPS จาก 3 เป็น 4 ให้พอสำหรับ
+           flow fill->click->read_page_data->finish_task + แก้ fallback summarize_page() ให้
+           ใช้ page_text ล่าสุดหลังค้นหาแทน page_text ก่อนค้นหา
+
+           อาการ (2): user รายงานว่า search/filter state ที่ทำไว้ในเทิร์นก่อนหายไปเพราะ
+           navigate ซ้ำข้าม turn ใน session เดียวกัน — ตรวจสอบแล้วพบว่า run_task() (W12/W19)
+           มี domain-based skip-goto logic ที่ครอบคลุมกรณีนี้ครบอยู่แล้ว (เทียบ domain ปัจจุบัน
+           กับ domain เป้าหมาย เหมือนกัน = reuse page เดิมไม่ goto ซ้ำ, ต่างกัน = goto ตามปกติ
+           พร้อม log/event ทั้ง 2 กรณี) รวมถึง unit test ทั้ง 3 เคสที่ต้องการ (turn ต่อเนื่อง
+           URL เดิมไม่ goto ซ้ำ, URL ต่างจริงยัง goto, turn แรกของ session ใหม่ยัง goto) ก็มี
+           อยู่แล้วและผ่านอยู่แล้ว — ไม่ต้องแก้โค้ดเพิ่ม
+
+           อาการ (3): read_page_data หา exact match ในตาราง/list ไม่เจอเพราะ user พิมพ์ชื่อ
+           ผิดเล็กน้อย (เช่น "Cierra Vaga" แทน "Cierra Vega") แล้วคืน [FAIL] ทันทีทั้งที่ข้อมูล
+           ที่ใกล้เคียงมากมีอยู่จริง
+
+           แก้ (3): เพิ่ม perception.py::fuzzy_find(query, candidates, threshold=0.75) ใช้
+           difflib.SequenceMatcher.ratio() (stdlib ล้วนๆ ไม่เพิ่ม dependency ใหม่) คืน
+           candidate ที่ score สูงสุดถ้าเกิน threshold — extract_table_data() รับ query
+           parameter เพิ่ม (optional, ว่างเปล่า = พฤติกรรมเดิมทุกประการ) ลอง exact substring
+           match ในแถว/รายการก่อนเสมอ ไม่เจอค่อย fuzzy_find เป็นชั้นสำรอง เจอ fuzzy match
+           แนบ annotation นำหน้าผลลัพธ์ชัดเจนว่า "พบ 'Cierra Vega' ใกล้เคียงกับคำค้น 'Cierra
+           Vaga' ที่คุณพิมพ์" (ไม่แกล้งทำเป็นตรงกันเป๊ะ) ไม่เจอทั้ง exact และ fuzzy เลยถึงคืน
+           [FAIL] จริง — threshold ปรับได้จาก settings.agent_fuzzy_match_threshold (default
+           0.75, คอมเมนต์ trade-off: ต่ำไป false-positive จับคนละคน อันตรายกว่าตั้งสูงไปแล้ว
+           พลาดคำพิมพ์ผิดจริง)
+
+           unit test ใหม่: SYSTEM_PROMPT มีกติกาบังคับลองค้นหาก่อน finish_task
+           (test_llm.py), qa_summary mini-loop อนุญาต fill/click กับ element ค้นหาจริง แต่ยัง
+           ปฏิเสธ element อื่น (test_intent_and_summarization.py — แก้เทสต์เดิม 1 ตัวที่ไม่
+           mock next_action เลยพึ่งพฤติกรรมจริงของ Gemini API ที่ไม่ deterministic ให้ mock
+           ตรงๆ ด้วย), fuzzy_find คืนคำใกล้เคียงถูกต้อง/คืน None เมื่อไม่ผ่าน threshold,
+           extract_table_data ลอง exact ก่อนเสมอไม่ข้ามไป fuzzy ทันที (test_perception.py)
+
+           รันจริง `pytest -q backend/tests/test_perception.py backend/tests/test_actions.py
+           backend/tests/test_llm.py backend/tests/test_intent_and_summarization.py
+           backend/tests/test_orchestrator.py` ยืนยัน: 220 เคสผ่าน, เหลือ 3 เคส fail ที่มีมา
+           ก่อนงานนี้แล้ว (ยืนยันด้วย git stash ว่า fail เหมือนกันบน branch เดิมที่ยังไม่แตะ
+           เลย — ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ ไม่เกี่ยวกับ
+           งานนี้)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

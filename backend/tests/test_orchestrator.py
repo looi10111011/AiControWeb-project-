@@ -18,6 +18,9 @@ from backend.app.core.orchestrator import (
     _MAX_PREMATURE_TRUE_FINISH_RETRIES,
     _PREMATURE_FALSE_FINISH_NUDGE,
     _PREMATURE_TRUE_FINISH_NUDGE,
+    _QA_ANSWER_FORMAT_GUIDANCE,
+    _QA_SUMMARY_ACTION_REJECTED_NUDGE,
+    _QA_SUMMARY_MAX_STEPS,
     _RAG_CHUNKS_PER_STEP,
     _build_history_digest,
     _build_nudge_message,
@@ -739,6 +742,184 @@ async def test_run_task_executes_action_then_finishes():
     assert result["tokens"] == {"input": 110, "output": 25, "cache_read": 0, "cache_creation": 0}
 
 
+# W44: qa_summary ตอนนี้วน next_action() แบบจำกัด (ดู _QA_SUMMARY_MAX_STEPS) แทนที่จะเรียก
+# llm.summarize_page() ตัวเดียวแบบเดิม — goal ทุกเทสต์ด้านล่างใช้คำใน qa_keywords
+# (llm.classify_intent()) ตรงๆ ("มีสินค้าอะไรบ้าง") ไม่ปนคำใน action_keywords เลย เพื่อให้
+# classify_intent() คืน "qa_summary" ผ่าน heuristic ทันที ไม่ต้องยิง LLM จริง (กัน network
+# call ระหว่าง pytest)
+_QA_GOAL = "ตารางนี้มีสินค้าอะไรบ้าง"
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_answers_directly_when_finish_task_called_immediately():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock()) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock()) as mock_summarize, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=(
+                 "finish_task", {"success": True, "message": "มีสินค้า 3 ชิ้น"}, "", [],
+                 llm.TokenUsage(input_tokens=30, output_tokens=6),
+             )),
+         ):
+        result = await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    assert result["status"] == "chat_reply"
+    assert result["success"] is True
+    assert result["message"] == "มีสินค้า 3 ชิ้น"
+    assert result["tokens"] == {"input": 30, "output": 6, "cache_read": 0, "cache_creation": 0}
+    mock_execute.assert_not_called()
+    mock_summarize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_calls_read_page_data_via_execute_then_answers():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    read_result = ActionResult(True, "read_page_data", "พบ 1 รายการที่ตรงกับ 'table tbody tr': Cierra Vega")
+
+    qa_next_action_calls = [
+        (
+            "browser_action",
+            {"type": "read_page_data", "query": "มีชื่อ Cierra ไหม", "target_hint": "table tbody tr"},
+            "qa_tool_1", ["m1"], llm.TokenUsage(input_tokens=40, output_tokens=8),
+        ),
+        (
+            "finish_task", {"success": True, "message": "เห็นชื่อ Cierra ในตารางค่ะ"}, "", ["m2"],
+            llm.TokenUsage(input_tokens=45, output_tokens=9),
+        ),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[table not shown here]"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=read_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock()) as mock_summarize, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=qa_next_action_calls)):
+        result = await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    assert result["status"] == "chat_reply"
+    assert result["message"] == "เห็นชื่อ Cierra ในตารางค่ะ"
+    mock_execute.assert_awaited_once_with(
+        mock_page, {"type": "read_page_data", "query": "มีชื่อ Cierra ไหม", "target_hint": "table tbody tr"},
+        ask_user_func=None, label="", manual_guidance="", allowed_domains=None,
+    )
+    mock_summarize.assert_not_awaited()
+    assert result["tokens"] == {"input": 85, "output": 17, "cache_read": 0, "cache_creation": 0}
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_rejects_non_read_page_data_action_without_dispatching():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    qa_next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "qa_tool_1", ["m1"], llm.TokenUsage(input_tokens=10, output_tokens=2)),
+        ("finish_task", {"success": True, "message": "ตอบได้จากข้อมูลที่เห็นอยู่แล้ว"}, "", ["m2"], llm.TokenUsage(input_tokens=11, output_tokens=3)),
+    ]
+    append_tool_result_calls = []
+
+    def _fake_append_tool_result(messages, tool_use_id, result_text):
+        append_tool_result_calls.append((tool_use_id, result_text))
+        return messages + [result_text]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[2] button 'Delete'"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock()) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_fake_append_tool_result), \
+         patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock()) as mock_summarize, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=qa_next_action_calls)):
+        result = await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    assert result["message"] == "ตอบได้จากข้อมูลที่เห็นอยู่แล้ว"
+    mock_execute.assert_not_called()
+    mock_summarize.assert_not_awaited()
+    assert append_tool_result_calls == [("qa_tool_1", _QA_SUMMARY_ACTION_REJECTED_NUDGE)]
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_falls_back_to_summarize_page_when_steps_exhausted():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    read_result = ActionResult(True, "read_page_data", "พบ 40 รายการ")
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[some elements]"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=read_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock(return_value="สรุปแบบเดิมจาก fallback")) as mock_summarize, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=(
+                 "browser_action", {"type": "read_page_data", "query": "q", "target_hint": "table"}, "qa_tool", ["m"],
+                 llm.TokenUsage(input_tokens=5, output_tokens=1),
+             )),
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    assert result["message"] == "สรุปแบบเดิมจาก fallback"
+    assert mock_next_action.await_count == _QA_SUMMARY_MAX_STEPS
+    assert mock_execute.await_count == _QA_SUMMARY_MAX_STEPS
+    mock_summarize.assert_awaited_once()
+
+
+# user รายงานว่า agent ตอบ "list รายชื่อ" ด้วยการแปะรายละเอียดอื่นที่ไม่มีใครถามปนมา (ตำแหน่ง/
+# office/salary) และเขียนรวมเป็นย่อหน้าเดียวยาวแทนที่จะขึ้นบรรทัดใหม่ทีละข้อ — ตอนนี้ qa_summary
+# ต่อ _QA_ANSWER_FORMAT_GUIDANCE เข้าไปในทั้ง goal ที่ next_action() เห็น และ user_prompt ที่
+# summarize_page() fallback เห็น (ดู orchestrator.py qa_goal)
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_appends_answer_format_guidance_to_goal_seen_by_next_action():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock()), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=(
+                 "finish_task", {"success": True, "message": "1. A\n2. B"}, "", [],
+                 llm.TokenUsage(input_tokens=10, output_tokens=2),
+             )),
+         ) as mock_next_action:
+        await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    goal_seen_by_next_action = mock_next_action.await_args.args[2]
+    assert goal_seen_by_next_action == f"{_QA_GOAL}{_QA_ANSWER_FORMAT_GUIDANCE}"
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_summary_appends_answer_format_guidance_to_summarize_page_fallback():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[some elements]"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock()), \
+         patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock(return_value="สรุป")) as mock_summarize, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=(
+                 "finish_task", {"success": False}, "", [], llm.TokenUsage(),
+             )),
+         ):
+        await Orchestrator().run_task("https://example.com", _QA_GOAL, provider="anthropic")
+
+    mock_summarize.assert_awaited_once()
+    assert mock_summarize.await_args.kwargs["user_prompt"] == f"{_QA_GOAL}{_QA_ANSWER_FORMAT_GUIDANCE}"
+
+
 @pytest.mark.asyncio
 async def test_run_task_stops_at_max_steps_without_finish_task():
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
@@ -1425,6 +1606,67 @@ async def test_run_task_loop_guard_does_not_trigger_for_varied_actions():
 
     assert result["success"] is True
     assert mock_execute.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_task_loop_guard_does_not_trigger_for_varied_read_page_data_queries():
+    """read_page_data ที่ query ต่างกันไม่ควรถูกนับเป็น action ซ้ำ — user ถามคำถามต่อเนื่อง
+    หลายข้อ ("ราคานี้เท่าไหร่" "อันนี้ล่ะ" ...) ต้องไม่โดน force_loop_recovery (W31) เข้าใจ
+    ผิดว่า agent วนซ้ำไม่มีความคืบหน้า — loop-guard เทียบ tool_input ทั้ง dict อยู่แล้ว
+    (ไม่ใช่แค่ชื่อ type) เลย query ที่ต่างกันทำให้ dict ไม่เท่ากันเองโดยธรรมชาติ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    read_result = ActionResult(True, "read_page_data", "พบ 1 รายการ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "read_page_data", "query": "สินค้าชิ้นที่ 1 ราคาเท่าไหร่", "target_hint": ".item-1"}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "read_page_data", "query": "สินค้าชิ้นที่ 2 ราคาเท่าไหร่", "target_hint": ".item-2"}, "t2", [], llm.TokenUsage()),
+        ("browser_action", {"type": "read_page_data", "query": "สินค้าชิ้นที่ 3 ราคาเท่าไหร่", "target_hint": ".item-3"}, "t3", [], llm.TokenUsage()),
+        ("browser_action", {"type": "read_page_data", "query": "สินค้าชิ้นที่ 4 ราคาเท่าไหร่", "target_hint": ".item-4"}, "t4", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ตอบครบทุกข้อแล้ว"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=read_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=10, provider="anthropic"
+        )
+
+    assert result["success"] is True
+    # ทุก read_page_data (4 ข้อคำถามต่างกัน) ต้องถูก execute จริง ไม่มีตัวไหนถูกบล็อกด้วย
+    # loop-guard เพราะเข้าใจผิดว่าเป็น action เดิมซ้ำ
+    assert mock_execute.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_run_task_loop_guard_still_triggers_for_identical_repeated_read_page_data_query():
+    """ตรงข้ามกับเทสต์ข้างบน — query (และ target_hint) เดิมเป๊ะซ้ำติดกันจริงๆ (ไม่ใช่
+    คำถามใหม่) ยังต้องถูกจับว่าเป็น action ซ้ำเหมือน action ประเภทอื่นตามปกติ ไม่ใช่ว่า
+    read_page_data ได้รับการยกเว้นจาก loop-guard ไปเลยทั้งหมด"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    read_result = ActionResult(True, "read_page_data", "พบ 1 รายการ")
+    same_query = {"type": "read_page_data", "query": "มีสินค้ากี่ชิ้น", "target_hint": ".inventory_item"}
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=read_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(return_value=(
+             "browser_action", same_query, "tool_x", [], llm.TokenUsage()
+         ))):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", max_steps=20, provider="anthropic"
+        )
+
+    assert result["success"] is False
+    assert "ซ้ำ" in result["message"]
+    assert "บังคับ" in result["message"]
 
 
 @pytest.mark.asyncio

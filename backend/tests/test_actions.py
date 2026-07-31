@@ -356,3 +356,98 @@ async def test_select_option_still_works_normally_for_plain_dropdown_without_nbs
 
     assert result.success is True
     assert selected_value == "js"
+
+
+# ---------------- read_page_data: อ่านเนื้อหาหน้าเว็บ (Lane 1 นับ / Lane 2 อ่านตาราง) ----------------
+# mock count_elements()/extract_table_data() ตรงๆ (ทั้งคู่เทสต์ครบแล้วใน test_perception.py
+# ด้วย chromium จริง) — ที่นี่สนใจแค่ dispatch/lane-selection logic ของ execute() เอง
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_favors_count_for_counting_query():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=5)) as mock_count, \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock()) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "มีสินค้ากี่ชิ้น", "target_hint": ".inventory_item"},
+        )
+
+    assert result.success is True
+    assert "5" in result.message
+    mock_count.assert_awaited_once_with(mock_page, ".inventory_item")
+    mock_extract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_uses_extract_table_data_for_non_counting_query():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock()) as mock_count, \
+         patch(
+             "backend.app.core.actions.extract_table_data",
+             AsyncMock(return_value="| Name |\n| --- |\n| Widget |"),
+         ) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "สรุปตารางสินค้าให้หน่อย", "target_hint": "#products"},
+        )
+
+    assert result.success is True
+    assert "Widget" in result.message
+    mock_extract.assert_awaited_once_with(mock_page, "#products", "สรุปตารางสินค้าให้หน่อย")
+    mock_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_fails_without_target_hint():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "read_page_data", "query": "มีสินค้ากี่ชิ้น"})
+
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_reports_failure_from_extract_table_data():
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.extract_table_data",
+        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+    ):
+        result = await execute(
+            mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"}
+        )
+
+    assert result.success is False
+    assert "#missing" in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_waits_for_page_to_settle_before_reading():
+    """Retry on State Change: ถ้าเพิ่ง edit/submit ข้อมูลในตารางไปเมื่อ step ก่อนหน้า DOM อาจ
+    ยัง bind ค่าใหม่ไม่เสร็จตอน read_page_data ถูกเรียกตามมาติดๆ — ต้องรอหน้านิ่ง (wait_stable)
+    ก่อนอ่านเสมอ ไม่ใช่อ่านทันทีแล้วอาจได้ข้อมูลเก่า/ว่างเปล่า"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.wait_stable", AsyncMock()) as mock_wait_stable, \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value="| Name |\n| --- |\n| Widget |")):
+        await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "สรุปตารางสินค้าให้หน่อย", "target_hint": "#products"},
+        )
+
+    mock_wait_stable.assert_awaited_once_with(mock_page)
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_does_not_retry_on_failure(_no_real_sleep):
+    """read_page_data ไม่ผ่าน _dispatch_with_retry เหมือน click/fill — target_hint ที่หา
+    ไม่เจอเป็น deterministic mismatch ไม่ใช่ DOM-timing issue ที่ retry แล้วจะเปลี่ยนผล"""
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.extract_table_data",
+        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+    ) as mock_extract:
+        await execute(mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"})
+
+    assert mock_extract.await_count == 1
+    _no_real_sleep.assert_not_awaited()
