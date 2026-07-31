@@ -586,7 +586,8 @@ def test_execute_plan_always_saves_confirmed_plan_to_plan_memory(client):
         )
         _poll_until(client, resp.json()["task_id"])
 
-    mock_save.assert_called_once_with("www.saucedemo.com", "login", "1. Open site\n2. Log in")
+    # extract_domain() ตัด "www." ออกโดยเจตนา (ดู permission/rules.py::extract_domain())
+    mock_save.assert_called_once_with("saucedemo.com", "login", "1. Open site\n2. Log in")
 
 
 def test_execute_plan_without_a_plan_does_not_touch_plan_memory(client):
@@ -1073,6 +1074,22 @@ def test_save_site_credentials_endpoint_persists_and_status_reflects_it(client, 
 
     resp = client.post(
         "/api/site-manual/example.com/credentials", json={"username": "alice", "password": "s3cr3t"},
+    )
+    assert resp.status_code == 204
+
+    assert client.get("/api/site-manual/example.com/credentials/status").json() == {"exists": True}
+    assert storage.load_credentials("example.com") == {"username": "alice", "password": "s3cr3t"}
+
+
+def test_save_site_credentials_endpoint_normalizes_www_prefix(client, isolated_manuals_dir):
+    """path param "domain" ไม่ผ่าน extract_domain(url) เหมือนจุดอื่น (รับ hostname ตรงๆ) —
+    ต้อง normalize เอง (ตัด www./lowercase) ไม่งั้น credential ที่บันทึกผ่าน
+    www.example.com จะหาไม่เจอตอน core/orchestrator.py::_maybe_auto_login ค้นด้วย
+    extract_domain(page.url) ที่ตัด www. ออกแล้วเสมอ"""
+    from backend.app.site_learning import storage
+
+    resp = client.post(
+        "/api/site-manual/www.Example.com/credentials", json={"username": "alice", "password": "s3cr3t"},
     )
     assert resp.status_code == 204
 

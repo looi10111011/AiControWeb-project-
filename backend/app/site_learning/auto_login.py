@@ -11,10 +11,12 @@ Orchestrator._llm_backend()) — ถ้า orchestrator.py import จาก craw
 circular import ทันที โมดูลนี้ไม่ import ทั้งสองฝั่งเลย ปลอดภัยให้ทั้งคู่ import ได้อิสระ
 """
 
+import urllib.parse
 from typing import Optional
 
 from playwright.async_api import Page
 
+from backend.app.site_learning.extractor import extract_page
 from backend.app.site_learning.schema import PageInfo
 
 _USERNAME_FIELD_KEYWORDS = ("user", "email", "login", "name")
@@ -53,6 +55,68 @@ def find_login_submit_selector(page_info: PageInfo) -> Optional[str]:
         if any(kw in text for kw in _LOGIN_SUBMIT_KEYWORDS):
             return b.selector or None
     return None
+
+
+def _normalize_url_for_compare(url: str) -> str:
+    """ตัด fragment/trailing slash ให้เทียบ URL ก่อน-หลัง login ได้แม่นยำ (URL ต่างกันแค่
+    #section หรือ / ท้ายสุดไม่ควรนับว่าเป็นคนละหน้า) — สำเนาย่อของ crawler.py::
+    _normalize_url โดยเจตนา (ไม่ import ข้ามมาเพราะเป็น private helper ของ crawler ที่ใช้
+    เพื่อ dedupe BFS queue คนละจุดประสงค์ ไม่ใช่ shared utility และ logic สั้นพอที่จะซ้ำได้
+    โดยไม่เสี่ยง drift)"""
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
+
+
+async def verify_login_success(page: Page, pre_login_url: str) -> tuple[bool, str]:
+    """หลัง attempt_login() คืน True แล้ว (แปลว่ากด submit ได้จริง) เรียกตัวนี้ต่อเพื่อเช็คว่า
+    session ผ่านจริงไหม ไม่ใช่แค่กด submit ได้ — เกณฑ์ 2 ชั้นที่ต้องผ่านทั้งคู่ (ย้ายมาจาก
+    crawler.py::_login_and_continue เดิม (W24) ที่มี logic นี้อยู่ก่อนแล้ว รวมจุดเดียวให้
+    core/orchestrator.py::_maybe_auto_login เรียกใช้ร่วมได้ แทนที่จะไม่ verify อะไรเลยแบบ
+    เดิม):
+      (1) URL เปลี่ยนไปจาก URL ก่อน submit จริง (ไม่ใช่แค่ submit แล้ว reload หน้าเดิม)
+      (2) หน้าใหม่ไม่มีฟอร์ม login (username+password field) เหลืออยู่แล้ว (find_login_
+          fields คืน (None, None) — ถ้ายังเจอ = โดน redirect กลับมาหน้า login เดิม)
+
+    คืน (session_ok, reason) — reason เป็นข้อความอธิบายเหตุผลตอน session_ok=False เท่านั้น
+    (ว่างเปล่าตอน True) ไว้ log/แจ้ง user ต่อได้โดยไม่มี password ปนอยู่เลย ไม่ throw"""
+    post_login_url = _normalize_url_for_compare(page.url)
+    if post_login_url == _normalize_url_for_compare(pre_login_url):
+        return False, "URL ไม่เปลี่ยนหลัง submit — เข้าใจว่า login ไม่ผ่าน"
+    try:
+        post_page_info, _ = await extract_page(page)
+    except Exception:
+        return False, "อ่านหน้าใหม่หลัง submit ไม่สำเร็จ"
+    if find_login_fields(post_page_info) != (None, None):
+        return False, "ยังเจอฟอร์ม login (username+password field) อยู่หลัง submit — เข้าใจว่าถูก redirect กลับหน้า login"
+    return True, ""
+
+
+async def login_with_verification(
+    page: Page, page_info: PageInfo, username: str, password: str, retries: int = 1,
+) -> tuple[bool, str]:
+    """attempt_login() + verify_login_success() รวมกัน พร้อม retry อัตโนมัติถ้ารอบแรกไม่
+    ผ่าน (retries ครั้ง นับแยกจากความพยายามแรก) — ใช้ตอนที่ caller ไม่ต้องการ page_info ของ
+    หน้าหลัง login ต่อ (แค่ต้องการรู้ผล pass/fail) เช่น core/orchestrator.py::
+    _maybe_auto_login ที่ต่างจาก crawler.py::_login_and_continue ตรงที่ไม่ต้อง record หน้า
+    หลัง login ลง manual คืน (True, "") ถ้า login ผ่านจริง (รอบใดก็ได้ใน retries+1 ครั้ง)
+    คืน (False, reason) ของความพยายามครั้งสุดท้ายถ้ายังไม่ผ่านแม้ retry ครบแล้ว ไม่ throw"""
+    reason = ""
+    for attempt in range(retries + 1):
+        pre_login_url = page.url
+        did_login = await attempt_login(page, page_info, username, password)
+        if not did_login:
+            reason = "กรอกฟอร์ม/กดปุ่ม submit ไม่สำเร็จ (หา field/ปุ่มไม่ครบ หรือ fill/click ล้มเหลว)"
+            continue
+        session_ok, reason = await verify_login_success(page, pre_login_url)
+        if session_ok:
+            return True, ""
+        if attempt < retries:
+            try:
+                page_info, _ = await extract_page(page)
+            except Exception:
+                break
+    return False, reason
 
 
 async def attempt_login(page: Page, page_info: PageInfo, username: str, password: str) -> bool:

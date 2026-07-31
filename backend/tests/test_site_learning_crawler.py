@@ -308,6 +308,72 @@ async def test_crawl_site_attempts_login_only_once(login_fixture_server):
     assert spy.await_count == 1
 
 
+_SESSION_HOP_FIXTURE_PAGES = {
+    "login.html": """
+        <html><body>
+          <input type="text" id="username" name="username" placeholder="Username" />
+          <input type="password" id="password" name="password" placeholder="Password" />
+          <button type="button" id="submit-btn" onclick="window.location.href='/post_login.html'">Sign In</button>
+        </body></html>
+    """,
+    "post_login.html": """
+        <html><body>
+          <nav><a href="/session-expired.html">Reports</a></nav>
+          <div>Welcome!</div>
+        </body></html>
+    """,
+    # จำลองหน้าที่โดน redirect กลับมาเป็นฟอร์ม login เต็มรูปแบบอีกครั้งระหว่าง BFS (เช่น
+    # session หลุดกลางทาง) — มีทั้ง username+password field ครบเหมือน login.html รอบแรก
+    "session-expired.html": """
+        <html><body>
+          <input type="text" id="username" name="username" placeholder="Username" />
+          <input type="password" id="password" name="password" placeholder="Password" />
+          <button type="button" onclick="window.location.href='/should-not-be-visited.html'">Sign In</button>
+        </body></html>
+    """,
+    "should-not-be-visited.html": "<html><body>reachable only via submit on session-expired.html</body></html>",
+}
+
+
+@pytest.fixture
+def session_hop_fixture_server(tmp_path):
+    httpd, base_url = _make_fixture_server(tmp_path, _SESSION_HOP_FIXTURE_PAGES)
+    yield base_url
+    httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_crawl_site_treats_mid_crawl_login_page_as_dead_end(session_hop_fixture_server):
+    """login_attempted=True ไปแล้วตั้งแต่ login.html รอบแรก — พอ BFS เดินไปเจอ
+    session-expired.html (มีทั้ง username+password field ครบ เหมือนโดน redirect กลับหน้า
+    login เพราะ session หลุด) ต้องไม่ลอง submit ซ้ำเอง (attempt_login เรียกแค่ครั้งเดียว
+    ตลอดทั้ง crawl) ต้องบันทึกหน้านั้นไว้ (เห็นว่ามีจุดนี้อยู่ มีประโยชน์ต่อ manual) แต่ต้อง
+    ไม่ตามลิงก์ต่อจากมัน (dead-end) และต้องมี error บันทึกไว้ว่า manual ส่วนนี้อาจไม่สมบูรณ์"""
+    from backend.app.site_learning import crawler as crawler_module
+
+    real_attempt_login = crawler_module.attempt_login
+    spy = AsyncMock(wraps=real_attempt_login)
+
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()), \
+         patch("backend.app.site_learning.crawler.attempt_login", spy):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(
+                browser, f"{session_hop_fixture_server}/login.html", max_pages=10,
+                username="alice", password="s3cr3t",
+            )
+            await browser.close()
+
+    assert spy.await_count == 1  # ไม่ login ซ้ำแม้เจอฟอร์ม login อีกรอบ
+
+    visited_urls = {p.url for p in manual.pages}
+    assert any("session-expired.html" in u for u in visited_urls)  # บันทึกไว้ (แต่เป็น dead-end)
+    assert not any("should-not-be-visited" in u for u in visited_urls)  # ไม่ตามลิงก์ต่อจากมัน
+
+    login_errors = [e for e in manual.errors if e.get("phase") == "login"]
+    assert any("session-expired" in e.get("url", "") for e in login_errors)
+
+
 @pytest.mark.asyncio
 async def test_crawl_site_login_bootstrap_fails_gracefully_without_submit_button(no_submit_fixture_server):
     """มีช่อง username/password ครบแต่หาปุ่ม submit ที่เข้าข่าย keyword ("sign in"/"log

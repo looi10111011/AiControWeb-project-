@@ -495,7 +495,7 @@ async def _launch_chromium(playwright: Playwright, headless: bool, channel: Opti
     return await playwright.chromium.launch(headless=headless)
 
 
-async def _maybe_auto_login(page: Page, verbose: bool) -> None:
+async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
     """W17: เติม username/password ให้อัตโนมัติถ้ามี credential เก็บไว้สำหรับโดเมนนี้แล้ว
     (จาก POST /api/site-manual/learn หรือ .../credentials — ดู site_learning/storage.py::
     save_credentials) และหน้าปัจจุบัน (หลัง goto/skip_initial_goto ตอนต้น run_task())
@@ -510,28 +510,39 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> None:
     เรียกจริง (runtime, หลังทั้งสองโมดูลโหลดเสร็จแล้ว) แก้ปัญหานี้โดยไม่ต้องแตะโครงสร้าง
     site_learning/__init__.py เลย
 
-    ล้มเหลว/ไม่มี credential/หน้าปัจจุบันไม่ใช่หน้า login ก็แค่ปล่อยผ่านเงียบๆ ไม่ throw —
-    agent ยัง fallback ไปกรอกเองผ่าน action ปกติได้อยู่แล้วถ้า auto-login ไม่สำเร็จ"""
+    คืน None ถ้าไม่มี credential เก็บไว้ / หน้าปัจจุบันไม่ใช่หน้า login / login สำเร็จจริง
+    (ไม่ต้องแจ้ง user อะไรเลย) คืนข้อความเหตุผล (mask password เสมอ ไม่มีรหัสผ่านปนออกมา
+    เด็ดขาด) ถ้าเจอ credential + เป็นหน้า login จริง แต่ login ไม่ผ่านแม้ retry แล้ว — ให้
+    caller (run_task ด้านล่าง) ยิง SSE event แจ้ง user ต่อ ไม่ throw ในทุกกรณี (agent ยัง
+    fallback ไปกรอกเองผ่าน action ปกติได้อยู่แล้วถ้า auto-login ไม่สำเร็จ — แค่ต้องให้ user
+    รู้ตัวว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว ไม่ใช่ปล่อยผ่านเงียบๆ เหมือนเดิม)"""
     try:
         from backend.app.site_learning import storage as site_storage
-        from backend.app.site_learning.auto_login import attempt_login, find_login_fields
+        from backend.app.site_learning.auto_login import find_login_fields, login_with_verification
         from backend.app.site_learning.extractor import extract_page as site_extract_page
 
         domain = extract_domain(page.url)
         creds = site_storage.load_credentials(domain)
         if not creds:
-            return
+            return None
         page_info, _ = await site_extract_page(page)
         username_selector, password_selector = find_login_fields(page_info)
         if not username_selector or not password_selector:
-            return
+            return None
         if verbose:
             print(f"[auto-login] พบ credential ที่เก็บไว้สำหรับ {domain} — ลอง login อัตโนมัติ", flush=True)
-        did_login = await attempt_login(page, page_info, creds["username"], creds["password"])
-        if did_login:
-            await wait_stable(page)
+        # retries=1: ลองซ้ำอีก 1 ครั้งถ้ารอบแรกไม่ผ่าน (เช่น หน้าโหลดช้า/DOM ยังไม่นิ่งตอน
+        # fill รอบแรก) ก่อนยอมรับว่า login ไม่ผ่านจริง — login_with_verification() ตรวจ
+        # session_ok จริง (URL เปลี่ยน + ไม่เจอฟอร์ม login เหลือ) ไม่ใช่แค่ "กด submit ได้"
+        did_login, reason = await login_with_verification(
+            page, page_info, creds["username"], creds["password"], retries=1,
+        )
+        if not did_login:
+            return reason or "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้"
+        await wait_stable(page)
+        return None
     except Exception:
-        pass
+        return None
 
 
 def _tokens_dict(usage: llm.TokenUsage) -> dict:
@@ -1026,7 +1037,19 @@ class Orchestrator:
             # กรณี goto สดๆ และกรณี skip_initial_goto (tab เดิมจากเทิร์นก่อนหน้าดันมาเจอ
             # หน้า login พอดี เช่น session หลุด) ไม่มีผลอะไรถ้าหน้าปัจจุบันไม่ใช่หน้า login
             # หรือไม่มี credential เก็บไว้สำหรับโดเมนนี้ (ดู _maybe_auto_login())
-            await _maybe_auto_login(page, verbose)
+            #
+            # ถ้ามี credential เก็บไว้จริงแต่ login ไม่ผ่าน (retry แล้วก็ยังไม่ผ่าน) ต้องแจ้ง
+            # user ชัดเจนผ่าน SSE ก่อน — เดิมล้มเหลวแบบเงียบๆ ทำให้ agent เดินหน้า task ต่อ
+            # ทั้งที่ไม่มี permission ที่ถูกต้องโดย user ไม่รู้ตัว ไม่ throw/ไม่หยุด task เพราะ
+            # agent ยัง fallback ไปกรอกฟอร์ม login เองผ่าน action ปกติได้อยู่แล้ว — แค่ต้อง
+            # ให้ user เห็นว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว
+            auto_login_failure_reason = await _maybe_auto_login(page, verbose)
+            if auto_login_failure_reason:
+                await _emit({
+                    "kind": "auto_login_failed",
+                    "message": "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้",
+                    "reason": auto_login_failure_reason,
+                })
 
             # Intent Classification: ตรวจจับ Intent ของผู้ใช้ก่อนเริ่ม Planner Loop
             initial_elements, initial_page_text = await get_snapshot(page)

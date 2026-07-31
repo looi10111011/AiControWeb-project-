@@ -1,4 +1,6 @@
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from google.api_core.exceptions import ResourceExhausted
@@ -778,17 +780,30 @@ async def test_describe_screenshot_returns_empty_string_on_error_without_throwin
 
 # --- _build_user_turn_text() (W6[B]/W7[A]) ---
 
+# W?: เวลาปัจจุบันถูกฉีดเข้าทุก turn (ดู _current_bangkok_time_text() ใน llm.py) — เทสต์
+# กลุ่ม backward-compat ด้านล่างต้องรู้ค่าที่แน่นอนถึงจะ assert exact-match ได้ ใช้ fixture
+# นี้ freeze ค่าไว้แทนการเรียกเวลาจริงทุกเทสต์ (เทสต์เฉพาะของ datetime injection เองอยู่ใน
+# ท้ายไฟล์ — ตรงนั้น mock datetime.now() ตรงๆ แทน)
+_FIXED_TIME_TEXT = "วันศุกร์ที่ 31 กรกฎาคม 2569 เวลา 14:32 น."
+_TIME_LINE = f"\n\nเวลาปัจจุบัน (Asia/Bangkok): {_FIXED_TIME_TEXT}"
+_EXPECTED_PREFIX = f"Goal: goal{_TIME_LINE}\n\nหน้าเว็บปัจจุบัน:\npage"
+
+
+@pytest.fixture(autouse=True)
+def _freeze_bangkok_time(monkeypatch):
+    monkeypatch.setattr(llm, "_current_bangkok_time_text", lambda: _FIXED_TIME_TEXT)
+
 
 def test_build_user_turn_text_omits_manual_section_when_empty():
     result = llm._build_user_turn_text("goal", "page")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_manual_section_when_provided():
     result = llm._build_user_turn_text("goal", "page", "- chunk one\n- chunk two")
 
-    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert result.startswith(_EXPECTED_PREFIX)
     assert "chunk one" in result
     assert "chunk two" in result
 
@@ -796,13 +811,13 @@ def test_build_user_turn_text_includes_manual_section_when_provided():
 def test_build_user_turn_text_omits_memory_section_when_empty():
     result = llm._build_user_turn_text("goal", "page", manual_context="", memory_context="")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_memory_section_when_provided():
     result = llm._build_user_turn_text("goal", "page", memory_context="- {'type': 'click'} -> [FAIL] boom")
 
-    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert result.startswith(_EXPECTED_PREFIX)
     assert "[FAIL] boom" in result
     assert "Action ที่เคยลองแล้วล้มเหลว" in result
 
@@ -819,20 +834,20 @@ def test_build_user_turn_text_includes_both_manual_and_memory_sections():
 def test_build_user_turn_text_omits_vision_section_when_empty():
     result = llm._build_user_turn_text("goal", "page", vision_context="")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_vision_section_when_provided():
     result = llm._build_user_turn_text("goal", "page", vision_context="เห็น cookie banner บังปุ่ม Login อยู่")
 
-    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert result.startswith(_EXPECTED_PREFIX)
     assert "เห็น cookie banner บังปุ่ม Login อยู่" in result
 
 
 def test_build_user_turn_text_omits_current_url_section_when_empty():
     result = llm._build_user_turn_text("goal", "page", current_url="")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_current_url_before_page_text():
@@ -847,7 +862,7 @@ def test_build_user_turn_text_includes_current_url_before_page_text():
 def test_build_user_turn_text_omits_action_history_section_when_empty():
     result = llm._build_user_turn_text("goal", "page", action_history_context="")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_action_history_section_when_provided():
@@ -855,7 +870,7 @@ def test_build_user_turn_text_includes_action_history_section_when_provided():
         "goal", "page", action_history_context="- step 3: {'type': 'click'} -> [OK]",
     )
 
-    assert result.startswith("Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage")
+    assert result.startswith(_EXPECTED_PREFIX)
     assert "step 3" in result
     assert "Action ล่าสุดที่คุณเพิ่งทำไป" in result
 
@@ -868,7 +883,7 @@ def test_build_user_turn_text_omits_plan_section_when_empty():
     เป๊ะทุกตัวอักษร ไม่มี section แผนโผล่มาปนเลย (backward compatible)"""
     result = llm._build_user_turn_text("goal", "page", plan_context="")
 
-    assert result == "Goal: goal\n\nหน้าเว็บปัจจุบัน:\npage"
+    assert result == _EXPECTED_PREFIX
 
 
 def test_build_user_turn_text_includes_plan_section_when_provided():
@@ -878,3 +893,61 @@ def test_build_user_turn_text_includes_plan_section_when_provided():
     assert "1. ทำ X\n2. ทำ Y" in result
     # อยู่ก่อน "หน้าเว็บปัจจุบัน" (เป็นบริบทระดับ task เหมือน Goal ไม่ใช่ข้อมูลเฉพาะ step นี้)
     assert result.index("แพลนปัจจุบัน") < result.index("หน้าเว็บปัจจุบัน")
+
+
+# --- เวลาปัจจุบันของเซิร์ฟเวอร์ ฉีดเข้า context ทุก turn (LLM ไม่มีการรับรู้เวลาจริงในตัว
+# เอง) — ดู _current_bangkok_time_text() ใน llm.py ---
+
+
+class _FrozenDateTime:
+    """แทนที่ llm.datetime ทั้ง class เพื่อ mock datetime.now(tz=...) ตรงๆ — เก็บค่าคงที่
+    ไว้ตอบ .now() เสมอไม่ว่าจะเรียกกี่ครั้ง, ไม่แตะ ZoneInfo จริงเลย (ยังทำงานปกติ)"""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def now(self, tz=None):
+        return self._fixed
+
+
+def test_current_bangkok_time_text_formats_thai_buddhist_date(monkeypatch):
+    fixed = datetime(2026, 7, 31, 14, 32, tzinfo=ZoneInfo("Asia/Bangkok"))
+    monkeypatch.setattr(llm, "datetime", _FrozenDateTime(fixed))
+
+    result = llm._current_bangkok_time_text()
+
+    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
+    expected_month = llm._THAI_MONTHS[fixed.month - 1]
+    # ปี พ.ศ. = ค.ศ. + 543 (2026 -> 2569) เวลา 24 ชม. ตรงกับที่ mock ไว้เป๊ะ (14:32)
+    assert result == f"{expected_weekday}ที่ 31 {expected_month} 2569 เวลา 14:32 น."
+
+
+def test_build_user_turn_text_injects_current_bangkok_time_from_mocked_now(monkeypatch):
+    """mock datetime.now() ที่ระดับต่ำสุด (ไม่ใช่ mock helper function) — ยืนยันว่า context
+    ที่ build ออกมาจริงมีบรรทัดเวลาตรงกับ mock value, format/timezone ถูกต้อง"""
+    monkeypatch.undo()  # ปลด autouse fixture (_freeze_bangkok_time) ก่อน — เทสต์นี้ต้องการให้
+    # _current_bangkok_time_text() ตัวจริงทำงาน (อ่านจาก datetime.now() ที่ mock ด้านล่างแทน)
+    fixed = datetime(2026, 12, 25, 9, 5, tzinfo=ZoneInfo("Asia/Bangkok"))
+    monkeypatch.setattr(llm, "datetime", _FrozenDateTime(fixed))
+
+    result = llm._build_user_turn_text("goal", "page")
+
+    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
+    assert f"เวลาปัจจุบัน (Asia/Bangkok): {expected_weekday}ที่ 25 ธันวาคม 2569 เวลา 09:05 น." in result
+
+
+def test_build_user_turn_text_time_line_changes_across_calls_not_cached(monkeypatch):
+    """เรียก build 2 ครั้งด้วยเวลา mock ต่างกัน (ห่างกัน) ต้องได้บรรทัดเวลาต่างกันตามเวลา
+    จริงแต่ละครั้ง — ยืนยันว่า inject สดทุก turn ไม่ใช่คำนวณครั้งเดียวแล้ว cache ค้างไว้"""
+    times = iter([
+        "วันศุกร์ที่ 31 กรกฎาคม 2569 เวลา 14:32 น.",
+        "วันเสาร์ที่ 1 สิงหาคม 2569 เวลา 09:05 น.",
+    ])
+    monkeypatch.setattr(llm, "_current_bangkok_time_text", lambda: next(times))
+
+    first = llm._build_user_turn_text("goal", "page")
+    second = llm._build_user_turn_text("goal", "page")
+
+    assert "14:32" in first and "09:05" not in first
+    assert "09:05" in second and "14:32" not in second
+    assert first != second

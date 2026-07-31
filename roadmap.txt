@@ -189,7 +189,7 @@
                  blocking input() ตรงๆ เสมอไม่ว่าจะส่ง callback มาหรือไม่ (แก้แล้ว:
                  เรียก ask_user_func(cmd) จริงถ้ามี ไม่งั้น fallback เป็น input())
               2) backend/tests/test_perm.py เดิมเป็น manual script (print + if
-                 __name__=="__main__") ไม่ใช่ pytest test จริง — เขียนใหม่เป็น
+               __name__=="__main__") ไม่ใช่ pytest test จริง — เขียนใหม่เป็น
                  pytest.mark.asyncio + assert จริง 6 เคส (blocked domain, needs
                  confirmation, safe action, execute เคารพ ask_user_func ทั้ง
                  approve/reject, ไม่ถาม user ซ้ำตอน BLOCKED)
@@ -2620,6 +2620,84 @@
            backend/tests/test_intent_and_summarization.py` ยืนยัน: 242 เคสผ่าน, เหลือ 3 เคส
            fail เดิมที่ไม่เกี่ยวกับงานนี้ (ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ใน
            เครื่อง dev นี้ — ยืนยันมาแล้วตั้งแต่ W46)
+
+  [x] W48  แก้ agent ตอบวันที่/เวลาผิด (ไม่รับรู้เวลาจริง) + แก้ credential/login handling 2
+           จุด (crawl เจอหน้า login แล้วไม่ authenticate จริง, orchestrator ดึง credential
+           มาใช้ตอนรัน task จริงไม่ครบ/ผิด) + เปลี่ยน save_manual ให้ทับของเดิมแทนสร้าง
+           เวอร์ชันใหม่ — เสร็จแล้ว (2026-07-31)
+
+           อาการ (1): LLM ไม่มีการรับรู้เวลาจริงในตัวเอง เดา/อ้างอิงวันที่จาก training data
+           ผิดๆ เวลาถูกถามเรื่องวันที่/เวลาปัจจุบัน
+
+           แก้ (1): llm.py::_build_user_turn_text() ฉีดบรรทัด "เวลาปัจจุบัน (Asia/Bangkok):
+           ..." (ภาษาไทย, พ.ศ., รูปแบบอ่านง่าย) เข้า context ทุก turn อ่านเวลาสดจาก
+           datetime.now(tz=ZoneInfo("Asia/Bangkok")) ทุกครั้งที่เรียก ไม่ cache ค้างไว้ +
+           SYSTEM_PROMPT เพิ่มกติกาบังคับให้ยึดบรรทัดนี้เป็นความจริงเสมอ ห้ามเดาวันที่เอง —
+           ต้องเพิ่ม tzdata เข้า requirements.txt ด้วย (zoneinfo stdlib พึ่ง IANA tz
+           database ภายนอกบน Windows ไม่มี system tz database ให้อ่านเหมือน Linux/Mac ถ้า
+           ไม่ลงจะ ZoneInfoNotFoundError ตอนรันจริงบนเครื่องนี้ทันที)
+
+           อาการ (2): สำรวจโครงสร้าง credential ปัจจุบันก่อนแก้ (ตามที่ user สั่งให้รายงาน
+           ก่อน) พบว่ามี central module อยู่แล้ว (site_learning/auto_login.py ตั้งแต่
+           W15/W17 — ทั้ง crawler.py และ orchestrator.py เรียกใช้ร่วมกันอยู่แล้ว ไม่ได้
+           กระจัดกระจายคนละชุดตามที่สงสัยในโจทย์) แต่เจอ gap จริง 4 จุด: (ก)
+           permission/rules.py::extract_domain() ไม่ตัด "www." — "www.example.com" กับ
+           "example.com" ถูกมองเป็นคนละ domain ทำให้ credential ที่บันทึกผ่าน URL แบบหนึ่ง
+           หาไม่เจอตอนรัน task จริงที่เริ่มจาก URL อีกแบบของเว็บเดียวกัน (ข)
+           core/orchestrator.py::_maybe_auto_login() เรียก attempt_login() ตรงๆ ไม่ verify
+           session จริงเลย (ต่างจาก crawler.py ที่เช็ค URL เปลี่ยน+ไม่เจอฟอร์ม login เหลือ
+           อยู่แล้ว) ล้มเหลวก็ `except Exception: pass` เงียบๆ ไม่แจ้ง user เลย (ค)
+           crawler.py เจอฟอร์ม login ซ้ำระหว่าง BFS หลัง login_attempted=True ไปแล้ว (เช่น
+           session หลุดกลางทาง) ถูก record เป็นหน้าปกติแล้ว queue nav_links ต่อเหมือนไม่มี
+           อะไรเกิดขึ้น ไม่ถือเป็น dead-end (ง) endpoint
+           /api/site-manual/{domain}/credentials รับ domain เป็น path param ตรงๆ ไม่ผ่าน
+           extract_domain() เลย เสี่ยง key ไม่ตรงกันแฝงอยู่
+
+           แก้ (2): (ก) extract_domain() ตัด "www." ออกด้วย (รวมเป็นฟังก์ชันกลาง
+           normalize_domain() ให้ endpoint ที่รับ bare domain string เรียกใช้ร่วมได้ —
+           urlparse("www.x.com") เปล่าๆ ไม่มี scheme ได้ netloc ว่างเปล่า ใช้
+           extract_domain() ตรงๆ กับ path param ไม่ได้) (ข) เพิ่ม
+           verify_login_success()/login_with_verification() ใน auto_login.py (ดึง logic
+           2-ชั้นเดิมของ crawler.py::_login_and_continue ออกมาเป็นจุดกลาง — URL
+           เปลี่ยน+ไม่เจอฟอร์ม login เหลือ) ให้ทั้ง crawler.py (refactor มาเรียกจุดเดียวกัน
+           แทน logic ซ้ำ) และ orchestrator.py เรียกใช้ร่วม — _maybe_auto_login() retry 1
+           ครั้งถ้ารอบแรกไม่ผ่าน คืนเหตุผล fail (mask ไม่มี password ปน) แทน None เสมอ,
+           run_task() ยิง SSE event "auto_login_failed" แจ้ง user ก่อนเริ่ม task (ไม่ throw/
+           ไม่หยุด task — agent ยัง fallback กรอกฟอร์มเองได้) (ค) crawler.py: เจอฟอร์ม login
+           ซ้ำหลัง login_attempted=True แล้ว บันทึกหน้าไว้ (explore_buttons=False,
+           nav_links=[]) เป็น dead-end ไม่ submit ซ้ำ/ไม่ตามลิงก์ต่อ + บันทึก manual_errors
+           ชัดเจนว่า manual ส่วนนี้อาจไม่สมบูรณ์เพราะสำรวจได้ในสถานะยังไม่ login (ง) 3
+           endpoint credentials ใน routes.py normalize_domain(domain) ก่อนเรียก storage
+           ทุกจุด
+
+           อาการ/แก้ (3): save_manual() เดิมเขียน v{N}.json (ประวัติทุกเวอร์ชัน ไม่เคยลบ)
+           ทุกครั้งที่ save — สะสมไฟล์ไม่รู้จบบนดิสก์ที่ repo นี้ commit data/ เข้า git จริง
+           ตามที่ user ขอให้เปลี่ยน: เอาการเขียน v{N}.json ออก เหลือแค่ทับ latest.json
+           ตรงๆ ทุกครั้ง (ui-map/selectors/knowledge.json re-derive ตามปกติ) —
+           manual.version ยังนับเพิ่มไว้เป็น metadata ปกติ แค่ไม่มีไฟล์แยกต่อเวอร์ชันอีก
+
+           credential ทุกจุดที่ต้อง log/error mask ด้วยข้อความคงที่เสมอ (ไม่เคย
+           interpolate ค่า username/password จริงลงในข้อความ error/log ที่ไหนเลย)
+
+           unit test ใหม่: test_permission_rules.py (extract_domain/normalize_domain ตัด
+           www., เทียบ credential lookup ข้าม www./non-www จริงผ่าน storage.py),
+           test_auto_login.py (verify_login_success/login_with_verification ผ่าน chromium
+           จริง), เพิ่มเข้า test_llm.py (mock datetime.now() ยืนยัน format/timezone ถูกต้อง
+           + inject สดทุก turn ไม่ cache), test_orchestrator.py (SSE event
+           "auto_login_failed" ยิงเมื่อ login ไม่ verify ผ่าน/ไม่ยิงเมื่อสำเร็จ),
+           test_orchestrator_auto_login.py (คืนเหตุผล fail แทน None), test_site_learning_
+           crawler.py (mid-crawl login form = dead-end ไม่ submit ซ้ำ/ไม่ตามลิงก์),
+           test_site_learning_storage.py (ไม่มี vN.json อีกต่อไป), test_api.py (www.
+           normalization ที่ระดับ endpoint)
+
+           รันจริง `pytest -q backend/tests/test_llm.py backend/tests/test_permission_rules.py
+           backend/tests/test_api.py backend/tests/test_site_learning_storage.py
+           backend/tests/test_learn_manager.py backend/tests/test_orchestrator.py
+           backend/tests/test_orchestrator_auto_login.py backend/tests/test_auto_login.py`
+           ยืนยัน: 275 เคสผ่าน, เหลือ 7 เคส fail เดิมที่ไม่เกี่ยวกับงานนี้ (ยืนยันด้วย git
+           stash ว่า fail เหมือนกันบน branch เดิมที่ยังไม่แตะเลย) + รันแยก `pytest -q
+           backend/tests/test_site_learning_crawler.py` (real chromium ทั้งไฟล์ รวม dead-
+           end mid-crawl login test ใหม่) ยืนยันเพิ่ม 70 เคสผ่านหมด — รวม 345 เคสผ่าน
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

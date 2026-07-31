@@ -40,7 +40,9 @@ W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) �
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 from anthropic import AsyncAnthropic
@@ -205,6 +207,10 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ตอน hover เท่านั้น) ให้เรียก type: "hover" กับ index นั้นก่อน 1 ครั้ง แล้วค่อยคลิกต่อได้เลย
   (ไม่จำเป็นต้อง get_snapshot ใหม่ก่อนก็ได้ — ถ้าคลิกตรงๆ โดยไม่ hover ก่อน ระบบ retry จะ
   ลอง hover ให้อัตโนมัติตั้งแต่รอบที่ 2 อยู่แล้วเช่นกัน)
+- บรรทัด "เวลาปัจจุบัน (Asia/Bangkok)" ที่แนบมาในข้อความทุกครั้งคือเวลาจริงจากเซิร์ฟเวอร์
+  ณ ขณะนั้น ให้ยึดเป็นความจริงเสมอเมื่อต้องอ้างอิงวันที่/เวลาปัจจุบัน ห้ามเดาหรืออ้างอิง
+  วันที่จาก training data ของตัวเองเด็ดขาด แม้คำถามจะดูเหมือนต้องใช้ "ความรู้ทั่วไป"
+  เกี่ยวกับวันที่ก็ตาม (เช่น "วันนี้วันอะไร", "ตอนนี้กี่โมง", "ปีนี้ปีอะไร")
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -229,6 +235,25 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 # marker "[ถูกบังอยู่]" ใน perception.py ที่เป็นสัญญาณเสริมอีกชั้นแบบไม่ต้องพึ่ง vision)
 # — ว่างเปล่าถ้าไม่มี action ล้มเหลวแบบนี้เกิดขึ้น หรือ provider ไม่ใช่ Gemini
 # (orchestrator.py คุมการเรียก vision ไว้ที่ Gemini เท่านั้นตอนนี้ ดูเหตุผล scope ที่นั่น)
+_THAI_WEEKDAYS = ("วันจันทร์", "วันอังคาร", "วันพุธ", "วันพฤหัสบดี", "วันศุกร์", "วันเสาร์", "วันอาทิตย์")
+_THAI_MONTHS = (
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+)
+
+
+def _current_bangkok_time_text() -> str:
+    """เวลาจริงจากเซิร์ฟเวอร์ ณ ขณะเรียก (Asia/Bangkok) — เรียกสดทุกครั้งที่
+    _build_user_turn_text() ถูกเรียก (ทุก step ของ loop) ไม่ cache ค่าไว้ข้ามรอบ เพราะ LLM
+    เองไม่มีการรับรู้เวลาจริง ต้องฉีดเข้า context ทุก turn ไม่งั้นจะเดา/อ้างอิงวันที่จาก
+    training data ผิดๆ (ดู SYSTEM_PROMPT ข้อสุดท้ายที่สั่งให้ยึดบรรทัดนี้เป็นความจริงเสมอ)"""
+    now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
+    weekday = _THAI_WEEKDAYS[now.weekday()]
+    month = _THAI_MONTHS[now.month - 1]
+    buddhist_year = now.year + 543
+    return f"{weekday}ที่ {now.day} {month} {buddhist_year} เวลา {now.strftime('%H:%M')} น."
+
+
 def _build_user_turn_text(
     goal: str,
     page_text: str,
@@ -242,6 +267,10 @@ def _build_user_turn_text(
     plan_context: str = "",
 ) -> str:
     text = f"Goal: {goal}"
+    # แนบเวลาจริงของเซิร์ฟเวอร์ทุก turn (ไม่ใช่แค่ตอนเริ่ม session) — LLM ไม่มีการรับรู้
+    # เวลาจริงในตัวเอง ต้องฉีดเข้า context ทุกครั้งที่เรียก _build_user_turn_text() (ดู
+    # _current_bangkok_time_text() ด้านบน — อ่านเวลาสดทุกครั้ง ไม่ cache ค่าเดิมค้างไว้)
+    text += f"\n\nเวลาปัจจุบัน (Asia/Bangkok): {_current_bangkok_time_text()}"
     # W43: plan_context มีค่าเฉพาะ task ที่ผ่าน Confirm plan (confirm_plan=True/
     # approved_plan) มาก่อนเท่านั้น — ad-hoc task (ไม่มีแพลนเลย) ได้ "" เสมอ ไม่มี section
     # นี้โผล่มาปนเลย (backward compatible ทุกประการกับ prompt เดิม) วางไว้ก่อน "หน้าเว็บ

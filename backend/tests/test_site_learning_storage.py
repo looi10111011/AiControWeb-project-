@@ -35,8 +35,10 @@ def test_save_manual_creates_version_1_and_all_derived_files():
     assert version == 1
     assert storage.manual_exists("example.com") is True
     domain_dir = os.path.join(settings.site_manuals_dir, "example.com")
+    # ไม่มีไฟล์ประวัติแยกต่อเวอร์ชัน (vN.json) อีกต่อไป — save_manual() ทับ latest.json
+    # ตรงๆ ทุกครั้งตามที่ user ขอ (กันไฟล์สะสมไม่รู้จบบนดิสก์ที่ commit เข้า git)
     assert set(os.listdir(domain_dir)) == {
-        "latest.json", "v1.json", "ui-map.json", "selectors.json", "knowledge.json",
+        "latest.json", "ui-map.json", "selectors.json", "knowledge.json",
     }
 
 
@@ -58,10 +60,12 @@ def test_save_manual_bumps_version_on_subsequent_saves():
     assert v2 == 2
     loaded = storage.load_manual("example.com")
     assert loaded.version == 2
-    # v1.json (ประวัติ) ต้องยังอยู่ ไม่เคยลบทิ้ง
+    # version number ยังนับเพิ่มไว้เป็น metadata ปกติ แต่ไม่มีไฟล์ vN.json แยกต่างหากอีก
+    # ต่อไป (latest.json ถูกทับตรงๆ) — ดู docstring save_manual()
     domain_dir = os.path.join(settings.site_manuals_dir, "example.com")
-    assert "v1.json" in os.listdir(domain_dir)
-    assert "v2.json" in os.listdir(domain_dir)
+    assert set(os.listdir(domain_dir)) == {
+        "latest.json", "ui-map.json", "selectors.json", "knowledge.json",
+    }
 
 
 def test_load_knowledge_text_summarizes_pages_with_descriptions():
@@ -133,9 +137,8 @@ def test_save_and_load_credentials_round_trips():
 
 
 def test_save_credentials_writes_a_separate_file_from_the_manual():
-    """credentials.json ต้องไม่ปนกับ latest.json/vN.json ของ manual — เก็บคนละไฟล์
-    เพราะ manual มีระบบ versioning (ไม่เคยลบ vN.json เก่า) ถ้าฝัง credential ปนไปด้วยจะมี
-    สำเนารหัสผ่านกระจายอยู่หลายไฟล์บนดิสก์ตลอดกาล"""
+    """credentials.json ต้องไม่ปนกับ latest.json ของ manual — เก็บคนละไฟล์เจตนา กัน
+    credential หลุดปนเข้าไปใน manual โดยไม่ตั้งใจ"""
     storage.save_manual(_sample_manual())
     storage.save_credentials("example.com", "alice", "s3cr3t")
 

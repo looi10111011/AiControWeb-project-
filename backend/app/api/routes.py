@@ -41,7 +41,7 @@ from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
 from backend.app.core import plan_memory
 from backend.app.core.orchestrator import Orchestrator
-from backend.app.permission.rules import extract_domain
+from backend.app.permission.rules import extract_domain, normalize_domain
 from backend.app.site_learning import crawl_site, describe_page, extract_page
 from backend.app.site_learning.learn_manager import LearnManager
 from backend.app.site_learning.storage import (
@@ -626,18 +626,24 @@ async def save_site_credentials(domain: str, req: SaveCredentialsRequest) -> Non
     """W17: บันทึก/แก้ไข username-password ของโดเมนนี้ตรงๆ โดยไม่ต้อง crawl ทั้งเว็บใหม่
     (ต่างจาก POST /api/site-manual/learn ที่บันทึกให้อัตโนมัติเป็นผลพลอยได้จาก login
     bootstrap) — ไม่คืนค่า credential กลับเลย (204 เปล่าๆ) กันหลุดไปอยู่ใน response
-    log/network tab โดยไม่จำเป็น"""
-    save_credentials(domain, req.username, req.password)
+    log/network tab โดยไม่จำเป็น
+
+    normalize_domain() เสมอก่อนเก็บ — endpoint นี้รับ domain เป็น path param ตรงๆ (ไม่ผ่าน
+    extract_domain(url) เหมือนจุดอื่น) ถ้า caller ส่งมาไม่ normalize เอง (เช่นมี "www."
+    นำหน้า/ตัวพิมพ์ใหญ่ปน) จะได้ key คนละตัวกับที่ core/orchestrator.py::_maybe_auto_login
+    ใช้ extract_domain(page.url) ค้นหาตอนรัน task จริง ทำให้หา credential ไม่เจอทั้งที่
+    บันทึกไว้แล้ว"""
+    save_credentials(normalize_domain(domain), req.username, req.password)
 
 
 @router.get("/api/site-manual/{domain}/credentials/status", response_model=CredentialsStatusResponse)
 async def site_credentials_status(domain: str) -> CredentialsStatusResponse:
     """เช็คว่ามี credential เก็บไว้ให้โดเมนนี้ไหม — ไม่คืนค่า username/password จริงกลับมา
     เลย (แค่ exists: bool) กันไม่ให้ frontend/log ที่ไหนโชว์รหัสผ่านที่เก็บไว้แล้วออกมาซ้ำ"""
-    return CredentialsStatusResponse(exists=credentials_exist(domain))
+    return CredentialsStatusResponse(exists=credentials_exist(normalize_domain(domain)))
 
 
 @router.delete("/api/site-manual/{domain}/credentials", status_code=204)
 async def delete_site_credentials(domain: str) -> None:
     """ลบ credential ที่เก็บไว้ของโดเมนนี้ทิ้ง — ไม่ error ถ้าไม่มีอยู่แล้ว (idempotent)"""
-    delete_credentials(domain)
+    delete_credentials(normalize_domain(domain))

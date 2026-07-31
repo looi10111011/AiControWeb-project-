@@ -258,7 +258,7 @@ from backend.app.config import settings
 from backend.app.core import llm
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.permission.rules import extract_domain
-from backend.app.site_learning.auto_login import attempt_login, find_login_fields
+from backend.app.site_learning.auto_login import attempt_login, find_login_fields, verify_login_success
 from backend.app.site_learning.extractor import extract_page
 from backend.app.site_learning.safety import (
     button_core_priority,
@@ -1066,7 +1066,10 @@ async def crawl_site(
             ระหว่างทาง — ดู docstring ของ crawl_site())
 
             W24 การตรวจ session: attempt_login() คืนแค่ "กด submit ได้จริงไหม" ไม่รู้ว่า
-            login ผ่านจริง — เพิ่มเช็ค 2 ชั้นที่ตัดสิน "session_ok" จริงๆ (ทั้งคู่ต้องผ่าน):
+            login ผ่านจริง — ใช้ auto_login.py::verify_login_success() เช็ค 2 ชั้นที่ตัดสิน
+            "session_ok" จริงๆ (ทั้งคู่ต้องผ่าน — ดู docstring ของฟังก์ชันนั้นสำหรับรายละเอียด
+            เต็ม, ย้ายมารวมจุดเดียวกับ core/orchestrator.py::_maybe_auto_login ที่ตอนนี้
+            verify แบบเดียวกันแล้ว):
             (1) URL เปลี่ยนไปจาก URL ก่อน submit จริง (ไม่ใช่แค่ submit แล้ว reload หน้าเดิม)
             (2) หน้าใหม่ไม่มีฟอร์ม login เหลืออยู่แล้ว (find_login_fields คืน (None, None)
             — ถ้ายังเจอ = โดน redirect กลับมาหน้า login เดิม ถือว่า login ไม่ผ่าน)
@@ -1085,7 +1088,7 @@ async def crawl_site(
             กลายเป็นกด submit แทนที่ผ่านเส้นทางอื่นทั้งที่ตั้งใจให้ล้มเหลวอย่างเงียบๆ ไม่สำรวจ
             ต่อ (ดู test_crawl_site_login_bootstrap_fails_gracefully_without_submit_button)"""
             await _record_page(page_info, nav_links, explore_buttons=False)
-            pre_login_url = _normalize_url(page.url)
+            pre_login_url = page.url
             did_login = await attempt_login(page, page_info, login_username, login_password)
 
             session_ok = False
@@ -1095,17 +1098,15 @@ async def crawl_site(
             if not did_login:
                 reason = "กรอกฟอร์ม/กดปุ่ม submit ไม่สำเร็จ (หา field/ปุ่มไม่ครบ หรือ fill/click ล้มเหลว)"
             else:
-                post_login_url = _normalize_url(page.url)
-                if post_login_url == pre_login_url:
-                    reason = "URL ไม่เปลี่ยนหลัง submit — เข้าใจว่า login ไม่ผ่าน"
-                else:
+                session_ok, reason = await verify_login_success(page, pre_login_url)
+                if session_ok:
+                    # ต่างจาก verify_login_success() ที่ extract_page() แค่ครั้งเดียวพอเช็ค
+                    # ฟอร์ม login เท่านั้น — ตรงนี้ยัง reveal dynamic content + รอ DOM นิ่ง +
+                    # extract_page() ซ้ำอีกรอบก่อนบันทึกจริง เพื่อให้ manual ได้โครงสร้างหน้า
+                    # ที่ครบที่สุด (ปุ่ม/ฟอร์มที่โผล่มาทีหลังจาก JS)
                     await _reveal_dynamic_content(page)
                     await _wait_for_dom_stable(page)
                     post_page_info, post_nav_links = await extract_page(page)
-                    if find_login_fields(post_page_info) != (None, None):
-                        reason = "ยังเจอฟอร์ม login (username+password field) อยู่หลัง submit — เข้าใจว่าถูก redirect กลับหน้า login"
-                    else:
-                        session_ok = True
 
             cookie_count = 0
             try:
@@ -1207,6 +1208,27 @@ async def crawl_site(
                     continue
                 # user เลือกข้าม/หมดเวลา — บันทึกหน้านี้ตามปกติแล้วสำรวจต่อโดยไม่ login
                 # (เหมือนไม่เคยมี callback นี้เลย ไม่ใช่ error)
+
+            # W?: login_attempted เป็น True ไปแล้ว (ลองไปแล้วครั้งหนึ่งตอนต้น ไม่ว่าจะสำเร็จ/
+            # fail/user เลือกข้าม) แต่ BFS ยังเดินมาเจอหน้าที่หน้าตาเป็นฟอร์ม login อีกครั้ง —
+            # เช่น session หลุดกลางทาง หรือ login form ของ role/section อื่น ห้ามลอง submit
+            # ซ้ำเองเด็ดขาด (login ควรเกิดแค่ครั้งเดียวตอนต้น session ตามเจตนาเดิม — ดู W15
+            # ด้านบน) treat เป็น dead-end: บันทึกหน้านี้ไว้เฉยๆ (มีประโยชน์ต่อ manual — รู้ว่า
+            # มีจุดนี้อยู่) แต่ไม่ต่อคิว nav_links ของหน้านี้ (nav_links=[]) และไม่ไล่กดปุ่ม
+            # (explore_buttons=False เหมือนที่ _login_and_continue ทำกับหน้า login รอบแรก —
+            # กันปุ่ม submit ที่ใช้คำไม่ตรง _LOGIN_SUBMIT_KEYWORDS โดนไล่กดแทน) บันทึกลง
+            # manual_errors ด้วยว่า manual ส่วนนี้อาจไม่สมบูรณ์ เพราะสำรวจต่อได้ในสถานะยังไม่
+            # login เท่านั้น (ไม่ใช่เงียบแล้วสำรวจต่อเหมือนไม่มีอะไรเกิดขึ้น)
+            if login_attempted and find_login_fields(page_info) != (None, None):
+                await _record_page(page_info, [], explore_buttons=False)
+                reason = "เจอฟอร์ม login ซ้ำระหว่าง crawl หลัง login ไปแล้วก่อนหน้านี้ — ไม่ login ซ้ำ ถือเป็น dead-end (manual ส่วนนี้อาจไม่สมบูรณ์เพราะสำรวจได้ในสถานะยังไม่ login)"
+                manual_errors.append({"url": page.url, "phase": "login", "error": reason})
+                if on_progress:
+                    await on_progress({
+                        "kind": "login_result", "success": False, "url": page.url, "reason": reason,
+                        "cookie_count": 0, "has_storage_token": False,
+                    })
+                continue
 
             await _record_page(page_info, nav_links)
     finally:

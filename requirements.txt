@@ -4,6 +4,8 @@ uvicorn[standard]==0.32.0
 pydantic==2.9.2
 pydantic-settings==2.6.0
 python-dotenv==1.0.1
+tzdata==2026.3   # zoneinfo (stdlib) ต้องพึ่ง IANA tz database ภายนอกบน Windows (ไม่มี
+                 # system tz database ให้อ่านเหมือน Linux/Mac) — ใช้กับ ZoneInfo("Asia/Bangkok")
 
 # Browser control
 playwright==1.48.0

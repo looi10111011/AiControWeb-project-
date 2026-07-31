@@ -182,6 +182,63 @@ async def test_run_task_registers_dialog_handler_on_page():
     assert mock_page.on.call_args.args[0] == "dialog"
 
 
+# --- W17[hardened]: _maybe_auto_login() คืนข้อความเหตุผลเมื่อ login ไม่ผ่าน (แทนที่จะ
+# เงียบๆ) — run_task() ต้องยิง SSE event "auto_login_failed" แจ้ง user ต่อ แต่ยังรัน task
+# ต่อไปตามปกติ (ไม่ throw/ไม่หยุด — agent ยัง fallback กรอกฟอร์ม login เองได้)
+
+
+@pytest.mark.asyncio
+async def test_run_task_emits_auto_login_failed_event_when_login_does_not_verify():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    on_event = AsyncMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(
+             "backend.app.core.orchestrator._maybe_auto_login",
+             AsyncMock(return_value="ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้"),
+         ), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+        )
+
+    # task ยังรันต่อจนจบตามปกติ ไม่ถูกหยุดเพราะ auto-login fail
+    assert result["success"] is True
+    failed_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "auto_login_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0]["reason"] == "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้"
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_emit_auto_login_failed_event_when_login_succeeds_or_not_attempted():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    on_event = AsyncMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+        )
+
+    failed_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "auto_login_failed"]
+    assert failed_events == []
+
+
 def _patch_pooled_browser():
     """W10[A]: mock chain สำหรับ browser ที่ยืมมาจาก BrowserPool.acquire() (ต่างจาก
     _patch_browser() ด้านบนที่จำลอง async_playwright().start() ทั้งสาย) — ตัวนี้ไม่มี
@@ -480,10 +537,12 @@ async def test_run_task_user_browser_mode_derives_allowed_domains_from_url_when_
             connect_to_user_browser=True,
         )
 
+    # extract_domain() ตัด "www." ออกโดยเจตนา (กัน credential/allowed_domains แยกกันเป็นคนละ
+    # โดเมนทั้งที่เป็นเว็บเดียวกัน — ดู permission/rules.py::extract_domain())
     mock_execute.assert_awaited_once_with(
         mock_page, {"type": "click", "index": 1},
         ask_user_func=None, label="", manual_guidance="",
-        allowed_domains={"www.saucedemo.com"},
+        allowed_domains={"saucedemo.com"},
     )
 
 
