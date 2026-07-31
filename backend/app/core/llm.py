@@ -200,6 +200,11 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
 - คำถามที่ไม่มี verb สั่งงานตรงๆ (เช่น "อายุเท่าไหร่", "ราคาเท่าไหร่") ห้ามตีความว่าเป็น
   "แค่ถามเฉยๆ ไม่ต้องลงมือทำอะไร" — ทุกคำถามที่ต้องใช้ข้อมูลจากหน้าเว็บที่ยังไม่เห็นชัดในหน้า
   ปัจจุบัน นับเป็นคำสั่งให้ค้นหาโดยปริยายเสมอ (เทียบเท่ากับมีคำว่า "ค้นหา"/"หา" นำหน้า)
+- ถ้าเห็น element ที่ label ต่อท้ายด้วย "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" (ปุ่ม/ลิงก์ที่
+  ยังไม่แสดงผลเต็มที่จนกว่าจะ hover แถว/บริเวณรอบๆ ก่อน เช่น ปุ่ม action ในแถวอีเมลที่โผล่มา
+  ตอน hover เท่านั้น) ให้เรียก type: "hover" กับ index นั้นก่อน 1 ครั้ง แล้วค่อยคลิกต่อได้เลย
+  (ไม่จำเป็นต้อง get_snapshot ใหม่ก่อนก็ได้ — ถ้าคลิกตรงๆ โดยไม่ hover ก่อน ระบบ retry จะ
+  ลอง hover ให้อัตโนมัติตั้งแต่รอบที่ 2 อยู่แล้วเช่นกัน)
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -328,12 +333,18 @@ _BROWSER_ACTION_PARAMS = {
                 # click/fill/select ตรงที่ไม่ได้กด/แก้ไข element ใดๆ เลย แค่ query
                 # เนื้อหาที่มองเห็นอยู่แล้วกลับมาตอบ ดู "query"/"target_hint" ด้านล่าง
                 "read_page_data",
+                # W47: เลื่อนเมาส์ไปวางไว้บน element (ไม่คลิก) — ใช้ trigger CSS :hover
+                # ของ element/บรรพบุรุษก่อนกด element ที่ซ่อนอยู่จนกว่าจะ hover แถวแม่
+                # (ดู label marker "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" ด้านล่าง) — ปกติ
+                # ไม่ต้องเรียกเองเพราะ click retry รอบ 2 เป็นต้นไปจะ hover ให้อัตโนมัติ
+                # อยู่แล้ว เรียกเองได้ถ้าต้องการ get_snapshot ใหม่หลัง hover ก่อนตัดสินใจ
+                "hover",
             ],
             "description": "ชนิด action",
         },
         "index": {
             "type": "integer",
-            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay)",
+            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay/hover)",
         },
         "text": {"type": "string", "description": "ข้อความที่จะกรอก (fill)"},
         "label": {"type": "string", "description": "ตัวเลือกที่จะเลือกใน dropdown (select)"},

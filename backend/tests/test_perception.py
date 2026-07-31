@@ -881,3 +881,141 @@ async def test_extract_table_data_without_query_keeps_old_behavior():
     assert "ใกล้เคียงกับคำค้น" not in result
     assert "| Cierra Vega | 32 |" in result
     assert "| John Smith | 45 |" in result
+
+
+# ---------------- hover-to-reveal action buttons (opacity:0/visibility:hidden) ----------------
+# บั๊กที่ user รายงานจริงบน uitestingplayground.com/scrolltoclick Case 4 "Hover to Reveal":
+# ปุ่ม flag แต่ละแถวใช้ visibility:hidden จนกว่าจะ hover แถวแม่ ทำให้ perception เดิม
+# (visibility !== 'hidden' เป็นเงื่อนไข "มองเห็น") กรองทิ้งไปเลย agent ไม่มีทาง index ให้กด
+# ได้ตั้งแต่ต้น — ต้องยังติด index ให้ปุ่ม/ลิงก์ที่ซ่อนด้วย CSS ของตัวเอง (ไม่ใช่ display:none)
+# ตราบใดที่ bounding box ไม่เป็น 0x0 จริง แต่ display:none ยังต้องกรองทิ้งเหมือนเดิม (ไม่ layout
+# เลย ไม่มีทางคลิกได้จริงไม่ว่า CSS state ไหน) และต้องจำกัดแค่ปุ่ม/ลิงก์เท่านั้น (กัน hidden
+# <input> ที่เป็น honeypot/CSRF token จริงๆ ไม่ให้ agent เผลอไปกรอก)
+
+_HTML_HOVER_REVEAL_OPACITY_ZERO = """
+<html><body>
+  <div style="position:relative; width:300px; height:40px;">
+    <span>Weekly status report</span>
+    <button style="position:absolute; top:0; left:200px; width:60px; height:30px; opacity:0;">
+      Flag
+    </button>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_opacity_zero():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_HOVER_REVEAL_OPACITY_ZERO)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["tag"] == "button"
+    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+
+
+_HTML_HOVER_REVEAL_VISIBILITY_HIDDEN = """
+<html><body>
+  <div style="position:relative; width:300px; height:40px;">
+    <span>Weekly status report</span>
+    <button style="position:absolute; top:0; left:200px; width:60px; height:30px; visibility:hidden;">
+      Flag
+    </button>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_visibility_hidden():
+    """เคสที่เจอจริงบน uitestingplayground.com/scrolltoclick — ปุ่ม flag ใช้
+    visibility:hidden ไม่ใช่ opacity:0 (คนละ CSS property แต่ต้องได้ผลลัพธ์เดียวกัน)"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_HOVER_REVEAL_VISIBILITY_HIDDEN)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["tag"] == "button"
+    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+
+
+_HTML_DISPLAY_NONE_BUTTON = """
+<html><body>
+  <button style="width:60px; height:30px; display:none;">Truly Hidden</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_still_filters_out_display_none_button():
+    """display:none ต้องยังถูกกรองทิ้งเหมือนเดิมทุกประการ (ไม่ให้ relax เกินไป) — browser
+    ไม่ layout element นี้เลย ไม่มีทางคลิกได้จริงไม่ว่า CSS state ไหนจะเปลี่ยนก็ตาม"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_DISPLAY_NONE_BUTTON)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements == []
+
+
+_HTML_HIDDEN_INPUT_HONEYPOT = """
+<html><body>
+  <input type="text" name="honeypot" style="width:60px; height:20px; opacity:0;">
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_relax_filter_for_hidden_input():
+    """การผ่อนกฎ (opacity:0/visibility:hidden แต่ bounding box ไม่เป็น 0x0) ต้องจำกัดแค่
+    ปุ่ม/ลิงก์ (a/button/[role=button]) เท่านั้น — <input> ที่ซ่อนแบบเดียวกันมักเป็น
+    honeypot/CSRF token ที่ตั้งใจซ่อนถาวร ไม่ใช่รอ hover ต้องยังถูกกรองทิ้งเหมือนเดิม"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_HIDDEN_INPUT_HONEYPOT)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements == []
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal_marker():
+    """overlay detection ("[ถูกบังอยู่]" จาก W9[A]) เป็นคนละเงื่อนไขกับ hover-reveal marker
+    ใหม่นี้เลย — element ที่ visible ปกติแต่ถูกอีก element บังไว้ ต้องยังได้ marker เดิม
+    ไม่ใช่ hover-reveal marker (ซึ่งไม่เข้าเงื่อนไขเพราะ opacity/visibility ปกติ)"""
+    html = """
+    <html><body>
+      <button id="covered-btn" style="position:absolute; top:100px; left:100px; width:100px; height:40px;">Covered Button</button>
+      <div style="position:absolute; top:80px; left:80px; width:200px; height:100px; background:white; z-index:10;"></div>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["label"] == "Covered Button [ถูกบังอยู่]"

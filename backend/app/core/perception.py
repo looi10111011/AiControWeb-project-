@@ -157,10 +157,24 @@ _COLLECT_JS = r"""
     // เช็คว่ามองเห็นจริงไหม
     const rect = el.getBoundingClientRect();
     const st = window.getComputedStyle(el);
-    const visible = rect.width > 0 && rect.height > 0 &&
-                    st.visibility !== 'hidden' &&
-                    st.display !== 'none' &&
-                    st.opacity !== '0';
+    const hasSize = rect.width > 0 && rect.height > 0;
+    const notDisplayNone = st.display !== 'none';
+
+    // W47: ปุ่ม/ลิงก์ที่ซ่อนด้วย CSS ของตัวเอง (opacity:0 หรือ visibility:hidden) แต่
+    // bounding box ไม่เป็น 0x0 จริง (แปลว่า browser ยัง layout พื้นที่ไว้ให้ — ต่างจาก
+    // display:none ที่ browser ไม่ layout เลย ไม่มีทางคลิกได้จริงไม่ว่า CSS state ไหนจะ
+    // เปลี่ยน ต้องกรองทิ้งเหมือนเดิม) เจอจริงบน uitestingplayground.com/scrolltoclick
+    // Case 4 "Hover to Reveal": ปุ่ม flag แต่ละแถวใช้ visibility:hidden จนกว่าจะ hover
+    // แถวแม่ ทำให้ perception เดิมกรองทิ้งไปเลย agent เลยไม่มีทาง index ให้กดได้ตั้งแต่ต้น
+    // — ให้ยังติด index ตามปกติ แต่จำกัดเฉพาะ element ที่เป็นปุ่ม/ลิงก์เท่านั้น (ไม่ใช่ทุก
+    // selector ในลิสต์บนสุด) กัน hidden <input> ที่เป็น honeypot/CSRF token จริงๆ (ซ่อนถาวร
+    // ไม่ได้รอ hover) ไม่ให้ agent เผลอไปกรอก
+    const hiddenByOwnStyle = st.visibility === 'hidden' || st.opacity === '0';
+    const isClickableCandidate = ['a', 'button'].includes(el.tagName.toLowerCase()) ||
+      el.getAttribute('role') === 'button';
+    const hoverRevealCandidate = hasSize && notDisplayNone && hiddenByOwnStyle && isClickableCandidate;
+
+    const visible = hasSize && notDisplayNone && (!hiddenByOwnStyle || hoverRevealCandidate);
     if (!visible) continue;
     if (el.disabled) continue;
 
@@ -174,10 +188,19 @@ _COLLECT_JS = r"""
     // document.elementFromPoint() เช็คว่า element บนสุดตรงจุดกึ่งกลางจริงๆ คือตัวนี้
     // (หรือเป็นลูกของมัน) ไหม ถ้าไม่ใช่ แปะ marker ไว้ในป้าย ไม่ตัดออกจากลิสต์เพราะยัง
     // คลิกได้จริงถ้า overlay หายไปแล้วในตอนที่ action ทำงานจริง (เช่น modal ปิดไปแล้ว)
+    //
+    // hoverRevealCandidate (visibility:hidden อยู่ตอนนี้) ต้องข้ามเช็คนี้ไปเลย —
+    // browser ไม่ hit-test element ที่ visibility:hidden ให้ document.elementFromPoint()
+    // เลย (คนละเรื่องกับ opacity:0 ที่ยัง hit-test ได้ปกติ) ทำให้ topEl กลายเป็น element
+    // อื่นที่อยู่ตำแหน่งเดียวกันแทนเสมอ (เช่น <div> แม่) และ obscured จะเป็น true มั่ว
+    // ทุกครั้งทั้งที่ไม่มีอะไรมาบังจริง — ไม่ใช่ overlay บัง แค่ยังไม่ hover เฉยๆ
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     let obscured = false;
-    if (centerX >= 0 && centerX < window.innerWidth && centerY >= 0 && centerY < window.innerHeight) {
+    if (
+      !hoverRevealCandidate &&
+      centerX >= 0 && centerX < window.innerWidth && centerY >= 0 && centerY < window.innerHeight
+    ) {
       const topEl = document.elementFromPoint(centerX, centerY);
       obscured = topEl !== null && topEl !== el && !el.contains(topEl);
     }
@@ -206,7 +229,14 @@ _COLLECT_JS = r"""
     // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้
     // สื่อว่า element นี้คือปุ่มตะกร้า — ถ้า innerText เป็นแค่ตัวเลขสั้นๆ (badge
     // counter) แต่มี label เชิงความหมายให้ใช้ ให้ผสมกันแทนที่จะทิ้งไปเฉยๆ
-    const trimmedText = (el.innerText || '').trim();
+    //
+    // element ที่ hoverRevealCandidate (visibility:hidden อยู่ตอนนี้) — innerText คืน
+    // ค่าว่างเปล่าเสมอ (browser ไม่คำนวณ "rendered text" ให้ element ที่ไม่ได้ render จริง
+    // แม้จะมี text node อยู่ใน DOM จริงก็ตาม) fallback ไป textContent (ดิบกว่า ไม่สนใจว่า
+    // render อยู่จริงไหม) เฉพาะกรณีนี้เท่านั้น ไม่กระทบ element ที่มองเห็นปกติเลย
+    const innerTextTrimmed = (el.innerText || '').trim();
+    const trimmedText = innerTextTrimmed ||
+      (hoverRevealCandidate ? (el.textContent || '').trim() : '');
     const isBareCounter = /^\d{1,3}$/.test(trimmedText);
 
     // หา label ที่สื่อความหมายที่สุด
@@ -225,6 +255,12 @@ _COLLECT_JS = r"""
     label = label.trim().replace(/\s+/g, ' ').slice(0, 80);
     if (obscured) {
       label = label ? `${label} [ถูกบังอยู่]` : '[ถูกบังอยู่]';
+    }
+    // คนละเงื่อนไขกับ obscured ข้างบน (obscured = ถูก element อื่นวางทับ, นี่ = ซ่อนด้วย
+    // CSS opacity/visibility ของตัวเอง/บรรพบุรุษ) — ทั้งสอง marker แปะซ้อนกันได้ถ้าเข้า
+    // เงื่อนไขทั้งคู่พร้อมกัน (เคสหายากแต่ไม่ผิดอะไร)
+    if (hoverRevealCandidate) {
+      label = label ? `${label} [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]` : '[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]';
     }
 
     out.push({ index: idx, tag, type, label });
