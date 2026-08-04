@@ -41,13 +41,15 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 from anthropic import AsyncAnthropic
 from google.api_core.exceptions import ResourceExhausted
 from groq import AsyncGroq, BadRequestError as GroqBadRequestError
+
+from backend.app.config import settings
 
 
 @dataclass
@@ -137,6 +139,15 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   เสมอ ไม่ว่า element นั้นจะดูสำคัญแค่ไหนก็ตาม ห้ามใช้ 4 type นี้ "เผื่อไว้ก่อน"
   เด็ดขาด เพราะระบบจะหยุดขอยืนยันจาก human ทุกครั้งที่เจอ ใช้พร่ำเพรื่อจะทำให้ user
   ต้องกดอนุมัติบ่อยเกินจำเป็น
+- การคลิกเลือกรายการจากผลการค้นหา/ลิสต์ (เช่น คลิกวิดีโอ YouTube, การ์ดบทความ, ผลลัพธ์
+  การค้นหาสินค้า) เพื่อเปิดดู/เล่น ให้ใช้ "click" เสมอ แม้ว่า plan step จะใช้คำว่า
+  "เลือก"/"select" ก็ตาม — คำว่า "เลือก" ในที่นี้แปลว่า "คลิกเพื่อเปิดดู/นำทางไป" ไม่ใช่
+  การยืนยันคำสั่งซื้อ/ลบ/จ่ายเงิน อย่าตีความคำว่า "เลือก" ว่าต้องเป็น "submit"/"purchase"
+  เด็ดขาด (ป้ายของ element พวกนี้มักเป็นชื่อวิดีโอ/หัวข้อบทความ ไม่ใช่คำสั่งเสี่ยงใดๆ)
+- การกดปุ่ม Enter บนคีย์บอร์ดเพื่อยืนยันคำค้นหาที่พิมพ์ไว้ในช่องค้นหา (เช่น กด Enter
+  หลังพิมพ์คำค้นหาใน YouTube/Google) ให้ใช้ type: "press_key" เสมอ ห้ามใช้ "submit"
+  เด็ดขาดแม้จะรู้สึกว่า "กด Enter = submit ฟอร์ม" ก็ตาม — การค้นหาไม่ใช่การ submit ที่มี
+  ผลจริงแบบ checkout/ลบ/จ่ายเงิน ย้อนกลับได้ง่ายมาก
 - หากกรอกฟอร์มเข้าสู่ระบบ (Login Form) ให้กรอกข้อมูลให้ครบทั้ง Username และ Password
   ทันที ห้ามสั่ง wait คั่นกลางหากหน้าเว็บไม่มีการเปลี่ยนแปลง
 - ถ้า goal ต้องการหาข้อมูลเฉพาะเจาะจง (เช่น ราคา/ชื่อ/รายละเอียดสินค้า) ที่ยังไม่เห็นชัด
@@ -185,6 +196,13 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ห้ามใส่ completed_plan_step มาเลย (ละ parameter นี้ไว้) ห้ามเดา/ใส่เผื่อไว้ก่อน และห้ามใส่
   เลขข้อเดิมซ้ำสำหรับ step ที่เคยระบุว่าเสร็จไปแล้วในรอบก่อนหน้า — ถ้าไม่มี "แพลนปัจจุบัน"
   แนบมาเลย (ad-hoc task ไม่ผ่าน Confirm plan) ไม่ต้องสนใจ parameter นี้เลย
+  - W_planbug: ระวังเป็นพิเศษกับ action type "fill"/"select"/"check" — ถ้า step ในแผนบรรยาย
+    การกรอก/เลือก/ติ๊กค่านั้นตรงๆ อยู่แล้ว (เช่น "พิมพ์คำว่า X ลงในช่องค้นหา", "กรอกอีเมล",
+    "เลือก Y จาก dropdown") ให้ถือว่า action fill/select/check นั้น "ทำให้ step นั้นเสร็จ
+    สมบูรณ์แล้วทันที" ใส่ completed_plan_step ที่ action นี้เลย ห้ามรอไปใส่ที่ action ถัดไป
+    (เช่น กด Enter/คลิกปุ่มค้นหา) เพราะ step ที่บรรยายแค่ "พิมพ์/กรอก/เลือก" เฉยๆ ไม่ได้รวม
+    การกดส่ง/คลิกถัดไปด้วย — ยกเว้นถ้า step นั้นบรรยายรวมทั้งสองอย่างไว้ในข้อเดียวกันจริงๆ
+    (เช่น "พิมพ์คำค้นหาแล้วกด Enter") ถึงจะรอใส่ที่ action ที่กดส่งจริง
 - ถ้าต้องการอ่าน "เนื้อหา" บนหน้าเว็บ (เช่น นับจำนวนสินค้า, อ่าน/สรุปตาราง, หาค่าที่ปรากฏ
   อยู่บนหน้า) ไม่ใช่แค่หา element เพื่อกด/กรอก ให้ใช้ type: "read_page_data" พร้อม "query"
   (คำถามที่ต้องการคำตอบ) และ "target_hint" (CSS selector ที่คาดว่าตรงกับ element/แถวตาราง/
@@ -193,12 +211,28 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   target_hint โดยตรง เร็ว/ประหยัด token กว่าให้ดึงตารางทั้งก้อนมานับเอง) ไม่ต้องขอให้ดึง
   เนื้อหาเต็มมาก่อนแล้วค่อยนับ — เรียก read_page_data เฉพาะตอนจำเป็นจริงๆ เท่านั้น ไม่ต้อง
   เรียกทุก step ถ้าไม่มีคำถามเกี่ยวกับเนื้อหาหน้าเว็บที่ยังตอบไม่ได้
+- W_listformat: ตอนสรุปผลลัพธ์จาก read_page_data (ชื่อคน/username/รายการใดๆ) ใน finish_task
+  ต้อง "คัดลอกตัวสะกดตรงตามที่ระบบส่งกลับมาทุกตัวอักษร" ห้ามพิมพ์จากความจำ/เดาการสะกดใหม่/
+  แก้ไขให้ดู "ถูกต้องกว่า" เด็ดขาด (เช่น เห็น "Cierra Vaga" ต้องตอบ "Cierra Vaga" ไม่ใช่เปลี่ยน
+  เป็น "Cierra Vega" ทั้งที่ดูเหมือนชื่อที่คุ้นเคยกว่า) — ถ้าข้อมูลที่ดึงมามีคำอธิบายกำกับว่า
+  "ใกล้เคียงกับคำค้น ... ไม่ตรงกันเป๊ะ" ให้บอก user ตรงๆ ว่าเป็นการเดา ไม่ใช่ตรงกันเป๊ะ ไม่ใช่
+  เงียบๆ ปัดเป็นคำตอบที่มั่นใจ เมื่อ goal ขอ "รายชื่อ"/list ของหลายรายการ ให้เรียงลำดับตาม
+  ตัวอักษร (A-Z) ก่อนตอบเสมอเพื่อให้อ่านง่าย เว้นแต่ goal ระบุลำดับอื่นชัดเจน (เช่น "เรียงตาม
+  วันที่") — การเรียงลำดับใหม่ทำได้เฉพาะ "ลำดับที่แสดง" เท่านั้น ห้ามเปลี่ยนตัวสะกด/เนื้อหาของ
+  แต่ละรายการระหว่างเรียงเด็ดขาด
 - W46: ก่อนเรียก finish_task พร้อมข้อความทำนอง "ไม่มีข้อมูล"/"ไม่พบ"/"หาไม่เจอ" ต้องทำ 2 อย่างนี้
   ก่อนเสมอ: (ก) ตรวจ conversation history ของ session นี้ (ผลลัพธ์ action ก่อนหน้า/
   "Action ล่าสุดที่คุณเพิ่งทำไป" ที่แนบมาในข้อความ) ว่าเคยค้นหา/เจอข้อมูลที่เกี่ยวข้องกับ
   คำถามนี้มาก่อนหรือยัง (ข) ถ้ายังไม่เคยลองค้นหาเลยสักครั้ง ต้องเรียก action ที่มีอยู่ (fill
   ช่องค้นหาแล้วกด/read_page_data) อย่างน้อย 1 ครั้งก่อนเสมอ ถึงจะ finish_task ว่าไม่พบได้ —
   ห้ามสรุปว่า "ไม่มีข้อมูล" จากการดูหน้าปัจจุบันเฉยๆ โดยไม่เคยลองค้นหาเลย
+- ค้นหาแล้วจริงๆ (ทำตามข้อข้างบนครบแล้ว) แต่ยังไม่พบเป้าหมายที่ goal ระบุมาตรงๆ (เช่น
+  username/ชื่อ/รหัสที่เจาะจงเป็นตัวๆ) ห้ามลงมือ "แก้ปัญหาแทน" ด้วยการทำ action ที่ไม่ได้อยู่
+  ใน scope ของ goal เดิมเด็ดขาด เช่น ไปหน้า Add/Create เพื่อสร้างรายการใหม่ทดแทนของที่หาไม่เจอ,
+  แก้ไข/ลบรายการอื่นที่ไม่ใช่เป้าหมายที่ระบุ, หรือ เดา/เลือกรายการอื่นที่ "ดูใกล้เคียง" มาทำแทน —
+  goal ที่บอกให้แก้ไขของที่มีอยู่แล้ว (เช่น "แก้ไข role ของ user X") ไม่ได้แปลว่า "สร้าง X ถ้ายังไม่มี"
+  ไม่ว่ากรณีใด สิ่งเดียวที่ทำได้คือ finish_task(success=false) รายงานตรงๆ ว่าไม่พบเป้าหมายที่ระบุ
+  ให้ user ตัดสินใจเองว่าจะเอาอย่างไรต่อ
 - คำถามที่ไม่มี verb สั่งงานตรงๆ (เช่น "อายุเท่าไหร่", "ราคาเท่าไหร่") ห้ามตีความว่าเป็น
   "แค่ถามเฉยๆ ไม่ต้องลงมือทำอะไร" — ทุกคำถามที่ต้องใช้ข้อมูลจากหน้าเว็บที่ยังไม่เห็นชัดในหน้า
   ปัจจุบัน นับเป็นคำสั่งให้ค้นหาโดยปริยายเสมอ (เทียบเท่ากับมีคำว่า "ค้นหา"/"หา" นำหน้า)
@@ -207,6 +241,18 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ตอน hover เท่านั้น) ให้เรียก type: "hover" กับ index นั้นก่อน 1 ครั้ง แล้วค่อยคลิกต่อได้เลย
   (ไม่จำเป็นต้อง get_snapshot ใหม่ก่อนก็ได้ — ถ้าคลิกตรงๆ โดยไม่ hover ก่อน ระบบ retry จะ
   ลอง hover ให้อัตโนมัติตั้งแต่รอบที่ 2 อยู่แล้วเช่นกัน)
+- W50: dropdown/menu ที่เห็นบนหน้าเว็บมี 2 แบบ ต้องแยกให้ออกก่อนเลือกวิธีโต้ตอบ:
+  (ก) native dropdown จริง (element tag เป็น "select") — ใช้ type: "select" พร้อม
+  "label" ตามปกติเหมือนเดิม (ก) นี้ยังทำงานถูกต้องอยู่แล้ว ไม่ต้องเปลี่ยน
+  (ข) custom dropdown/menu (element ที่ label/ป้ายดูเหมือนตัวเลือก/dropdown แต่ tag ไม่ใช่
+  "select" — เช่น div/button ที่มี role=combobox, หรือหลังคลิกเปิดแล้วเห็น element
+  role=option/menuitem โผล่ขึ้นมาใหม่ในลิสต์) — วิธีที่เสถียรที่สุดสำหรับแบบนี้คือลำดับ
+  คีย์บอร์ด ไม่ใช่การไล่คลิก selector ลึกๆ: (1) type: "click" ที่ index ของตัว dropdown
+  เพื่อเปิดมันก่อน (2) type: "press_key" ที่ index เดิมนั้น พร้อม key: "ArrowDown" (ทำซ้ำ
+  ได้หลายครั้งถ้าต้องเลื่อนผ่านหลายตัวเลือก) (3) type: "press_key" ที่ index เดิม พร้อม
+  key: "Enter" เพื่อยืนยันตัวเลือกที่ไฮไลต์อยู่ — ให้ใช้ลำดับนี้ทันทีถ้าคลิกตัวเลือกตรงๆ
+  ไม่สำเร็จ หรือถ้าเห็นชัดว่า element เป็น custom dropdown ตั้งแต่แรก (ไม่ต้องเสีย step
+  ลองคลิกตัวเลือกก่อนก็ได้ถ้ามั่นใจ)
 - บรรทัด "เวลาปัจจุบัน (Asia/Bangkok)" ที่แนบมาในข้อความทุกครั้งคือเวลาจริงจากเซิร์ฟเวอร์
   ณ ขณะนั้น ให้ยึดเป็นความจริงเสมอเมื่อต้องอ้างอิงวันที่/เวลาปัจจุบัน ห้ามเดาหรืออ้างอิง
   วันที่จาก training data ของตัวเองเด็ดขาด แม้คำถามจะดูเหมือนต้องใช้ "ความรู้ทั่วไป"
@@ -265,6 +311,7 @@ def _build_user_turn_text(
     current_url: str = "",
     action_history_context: str = "",
     plan_context: str = "",
+    verification_context: str = "",
 ) -> str:
     text = f"Goal: {goal}"
     # แนบเวลาจริงของเซิร์ฟเวอร์ทุก turn (ไม่ใช่แค่ตอนเริ่ม session) — LLM ไม่มีการรับรู้
@@ -325,6 +372,12 @@ def _build_user_turn_text(
             "จริงต่อ goal ให้เปลี่ยนไปทำ action ที่ต่างออกไปแทน:\n"
             f"{action_history_context}"
         )
+    # W50: client-side action verification — สัญญาณเสริมจากโค้ด (ไม่ต้องพึ่ง LLM สังเกต
+    # เอง) ว่า action ก่อนหน้าที่คืน [OK] จริงๆ แล้วอาจไม่มีผลอะไรกับหน้าเว็บเลย (ดู
+    # orchestrator.py::run_task() จุดคำนวณ verification_context — เทียบ element
+    # count/เนื้อหาหน้าก่อน-หลัง action) ว่างเปล่าถ้าไม่มีสัญญาณผิดปกติ
+    if verification_context:
+        text += f"\n\n{verification_context}"
     if long_term_context:
         text += (
             "\n\nความจำจาก task run ก่อนหน้า (อาจมีค่าที่เคยหาเจอ เช่น ราคา/รหัส ให้ดึงมาใช้ได้ "
@@ -368,15 +421,28 @@ _BROWSER_ACTION_PARAMS = {
                 # ไม่ต้องเรียกเองเพราะ click retry รอบ 2 เป็นต้นไปจะ hover ให้อัตโนมัติ
                 # อยู่แล้ว เรียกเองได้ถ้าต้องการ get_snapshot ใหม่หลัง hover ก่อนตัดสินใจ
                 "hover",
+                # W50: ส่ง key ไปยัง element ตาม index — ใช้กับ custom dropdown/menu ที่
+                # ไม่ใช่ <select><option> จริง (ดู "key" parameter ด้านล่าง + กติกาการใช้
+                # ใน SYSTEM_PROMPT)
+                "press_key",
             ],
             "description": "ชนิด action",
         },
         "index": {
             "type": "integer",
-            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay/hover)",
+            "description": "index ของ element (click/fill/select/check/submit/delete/purchase/pay/hover/press_key)",
         },
         "text": {"type": "string", "description": "ข้อความที่จะกรอก (fill)"},
         "label": {"type": "string", "description": "ตัวเลือกที่จะเลือกใน dropdown (select)"},
+        "key": {
+            "type": "string",
+            "enum": ["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab", "Space"],
+            "description": (
+                "ปุ่มคีย์บอร์ดที่จะกด (press_key เท่านั้น) — ใช้กับ custom dropdown/menu "
+                "ที่ไม่ใช่ <select><option> จริง: กด ArrowDown/ArrowUp เพื่อเลื่อนตัวเลือก "
+                "ที่ไฮไลต์ แล้วกด Enter เพื่อยืนยันตัวเลือกนั้น"
+            ),
+        },
         "direction": {"type": "string", "enum": ["up", "down"], "description": "ทิศทางเลื่อนจอ (scroll)"},
         "url": {"type": "string", "description": "URL ปลายทาง (goto)"},
         "tab_index": {"type": "integer", "description": "ลำดับ tab ที่จะสลับไป (switch_tab)"},
@@ -419,7 +485,7 @@ _FINISH_TASK_PARAMS = {
     "type": "object",
     "properties": {
         "success": {"type": "boolean", "description": "goal สำเร็จไหม"},
-        "message": {"type": "string", "description": "สรุปผลสั้นๆ ว่าทำอะไรไป/ทำไมหยุด"},
+        "message": {"type": "string", "description": "สรุปผลสั้นๆ ว่าทำอะไรไป/ทำไมหยุด — รายชื่อ/ข้อมูลที่ดึงมาต้องคัดลอกตัวสะกดตรงตามต้นฉบับ ห้ามเดา/แก้สะกด และถ้าเป็นรายการหลายรายการให้เรียงตามตัวอักษรก่อนตอบ (ดู W_listformat ใน system prompt)"},
     },
     "required": ["success", "message"],
 }
@@ -453,6 +519,565 @@ _GEMINI_TOOLS = [
 ]
 
 
+# --- W_procmem: Abstractor tool (llm.abstract_trajectory()) — single-shot call ต่างหาก
+# ไม่ใช่ tool ที่อยู่ใน agent loop หลัก (browser_action/finish_task ด้านบน) เรียกแค่ครั้ง
+# เดียวแบบ fire-and-forget หลัง task สำเร็จ (ดู orchestrator.py) เพื่อกลั่น trajectory
+# เป็น template ให้ core/procedural_memory.py เก็บไว้ — "target" ของแต่ละ step ต้องมี
+# shape เดียวกับ locator descriptor ที่ core/dom_locator.py::compute_locator_descriptor()
+# คำนวณไว้แล้วในแต่ละ step ของ trajectory (ดู _format_trajectory_for_abstractor()
+# ด้านล่าง) เพื่อให้ fastpath_executor.py เอาไป resolve_locator() ต่อได้ตรงๆ ไม่ต้องแปลง
+# รูปแบบอีกชั้น
+_ABSTRACTOR_TARGET_SCHEMA = {
+    "type": "object",
+    "description": (
+        "locator ของ element เป้าหมาย — คัดลอกมาจาก locator_descriptor ของ step ที่ตรงกัน"
+        "ใน TRAJECTORY ตรงๆ ห้ามแต่งค่าขึ้นเอง"
+    ),
+    "properties": {
+        "tag": {"type": "string"},
+        "explicit_role": {"type": "string"},
+        "implicit_role": {"type": "string"},
+        "accessible_name": {"type": "string"},
+        "data_testid": {"type": "string"},
+        "css_fallback": {"type": "string"},
+    },
+}
+# W_procmem: step schema เดียวที่ใช้ร่วมกันทั้ง ABSTRACTOR_TOOL (steps ทั้งชุด) และ
+# PROCEDURAL_PLANNER_TOOL (แค่ตอน decision="adapt" ต้องส่ง patch step เดี่ยวๆ กลับมา) —
+# กันไม่ให้ schema สอง tool เพี้ยนไปคนละแบบทั้งที่ต้อง resolve_locator() ด้วยตรรกะเดียวกัน
+_TEMPLATE_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["goto", "click", "fill", "select", "check", "press_key", "hover"],
+        },
+        "target": _ABSTRACTOR_TARGET_SCHEMA,
+        "value": {
+            "type": "string",
+            "description": "ค่าที่จะกรอก/เลือก — ต้องเป็น {{slot_name}} เท่านั้น ห้ามมีค่าจริงหลงเหลืออยู่เด็ดขาด",
+        },
+        "widget": {
+            "type": "string",
+            "description": "ระบุถ้า element เป็น custom widget ที่ไม่ใช่ native (เช่น 'vue_dropdown', 'autocomplete', 'date_picker')",
+        },
+        "sensitive": {
+            "type": "boolean",
+            "description": "true ถ้า step นี้เกี่ยวข้องกับรหัสผ่าน/ข้อมูลลับ — ต้อง omit ค่าจริงออกจาก value โดยสิ้นเชิง",
+        },
+    },
+    "required": ["action"],
+}
+_ABSTRACTOR_PARAMS = {
+    "type": "object",
+    "properties": {
+        "goal_pattern": {
+            "type": "string",
+            "description": "คำอธิบาย task class แบบทั่วไป (paraphrase) ไม่ใช่ถ้อยคำ/ค่าเฉพาะของ goal ตัวนี้ตัวเดียว",
+        },
+        "url_pattern": {"type": "string", "description": "URL เริ่มต้นของ task class นี้"},
+        "slots": {
+            "type": "array",
+            "description": "รายชื่อ slot ทั้งหมดที่ใช้ใน steps เรียงตามลำดับที่ปรากฏครั้งแรก",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+        "steps": {"type": "array", "items": _TEMPLATE_STEP_SCHEMA},
+    },
+    "required": ["goal_pattern", "steps", "slots"],
+}
+_ABSTRACTOR_DESC = (
+    "กลั่น GOAL + TRAJECTORY ของ action ที่ทำสำเร็จแล้วให้เป็น template ที่นำกลับมาใช้ซ้ำ "
+    "ได้ (steps + locator + {{slot}} placeholder แทนค่าจริงเสมอ)"
+)
+ABSTRACTOR_TOOL = {"name": "emit_template", "description": _ABSTRACTOR_DESC, "input_schema": _ABSTRACTOR_PARAMS}
+_GROQ_ABSTRACTOR_TOOLS = [
+    {"type": "function", "function": {"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}},
+]
+_GEMINI_ABSTRACTOR_TOOLS = [
+    {"function_declarations": [{"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}]},
+]
+
+_ABSTRACTOR_SYSTEM_PROMPT = (
+    "You are a Workflow Abstractor for a browser-automation agent.\n"
+    "Given a GOAL and a TRAJECTORY of actions that successfully completed it,\n"
+    "distill a REUSABLE, PARAMETERIZED template.\n\n"
+    "RULES\n"
+    "- Separate STRUCTURE from DATA. Replace every concrete input value with a\n"
+    "  named slot {{slot_name}} in the step's \"value\" field. NEVER keep real\n"
+    "  values, PII, passwords, IDs, or record-specific data in the template.\n"
+    "- For each step's \"target\", copy the locator fields (tag/explicit_role/\n"
+    "  implicit_role/accessible_name/data_testid/css_fallback) directly from the\n"
+    "  matching TRAJECTORY entry's locator_descriptor — do not invent new values.\n"
+    "- Keep only steps with action in [goto, click, fill, select, check, press_key,\n"
+    "  hover] that a TRAJECTORY entry actually shows executing successfully.\n"
+    "- CRITICAL: Emit ONE template step per TRAJECTORY entry, in the SAME order, and\n"
+    "  NO MORE than that. Never add an extra step just because the GOAL implies it\n"
+    "  must have happened (e.g. a login form) — if TRAJECTORY does not contain a\n"
+    "  matching entry for it, that step happened outside this trajectory (such as an\n"
+    "  automated login bootstrap) and must NOT appear in the template at all.\n"
+    "- Mark any password/secret step with \"sensitive\": true and omit its literal\n"
+    "  value from \"value\" entirely (reference only the slot name).\n"
+    "- \"slots\" must list every slot used, in order of first appearance.\n"
+    "- \"goal_pattern\" must describe the TASK CLASS, not this one instance — AND must\n"
+    "  describe ONLY what the STEPS you are emitting actually do. If part of the\n"
+    "  original GOAL (e.g. \"log in\") is not reflected in any step (because it\n"
+    "  happened outside this trajectory, such as an automated login bootstrap), do\n"
+    "  NOT mention that part in goal_pattern at all — a future task matched against\n"
+    "  this template should get exactly what these steps do, no more, no less.\n"
+    "- Output ONLY valid JSON via the emit_template tool call. No prose."
+)
+
+
+def _format_trajectory_for_abstractor(trajectory: list[dict]) -> str:
+    """แปลง self.memory.all() (orchestrator.py) เป็นข้อความสั้นๆ ให้ Abstractor อ่าน —
+    เอาเฉพาะ action ที่กระทำ element จริงและสำเร็จเท่านั้น (ข้าม read_page_data/
+    finish_task/action ที่ fail — ไม่มี locator_descriptor ให้อ้างอิงอยู่แล้วเพราะ
+    actions.py คำนวณแค่ตอนสำเร็จ ดู core/actions.py) แต่ละบรรทัดเป็น JSON ก้อนเดียว
+    (action + locator_descriptor + ค่าที่กรอก/เลือกจริง) ให้ LLM คัดลอก target ตรงๆ ได้
+    ไม่ต้องตีความจาก prose"""
+    lines = []
+    for entry in trajectory:
+        if not entry.get("success"):
+            continue
+        cmd = entry.get("cmd") or {}
+        action = cmd.get("type")
+        if action == "goto":
+            lines.append(json.dumps({"action": "goto", "url": cmd.get("url", "")}, ensure_ascii=False))
+            continue
+        if action not in ("click", "fill", "select", "check", "press_key", "hover"):
+            continue
+        detail: dict[str, Any] = {"action": action, "locator_descriptor": entry.get("locator_descriptor") or {}}
+        if action == "fill":
+            detail["typed_value"] = cmd.get("text", "")
+        elif action == "select":
+            detail["selected_label"] = cmd.get("label", "")
+        elif action == "press_key":
+            detail["key"] = cmd.get("key", "")
+        lines.append(json.dumps(detail, ensure_ascii=False))
+    return "\n".join(lines) if lines else "(no successful element-targeting actions recorded)"
+
+
+async def abstract_trajectory(
+    client, model: str, goal: str, url: str, trajectory: list[dict], provider: str,
+) -> Optional[dict]:
+    """W_procmem: กลั่น trajectory ของ task ที่สำเร็จแล้ว (self.memory.all() จาก
+    orchestrator.py) ให้เป็น template ที่มีโครงสร้าง (ดู core/procedural_memory.py) —
+    เรียกครั้งเดียวแบบ fire-and-forget หลัง finish_task(success=True) เท่านั้น (ดู
+    orchestrator.py) ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด (provider error/parse ผิดพลาด/
+    ไม่เรียก tool กลับมา) — คืน None แทนเสมอ ให้ผู้เรียก skip การบันทึกเงียบๆ (เหมือน
+    fallback pattern อื่นๆ ทั้งระบบ — ดู plan_memory.py/long_term_memory.py)"""
+    trajectory_text = _format_trajectory_for_abstractor(trajectory)
+    prompt = (
+        f"GOAL: {goal}\nURL: {url}\nTRAJECTORY:\n{trajectory_text}\n\n"
+        "Call emit_template now with the distilled reusable template."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=2048,
+                system=_ABSTRACTOR_SYSTEM_PROMPT,
+                tools=[ABSTRACTOR_TOOL],
+                tool_choice={"type": "tool", "name": "emit_template"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            return tool_use.input if tool_use is not None else None
+
+        if provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "system", "content": _ABSTRACTOR_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_ABSTRACTOR_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "emit_template"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            if not tool_calls:
+                return None
+            return json.loads(tool_calls[0].function.arguments)
+
+        if provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_ABSTRACTOR_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_ABSTRACTOR_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "emit_template":
+                    return _gemini_struct_to_plain_python(fc.args)
+            return None
+
+        return None
+    except Exception as e:
+        print(f"⚠️ abstract_trajectory error: {e}", flush=True)
+        return None
+
+
+# --- W_procmem: Memory-augmented Planner tool (llm.plan_with_procedural_memory()) —
+# single-shot call ต่างหาก เรียกจาก routes.py::generate_plan ก่อน plan_memory/LLM
+# ร่างใหม่เสมอ (ดู module docstring ของ core/procedural_memory.py สำหรับลำดับความ
+# สำคัญเต็มๆ) ตัดสินใจว่าจะ reuse/adapt/plan_fresh จาก candidate template ที่
+# core/procedural_memory.py::find_candidate_templates() ดึงมาให้แล้ว
+_PROCEDURAL_PLANNER_PARAMS = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["reuse", "adapt", "plan_fresh"]},
+        "template_id": {
+            "type": "string",
+            "description": "template_id ของ candidate ที่เลือก (เฉพาะ reuse/adapt) — ต้องเป็นค่าที่มีอยู่จริงใน CANDIDATE_TEMPLATES เท่านั้น",
+        },
+        "confidence": {"type": "number", "description": "0.0-1.0 ความมั่นใจว่า candidate ตรงกับ task class + URL pattern + form fields ของ NEW_TASK จริง"},
+        "slot_values": {
+            "type": "object",
+            "description": "ค่าที่จะแทน {{slot_name}} แต่ละตัว ดึงมาจาก NEW_TASK เท่านั้น ห้ามแต่งขึ้นเอง — slot ที่ NEW_TASK ไม่ได้ระบุมาให้เว้นว่าง/ไม่ต้องใส่ key นั้น",
+        },
+        "patch": {
+            "type": "array",
+            "description": "เฉพาะ decision=adapt — รายการแก้ไข steps ของ candidate ทีละจุด",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["replace", "insert", "remove"]},
+                    "index": {"type": "integer", "description": "0-based index ใน steps ของ candidate ที่ op นี้กระทำ"},
+                    "step": _TEMPLATE_STEP_SCHEMA,
+                },
+                "required": ["op", "index"],
+            },
+        },
+        "reason": {"type": "string", "description": "เหตุผลสั้นๆ ของการตัดสินใจนี้"},
+    },
+    "required": ["decision", "confidence", "reason"],
+}
+_PROCEDURAL_PLANNER_DESC = (
+    "ตัดสินใจว่าจะ reuse/adapt template ที่มีอยู่แล้ว หรือปล่อยให้ร่างแผนใหม่ (plan_fresh) "
+    "จาก candidate template ที่ค้นมาให้แล้ว"
+)
+PROCEDURAL_PLANNER_TOOL = {
+    "name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "input_schema": _PROCEDURAL_PLANNER_PARAMS,
+}
+_GROQ_PROCEDURAL_PLANNER_TOOLS = [
+    {"type": "function", "function": {"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}},
+]
+_GEMINI_PROCEDURAL_PLANNER_TOOLS = [
+    {"function_declarations": [{"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}]},
+]
+
+_PROCEDURAL_PLANNER_SYSTEM_PROMPT = (
+    "You are the Planner of a browser agent with PROCEDURAL MEMORY.\n"
+    "You receive a NEW_TASK and up to K CANDIDATE_TEMPLATES retrieved by\n"
+    "similarity. Choose the fastest CORRECT way to act.\n\n"
+    "DECIDE exactly one:\n"
+    "- \"reuse\": a candidate matches the task class AND the current page fits.\n"
+    "  Return its template_id, confidence 0-1, and slot_values filled ONLY from\n"
+    "  NEW_TASK. Leave a slot out of slot_values if NEW_TASK doesn't provide it.\n"
+    "- \"adapt\": a candidate is close but needs small changes. Return\n"
+    "  template_id, slot_values, and a \"patch\" (steps to add/replace/remove).\n"
+    "- \"plan_fresh\": no candidate is good enough. Leave template_id out; the\n"
+    "  slow path will handle it.\n\n"
+    "RULES\n"
+    "- Match on task class + URL pattern + form fields, NOT surface wording.\n"
+    "- NEVER invent slot values. Use only data present in NEW_TASK.\n"
+    "- If your best confidence would be < 0.6, choose \"plan_fresh\" instead.\n"
+    "- Output ONLY valid JSON via the plan_decision tool call. No prose."
+)
+
+_PROCEDURAL_PLANNER_SAFE_DEFAULT: dict[str, Any] = {
+    "decision": "plan_fresh", "template_id": None, "confidence": 0.0, "slot_values": {}, "patch": None,
+    "reason": "",
+}
+
+
+def _format_candidates_for_planner(candidates: list[dict]) -> str:
+    """สรุป candidate ให้ Planner อ่าน — ตัดรายละเอียด locator/target ของแต่ละ step
+    ออก (เหลือแค่ลำดับ action type) กันไม่ให้ prompt บวมโดยไม่จำเป็น เพราะ Planner
+    แค่ต้อง "ตัดสินใจ" ว่า candidate ไหนตรงกับ task class เท่านั้น — steps เต็มๆ พร้อม
+    locator จริง ผู้เรียก (routes.py) ค่อยไปดึงจาก candidates list เดิม (ที่
+    find_candidate_templates() คืนมาให้ตั้งแต่แรก) มาประกอบเป็น template สุดท้ายเอง
+    หลัง Planner ตัดสินใจแล้ว ไม่ต้องให้ LLM คัดลอก locator กลับมาเองให้เสี่ยงพิมพ์ผิด"""
+    lines = []
+    for c in candidates:
+        step_sequence = "/".join(str(s.get("action", "")) for s in c.get("steps", []))
+        slot_names = [s.get("name") for s in c.get("slots", []) if isinstance(s, dict) and s.get("name")]
+        lines.append(json.dumps({
+            "template_id": c.get("template_id"),
+            "goal_pattern": c.get("goal_pattern", ""),
+            "url_pattern": c.get("url_pattern", ""),
+            "slots": slot_names,
+            "step_sequence": step_sequence,
+        }, ensure_ascii=False))
+    return "\n".join(lines) if lines else "(no candidates)"
+
+
+async def plan_with_procedural_memory(
+    client, model: str, goal: str, url: str, page_fingerprint: str, candidates: list[dict], provider: str,
+    *, has_auto_login: bool = False,
+) -> dict:
+    """W_procmem: ตัดสินใจ reuse/adapt/plan_fresh จาก candidate template ที่
+    core/procedural_memory.py::find_candidate_templates() ดึงมาให้ — เรียกจาก
+    routes.py::generate_plan ก่อน plan_memory/LLM ร่างใหม่เสมอ (ดู module docstring
+    ของ core/procedural_memory.py) ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด — คืน
+    _PROCEDURAL_PLANNER_SAFE_DEFAULT (decision=plan_fresh, confidence=0.0) แทนเสมอถ้า
+    provider error/parse ผิดพลาด/ไม่เรียก tool กลับมา ให้ caller fallback ไปทาง
+    plan_memory/LLM ร่างใหม่ตามปกติ (เหมือนไม่มี procedural memory เลย)
+
+    page_fingerprint: label/role ของ element บนหน้าปัจจุบัน (จาก
+    perception.get_snapshot() text_repr) ถ้า session มี page เปิดค้างอยู่แล้ว — ว่างเปล่า
+    ถ้าเป็น task ใหม่ที่ยังไม่เคยเปิดหน้าเลย ใช้ช่วยยืนยันว่า candidate ที่ดูตรงกันจาก
+    goal text เพียวๆ ยังตรงกับสภาพหน้าเว็บจริงตอนนี้ด้วยหรือไม่ (ป้องกันกรณีเว็บถูก
+    redesign ไปแล้วทั้งที่ goal ยังพิมพ์เหมือนเดิม)
+
+    has_auto_login (W_procmem, แก้ปัญหาจริงที่เจอตอน Phase 4 validation): True ถ้า
+    โดเมนนี้มี credential เก็บไว้แล้ว (ดู site_learning/storage.py::credentials_exist —
+    ผู้เรียก routes.py เป็นคนเช็คให้) — auto_login.py จะ login ให้อัตโนมัติ "นอก" LLM
+    loop เสมอไม่ว่าทางไหน (ดู orchestrator.py::_maybe_auto_login) ทำให้ template ที่ไม่มี
+    step login เลยยังถือว่า "ครบ" สำหรับ task ที่ implies ว่าต้อง login ก่อน — ถ้าไม่บอก
+    Planner เรื่องนี้ มันจะเดา (ผิด) ว่า template ขาด step login ไปแล้วปฏิเสธ reuse ทั้งที่
+    จริงๆ ใช้ได้ปกติ (เจอบั๊กนี้จริงกับ OrangeHRM ระหว่างทดสอบ)"""
+    candidates_text = _format_candidates_for_planner(candidates)
+    auto_login_note = (
+        "AUTO_LOGIN: this domain has stored credentials — login happens automatically "
+        "and invisibly before any task starts, completely outside any template's steps. "
+        "A candidate template lacking login steps is NOT incomplete because of that; do "
+        "not penalize it or require login steps to be present.\n"
+        if has_auto_login else
+        "AUTO_LOGIN: none configured for this domain — if the task needs login, a "
+        "matching template should actually contain those steps.\n"
+    )
+    prompt = (
+        f"NEW_TASK: {goal}\nCURRENT_URL: {url}\n"
+        f"PAGE_FINGERPRINT: {page_fingerprint or '(no live page yet)'}\n"
+        f"{auto_login_note}"
+        f"CANDIDATE_TEMPLATES:\n{candidates_text}\n\n"
+        "Call plan_decision now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=1024,
+                system=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
+                tools=[PROCEDURAL_PLANNER_TOOL],
+                tool_choice={"type": "tool", "name": "plan_decision"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            decision = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": _PROCEDURAL_PLANNER_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_PROCEDURAL_PLANNER_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "plan_decision"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            decision = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_PROCEDURAL_PLANNER_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            decision = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "plan_decision":
+                    decision = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            decision = None
+
+        if decision is None:
+            return dict(_PROCEDURAL_PLANNER_SAFE_DEFAULT)
+
+        # W_procmem defense-in-depth: ไม่เชื่อ confidence/decision ของ LLM ตรงๆ 100% —
+        # บังคับ plan_fresh เองถ้า confidence ต่ำกว่าเกณฑ์ แม้ LLM จะเผลอตอบ
+        # decision="reuse"/"adapt" มาก็ตาม (กันโมเดลมั่นใจเกินจริง)
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        if confidence < settings.procedural_memory_min_confidence:
+            return {**_PROCEDURAL_PLANNER_SAFE_DEFAULT, "confidence": confidence, "reason": decision.get("reason", "")}
+
+        chosen_decision = decision.get("decision", "plan_fresh")
+        template_id = decision.get("template_id")
+        # W_procmem: "template_id" ไม่ได้อยู่ใน required ของ schema (ไม่มีทางบังคับแบบ
+        # "required เฉพาะตอน decision=reuse/adapt" ข้าม provider ได้เนียนพอ) — เจอจริง
+        # ตอนทดสอบว่า LLM ตอบ decision="reuse" มาแต่ลืมใส่ template_id มาด้วย ถ้ามี
+        # candidate แค่ตัวเดียวไม่มีความกำกวม เดาแทนให้ได้อย่างปลอดภัย แต่ถ้ามีหลายตัวและ
+        # ไม่ระบุมาเลย ไม่มีทางรู้ว่าหมายถึงตัวไหน ปลอดภัยกว่าที่จะ plan_fresh แทนการเดา
+        if chosen_decision in ("reuse", "adapt") and not template_id:
+            if len(candidates) == 1:
+                template_id = candidates[0].get("template_id")
+            else:
+                return {
+                    **_PROCEDURAL_PLANNER_SAFE_DEFAULT, "confidence": confidence,
+                    "reason": "LLM chose reuse/adapt but did not specify which template_id (ambiguous with multiple candidates)",
+                }
+
+        return {
+            "decision": chosen_decision,
+            "template_id": template_id,
+            "confidence": confidence,
+            "slot_values": decision.get("slot_values") or {},
+            "patch": decision.get("patch"),
+            "reason": decision.get("reason", ""),
+        }
+    except Exception as e:
+        print(f"⚠️ plan_with_procedural_memory error: {e}", flush=True)
+        return dict(_PROCEDURAL_PLANNER_SAFE_DEFAULT)
+
+
+# --- W_procmem: Repair tool (llm.repair_step()) — single-shot call ต่างหาก เรียกจาก
+# core/fastpath_executor.py เฉพาะตอน step ของ template ที่กำลัง replay ล้มเหลว (resolve
+# locator ไม่ได้/dispatch พัง/verify ไม่ผ่าน) — เป้าหมายคือแก้ step "เดียว" ให้ยังทำ
+# sub-goal เดิมสำเร็จบนหน้าเว็บปัจจุบัน ไม่ใช่ plan ใหม่ทั้งชุด (นั่นคือหน้าที่ของ
+# "replan" — escalate กลับไปให้ orchestrator.run_task() เต็มรูปแบบแทน)
+_REPAIR_STEP_PARAMS = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["click", "fill", "select", "check", "press_key", "hover", "replan"],
+            "description": "\"replan\" ถ้า element ที่ต้องการไม่มีอยู่บนหน้านี้จริงๆ (ไม่ใช่แค่ locator เดิมใช้ไม่ได้)",
+        },
+        "target": _ABSTRACTOR_TARGET_SCHEMA,
+        "value": {
+            "type": "string",
+            "description": "ค่าที่จะกรอก/เลือก — ต้องเป็น {{slot_name}} เดิมจาก FAILED_STEP เท่านั้น ห้ามเปลี่ยนว่าข้อมูลไหนไปช่องไหน",
+        },
+        "widget": {
+            "type": "string",
+            "description": "ระบุถ้าต้องใช้ custom widget handling (เช่น 'vue_dropdown' สำหรับ dropdown ที่ไม่ใช่ native <select>: click เปิดก่อน แล้วค่อย click ตัวเลือก)",
+        },
+        "slot": {
+            "type": "string",
+            "description": "ชื่อ slot เดิมที่ step นี้อ้างอิง (ต้องตรงกับ FAILED_STEP เป๊ะ ไม่เปลี่ยน — ว่างเปล่าถ้า step เดิมไม่มี slot เช่น click เฉยๆ)",
+        },
+    },
+    "required": ["action"],
+}
+_REPAIR_STEP_DESC = "แก้ template step หนึ่งที่ล้มเหลวระหว่าง replay ให้ยังทำ sub-goal เดิมสำเร็จบนหน้าเว็บปัจจุบัน หรือส่งสัญญาณ replan ถ้าทำไม่ได้จริง"
+REPAIR_STEP_TOOL = {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "input_schema": _REPAIR_STEP_PARAMS}
+_GROQ_REPAIR_STEP_TOOLS = [
+    {"type": "function", "function": {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}},
+]
+_GEMINI_REPAIR_STEP_TOOLS = [
+    {"function_declarations": [{"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}]},
+]
+
+_REPAIR_STEP_SYSTEM_PROMPT = (
+    "You are the Repair module. One template step failed during execution.\n"
+    "Given the FAILED_STEP, the ERROR, and the CURRENT_PAGE, produce a\n"
+    "corrected SINGLE step that achieves the same sub-goal on THIS page.\n\n"
+    "RULES\n"
+    "- Keep the same intent and the SAME slot (do not change which data\n"
+    "  goes where — copy the \"slot\" field from FAILED_STEP verbatim if present).\n"
+    "- Prefer robust locators (role+name, label, data-testid) over long CSS.\n"
+    "- For custom dropdowns/menus that are not a native <select> (e.g. Vue/React\n"
+    "  component libraries), emit widget:\"vue_dropdown\" (click to open, then\n"
+    "  click the option) instead of assuming a native select.\n"
+    "- If the element truly isn't on the page at all, return action:\"replan\" to\n"
+    "  hand back to the full planner — do not guess wildly.\n"
+    "- Output ONLY the emit_repaired_step tool call. No prose."
+)
+
+REPLAN_SIGNAL: dict = {"action": "replan"}
+
+
+async def repair_step(
+    client, model: str, failed_step: dict, error: str, current_page_text: str, provider: str,
+) -> dict:
+    """W_procmem: แก้ template step เดียวที่ล้มเหลวระหว่าง fast-path replay (ดู
+    core/fastpath_executor.py) — เรียกเฉพาะตอน resolve_locator()/dispatch/verify ของ
+    step นั้นไม่ผ่าน ไม่ใช่ทุก step
+
+    **สำคัญ**: ผู้เรียก (fastpath_executor.py) ต้อง mask ค่าจริงของ step ที่
+    sensitive=True ออกจาก failed_step ก่อนส่งเข้าฟังก์ชันนี้เสมอ (เช่นแทนด้วย
+    "••••••") — ฟังก์ชันนี้เองไม่ mask ให้ ป้องกันไม่ให้ raw secret (รหัสผ่าน) เข้าไปใน
+    LLM prompt โดยไม่จำเป็น
+
+    ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด (provider error/parse ผิดพลาด/ไม่เรียก tool
+    กลับมา) — คืน REPLAN_SIGNAL ({"action": "replan"}) แทนเสมอ ซึ่งเป็นค่าที่ปลอดภัย
+    ที่สุดอยู่แล้ว (escalate กลับไปให้ slow-path loop เต็มรูปแบบจัดการต่อ แทนที่จะเสี่ยง
+    ทำ action ผิดๆ ต่อ)"""
+    prompt = (
+        f"FAILED_STEP: {json.dumps(failed_step, ensure_ascii=False)}\n"
+        f"ERROR: {error}\n"
+        f"CURRENT_PAGE:\n{current_page_text}\n\n"
+        "Call emit_repaired_step now with the corrected step (or replan)."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=1024,
+                system=_REPAIR_STEP_SYSTEM_PROMPT,
+                tools=[REPAIR_STEP_TOOL],
+                tool_choice={"type": "tool", "name": "emit_repaired_step"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": _REPAIR_STEP_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_REPAIR_STEP_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "emit_repaired_step"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_REPAIR_STEP_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_REPAIR_STEP_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "emit_repaired_step":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(REPLAN_SIGNAL)
+    except Exception as e:
+        print(f"⚠️ repair_step error: {e}", flush=True)
+        return dict(REPLAN_SIGNAL)
+
+
 # system ส่งเป็น content block (ไม่ใช่ string เฉยๆ) พร้อม cache_control -> Anthropic
 # cache ทั้ง tools+system prefix ไว้ (เหมือนกันทุก step ของ loop เดียวกัน ต่างแค่
 # messages ที่ยาวขึ้นเรื่อยๆ) ลด input token cost ของทุก step หลังจากตัวแรก
@@ -479,6 +1104,8 @@ async def next_action(
     current_url: str = "",
     action_history_context: str = "",
     plan_context: str = "",
+    *,
+    verification_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
 
@@ -515,6 +1142,9 @@ async def next_action(
 
     plan_context (W43): แผนที่ user ยืนยันแล้ว (เลขข้อ "1. ... 2. ...") ถ้า task นี้ผ่าน
     Confirm plan มา — ว่างเปล่าถ้าเป็น ad-hoc task ไม่มีแผนเลย ดู _build_user_turn_text()
+
+    verification_context (W50): สัญญาณเสริมจากโค้ดว่า action ก่อนหน้าอาจไม่มีผลจริงกับ
+    หน้าเว็บแม้จะคืน [OK] — orchestrator.py คำนวณให้ทุก step ดู _build_user_turn_text()
     """
     messages = messages + [
         {
@@ -522,6 +1152,7 @@ async def next_action(
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
+                verification_context,
             ),
         }
     ]
@@ -581,6 +1212,8 @@ async def next_action_groq(
     current_url: str = "",
     action_history_context: str = "",
     plan_context: str = "",
+    *,
+    verification_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
     ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
@@ -605,6 +1238,7 @@ async def next_action_groq(
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
+                verification_context,
             ),
         }
     ]
@@ -670,6 +1304,26 @@ def build_gemini_client(api_key: str):
     return genai
 
 
+def _gemini_struct_to_plain_python(value: Any) -> Any:
+    """W_procmem: Gemini function_call().args คืน protobuf Struct/ListValue
+    (MapComposite/RepeatedComposite จาก proto-plus) ที่มี nested composite ซ้อนอยู่ลึกๆ
+    เสมอ ไม่ใช่แค่ชั้นบนสุด — dict()/list() ตรงๆ (แบบที่ next_action_gemini() ใช้กับ
+    _BROWSER_ACTION_PARAMS ที่เป็น flat schema เดียว พอแปลงชั้นเดียว) แปลงได้แค่ชั้นบนสุด
+    ไม่พอสำหรับ ABSTRACTOR_TOOL ที่มี array ซ้อน (steps/slots) — json.dumps() ของ
+    RepeatedComposite ที่หลงเหลืออยู่ข้างในจะพัง ("Object of type RepeatedComposite is
+    not JSON serializable", เจอบั๊กจริงตอนทดสอบ) ฟังก์ชันนี้ไล่แปลงทุกชั้น recursively
+    ด้วย duck-typing (เช็ค .items() ก่อนสำหรับ mapping, แล้วค่อยเช็ค iterable สำหรับ
+    sequence) แทนที่จะ import internal type ของ proto-plus ตรงๆ (เปราะบางกว่าข้าม
+    เวอร์ชัน library)"""
+    if hasattr(value, "items"):
+        return {k: _gemini_struct_to_plain_python(v) for k, v in value.items()}
+    if isinstance(value, (str, bytes)):
+        return value
+    if isinstance(value, (list, tuple)) or hasattr(value, "__iter__"):
+        return [_gemini_struct_to_plain_python(v) for v in value]
+    return value
+
+
 def _normalize_gemini_args(args: dict) -> dict[str, Any]:
     """Gemini คืนตัวเลขทุกตัวเป็น float ผ่าน protobuf Struct เสมอ แม้ schema จะระบุ
     "integer" ไว้ก็ตาม (เช่น index: 0.0 แทน 0) — ถ้าไม่แปลงกลับ selector ที่ยิงเข้า
@@ -694,6 +1348,8 @@ async def next_action_gemini(
     current_url: str = "",
     action_history_context: str = "",
     plan_context: str = "",
+    *,
+    verification_context: str = "",
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
     """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
 
@@ -724,6 +1380,7 @@ async def next_action_gemini(
                 "text": _build_user_turn_text(
                     goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                     site_manual_context, current_url, action_history_context, plan_context,
+                    verification_context,
                 )
             }],
         }

@@ -8,7 +8,12 @@ tzdata==2026.3   # zoneinfo (stdlib) ต้องพึ่ง IANA tz database �
                  # system tz database ให้อ่านเหมือน Linux/Mac) — ใช้กับ ZoneInfo("Asia/Bangkok")
 
 # Browser control
-playwright==1.48.0
+# W51: อัปเกรดจาก 1.48.0 -> 1.62.0 — Edge ที่ Windows auto-update ให้บนเครื่อง dev ขึ้นไปถึง
+# 151.x แล้ว แต่ playwright 1.48.0 (bundled Chromium รุ่นเก่ากว่ามาก) คุยกับ real Edge/Chrome
+# ผ่าน channel="msedge"/"chrome" ไม่ได้เลย (TargetClosedError ทุกครั้งที่ launch()/
+# launch_persistent_context() ด้วย channel จริง — ยืนยันแล้วว่าไม่ใช่บั๊กโค้ดฝั่งเรา) 1.62.0
+# มาพร้อม bundled Chromium สาย 151.x เดียวกับ Edge ที่ติดตั้งอยู่พอดี แก้ปัญหานี้ได้จริง
+playwright==1.62.0
 
 # LLM
 anthropic==0.116.0

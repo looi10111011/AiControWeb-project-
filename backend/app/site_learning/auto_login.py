@@ -14,7 +14,7 @@ circular import ทันที โมดูลนี้ไม่ import ทั�
 import urllib.parse
 from typing import Optional
 
-from playwright.async_api import Page
+from playwright.async_api import Page, TimeoutError as PWTimeout
 
 from backend.app.site_learning.extractor import extract_page
 from backend.app.site_learning.schema import PageInfo
@@ -135,7 +135,20 @@ async def attempt_login(page: Page, page_info: PageInfo, username: str, password
     try:
         await page.fill(username_selector, username, timeout=5000)
         await page.fill(password_selector, password, timeout=5000)
+        pre_click_url = page.url
         await page.click(submit_selector, timeout=5000)
+        # เว็บบางแห่ง (เช่น SPA ที่ยิง XHR ตรวจ credential ก่อนค่อย route เปลี่ยนหน้า) มีช่วง
+        # หน่วงสั้นๆ ระหว่างกด submit กับ navigation จริงเริ่มต้น — ถ้าเรียก
+        # wait_for_load_state("networkidle") ทันทีโดยไม่รอ URL เปลี่ยนก่อน มันอาจ resolve
+        # ทันทีเพราะหน้า "เดิม" (ก่อน navigate) ก็ idle อยู่แล้วอยู่แล้ว ทำให้
+        # verify_login_success() เห็น URL ยังไม่เปลี่ยนแล้วเข้าใจผิดว่า login ไม่ผ่านทั้งที่
+        # จริงๆ แค่ยังไม่ทันเปลี่ยนหน้า — รอ URL เปลี่ยนก่อนเป็นอันดับแรก (เงียบๆ ถ้า timeout
+        # เพราะ login ที่ล้มเหลวจริงก็ไม่มีทาง URL เปลี่ยนอยู่ดี ปล่อยให้ verify_login_success
+        # ตัดสินจากสถานะสุดท้ายแทน)
+        try:
+            await page.wait_for_url(lambda u: u != pre_click_url, timeout=10000)
+        except PWTimeout:
+            pass
         await page.wait_for_load_state("networkidle", timeout=10000)
         return True
     except Exception:

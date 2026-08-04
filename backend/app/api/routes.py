@@ -11,6 +11,7 @@ Approve/Deny หรือ Confirm plan บนหน้าเว็บได้�
 request_approval/resolve_approval (ดู task_manager.py)
 """
 
+import asyncio
 import json
 from typing import Optional
 
@@ -39,8 +40,9 @@ from backend.app.api.schemas import (
 )
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
-from backend.app.core import plan_memory
+from backend.app.core import llm, plan_memory, procedural_memory
 from backend.app.core.orchestrator import Orchestrator
+from backend.app.core.perception import get_snapshot
 from backend.app.permission.rules import extract_domain, normalize_domain
 from backend.app.site_learning import crawl_site, describe_page, extract_page
 from backend.app.site_learning.learn_manager import LearnManager
@@ -126,6 +128,7 @@ async def _run_with_resolved_browser(
             url=req.url,
             goal=req.goal,
             max_steps=req.max_steps,
+            headless=req.headless,
             verbose=False,
             provider=req.provider,
             ask_user_func=ask_user_func,
@@ -205,7 +208,8 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
             extra_run_task_kwargs={"confirm_plan": req.confirm_plan},
         )
 
-    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run())
+    resolved_headless = settings.browser_headless if req.headless is None else req.headless
+    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless)
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
 
 
@@ -222,11 +226,17 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     ที่ตรงกับ (domain, goal) นี้มากที่สุดด้วย semantic search (ไม่ใช่ exact text match —
     "Login"/"Sign in"/"เข้าสู่ระบบ" ควรจับคู่ lineage เดียวกันได้) เจอ = คืนแผนนั้นตรงๆ
     เลย ข้าม LLM ไปทั้งหมด (Plan Priority: user-approved มาก่อน LLM เสมอ) ไม่เจอ/ไม่ตรงพอ
-    = fallback ไปให้ LLM ร่างใหม่ตามปกติด้านล่าง"""
+    = fallback ไปให้ LLM ร่างใหม่ตามปกติด้านล่าง
+
+    W_procmem: เช็ค procedural template (ดู core/procedural_memory.py) ก่อน Plan
+    Memory ด้านบนอีกที (ลำดับความสำคัญเต็ม: procedural -> plan_memory -> LLM ร่างใหม่)
+    ปิดไว้ default (settings.enable_procedural_memory=False) จนกว่าจะ validate คุณภาพ
+    template/locator resolution บนเว็บจริงก่อน (ดู Phase 4 ใน implementation plan) —
+    เจอ candidate + Planner ตัดสินใจ reuse/adapt ด้วย confidence ผ่านเกณฑ์ จะคืนแผนที่
+    render จาก steps จริง (พร้อม template_id/slot_values/steps ให้ frontend ส่งต่อเข้า
+    POST /api/execute_plan เพื่อวิ่งผ่าน fast-path executor ได้) — ไม่เจอ/ไม่มั่นใจพอ
+    (plan_fresh) fallback ไปที่ plan_memory/LLM ตามปกติด้านล่างเหมือนไม่มี feature นี้เลย"""
     domain = extract_domain(req.url)
-    matched = plan_memory.find_matching_plan(domain, req.goal)
-    if matched is not None:
-        return GeneratePlanResponse(plan=matched["plan"], is_qa=False)
 
     page = None
     if req.session_id:
@@ -234,15 +244,70 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
         session = session_registry.get(req.session_id)
         if session is not None and session_registry.is_healthy(session):
             page = session.page
+
+    if settings.enable_procedural_memory:
+        candidates = procedural_memory.find_candidate_templates(domain, req.goal)
+        if candidates:
+            page_fingerprint = ""
+            if page is not None:
+                try:
+                    _, page_fingerprint = await get_snapshot(page)
+                except Exception:
+                    pass
+            resolved_provider = req.provider or settings.llm_provider
+            planner_client, planner_model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+            # W_procmem: บอก Planner ตรงๆ ว่าโดเมนนี้มี auto-login credential เก็บไว้ไหม
+            # (ดู orchestrator.py::_maybe_auto_login) — ไม่งั้นมันจะเดา (ผิด) ว่า
+            # candidate ที่ไม่มี step login เลยขาดอะไรไปแล้วปฏิเสธ reuse ทั้งที่จริงๆ
+            # login เกิดขึ้นอัตโนมัตินอก template อยู่แล้วเสมอ (เจอบั๊กนี้จริงตอน
+            # ทดสอบกับ OrangeHRM)
+            decision = await llm.plan_with_procedural_memory(
+                planner_client, planner_model, req.goal, req.url, page_fingerprint, candidates, resolved_provider,
+                has_auto_login=credentials_exist(domain),
+            )
+            if decision["decision"] in ("reuse", "adapt") and decision.get("template_id"):
+                matched_candidate = next(
+                    (c for c in candidates if c["template_id"] == decision["template_id"]), None,
+                )
+                if matched_candidate is not None:
+                    final_steps = matched_candidate["steps"]
+                    if decision["decision"] == "adapt":
+                        final_steps = procedural_memory.apply_template_patch(final_steps, decision.get("patch"))
+                    slot_values = decision.get("slot_values") or {}
+                    return GeneratePlanResponse(
+                        plan=procedural_memory.render_steps_as_plan_text(final_steps, slot_values),
+                        is_qa=False,
+                        source=f"procedural_{decision['decision']}",
+                        template_id=decision["template_id"],
+                        slot_values=slot_values,
+                        steps=final_steps,
+                    )
+
+    matched = plan_memory.find_matching_plan(domain, req.goal)
+    if matched is not None:
+        return GeneratePlanResponse(plan=matched["plan"], is_qa=False, source="plan_memory")
+
     site_manual_context = load_knowledge_text(domain)
     try:
-        res = await Orchestrator().generate_plan(
-            req.url, req.goal, provider=req.provider, page=page, site_manual_context=site_manual_context,
+        res = await asyncio.wait_for(
+            Orchestrator().generate_plan(
+                req.url, req.goal, provider=req.provider, page=page, site_manual_context=site_manual_context,
+            ),
+            timeout=settings.plan_generation_timeout_seconds,
         )
         if isinstance(res, tuple):
             plan, is_qa = res
         else:
             plan, is_qa = str(res), False
+    except asyncio.TimeoutError:
+        # W_planhang: ดู settings.plan_generation_timeout_seconds — ไม่มี timeout นี้
+        # request จะค้างเงียบๆ ไม่มีวันจบถ้า LLM provider ตอบช้าผิดปกติ (rate limit/
+        # network) ทำให้ composer หน้าเว็บดูค้างที่ "Generating plan…" ตลอดไป ดีกว่าให้
+        # user เห็น error แล้วลองใหม่ได้ทันที
+        raise HTTPException(
+            status_code=504,
+            detail=f"LLM ไม่ตอบสนองภายใน {settings.plan_generation_timeout_seconds:.0f} วินาที ลองใหม่อีกครั้ง",
+        )
     except Exception as e:
         # ห่อ exception ทุกชนิด (LLM API error, page เดิมจาก session_id ถูกปิด/นำทางไปแล้ว
         # ระหว่าง perceive ฯลฯ) เป็น HTTPException ที่มี detail จริง — ไม่งั้น FastAPI จะคืน
@@ -263,8 +328,25 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
     Plan Memory เสมอ (ดู core/plan_memory.py::save_confirmed_plan) — "Confirm" คือจุดที่
     ถือว่าแผนนี้ approved แล้วตามสเปค ไม่ต้องรอ flag แยกจาก frontend ว่าแก้ไขหรือไม่ (ถ้า
     เนื้อหาเหมือน version ล่าสุดเป๊ะอยู่แล้ว plan_memory จะไม่สร้าง version ซ้ำซ้อนเปล่าๆ
-    เอง) — draft ที่ยังไม่ confirm/plan ที่ user cancel ไม่มีทางมาถึง endpoint นี้เลย"""
-    if req.plan:
+    เอง) — draft ที่ยังไม่ confirm/plan ที่ user cancel ไม่มีทางมาถึง endpoint นี้เลย
+
+    W_procmem: req.execution_mode == "fastpath" (มาจาก GeneratePlanResponse.source ที่
+    ขึ้นต้นด้วย "procedural_" — ดู index.html) ข้าม plan_memory.save_confirmed_plan ไปเลย
+    (ไม่บันทึก preview text ที่ render จาก steps จริงเป็น "แผนดิบ" ปนกับของจริงที่ user
+    พิมพ์เอง — คนละบทบาทกัน) แล้ววิ่งผ่าน orchestrator.run_fastpath() แทน run_task() ปกติ
+    ถ้า template_id/steps มีมาจริงและไม่ได้ขอโหมดที่ fast-path ยังไม่รองรับ (ดู
+    Orchestrator.run_fastpath() docstring — รองรับแค่ page=/browser=, ไม่รองรับ
+    use_user_browser/visible-window เอง) — โหมดที่ไม่รองรับ fallback ไปที่ slow-path
+    ปกติเงียบๆ (ไม่ error) เหมือนไม่มี fast-path feature นี้เลย"""
+    is_fastpath = bool(
+        settings.enable_procedural_memory
+        and req.execution_mode == "fastpath"
+        and req.template_id
+        and req.steps
+        and not req.use_user_browser
+        and req.headless is not False
+    )
+    if req.plan and not is_fastpath:
         plan_memory.save_confirmed_plan(extract_domain(req.url), req.goal, req.plan)
 
     pool = request.app.state.browser_pool
@@ -278,12 +360,32 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
         await task_manager.push_event(task_id, event)
 
     async def _run() -> dict:
+        if is_fastpath:
+            if req.session_id:
+                session = await session_registry.get_or_create(
+                    req.session_id, use_user_browser=False, headless=req.headless,
+                    target_url=req.url, pool=pool, tab_reuse_policy=req.tab_reuse_policy,
+                    ask_user_func=ask_user_func,
+                )
+                return await orchestrator.run_fastpath(
+                    url=req.url, goal=req.goal, template_id=req.template_id, steps=req.steps,
+                    slot_values=req.slot_values or {}, max_steps=req.max_steps, provider=req.provider,
+                    ask_user_func=ask_user_func, on_event=_on_event, page=session.page,
+                    session_id=req.session_id,
+                )
+            async with pool.acquire() as browser:
+                return await orchestrator.run_fastpath(
+                    url=req.url, goal=req.goal, template_id=req.template_id, steps=req.steps,
+                    slot_values=req.slot_values or {}, max_steps=req.max_steps, provider=req.provider,
+                    ask_user_func=ask_user_func, on_event=_on_event, browser=browser,
+                )
         return await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
             extra_run_task_kwargs={"approved_plan": req.plan},
         )
 
-    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run())
+    resolved_headless = settings.browser_headless if req.headless is None else req.headless
+    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless)
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
 
 
@@ -302,6 +404,7 @@ async def get_task(task_id: str, request: Request) -> TaskStatusResponse:
         created_at=record.created_at,
         result=record.result,
         error=record.error,
+        headless=record.headless,
     )
 
 
@@ -318,6 +421,7 @@ async def list_tasks(request: Request) -> list[TaskStatusResponse]:
             created_at=r.created_at,
             result=r.result,
             error=r.error,
+            headless=r.headless,
         )
         for r in task_manager.list()
     ]

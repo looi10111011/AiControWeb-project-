@@ -31,8 +31,131 @@ def test_classify_action_needs_confirmation_for_submit():
     assert classify_action({"type": "submit"}) == ActionRisk.NEEDS_CONFIRMATION
 
 
+# W_search: บั๊กจริงที่ user รายงาน — LLM บางครั้งเลือก action type "submit" ให้ปุ่ม
+# ค้นหา/เปิดดูวิดีโอ (ตีความ "ค้นหา" ว่าเป็นการ "ส่งฟอร์ม" ทางความหมาย) ทั้งที่ย้อนกลับ
+# ได้ง่ายมาก ไม่มีผลถาวรใดๆ ต่างจาก submit ที่แท้จริงเสี่ยง (เช่น place order/checkout)
+# — ต้องเช็ค label ก่อนเสมอแม้ action_type จะดูเสี่ยง (defense-in-depth สวนทางกับ
+# RISKY_LABEL_KEYWORDS)
+
+
+def test_classify_action_safe_for_submit_with_search_label():
+    assert classify_action({"type": "submit"}, label="Search") == ActionRisk.SAFE
+
+
+def test_classify_action_safe_for_submit_with_watch_video_label():
+    assert classify_action({"type": "submit"}, label="Watch") == ActionRisk.SAFE
+
+
+def test_classify_action_safe_for_submit_with_thai_search_label():
+    assert classify_action({"type": "submit"}, label="ค้นหา") == ActionRisk.SAFE
+
+
+def test_classify_action_still_needs_confirmation_for_submit_with_no_label():
+    # ไม่มี label ให้เช็คเลย (ว่างเปล่า) — ไม่มีข้อมูลพอจะลดระดับ ต้อง fail-safe เป็น
+    # NEEDS_CONFIRMATION เหมือนเดิมทุกประการ (ไม่ใช่ auto-safe ทุก submit)
+    assert classify_action({"type": "submit"}, label="") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_needs_confirmation_when_label_matches_both_safe_and_risky_keywords():
+    # label ที่ดู "ปลอดภัย" บางส่วนแต่ก็มีคำเสี่ยงปนอยู่ด้วย (เช่นอยู่ในหน้า checkout จริง)
+    # ต้องระวังไว้ก่อนเสมอ — ฝั่งเสี่ยงชนะ
+    assert classify_action({"type": "submit"}, label="Confirm and Search Orders") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_manual_guidance_still_wins_over_safe_label():
+    # คู่มือที่ user ตั้งไว้เองต้องชนะเสมอ แม้ label จะดูปลอดภัยแค่ไหนก็ตาม
+    cmd = {"type": "submit"}
+    manual = "- การค้นหาทุกครั้งต้องขออนุมัติจากหัวหน้างานก่อนเสมอ"
+    assert classify_action(cmd, label="Search", manual_guidance=manual) == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_safe_for_delete_type_with_safe_label():
+    # ครอบคลุมทั้ง 4 action type ใน DEFAULT_NEEDS_CONFIRMATION ไม่ใช่แค่ submit —
+    # ในทางปฏิบัติ delete/purchase/pay จริงๆ แทบไม่มีทาง match safe label ได้เลย (label
+    # ของปุ่มลบ/ซื้อ/จ่ายเงินจริงไม่ใช่คำว่า "search"/"watch") แต่ยืนยันว่า logic ใช้ร่วมกัน
+    # ทั้ง 4 ประเภทสม่ำเสมอ
+    assert classify_action({"type": "delete"}, label="View details") == ActionRisk.SAFE
+
+
 def test_classify_action_safe_for_normal_click():
     assert classify_action({"type": "click", "index": 0}) == ActionRisk.SAFE
+
+
+# W_search follow-up: บั๊กจริงที่ user รายงานต่อ — คลิกวิดีโอ YouTube จากผลการค้นหา (LLM
+# เผลอเลือก type="submit"/"purchase" ให้กับการคลิกเลือกรายการ) label ในเคสนี้เป็นชื่อ
+# วิดีโอดิบๆ (เช่น "เพลงรัก - Three Man Down |Official MV|") ไม่ match ทั้ง
+# SAFE_ACTION_LABEL_KEYWORDS และ RISKY_LABEL_KEYWORDS เลย — ต้องใช้ element_tag (tag=="a")
+# เป็นสัญญาณสำรองชั้นสุดท้ายแทน
+
+
+def test_classify_action_safe_for_submit_type_on_anchor_with_arbitrary_title_label():
+    cmd = {"type": "submit", "index": 12}
+    label = "เพลงรัก - Three Man Down |Official MV|"
+    assert classify_action(cmd, label=label, element_tag="a") == ActionRisk.SAFE
+
+
+def test_classify_action_needs_confirmation_for_submit_type_on_non_anchor_with_arbitrary_label():
+    # tag ไม่ใช่ "a" (เช่น <button>) + label ไม่ match ทั้งสองฝั่ง — ไม่มีสัญญาณปลอดภัยเลย
+    # ต้อง fail-safe เป็น NEEDS_CONFIRMATION เหมือนเดิม
+    cmd = {"type": "submit", "index": 12}
+    assert classify_action(cmd, label="เพลงรัก - Three Man Down |Official MV|", element_tag="button") == (
+        ActionRisk.NEEDS_CONFIRMATION
+    )
+
+
+def test_classify_action_risky_label_still_wins_over_anchor_tag():
+    # ป้องกันเคสหายาก: ปุ่ม "Place Order" ที่ทำเป็น <a> ตกแต่งด้วย CSS ให้ดูเหมือนปุ่ม —
+    # label เสี่ยงต้องชนะ tag=="a" เสมอ
+    cmd = {"type": "purchase", "index": 12}
+    assert classify_action(cmd, label="Place Order", element_tag="a") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_no_anchor_signal_without_element_tag():
+    # element_tag ไม่ส่งมา (default "") ต้องไม่ auto-safe จาก tag เปล่าๆ — พฤติกรรมเดิม
+    cmd = {"type": "submit", "index": 12}
+    assert classify_action(cmd, label="เพลงรัก - Three Man Down |Official MV|") == ActionRisk.NEEDS_CONFIRMATION
+
+
+# W_search follow-up 2: บั๊กจริงอีกเคส — LLM เลือก type="submit" ให้กับ action "กด Enter
+# เพื่อค้นหา" (เป้าหมายยังเป็นช่องค้นหาเดิม) หลังจากพิมพ์คำค้นหาไปแล้ว label ของช่องนั้น
+# กลายเป็นคำค้นหาดิบๆ (เช่น "เพลงรัก") ไม่ match ทั้ง SAFE_ACTION_LABEL_KEYWORDS และ
+# RISKY_LABEL_KEYWORDS เลย (เหมือนเคส anchor ด้านบนแต่คนละ element type) — ต้องใช้
+# element_tag=="input" (ไม่ใช่ type เสี่ยง) เป็นสัญญาณสำรองชั้นสุดท้ายแทน
+
+
+def test_classify_action_safe_for_submit_type_on_text_input_with_arbitrary_query_label():
+    cmd = {"type": "submit", "index": 3}
+    assert classify_action(cmd, label="เพลงรัก", element_tag="input", element_type="text") == ActionRisk.SAFE
+
+
+def test_classify_action_safe_for_submit_type_on_search_input_with_no_type_attribute():
+    # <input> ที่ไม่มี type attribute ระบุตรงๆ เลย (getAttribute คืนค่าว่าง) — ยังถือว่า
+    # ปลอดภัย (ไม่ใช่ submit/image/password ที่แท้จริง)
+    cmd = {"type": "submit", "index": 3}
+    assert classify_action(cmd, label="เพลงรัก", element_tag="input", element_type="") == ActionRisk.SAFE
+
+
+def test_classify_action_needs_confirmation_for_submit_type_input_with_risky_input_type():
+    # <input type="submit"> จริงๆ (ปุ่ม submit ของฟอร์มในคราบ input) ต้อง fail-safe
+    cmd = {"type": "submit", "index": 3}
+    assert classify_action(cmd, label="เพลงรัก", element_tag="input", element_type="submit") == (
+        ActionRisk.NEEDS_CONFIRMATION
+    )
+
+
+def test_classify_action_needs_confirmation_for_purchase_type_password_input():
+    # <input type="password"> ระวังไว้ก่อน (อาจเป็นส่วนหนึ่งของ flow ยืนยันตัวตนก่อนจ่ายเงิน)
+    cmd = {"type": "purchase", "index": 3}
+    assert classify_action(cmd, label="", element_tag="input", element_type="password") == (
+        ActionRisk.NEEDS_CONFIRMATION
+    )
+
+
+def test_classify_action_risky_label_still_wins_over_safe_input_tag():
+    cmd = {"type": "purchase", "index": 3}
+    assert classify_action(cmd, label="Confirm Payment", element_tag="input", element_type="text") == (
+        ActionRisk.NEEDS_CONFIRMATION
+    )
 
 
 # ชั้นสำรอง (defense-in-depth): LLM อาจส่ง type="click" ธรรมดาสำหรับปุ่มที่จริงๆ มีผล

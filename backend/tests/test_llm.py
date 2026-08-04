@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -950,4 +951,376 @@ def test_build_user_turn_text_time_line_changes_across_calls_not_cached(monkeypa
 
     assert "14:32" in first and "09:05" not in first
     assert "09:05" in second and "14:32" not in second
-    assert first != second
+
+
+# --- W_procmem: llm.abstract_trajectory() / _format_trajectory_for_abstractor() ---
+
+
+def test_format_trajectory_for_abstractor_keeps_only_successful_element_actions():
+    trajectory = [
+        {"success": True, "cmd": {"type": "goto", "url": "https://example.com/login"}},
+        {"success": True, "cmd": {"type": "fill", "index": 1, "text": "alice"}, "locator_descriptor": {"accessible_name": "Username"}},
+        {"success": False, "cmd": {"type": "click", "index": 2}, "locator_descriptor": None},
+        {"success": True, "cmd": {"type": "read_page_data", "query": "how many users"}},
+        {"success": True, "cmd": {"type": "click", "index": 3}, "locator_descriptor": {"accessible_name": "Login"}},
+    ]
+
+    text = llm._format_trajectory_for_abstractor(trajectory)
+    lines = text.splitlines()
+
+    assert len(lines) == 3  # goto + successful fill + successful click; failed click and read_page_data dropped
+    assert '"action": "goto"' in lines[0]
+    assert '"typed_value": "alice"' in lines[1]
+    assert '"accessible_name": "Username"' in lines[1]
+    assert '"accessible_name": "Login"' in lines[2]
+
+
+def test_format_trajectory_for_abstractor_handles_empty_trajectory():
+    assert llm._format_trajectory_for_abstractor([]) == "(no successful element-targeting actions recorded)"
+
+
+@pytest.mark.asyncio
+async def test_abstract_trajectory_returns_tool_input_on_anthropic_success():
+    expected_template = {
+        "goal_pattern": "Log in with a username",
+        "url_pattern": "https://example.com/login",
+        "slots": [{"name": "username", "description": "the username"}],
+        "steps": [{"action": "fill", "target": {"accessible_name": "Username"}, "value": "{{username}}"}],
+    }
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("emit_template", expected_template)])
+    )
+
+    result = await llm.abstract_trajectory(
+        client, "claude-x", "log in", "https://example.com/login",
+        [{"success": True, "cmd": {"type": "fill", "index": 1, "text": "alice"}, "locator_descriptor": {"accessible_name": "Username"}}],
+        "anthropic",
+    )
+
+    assert result == expected_template
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_template"}
+    assert kwargs["tools"] == [llm.ABSTRACTOR_TOOL]
+
+
+@pytest.mark.asyncio
+async def test_abstract_trajectory_returns_none_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.abstract_trajectory(client, "claude-x", "goal", "https://example.com", [], "anthropic")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_abstract_trajectory_swallows_provider_errors_and_returns_none():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.abstract_trajectory(client, "claude-x", "goal", "https://example.com", [], "anthropic")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_abstract_trajectory_returns_none_for_unknown_provider():
+    result = await llm.abstract_trajectory(MagicMock(), "model", "goal", "https://example.com", [], "unknown")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_abstract_trajectory_groq_parses_tool_call_arguments():
+    template_json = json.dumps({
+        "goal_pattern": "Log in",
+        "url_pattern": "https://example.com",
+        "slots": [],
+        "steps": [{"action": "click", "target": {"accessible_name": "Login"}}],
+    })
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "emit_template", template_json)], {})
+    )
+
+    result = await llm.abstract_trajectory(client, "llama-x", "goal", "https://example.com", [], "groq")
+
+    assert result["goal_pattern"] == "Log in"
+    assert result["steps"][0]["action"] == "click"
+
+
+# --- W_procmem: llm.plan_with_procedural_memory() ---
+
+_CANDIDATES = [{
+    "template_id": "t1", "intent_key": "k1", "version": 1,
+    "goal_pattern": "Log in with a username and password",
+    "url_pattern": "https://example.com/login",
+    "steps": [{"action": "fill"}, {"action": "click"}],
+    "slots": [{"name": "username"}, {"name": "password"}],
+    "distance": 0.2,
+}]
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_returns_reuse_decision_above_threshold():
+    decision_payload = {
+        "decision": "reuse", "template_id": "t1", "confidence": 0.9,
+        "slot_values": {"username": "alice"}, "reason": "same task class and URL pattern",
+    }
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("plan_decision", decision_payload)])
+    )
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "log in as alice", "https://example.com/login", "", _CANDIDATES, "anthropic",
+    )
+
+    assert result["decision"] == "reuse"
+    assert result["template_id"] == "t1"
+    assert result["slot_values"] == {"username": "alice"}
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "plan_decision"}
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_defaults_missing_template_id_when_only_one_candidate():
+    """เจอจริงตอนทดสอบ: LLM ตอบ decision='reuse' มาแต่ลืมใส่ template_id มาด้วย (ไม่ได้
+    อยู่ใน required ของ schema เพราะบังคับ "required เฉพาะตอน reuse/adapt" ข้าม provider
+    ให้เนียนไม่ได้) — ถ้ามี candidate แค่ตัวเดียวไม่มีความกำกวม ต้องเดาแทนให้ได้"""
+    decision_payload = {"decision": "reuse", "confidence": 0.95, "slot_values": {}, "reason": "exact match"}
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("plan_decision", decision_payload)])
+    )
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com/login", "", _CANDIDATES, "anthropic",
+    )
+
+    assert result["decision"] == "reuse"
+    assert result["template_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_falls_back_to_plan_fresh_when_template_id_ambiguous():
+    """เหมือนเทสต์ข้างบน แต่มีมากกว่า 1 candidate — เดาไม่ได้ว่าหมายถึงตัวไหน ต้อง
+    plan_fresh แทนการเดามั่วๆ"""
+    two_candidates = _CANDIDATES + [{**_CANDIDATES[0], "template_id": "t2"}]
+    decision_payload = {"decision": "reuse", "confidence": 0.95, "slot_values": {}, "reason": "match"}
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("plan_decision", decision_payload)])
+    )
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com/login", "", two_candidates, "anthropic",
+    )
+
+    assert result["decision"] == "plan_fresh"
+    assert result["template_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_forces_plan_fresh_below_confidence_threshold():
+    """defense-in-depth: แม้ LLM ตอบ decision='reuse' มา ถ้า confidence ต่ำกว่า
+    settings.procedural_memory_min_confidence ต้องบังคับ plan_fresh เองเสมอ ไม่เชื่อ
+    LLM ตรงๆ 100%"""
+    decision_payload = {
+        "decision": "reuse", "template_id": "t1", "confidence": 0.3,
+        "slot_values": {}, "reason": "weak match",
+    }
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("plan_decision", decision_payload)])
+    )
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com", "", _CANDIDATES, "anthropic",
+    )
+
+    assert result["decision"] == "plan_fresh"
+    assert result["template_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_returns_safe_default_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com", "", _CANDIDATES, "anthropic",
+    )
+
+    assert result["decision"] == "plan_fresh"
+    assert result["confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_swallows_provider_errors():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com", "", _CANDIDATES, "anthropic",
+    )
+
+    assert result["decision"] == "plan_fresh"
+    assert result["confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_returns_safe_default_for_unknown_provider():
+    result = await llm.plan_with_procedural_memory(
+        MagicMock(), "model", "goal", "https://example.com", "", _CANDIDATES, "unknown",
+    )
+
+    assert result["decision"] == "plan_fresh"
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_groq_parses_adapt_decision_with_patch():
+    decision_json = json.dumps({
+        "decision": "adapt", "template_id": "t1", "confidence": 0.75,
+        "slot_values": {"username": "bob"},
+        "patch": [{"op": "replace", "index": 1, "step": {"action": "click", "target": {"accessible_name": "Sign in"}}}],
+        "reason": "button label differs slightly",
+    })
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "plan_decision", decision_json)], {})
+    )
+
+    result = await llm.plan_with_procedural_memory(
+        client, "llama-x", "goal", "https://example.com", "", _CANDIDATES, "groq",
+    )
+
+    assert result["decision"] == "adapt"
+    assert result["patch"][0]["op"] == "replace"
+
+
+def test_format_candidates_for_planner_reduces_steps_to_action_sequence():
+    text = llm._format_candidates_for_planner(_CANDIDATES)
+
+    assert '"step_sequence": "fill/click"' in text
+    assert "username" in text and "password" in text
+
+
+def test_format_candidates_for_planner_handles_empty_list():
+    assert llm._format_candidates_for_planner([]) == "(no candidates)"
+
+
+# --- W_procmem: llm.plan_with_procedural_memory()'s has_auto_login note ---
+#
+# บั๊กจริงที่เจอตอน Phase 4 validation: โดเมนที่มี auto-login credential เก็บไว้ (ดู
+# orchestrator.py::_maybe_auto_login) ทำให้ login เกิดขึ้น "นอก" LLM loop เสมอ ไม่ว่า
+# ทางไหน — candidate template ที่ capture มาจาก run แบบนั้นเลยไม่มี step login แม้แต่
+# นิดเดียว ถ้าไม่บอก Planner ตรงๆ ว่าโดเมนนี้ auto-login ไว้แล้ว มันจะเดา (ผิด) ว่า
+# candidate ขาด step ไปแล้วปฏิเสธ reuse ทั้งที่ใช้ได้ปกติ
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_includes_auto_login_note_when_true():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com/login", "", _CANDIDATES, "anthropic",
+        has_auto_login=True,
+    )
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "AUTO_LOGIN: this domain has stored credentials" in prompt
+    assert "do not penalize it or require login steps" in prompt
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_includes_no_auto_login_note_when_false():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com/login", "", _CANDIDATES, "anthropic",
+        has_auto_login=False,
+    )
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "AUTO_LOGIN: none configured for this domain" in prompt
+
+
+@pytest.mark.asyncio
+async def test_plan_with_procedural_memory_defaults_has_auto_login_to_false():
+    """ผู้เรียกเดิม (ก่อนแก้บั๊กนี้) ที่ไม่รู้จัก parameter นี้เลยยังต้องทำงานได้ตามปกติ"""
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    await llm.plan_with_procedural_memory(
+        client, "claude-x", "goal", "https://example.com/login", "", _CANDIDATES, "anthropic",
+    )
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "AUTO_LOGIN: none configured for this domain" in prompt
+
+
+# --- W_procmem: llm.repair_step() ---
+
+_FAILED_STEP = {"action": "click", "target": {"accessible_name": "Login"}, "slot": None}
+
+
+@pytest.mark.asyncio
+async def test_repair_step_returns_corrected_step_on_anthropic_success():
+    corrected = {"action": "click", "target": {"accessible_name": "Sign in"}, "slot": None}
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("emit_repaired_step", corrected)])
+    )
+
+    result = await llm.repair_step(client, "claude-x", _FAILED_STEP, "element not found", "page text", "anthropic")
+
+    assert result == corrected
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_repaired_step"}
+
+
+@pytest.mark.asyncio
+async def test_repair_step_returns_replan_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.repair_step(client, "claude-x", _FAILED_STEP, "error", "page", "anthropic")
+
+    assert result == {"action": "replan"}
+
+
+@pytest.mark.asyncio
+async def test_repair_step_swallows_provider_errors_and_returns_replan():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.repair_step(client, "claude-x", _FAILED_STEP, "error", "page", "anthropic")
+
+    assert result == {"action": "replan"}
+
+
+@pytest.mark.asyncio
+async def test_repair_step_returns_replan_for_unknown_provider():
+    result = await llm.repair_step(MagicMock(), "model", _FAILED_STEP, "error", "page", "unknown")
+
+    assert result == {"action": "replan"}
+
+
+@pytest.mark.asyncio
+async def test_repair_step_groq_parses_replan_signal_from_model():
+    replan_json = json.dumps({"action": "replan"})
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "emit_repaired_step", replan_json)], {})
+    )
+
+    result = await llm.repair_step(client, "llama-x", _FAILED_STEP, "element gone", "page", "groq")
+
+    assert result == {"action": "replan"}

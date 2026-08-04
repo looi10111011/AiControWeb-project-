@@ -81,3 +81,20 @@ def get_plan_memory_collection() -> Collection:
         embedding_function=_embedding_function,
         metadata={"hnsw:space": "cosine"},
     )
+
+
+# W_procmem: Procedural Memory (ดู backend/app/core/procedural_memory.py) — template
+# แบบมีโครงสร้าง (steps + locator + slot) เก็บแยก collection ต่างหากจาก plan_memory
+# ข้างบน (คนละบทบาทกัน: นี่เก็บ step ที่รันได้จริง ไม่ใช่ข้อความแผนดิบ) ตั้ง
+# hnsw:space เป็น "cosine" ตั้งแต่สร้างครั้งแรกเหมือน plan_memory ทุกประการ (เปลี่ยน
+# ทีหลังไม่ได้ ถ้าจะเปลี่ยนต้องลบ collection เดิมทิ้งแล้วสร้างใหม่) — การ retrieve จาก
+# collection นี้ไม่ได้ใช้ threshold ตัดสินใจเด็ดขาดแบบ plan_memory_max_distance (แค่ดึง
+# top-K มาให้ Planner LLM ตัดสินใจต่อ) แต่ยังต้องตั้ง cosine ไว้เผื่ออนาคตต้องการ
+# threshold-based gating เพิ่มด้วยเช่นกัน
+def get_procedural_memory_collection() -> Collection:
+    client = get_client()
+    return client.get_or_create_collection(
+        name=settings.chroma_procedural_memory_collection_name,
+        embedding_function=_embedding_function,
+        metadata={"hnsw:space": "cosine"},
+    )

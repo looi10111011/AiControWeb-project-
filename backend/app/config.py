@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     chroma_collection_name: str = "manuals"
     chroma_long_term_collection_name: str = "long_term_memory"
 
+    # W49: baseline สำหรับงาน token/cost optimization — บันทึก token usage จริงของทุก
+    # task ที่จบสำเร็จ (JSON Lines, append-only) ไว้วัด baseline ก่อนเริ่มปรับ pipeline
+    # (ดู api/task_manager.py::_log_token_usage()) แยกจาก long_term_memory เพราะอันนั้น
+    # เก็บไว้ให้ agent recall เอง ไม่ใช่ไว้ให้ developer วิเคราะห์ cost
+    token_usage_log_path: str = "./data/token_usage.jsonl"
+
     browser_headless: bool = True
 
     api_host: str = "0.0.0.0"
@@ -38,6 +44,16 @@ class Settings(BaseSettings):
     # ด้วยซ้ำ) — ตั้ง default ไว้ไม่นานเกินไป (5 นาที) พอให้ user อ่านแผนจริงๆ ได้ทัน แต่ไม่
     # ยึด pool ค้างเป็นชั่วโมงถ้าลืมแท็บทิ้งไว้
     approval_timeout_seconds: float = 300.0
+
+    # W_planhang: POST /api/generate_plan (routes.py::generate_plan) เรียก LLM ตรงๆ
+    # (classify_intent + generate_plan) โดยไม่มี timeout ใดๆ เลยเดิม — client
+    # (AsyncAnthropic/Groq openai-compatible/Gemini) ทุกตัวไม่ได้ตั้ง timeout เอง ถ้า
+    # provider ตอบช้าผิดปกติ (rate limit/network) endpoint นี้จะค้างเงียบๆ ไม่มีวันจบ
+    # (อาการจริงที่ user เจอ: หน้าจอค้างที่ "Generating plan…" ไม่ error ไม่ timeout เลย)
+    # ต่างจาก approval_timeout_seconds ด้านบนที่รอ "คน" ตอบ (รอนานได้) endpoint นี้เป็น
+    # synchronous request-response เดียว (ไม่มี SSE progress ระหว่างรอ) ต้อง fail เร็ว
+    # พอให้ user รู้ว่ามีปัญหาแล้วลองใหม่ได้ ไม่ใช่ปล่อยให้ composer ดูค้างตลอดไป
+    plan_generation_timeout_seconds: float = 45.0
 
     # Real-user-browser mode (CDP connect, ดู core/user_browser.py): user เปิด Chrome
     # เองล่วงหน้าด้วย --remote-debugging-port ก่อนรัน agent ในโหมดนี้ — agent ไม่ launch
@@ -111,6 +127,34 @@ class Settings(BaseSettings):
     # ~0.77 ใกล้เคียง intent ที่ไม่เกี่ยวข้องเลย) เป็นข้อจำกัดของ embedding model เอง ไม่ใช่
     # threshold ตั้งผิด — ปรับค่านี้ได้ถ้าพบว่า reuse ผิด/ไม่ยอม reuse ที่ควร reuse บ่อยไป
     plan_memory_max_distance: float = 0.5
+
+    # W_procmem: Procedural Memory (ดู core/procedural_memory.py, core/dom_locator.py,
+    # core/fastpath_executor.py) — ต่อยอดจาก Plan Memory ด้านบน: Plan Memory ข้าม LLM
+    # call แค่ตอน "ร่างแผน" (1 call ต่อ task) ส่วนระบบนี้เก็บ template แบบมีโครงสร้าง
+    # (ordered steps + stable locator + {{slot}} placeholder แทนค่าจริงเสมอ) ที่ทำให้
+    # ข้าม LLM call ได้ทั้ง step-by-step execution loop ไม่ใช่แค่ตอนร่างแผน — เก็บใน
+    # ChromaDB collection แยกต่างหาก (คนละ collection กับ plan_memory ข้างบน)
+    #
+    # ลำดับความสำคัญตอนหา plan ให้ user (ดู routes.py::generate_plan): procedural
+    # template ก่อน (ถ้าเปิดและ match) -> plan_memory (ข้อความแผนเดิม) -> LLM ร่างใหม่
+    # สดๆ — plan_memory "ไม่" ถูกแทนที่ ยังทำงานเป็น fallback ชั้นถัดไปเหมือนเดิมทุก
+    # ประการ (คนละบทบาทกัน: plan_memory เก็บข้อความแผนดิบ, ตัวนี้เก็บ step ที่รันได้จริง)
+    enable_procedural_memory_capture: bool = True
+    # เปิดแค่ "ฝั่งเขียน" (Abstractor หลัง task สำเร็จ) — additive ล้วนๆ ไม่มีอะไรอ่านจาก
+    # collection นี้เลยจนกว่า enable_procedural_memory ด้านล่างจะเปิด ปลอดภัยที่จะเปิด
+    # ไว้ default (True) ให้ template เริ่มสะสมได้ทันทีโดยไม่กระทบ behavior เดิมเลย
+    enable_procedural_memory: bool = False
+    # master flag ของ "ฝั่งอ่าน" (Memory-augmented Planner + fast-path executor) — ปิด
+    # ไว้ default จนกว่าจะ validate คุณภาพ template/locator resolution บนเว็บจริงก่อน
+    # (ดู Phase 4 ใน implementation plan) ค่อยเปิดเป็น default True
+    chroma_procedural_memory_collection_name: str = "procedural_memory"
+    procedural_memory_max_candidates: int = 3
+    procedural_memory_min_confidence: float = 0.6
+    # จำนวนครั้งสูงสุดที่ยอมให้ Repair module แก้ step เดียวกันซ้ำก่อนจะยอม escalate ไป
+    # เต็ม slow-path loop (ดู fastpath_executor.py) — กันไม่ให้วนซ่อม step เดิมไม่รู้จบ
+    # ถ้า locator เปลี่ยนไปมากจน Repair เดาไม่ถูกสักที (เทียบ pattern เดียวกับ
+    # _ACTION_RETRIES ใน actions.py)
+    procedural_memory_max_repair_attempts: int = 2
 
     # W46: perception.py::fuzzy_find() — ใช้ตอน read_page_data (actions.py) หา exact match ใน
     # ตาราง/list ไม่เจอ (เช่น user พิมพ์ชื่อผิดเล็กน้อย "Cierra Vaga" แทน "Cierra Vega") ค่า

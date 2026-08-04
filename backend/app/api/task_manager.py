@@ -22,10 +22,14 @@ self._running ที่มีไว้กัน GC เฉยๆ ไม่ผู�
 """
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Coroutine, Optional
+
+from backend.app.config import settings
 
 
 @dataclass
@@ -35,6 +39,11 @@ class TaskRecord:
     goal: str
     provider: Optional[str]
     status: str  # "running" | "done" | "error" | "cancelled"
+    # W_live: ค่า headless ที่ resolve แล้ว (ไม่มีทางเป็น None ตรงนี้ — caller resolve
+    # req.headless ก่อนส่งเข้า submit() แล้ว) ให้ frontend รู้ว่า task นี้เปิด browser
+    # แบบมองเห็นได้หรือไม่ เพื่อตัดสินใจว่าจะโชว์ live view (headless=True) หรือปิดไปเลย
+    # (headless=False — browser จริงเปิดโชว์อยู่แล้ว ไม่ต้อง stream screenshot ซ้ำซ้อน)
+    headless: bool = True
     created_at: float = field(default_factory=time.time)
     result: Optional[dict] = None
     error: Optional[str] = None
@@ -59,6 +68,39 @@ class TaskRecord:
     pending: dict = field(default_factory=dict)
 
 
+def _log_token_usage(record: TaskRecord) -> None:
+    """W49: เขียน 1 บรรทัด JSON ต่อ task ที่จบสำเร็จ (append-only, JSON Lines) — เรียกจาก
+    _run() ทันทีหลัง coro คืนค่า เป็น choke point เดียวที่ครอบคลุมทุก return path ของ
+    Orchestrator.run_task() (finish_task ปกติ, chat_reply, plan ถูกปฏิเสธ, หมด max_steps
+    — ทุกอันคืน dict ที่มี key "tokens" เหมือนกัน ดู orchestrator.py::_tokens_dict())
+    ไม่ครอบ error/cancelled เพราะสอง path นั้นไม่คืน dict เลย (exception/CancelledError)
+    ไม่มี token total ให้บันทึก — ยอมรับได้เพราะจุดประสงค์คือวัด baseline ต้นทุนของงานที่
+    ทำสำเร็จจริง ไม่ใช่ทุก request ที่ยิงเข้ามา
+
+    เขียนแบบ sync ล้วนๆ (blocking file I/O) เพราะผู้เรียกต้อง await asyncio.to_thread()
+    เสมอ กันบล็อก event loop ตอน disk ช้า — ห้าม throw ออกจากฟังก์ชันนี้เด็ดขาด (ผู้เรียก
+    ห่อ try/except ไว้อีกชั้นเผื่อพลาด แต่ตั้งใจให้ปัญหาการ log ไม่มีทางทำ task ที่เสร็จไป
+    แล้วจริงๆ กลายเป็น status="error" ย้อนหลัง)"""
+    tokens = record.result.get("tokens") if record.result else None
+    if not tokens:
+        return
+    entry = {
+        "timestamp": time.time(),
+        "task_id": record.task_id,
+        "url": record.url,
+        "goal": record.goal,
+        "provider": record.provider,
+        "steps": record.result.get("steps"),
+        "success": record.result.get("success"),
+        "duration_seconds": round(time.time() - record.created_at, 2),
+        "tokens": tokens,
+    }
+    path = Path(settings.token_usage_log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 class TaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, TaskRecord] = {}
@@ -78,13 +120,20 @@ class TaskManager:
 
     def submit(
         self, task_id: str, url: str, goal: str, provider: Optional[str],
-        coro: Coroutine[Any, Any, dict],
+        coro: Coroutine[Any, Any, dict], headless: bool = True,
     ) -> TaskRecord:
         """สร้าง TaskRecord สถานะ "running" ทันที (ด้วย task_id ที่ caller สร้างไว้ล่วงหน้า
         ผ่าน new_task_id() แล้ว) แล้วสั่งรัน coro (โดยทั่วไปคือ Orchestrator.run_task() ที่
         ห่อด้วย BrowserPool.acquire() ดู routes.py) เป็น background — ไม่ await ตรงนี้ คืน
-        record กลับทันทีให้ endpoint ส่ง response 202"""
-        record = TaskRecord(task_id=task_id, url=url, goal=goal, provider=provider, status="running")
+        record กลับทันทีให้ endpoint ส่ง response 202
+
+        headless: ค่าที่ resolve แล้ว (ไม่ใช่ req.headless ดิบๆ ที่อาจเป็น None) ให้
+        caller (routes.py) เป็นคนตัดสิน settings.browser_headless fallback เอง ก่อนส่งเข้า
+        มาตรงนี้"""
+        record = TaskRecord(
+            task_id=task_id, url=url, goal=goal, provider=provider, status="running",
+            headless=headless,
+        )
         self._tasks[task_id] = record
         task = asyncio.create_task(self._run(record, coro))
         record.asyncio_task = task
@@ -96,6 +145,10 @@ class TaskManager:
         try:
             record.result = await coro
             record.status = "done"
+            try:
+                await asyncio.to_thread(_log_token_usage, record)
+            except Exception:
+                pass
         except asyncio.CancelledError:
             # W10[C]: มาจาก cancel() (ปุ่ม Stop บนหน้าเว็บ) — โดยปกติ convention ของ
             # CancelledError คือต้อง re-raise ต่อเสมอ แต่ตัว task นี้ (จาก submit()) เป็น

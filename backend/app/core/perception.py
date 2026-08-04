@@ -51,10 +51,20 @@ from backend.app.config import settings
 # --- JS ที่ inject เข้าไปเก็บ element โต้ตอบได้ที่มองเห็นบนหน้าจอ ---
 _COLLECT_JS = r"""
 (startIndex) => {
+  // W50: role=option/menuitem*/combobox — ปุ่ม/ตัวเลือกของ custom dropdown/menu widget
+  // (MUI, Ant Design, React-select, Headless UI ฯลฯ) มักไม่ใช่ <select><option> จริงเลย
+  // แต่ implement เป็น <div>/<li> ที่มี role ตาม ARIA listbox/menu pattern แทน — เดิม
+  // selectors ด้านบนไม่มี role พวกนี้เลย ทำให้ perception มองไม่เห็นตัวเลือกข้างในหลัง
+  // เปิด dropdown แม้ document.querySelectorAll() (ด้านล่าง) จะกวาดทั้ง document อยู่แล้ว
+  // (ไม่ขึ้นกับว่า dropdown จะ portal ไปแปะที่ document.body หรือซ้อนอยู่ใต้ trigger ก็ตาม
+  // — ปัญหาจริงคือ selector ไม่ครอบคลุม ไม่ใช่เรื่อง portal location) role=combobox คือตัว
+  // trigger ของ widget แบบนี้เอง (คู่กับ [role=button] เดิมที่มีอยู่แล้ว)
   const selectors = [
     'a', 'button', 'input', 'select', 'textarea',
     '[role=button]', '[role=link]', '[role=checkbox]',
-    '[role=tab]', '[onclick]', '[tabindex]'
+    '[role=tab]', '[role=option]', '[role=menuitem]',
+    '[role=menuitemradio]', '[role=menuitemcheckbox]', '[role=combobox]',
+    '[onclick]', '[tabindex]'
   ].join(',');
 
   // footer/ส่วนที่ไม่เกี่ยวกับการทำ task จริง (โซเชียล/copyright/nav ซ้ำ) —
@@ -263,7 +273,16 @@ _COLLECT_JS = r"""
       label = label ? `${label} [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]` : '[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]';
     }
 
-    out.push({ index: idx, tag, type, label });
+    // W50 (viewport-aware sorting): เช็คว่า element นี้อยู่ในกรอบจอที่มองเห็นตอนนี้ไหม
+    // (ไม่ใช่ obscured เช็คด้านบนที่ดูว่าโดน element อื่นบังอยู่หรือเปล่า — ตัวนี้ดูแค่
+    // ตำแหน่ง top/bottom เทียบกับ viewport เฉยๆ) ใช้ rect ที่คำนวณไปแล้วด้านบนสุดของ
+    // element นี้ ไม่ query DOM เพิ่ม — get_snapshot() (ฝั่ง Python) ใช้ค่านี้ "จัดลำดับ"
+    // การแสดงผลใน text_repr เท่านั้น (element ที่เห็นอยู่ในจอตอนนี้ขึ้นก่อน) ไม่ใช่กรอง
+    // element ที่ยังไม่ scroll ถึงทิ้ง — element นอกจอยังคงอยู่ครบใน list เหมือนเดิมทุก
+    // ตัว แค่เรียงลำดับต่างไป (data-ai-index ที่แปะไปแล้วด้านบนไม่เปลี่ยนตามการเรียงนี้)
+    const inViewport = rect.bottom > 0 && rect.top < window.innerHeight;
+
+    out.push({ index: idx, tag, type, label, in_viewport: inViewport });
     idx++;
   }
   return out;
@@ -274,8 +293,9 @@ _COLLECT_JS = r"""
 async def get_snapshot(page: Page):
     """
     คืนค่า 2 อย่าง:
-      elements  = list ของ dict (index, tag, type, label)  -> ไว้ให้โค้ดใช้
-      text_repr = string สรุปสั้นๆ                          -> ไว้ยัดใส่ prompt LLM
+      elements  = list ของ dict (index, tag, type, label, in_viewport) -> ไว้ให้โค้ดใช้
+                  (in_viewport ใช้แค่จัดลำดับการแสดงผล ดู W50 ด้านล่าง — ไม่ใช่ตัวกรอง)
+      text_repr = string สรุปสั้นๆ (เรียงตาม in_viewport ก่อนแล้ว) -> ไว้ยัดใส่ prompt LLM
 
     W40: ไล่เก็บจากทุก frame ใน page.frames ไม่ใช่แค่ main document (ดู docstring หัวไฟล์) —
     main frame เก็บก่อนเสมอ (หน้าที่ไม่มี iframe เลย page.frames มีแค่ [main_frame] ตัวเดียว
@@ -293,6 +313,19 @@ async def get_snapshot(page: Page):
         except Exception:
             continue
         elements.extend(frame_elements)
+
+    # W50 (viewport-aware sorting, soft — ไม่ตัด element ทิ้ง): เรียง element ที่อยู่ใน
+    # กรอบจอที่มองเห็นตอนนี้ขึ้นก่อน element ที่อยู่นอกจอ (ยังต้อง scroll ถึง) — ใช้
+    # list.sort() ซึ่งเป็น stable sort ของ Python เสมอ (คงลำดับเดิมของกลุ่มที่ key เท่ากัน
+    # ไว้) เลยไม่กระทบลำดับเดิมภายในกลุ่ม in_viewport เดียวกัน — data-ai-index ที่แปะไปแล้ว
+    # ใน _COLLECT_JS (ผูกกับ element ตัวจริงผ่าน selector ไม่ใช่ผ่านตำแหน่งใน list) ไม่ถูก
+    # แตะเลย การเรียงนี้มีผลแค่ลำดับการแสดงผลใน text_repr ให้ LLM เห็น element ที่กำลังเปิด
+    # อยู่ตรงหน้า (เช่น dropdown ที่เพิ่ง click เปิด) ก่อน element ที่ต้อง scroll ไปหา —
+    # element นอกจอยังอยู่ครบใน list เหมือนเดิมทุกตัว ไม่มีตัวไหนถูกกรองทิ้ง
+    #
+    # หมายเหตุ: สำหรับ element ใน <iframe> ค่า in_viewport อ้างอิงตำแหน่ง scroll ของ frame
+    # นั้นเอง ไม่ใช่ของหน้าหลัก — เป็นข้อจำกัดที่ยอมรับได้ (ยังสื่อความหมายอยู่ ไม่ใช่ bug)
+    elements.sort(key=lambda e: not e.get("in_viewport", True))
 
     lines = []
     for e in elements:
@@ -374,9 +407,21 @@ _EXTRACT_TABLE_JS = r"""
 (hint) => {
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 
+  // W_ariagrid: หลายเว็บ (OrangeHRM, MUI DataGrid, AG Grid, React-select ฯลฯ) ไม่ใช้
+  // <table><tr><td> จริงเลย แต่ implement เป็น <div role="table">/<div role="row">/
+  // <div role="cell|gridcell|columnheader"> แทน (ARIA grid pattern) — querySelectorAll("tr")
+  // บน element พวกนี้จะได้ [] เสมอทั้งที่มีข้อมูลเต็มหน้า ต้อง fallback ไปหา [role=row]
+  // ก่อนยอมแพ้ (เหมือน role=option/menuitem ที่ต้องเพิ่มให้ _COLLECT_JS ตอนแก้ปัญหา custom
+  // dropdown มองไม่เห็นมาก่อนหน้านี้ — อาการเดียวกัน คนละจุด)
   const extractTable = (el) => {
-    const rows = Array.from(el.querySelectorAll("tr"))
-      .map((tr) => Array.from(tr.querySelectorAll("th,td")).map((cell) => clean(cell.innerText)))
+    let rowEls = Array.from(el.querySelectorAll("tr"));
+    let cellSelector = "th,td";
+    if (rowEls.length === 0) {
+      rowEls = Array.from(el.querySelectorAll('[role="row"]'));
+      cellSelector = '[role="cell"],[role="gridcell"],[role="columnheader"]';
+    }
+    const rows = rowEls
+      .map((tr) => Array.from(tr.querySelectorAll(cellSelector)).map((cell) => clean(cell.innerText)))
       .filter((row) => row.length > 0);
     return rows.length > 0 ? { kind: "table", rows } : null;
   };
@@ -388,9 +433,14 @@ _EXTRACT_TABLE_JS = r"""
     return items.length > 0 ? { kind: "list", items } : null;
   };
 
+  const isTableLike = (el) => {
+    const role = el.getAttribute && el.getAttribute("role");
+    return el.tagName.toLowerCase() === "table" || role === "table" || role === "grid";
+  };
+
   const extractFrom = (el) => {
     if (!el) return null;
-    return el.tagName.toLowerCase() === "table" ? extractTable(el) : extractList(el);
+    return isTableLike(el) ? extractTable(el) : extractList(el);
   };
 
   const direct = extractFrom(document.querySelector(hint));
@@ -398,12 +448,12 @@ _EXTRACT_TABLE_JS = r"""
 
   // Fallback Extraction Protocol: target_hint ที่ LLM เดามาไม่ตรง/ไม่มีข้อมูลเลย (get_snapshot()
   // กรองเฉพาะ element คลิกได้ ไม่เคยโชว์โครงสร้างตาราง/class name จริงให้ LLM เห็นเลย เดาได้
-  // แค่จาก URL/context อื่น) — ก่อนจะยอม fail ให้บังคับหาตาราง <table>/list (<ul>,<ol>) จริง
-  // บนหน้านี้ตรงๆ แล้วอ่าน td/th (หรือ li) ทุกอันตรงๆ ก่อน (เอาตัวที่มีแถว/รายการเยอะที่สุด
-  // ถ้ามีหลายอัน) แทนที่จะตอบว่า "ไม่พบข้อมูล" ทั้งที่จริงๆ มีตาราง/list อยู่บนหน้านี้ แค่เดา
-  // selector ผิดเฉยๆ
+  // แค่จาก URL/context อื่น) — ก่อนจะยอม fail ให้บังคับหาตาราง <table>/[role=table|grid]/
+  // list (<ul>,<ol>) จริงบนหน้านี้ตรงๆ แล้วอ่าน td/th (หรือ li) ทุกอันตรงๆ ก่อน (เอาตัวที่มี
+  // แถว/รายการเยอะที่สุดถ้ามีหลายอัน) แทนที่จะตอบว่า "ไม่พบข้อมูล" ทั้งที่จริงๆ มีตาราง/list
+  // อยู่บนหน้านี้ แค่เดา selector ผิดเฉยๆ
   let best = null;
-  for (const t of document.querySelectorAll("table")) {
+  for (const t of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
     const r = extractTable(t);
     if (r && (!best || r.rows.length > best.rows.length)) best = r;
   }

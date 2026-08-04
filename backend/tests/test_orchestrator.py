@@ -542,7 +542,7 @@ async def test_run_task_user_browser_mode_derives_allowed_domains_from_url_when_
     mock_execute.assert_awaited_once_with(
         mock_page, {"type": "click", "index": 1},
         ask_user_func=None, label="", manual_guidance="",
-        allowed_domains={"saucedemo.com"},
+        allowed_domains={"saucedemo.com"}, element_tag="", element_type="",
     )
 
 
@@ -573,7 +573,7 @@ async def test_run_task_user_browser_mode_passes_explicit_allowed_domains_to_exe
     mock_execute.assert_awaited_once_with(
         mock_page, {"type": "click", "index": 1},
         ask_user_func=None, label="", manual_guidance="",
-        allowed_domains={"custom.example.com"},
+        allowed_domains={"custom.example.com"}, element_tag="", element_type="",
     )
 
 
@@ -779,7 +779,7 @@ async def test_run_task_executes_action_then_finishes():
     assert result["message"] == "เพิ่มลงตะกร้าแล้ว"
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 2},
-        ask_user_func=None, label="", manual_guidance="", allowed_domains=None,
+        ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
     )
     assert result["history"] == [
         {
@@ -795,6 +795,9 @@ async def test_run_task_executes_action_then_finishes():
             "result": str(click_result),
             "success": True,
             "tokens": {"input": 50, "output": 10, "cache_read": 0, "cache_creation": 0},
+            # W_procmem: click_result เป็น ActionResult ที่สร้างขึ้นตรงๆ ในเทสต์นี้ (ไม่ผ่าน
+            # actions.py จริง) เลยไม่มี locator_descriptor แนบมา (default None)
+            "locator_descriptor": None,
         },
     ]
     # ต้องรวม token ของทั้ง 2 รอบ next_action (browser_action + finish_task) ไม่ใช่แค่รอบสุดท้าย
@@ -1056,7 +1059,7 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
     assert result["steps"] == 1
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 5},
-        ask_user_func=None, label="", manual_guidance="", allowed_domains=None,
+        ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
     )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
     append_tool_result_mock.assert_any_call(["m1"], "tool_f1", _PREMATURE_FALSE_FINISH_NUDGE)
@@ -2652,6 +2655,7 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
+        verification_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -2717,6 +2721,7 @@ async def test_run_task_compacts_anthropic_history_once_step_count_exceeds_thres
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
+        verification_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -2780,6 +2785,7 @@ async def test_run_task_compacts_groq_history_and_preserves_leading_system_messa
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
+        verification_context="",
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1

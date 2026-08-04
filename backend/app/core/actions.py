@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
+from backend.app.core.dom_locator import compute_locator_descriptor
 from backend.app.core.perception import count_elements, extract_table_data, resolve_frame
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
 
@@ -59,6 +60,14 @@ class ActionResult:
     success: bool
     action: str
     message: str = ""
+    # W_procmem: locator ที่ "อยู่รอด" ข้าม task run ได้ (ดู core/dom_locator.py) —
+    # คำนวณเฉพาะตอน action สำเร็จจริงใน click/fill/select_option/check เท่านั้น (ดูจุด
+    # เรียก compute_locator_descriptor() ในแต่ละฟังก์ชันด้านล่าง) None สำหรับ action อื่น
+    # ทั้งหมด (goto/scroll/go_back/switch_tab/wait_stable/read_page_data — ไม่มี element
+    # เดี่ยวๆ ให้ abstract) และ None ตอน action ล้มเหลวด้วย (ไม่มีอะไรให้อธิบาย element
+    # ที่ยังไม่เกิดผลจริง) — default None ท้ายสุดไม่กระทบ call site เดิมที่สร้าง
+    # ActionResult(success, action, message) แบบ positional 3 ตัวเลยสักที่เดียว
+    locator_descriptor: Optional[dict] = None
 
     def __str__(self):
         mark = "OK" if self.success else "FAIL"
@@ -123,7 +132,8 @@ async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.click(selector, timeout=timeout)
-        return ActionResult(True, f"click({index})", "คลิกสำเร็จ")
+        descriptor = await compute_locator_descriptor(target, selector)
+        return ActionResult(True, f"click({index})", "คลิกสำเร็จ", locator_descriptor=descriptor)
     except PWTimeout:
         return ActionResult(False, f"click({index})", "หา element ไม่เจอ/คลิกไม่ได้ (timeout)")
     except Exception as e:
@@ -189,13 +199,35 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
     return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
 
 
+# W50: keyboard-based interaction สำหรับ custom dropdown/menu widget (MUI/Ant Design/
+# React-select/Headless UI ฯลฯ) ที่ implement เองด้วย <div>/<li> role=option/menuitem
+# (ดู perception.py W50) ไม่ใช่ <select><option> จริง — คลิกเลือก option ตรงๆ บางทีพลาด
+# เพราะ DOM ซับซ้อน/มี animation/ตัวเลือกซ้อนอยู่ใต้ overlay — sequence ที่เสถียรกว่าคือ
+# click เปิด dropdown ก่อน แล้วส่ง key (ArrowDown/ArrowUp/Enter ฯลฯ) ไปยัง element เดิม
+# (เบราว์เซอร์ native keyboard navigation ของ widget เอง) แทนการไล่หา selector ของตัวเลือก
+async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
+    """ส่ง key event ไปยัง element ตาม index (Playwright's locator.press() focus element
+    ให้ก่อนส่ง key เองอยู่แล้ว — ต่างจาก page.keyboard.press() ที่ยิงไปที่ element ที่มี
+    focus อยู่ ณ ขณะนั้นเฉยๆ ไม่รับประกันว่าเป็น element ที่ LLM ตั้งใจสั่ง)"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.press(selector, key, timeout=timeout)
+        return ActionResult(True, f"press_key({index}, {key})", f"กดปุ่ม '{key}' สำเร็จ")
+    except PWTimeout:
+        return ActionResult(False, f"press_key({index}, {key})", "หา element ไม่เจอ/กดปุ่มไม่ได้ (timeout)")
+    except Exception as e:
+        return ActionResult(False, f"press_key({index}, {key})", f"error: {e}")
+
+
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.fill(selector, text, timeout=timeout)
-        return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ")
+        descriptor = await compute_locator_descriptor(target, selector)
+        return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ", locator_descriptor=descriptor)
     except PWTimeout:
         return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
     except Exception as e:
@@ -234,8 +266,10 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
     if matched is not None:
         try:
             await target.select_option(selector, value=matched["value"], timeout=timeout)
+            descriptor = await compute_locator_descriptor(target, selector)
             return ActionResult(
                 True, f"select({index})", f"เลือก '{_normalize_option_text(matched['text'])}' สำเร็จ",
+                locator_descriptor=descriptor,
             )
         except PWTimeout:
             return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
@@ -246,7 +280,8 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
     # attribute ไม่ใช่ text ที่เห็น (ของเดิมมี fallback นี้อยู่แล้ว ยังคงไว้เหมือนเดิม)
     try:
         await target.select_option(selector, value=label, timeout=timeout)
-        return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ")
+        descriptor = await compute_locator_descriptor(target, selector)
+        return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ", locator_descriptor=descriptor)
     except Exception:
         options_repr = ", ".join(repr(_normalize_option_text(o["text"])) for o in options)
         options_repr = options_repr or "(ไม่พบ option ใดๆ ใน dropdown นี้)"
@@ -263,7 +298,8 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.check(selector, timeout=timeout)
-        return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ")
+        descriptor = await compute_locator_descriptor(target, selector)
+        return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ", locator_descriptor=descriptor)
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")
 
@@ -401,7 +437,8 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label
 # ------------------------------------------------------------
 async def execute(
     page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
-    manual_guidance: str = "", allowed_domains: Optional[set] = None,
+    manual_guidance: str = "", allowed_domains: Optional[set] = None, element_tag: str = "",
+    element_type: str = "",
 ) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
@@ -429,10 +466,22 @@ async def execute(
     นี้ (ดู permission/rules.py::classify_action ส่วน allowed_domains) ไม่ส่งมาก็ได้
     (default None = พฤติกรรมเดิม ใช้ ALLOWED_DOMAINS ของ module) — ใช้ตอน orchestrator
     ต่อ agent เข้า browser จริงของ user เพื่อจำกัด goto แค่โดเมนของ task นั้นๆ
+
+    element_tag (W_search follow-up): ชื่อ HTML tag ของ element เป้าหมาย (เช่น "a") —
+    ส่งต่อให้ classify_action() เช็คสัญญาณโครงสร้างเป็นชั้นสำรองอีกชั้นนอกจาก label (ดู
+    permission/rules.py::ANCHOR_TAG) ไม่ส่งมาก็ได้ (default "")
+
+    element_type (W_search follow-up 2): ค่า attribute "type" ของ element เป้าหมาย
+    (เช่น input ที่ type="text"/"search"/"submit") — ส่งต่อให้ classify_action() คู่กับ
+    element_tag (ดู permission/rules.py::SAFE_INPUT_TAG/RISKY_INPUT_TYPES) ไม่ส่งมาก็ได้
+    (default "")
     """
     t = cmd.get("type")
 
-    risk = classify_action(cmd, label=label, manual_guidance=manual_guidance, allowed_domains=allowed_domains)
+    risk = classify_action(
+        cmd, label=label, manual_guidance=manual_guidance, allowed_domains=allowed_domains,
+        element_tag=element_tag, element_type=element_type,
+    )
     if risk == ActionRisk.BLOCKED:
         return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
     if risk == ActionRisk.NEEDS_CONFIRMATION:
@@ -459,6 +508,7 @@ async def execute(
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])
         if t == "wait":        return await wait_stable(page)
         if t == "hover":       return await hover(page, cmd["index"])
+        if t == "press_key":   return await _dispatch_with_retry(press_key, page, cmd["index"], cmd["key"])
         if t == "read_page_data":
             return await read_page_data(page, cmd.get("query", ""), cmd.get("target_hint", ""))
         if t in DEFAULT_NEEDS_CONFIRMATION:
