@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-07-31)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-04)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -2698,6 +2698,170 @@
            stash ว่า fail เหมือนกันบน branch เดิมที่ยังไม่แตะเลย) + รันแยก `pytest -q
            backend/tests/test_site_learning_crawler.py` (real chromium ทั้งไฟล์ รวม dead-
            end mid-crawl login test ใหม่) ยืนยันเพิ่ม 70 เคสผ่านหมด — รวม 345 เคสผ่าน
+
+  [x] W49  Perception robustness: custom dropdown/menu widget + ARIA-grid table +
+           viewport-aware ordering — เสร็จแล้ว (2026-08-04)
+
+           อาการ: (1) เว็บที่ implement dropdown/menu เองด้วย <div>/<li> role=option/
+           menuitem (MUI, Ant Design, React-select, Headless UI ฯลฯ) แทน <select><option>
+           จริง — perception เดิมมองไม่เห็น option พวกนี้เลยหลังเปิด dropdown เพราะ
+           selector list ไม่มี role เหล่านี้ (2) เว็บที่ implement ตารางด้วย ARIA grid
+           pattern (<div role="table">/[role=row]/[role=cell|gridcell]) แทน
+           <table><tr><td> จริง เช่น OrangeHRM, MUI DataGrid — read_page_data() หา "tr"
+           ไม่เจอเลยทั้งที่มีข้อมูลเต็มหน้า (3) เมื่อเปิด dropdown/menu ใหม่ element ที่
+           เพิ่งโผล่มักอยู่ท้าย text_repr (เรียงตามลำดับที่เจอใน DOM) ทำให้ LLM เผลอมองข้าม
+           ทั้งที่ element นั้นอยู่ตรงหน้าจอพอดี
+
+           แก้: (1) perception.py::_COLLECT_JS เพิ่ม selector [role=option]/[role=menuitem]/
+           [role=menuitemradio]/[role=menuitemcheckbox]/[role=combobox] เข้าไปคู่กับ
+           [role=button] เดิม + เพิ่ม actions.py::press_key() (locator.press() ส่ง
+           ArrowDown/ArrowUp/Enter ไปยัง element ที่มี focus จริง) ให้เลือก option ผ่าน
+           native keyboard navigation ของ widget แทนการไล่คลิก selector ที่เดายาก (2)
+           perception.py::_EXTRACT_TABLE_JS fallback ไปหา [role="row"]/[role="cell"/
+           "gridcell"/"columnheader"] เมื่อ querySelectorAll("tr") ได้ [] (3) เพิ่ม field
+           in_viewport ต่อ element (เช็คแค่ rect.top/bottom เทียบ window.innerHeight ไม่
+           กรอง element นอกจอทิ้ง) แล้ว sort แบบ stable ให้ element ในจอขึ้นก่อนใน
+           text_repr เท่านั้น (data-ai-index ที่ผูกกับ selector จริงไม่ถูกกระทบ)
+
+           รันจริง `pytest -q backend/tests/test_perception.py backend/tests/test_actions.py
+           backend/tests/test_llm.py` ผ่านทั้งหมด ไม่มี regression กับ overlay detection/
+           hover-to-reveal (W47) ที่ทำมาก่อนหน้า
+
+  [x] W50  Reliability/observability เล็กๆ 5 จุด: token usage baseline logging, timeout
+           กัน /api/generate_plan ค้าง, Plan Memory ปฏิเสธ reuse เมื่อ goal ต่างแค่ค่า
+           เฉพาะเจาะจง, real-user-browser เปิด tab ผิด window, auto-login เข้าใจผิดว่า
+           SPA login ล้มเหลว — เสร็จแล้ว (2026-08-04)
+
+           (1) token usage baseline: เพิ่ม api/task_manager.py::_log_token_usage() เขียน
+           1 บรรทัด JSON (JSON Lines, append-only) ต่อ task ที่จบสำเร็จลง
+           data/token_usage.jsonl (path ตั้งจาก settings.token_usage_log_path) — ไว้วัด
+           baseline ต้นทุน token ก่อนเริ่มงานปรับ pipeline ในอนาคต แยกจาก long_term_memory
+           ที่มีไว้ให้ agent recall เอง ไม่ใช่ไว้ให้ developer วิเคราะห์ cost
+
+           (2) generate_plan timeout: POST /api/generate_plan เรียก LLM ตรงๆ
+           (classify_intent + generate_plan) โดยไม่มี timeout เลยเดิม — ถ้า provider ตอบ
+           ช้าผิดปกติ (rate limit/network) endpoint ค้างเงียบๆ ไม่มีวันจบ (อาการจริงที่ user
+           เจอ: หน้าจอค้างที่ "Generating plan…") แก้ด้วย asyncio.wait_for(...,
+           timeout=settings.plan_generation_timeout_seconds คือ 45s) คืน HTTP 504 พร้อม
+           ข้อความชัดเจนแทน
+
+           (3) Plan Memory value-substitution bug: goal เดิมที่เคย confirm ไปแล้ว
+           "edit role Cody55 to admin" ถูกบันทึกเป็น lineage เดียว พอ user พิมพ์ goal ใหม่
+           "edit role username::gfgfgf to admin" (เปลี่ยนแค่ username เป้าหมาย) embedding
+           distance ใกล้กันมาก (ต่างกันแค่ 1 token) เลย "match" แล้วคืนแผนเก่าที่มีคำว่า
+           "Cody55" ฝังอยู่ในทุก step กลับไปให้ user เห็นตอน review — ผิดเป้าหมายไปเลย แก้
+           ด้วย plan_memory.py::_is_value_substitution_only() (difflib.SequenceMatcher
+           เทียบ token เดิม/ใหม่ — ratio() ≥ 0.6 แต่มี replace-opcode เดียวและสั้น ≤2 token
+           ถือว่าเป็นการเปลี่ยนค่าเฉพาะเจาะจง ไม่ใช่แค่ถ้อยคำต่างกัน) ทั้ง
+           find_matching_plan() (ปฏิเสธ reuse) และ save_confirmed_plan() (แยก lineage ใหม่
+           แทนเพิ่ม version ให้ lineage เดิม)
+
+           (4) real-user-browser tab ผิด window: session_registry.py เดิมเรียก
+           context.new_page() ตรงๆ ตอนต้องเปิด tab ใหม่ให้ session mode="user_browser" —
+           context นี้คือ Chrome จริงของ user ที่อาจมีหลาย window เปิดพร้อมกัน
+           context.new_page() (CDP Target.createTarget()) ไม่การันตีว่า tab ใหม่จะไปโผล่
+           window เดียวกับที่ user กำลังดูอยู่ (บั๊กจริงที่ user รายงาน) แก้ด้วยเรียก
+           user_browser.py::_open_new_tab_in_same_window() ตัวเดียวกับที่
+           resolve_target_page() ใช้ตอนสร้าง session ครั้งแรกแทน
+
+           (5) auto-login SPA timing: auto_login.py::attempt_login() เดิมเรียก
+           wait_for_load_state("networkidle") ทันทีหลังกด submit — เว็บ SPA บางแห่งที่ยิง
+           XHR ตรวจ credential ก่อนค่อย route เปลี่ยนหน้ามีช่วงหน่วงสั้นๆ ทำให้ networkidle
+           resolve ทันทีเพราะหน้าเดิมก็ idle อยู่แล้ว แล้ว verify_login_success() เข้าใจผิด
+           ว่า login ไม่ผ่านทั้งที่จริงๆ แค่ยังไม่ทันเปลี่ยนหน้า แก้ด้วยรอ
+           page.wait_for_url(lambda u: u != pre_click_url) ก่อนเป็นอันดับแรก (เงียบๆ ถ้า
+           timeout เพราะ login ที่ล้มเหลวจริงก็ไม่มีทาง URL เปลี่ยนอยู่ดี)
+
+           แถม: TaskRecord/TaskStatusResponse เพิ่ม field "headless" (ค่าที่ resolve แล้ว
+           ไม่มีทาง None) ให้ frontend ตัดสินใจโชว์/ซ่อน live view ได้ถูกต้อง + อัปเกรด
+           playwright 1.48.0 -> 1.62.0 (Edge ที่ Windows auto-update ให้บนเครื่อง dev ขึ้น
+           ไปถึง 151.x แล้ว แต่ 1.48.0 คุยกับ real Edge/Chrome ผ่าน channel="msedge"/
+           "chrome" ไม่ได้เลย — TargetClosedError ทุกครั้งที่ launch ด้วย channel จริง —
+           1.62.0 มาพร้อม bundled Chromium สาย 151.x เดียวกันแก้ปัญหานี้ได้จริง)
+
+           ยืนยันด้วยการรัน pytest เต็มชุด (ดู W52 ด้านล่างสำหรับตัวเลขรวมท้ายสุด) — ไม่มี
+           regression ใหม่จาก 5 จุดนี้
+
+  [x] W51  Procedural Memory: Abstractor + Memory-augmented Planner + Repair/fast-path
+           executor (4 phases เต็ม ตามแผน) — เสร็จแล้ว (2026-08-04)
+
+           ปัญหาเดิม: agent วิ่ง perceive→plan→act เต็มลูปทุก action step แม้เป็น task
+           ประเภทที่เคยทำสำเร็จมาก่อนแล้ว (ยิง LLM 1 ครั้งต่อ step ไม่มีข้อยกเว้น) — Plan
+           Memory ที่มีอยู่ก่อนช่วยข้าม LLM call ได้แค่ตอน "ร่างแผน" (1 ครั้งต่อ task) ไม่
+           ช่วยระหว่าง execution loop เลย
+
+           งานนี้เพิ่มชั้นใหม่ทั้งหมด แยกจาก Plan Memory เดิม (ยังทำงานเป็น fallback ชั้น
+           ถัดไปเหมือนเดิมทุกประการ): Abstractor (llm.py::abstract_trajectory — หลัง task
+           สำเร็จ กลั่นเป็น template ที่มี ordered steps + stable locator (dom_locator.py,
+           ต่อยอด site_learning/extractor.py::computeSelector()) + {{slot}} placeholder
+           เสมอ ไม่เคยจดค่าจริง/รหัสผ่านลงไป) → เก็บใน ChromaDB collection แยก
+           (procedural_memory.py, chroma_client.py::get_procedural_memory_collection())
+           → Memory-augmented Planner (llm.py::plan_with_procedural_memory — ตัดสินใจ
+           reuse/adapt/plan_fresh ด้วย confidence threshold, บอกด้วยว่าโดเมนนี้มี
+           auto-login credential เก็บไว้ไหมกันเข้าใจผิดว่า template ที่ไม่มี step login
+           ขาดอะไรไป) → fast-path executor (fastpath_executor.py — resolve locator ผ่าน
+           chain get_by_role→get_by_label→get_by_test_id→css_fallback, verify แบบ
+           deterministic ไม่พึ่ง LLM, Repair (llm.py::repair_step) เป็น safety net เมื่อ
+           step พัง ซ่อมได้ไม่เกิน procedural_memory_max_repair_attempts ครั้งก่อน
+           escalate กลับไปที่ slow-path loop เดิมเสมอ) — ต่อเข้า routes.py::generate_plan/
+           execute_plan (ลำดับความสำคัญ: procedural template → plan_memory → LLM ร่างใหม่)
+           และ orchestrator.py::run_fastpath() ทั้งหมดปิดไว้เป็น default
+           (enable_procedural_memory=False, เปิดแค่ enable_procedural_memory_capture=True
+           ให้เริ่มสะสม template ได้แบบ additive ล้วนๆ ไม่กระทบ behavior เดิม)
+
+           บั๊กจริง 2 จุดที่เจอตอน validate end-to-end บน OrangeHRM: (ก) run_fastpath()
+           ไม่เคยเรียก auto-login เลย (นำทางตรงเข้า template ทันที) ทำให้ replay บน browser
+           context ที่ล็อกเอาต์อยู่ล้มเหลวเสมอ — แก้ด้วยย้าย navigation ออกจาก
+           execute_template() ไปที่ Orchestrator.run_fastpath() ซึ่งเรียก
+           _maybe_auto_login() ก่อนเสมอเหมือน run_task() ปกติ (ข) Planner ไม่รู้ว่าโดเมนนี้
+           มี auto-login credential อยู่ ทำให้ตัดสินใจ "ไม่มั่นใจพอ" (plan_fresh) กับ
+           candidate ที่ถูกต้องแล้ว — แก้ด้วยเพิ่ม has_auto_login parameter (ดูย่อหน้าบน)
+
+           ยืนยัน end-to-end จริงบน OrangeHRM/saucedemo.com/uitestingplayground.com (ไม่ mock
+           สักจุด — Playwright จริง + Gemini จริง): Abstractor สร้าง template ที่มี
+           {{slot}} ไม่มีค่าจริง/รหัสผ่านปน, Planner เลือก reuse/adapt ถูกต้อง, fast-path
+           replay สำเร็จบน browser context ใหม่ (auto-login ทำงานถูกทั้ง 2 บั๊กที่แก้แล้ว),
+           Repair กู้คืนได้จริงเมื่อจงใจเปลี่ยน selector ของ template, escalate กลับ
+           slow-path เมื่อ repair เกินโควตา — ยืนยันด้วยการรัน pytest เต็มชุด (ดู W52
+           ด้านล่างสำหรับตัวเลขรวมท้ายสุด)
+
+  [x] W52  แก้ agent ขอ approve ปุ่มค้นหา/คลิกดูวิดีโอบน YouTube ทั้งที่เป็น action ที่
+           ย้อนกลับได้ง่าย ไม่มีผลถาวร — เสร็จแล้ว (2026-08-04)
+
+           อาการ: user รายงานว่า agent ขึ้น "PERMISSION NEEDED" ทั้งตอนกดปุ่มค้นหาและตอน
+           คลิกเลือกวิดีโอจากผลการค้นหาบน YouTube ทั้งที่ทั้งคู่เป็น action ที่ปลอดภัยมาก
+           (แค่ค้นหา/เปิดดูเนื้อหา) สาเหตุคือ LLM บางครั้งเลือก action type "submit" ให้กับ
+           การกดปุ่มค้นหา/กด Enter ค้นหา (ตีความ "ค้นหา"/"เลือก" ว่าเป็นการ "ส่งฟอร์ม"/
+           "ยืนยัน" ทางความหมาย) ซึ่ง classify_action() ให้ NEEDS_CONFIRMATION แบบไม่มี
+           เงื่อนไขสำหรับ type ใน DEFAULT_NEEDS_CONFIRMATION (submit/delete/purchase/pay)
+
+           แก้เป็น 3 ชั้น (permission/rules.py::classify_action) หลัง label ไม่ match
+           RISKY_LABEL_KEYWORDS เลย: (1) SAFE_ACTION_LABEL_KEYWORDS — label ที่ชัดเจนว่า
+           เป็นคำกริยาสั่งงานปลอดภัย ("search"/"ค้นหา"/"watch"/"ดู"/ฯลฯ) ลดระดับกลับเป็น
+           SAFE (2) ANCHOR_TAG — label เป็นเนื้อหาอิสระ (เช่นชื่อวิดีโอ "เพลงรัก - Three
+           Man Down |Official MV|") ไม่ match คำปลอดภัยหรือเสี่ยงเลย แต่ element เป็น <a>
+           ธรรมดา (แค่ navigate ไปหน้าอื่น ย้อนกลับง่าย ไม่ submit ข้อมูลอะไรจริง) ก็ลด
+           ระดับเป็น SAFE (3) SAFE_INPUT_TAG/RISKY_INPUT_TYPES — เจอเคสที่สองว่าหลังพิมพ์
+           คำค้นหาลงช่องค้นหาสำเร็จ label ของช่องนั้นกลายเป็นคำค้นหาดิบๆ (perception.py
+           คำนวณ label จาก el.value เมื่อ innerText ว่าง) ถ้า LLM เผลอเลือก type="submit"
+           ให้ action "กด Enter ค้นหา" (แทนที่จะเป็น "press_key" ที่ถูกต้อง) label ที่เป็น
+           คำค้นหาก็ไม่ match ทั้งสองฝั่งเหมือนกัน — <input> ที่ไม่ใช่ type="submit"/
+           "image"/"password" จริงๆ ก็ลดระดับเป็น SAFE เช่นกัน ทั้ง 2 สัญญาณโครงสร้าง (tag/
+           input-type) เป็น defense-in-depth ต่อจาก label เดิม ไม่ใช่แทนที่ — label เสี่ยง
+           (RISKY_LABEL_KEYWORDS) และคู่มือ (manual_guidance) ยังคงชนะเสมอไม่ว่า tag จะดู
+           ปลอดภัยแค่ไหน เสริมด้วยตัวอย่างชัดเจนใน SYSTEM_PROMPT (llm.py) ว่าคลิกเลือกผลการ
+           ค้นหา/กด Enter ค้นหาต้องใช้ "click"/"press_key" เสมอ ไม่ใช่ "submit"
+
+           ยืนยันจริงตรงบน server ที่รันอยู่ (ไม่ใช่แค่ unit test): เปิด SSE stream ของ
+           task จริงบน YouTube พิสูจน์ locator_descriptor.tag=="a" ของปุ่มวิดีโอที่เคยขอ
+           approve ตอนนี้ execute ผ่านโดยไม่ถามยืนยันเลย เพิ่ม unit test 14 เคสใหม่ใน
+           test_perm.py (safe label ทั้ง 3 signal, risky label ชนะทุก signal เสมอ,
+           element_tag/element_type ไม่ส่งมาไม่ auto-safe)
+
+           รันจริง `pytest -q` เต็มชุดหลังรวมงาน W49-W52 ทั้งหมด: 761 เคสผ่าน, เหลือ 10
+           เคส fail เดิมที่มีมาก่อนงานทั้งหมดนี้แล้ว (9 เคสใน test_orchestrator.py ที่ยิง
+           Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ + 1 เคสใน
+           test_site_learning_crawler.py — ยืนยันเหมือนเดิมทุกประการกับก่อนเริ่มงานนี้)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

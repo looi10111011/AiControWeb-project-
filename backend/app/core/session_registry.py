@@ -40,7 +40,12 @@ from playwright.async_api import Browser, BrowserContext, Page, Playwright, asyn
 from backend.app.config import settings
 from backend.app.core.browser_pool import BrowserPool
 from backend.app.core.orchestrator import _detect_default_browser_channel, _launch_chromium
-from backend.app.core.user_browser import AskUserFunc, connect_user_browser, resolve_target_page
+from backend.app.core.user_browser import (
+    AskUserFunc,
+    _open_new_tab_in_same_window,
+    connect_user_browser,
+    resolve_target_page,
+)
 
 
 @dataclass
@@ -201,7 +206,17 @@ class SessionRegistry:
 
         if browser_alive:
             try:
-                if session.context is not None:
+                if session.mode == "user_browser" and session.context is not None:
+                    # W_fix: ห้าม context.new_page() ตรงๆ สำหรับ mode "user_browser" —
+                    # context นี้คือ Chrome จริงของ user ที่อาจมีมากกว่า 1 window เปิดพร้อม
+                    # กัน context.new_page() (CDP Target.createTarget()) ไม่การันตีว่า tab
+                    # ใหม่จะไปโผล่ window เดียวกับที่ user กำลังดูอยู่ (นี่คือ bug ที่ user
+                    # รายงานจริง: agent เปิด window ใหม่ทั้งที่ควรทำงานต่อบน tab เดิม) —
+                    # ใช้ helper เดียวกับที่ resolve_target_page() ใช้ตอนสร้าง session
+                    # ครั้งแรก (ดู user_browser.py::_open_new_tab_in_same_window()
+                    # docstring) แทน ซึ่งรับประกัน tab ใหม่อยู่ window เดียวกันเสมอ
+                    session.page = await _open_new_tab_in_same_window(session.context)
+                elif session.context is not None:
                     session.page = await session.context.new_page()
                 else:
                     session.page = await session.browser.new_page()

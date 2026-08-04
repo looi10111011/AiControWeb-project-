@@ -1,0 +1,56 @@
+{
+  "หน้าแรก YouTube > Guide": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Guide",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > Skip navigation": {
+    "css": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Skip navigation",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > Search": {
+    "css": "button.ytSearchboxComponentSearchButton",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]",
+    "aria": "Search",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > Search with your voice": {
+    "css": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextText.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconOnlyDefault.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+    "aria": "Search with your voice",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > Settings": {
+    "css": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+    "xpath": "//*[@id=\"button\"]",
+    "aria": "Settings",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > Sign in": {
+    "css": "a.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextOutline.ytSpecButtonShapeNextCallToAction.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconLeading.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+    "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]",
+    "aria": "Sign in",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > [List Item Pattern]": {
+    "css": "#offline_no_content__a",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > [Style Scope]": {
+    "css": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าแรก YouTube > [Style Scope] Home": {
+    "css": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+    "xpath": "//*[@id=\"endpoint\"]",
+    "aria": "Home",
+    "data_testid": ""
+  }
+}

@@ -111,8 +111,19 @@
   .col-header{ padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; gap:8px; }
   .chat-header{ justify-content:flex-start; }
   .chat-header .eyebrow{ flex-shrink:0; }
-  .chat-url-input{ flex:1; min-width:0; background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12.5px; }
+  /* W_urllock: sized to comfortably fit a typical URL (not flex:1 growing to fill the whole
+     header) so the pencil button sits right after it instead of stranded at the far right of
+     a bar-length input — still allowed to shrink (not grow) on a narrow window. */
+  .chat-url-input{ flex:0 1 380px; min-width:0; background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12.5px; }
   .chat-url-input:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  /* W_urllock: once a turn exists for the conversation, the target URL is locked (readonly)
+     — it was set the moment the task started, editing it afterward wouldn't retroactively
+     change what already ran, and the "edit pencil" is there for the one case that's actually
+     useful: overriding the target for the *next* follow-up turn. */
+  .chat-url-input[readonly]{ background:transparent; color:var(--muted); cursor:default; }
+  .btn-edit-url{ flex-shrink:0; width:26px; height:26px; border-radius:7px; border:1px solid var(--border); background:transparent; color:var(--faint); cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .btn-edit-url:hover{ border-color:var(--accent); color:var(--accent); }
+  .btn-edit-url svg{ width:13px; height:13px; }
   .col-body{ flex:1; min-height:0; overflow-y:auto; padding:0 8px 12px; }
 
   /* ---- History ---- */
@@ -142,18 +153,42 @@
   /* ---- Chat ---- */
   .chat{ background:var(--surface); }
   .chat .col-body{ padding:18px 22px; display:flex; flex-direction:column; gap:14px; }
+  /* W_live: fixed-height strip above the transcript showing the agent's live page view —
+     flex-shrink:0 so it keeps its height regardless of how much chat/plan content is below
+     it; the transcript below keeps scrolling in its own overflow-y:auto as before. Shrinks
+     in width automatically along with the rest of the chat column when the Log rail toggles
+     open (that's the .main grid's minmax(0,1fr) column doing its normal job, same as it
+     always did for the chat area — no extra layout code needed for that part). */
+  /* W_live: size is computed in JS (see fitLiveView()), not pure CSS — earlier attempts with
+     CSS-only aspect-ratio kept losing one constraint or the other:
+       - aspect-ratio + max-height alone: max-height wins over aspect-ratio while width still
+         fills the full column via the margin below, breaking the ratio -> letterboxing.
+       - aspect-ratio with no max-height: zero letterboxing, but nothing capped the size on a
+         tall/wide window -> the box swallowed the whole screen (this is what was just
+         reported — no room left to see chat below it).
+     fitLiveView() picks whichever of (available column width) or (a height cap) is more
+     restrictive and sizes both dimensions from *that one*, so the box's rendered ratio always
+     equals the real image's ratio exactly — no bars, and never bigger than the height cap.
+     align-self:center below opts this out of the flex column's default width:stretch so an
+     explicit narrower width (from the height-cap case) doesn't get stretched back out. */
+  .live-view{ flex-shrink:0; align-self:center; max-width:100%; margin:14px 22px 0; border-radius:10px; overflow:hidden; background:#000; display:flex; align-items:center; justify-content:center; border:1px solid var(--border); }
+  .live-view img{ width:100%; height:100%; object-fit:contain; }
+  .live-view-placeholder{ color:var(--faint); font-size:12.5px; text-align:center; padding:0 20px; }
+  /* explicit divider line between the live-view box and the chat transcript below it — the
+     18px top padding of .chat .col-body already left a visual gap there, but with nothing
+     drawn in it the two areas read as blending together; shown/hidden together with
+     #liveView itself (see renderLiveView()). */
+  .live-view-divider{ flex-shrink:0; height:1px; background:var(--border); margin:14px 22px 0; }
   .transcript-empty{ margin:auto; text-align:center; color:var(--faint); font-size:13px; max-width:280px; }
   .msg{ display:flex; gap:10px; max-width:100%; }
   .msg .avatar{ width:26px;height:26px;border-radius:7px;flex-shrink:0; display:flex;align-items:center;justify-content:center; font-size:11px;font-weight:700; }
   .msg.user{ align-self:flex-end; flex-direction:row-reverse; }
   .msg.user .avatar{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
   .msg.agent .avatar{ background:var(--accent); color:var(--accent-ink); }
-  .bubble{ padding:10px 13px; border-radius:12px; font-size:13.5px; line-height:1.55; max-width:440px; }
+  .bubble{ padding:10px 13px; border-radius:12px; font-size:13.5px; line-height:1.55; max-width:440px; white-space:pre-wrap; }
   .msg.user .bubble{ background:var(--surface-2); border:1px solid var(--border); border-top-right-radius:3px; }
   .msg.agent .bubble{ background:var(--accent-soft); border-top-left-radius:3px; }
   .msg.agent.error .bubble{ background:var(--critical-soft); color:var(--critical); }
-  .msg .meta-line{ font-size:11px; color:var(--faint); margin-top:4px; }
-  .msg.user .meta-line{ text-align:right; }
   .stat-line{ display:flex; gap:12px; font-size:11.5px; color:var(--faint); margin-top:5px; }
 
   /* ---- Human-in-the-loop approval cards ---- */
@@ -174,15 +209,18 @@
   .plan-bubble-title .plan-badge{ font-size:10px; padding:1px 7px; border-radius:5px; font-weight:700; text-transform:none; letter-spacing:0; }
   .plan-badge.ok{ background:var(--accent); color:var(--accent-ink); }
   .plan-badge.fail{ background:var(--critical-soft); color:var(--critical); }
+  .plan-badge.running{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
   .plan-bubble-text{ font-size:13px; line-height:1.6; white-space:pre-wrap; color:var(--ink); margin-bottom:8px; }
-  /* W43: real-time checklist rendering of a numbered plan ("1. ... \n2. ...") — each line
-     becomes its own row with a checkbox-style marker that fills in as the agent completes
-     that step during the run (see plan_step_done handling in handleStreamEvent()). Falls
-     back to the plain .plan-bubble-text block above when the plan text doesn't parse into
-     numbered steps at all (e.g. an older/malformed plan), so nothing silently disappears. */
-  .plan-checklist{ list-style:none; margin:0 0 8px; padding:0; display:flex; flex-direction:column; gap:6px; }
-  .plan-checklist-item{ display:flex; align-items:flex-start; gap:8px; font-size:13px; line-height:1.5; color:var(--ink); }
-  .plan-checklist-box{ flex:0 0 auto; width:16px; height:16px; margin-top:1px; border-radius:4px; border:1.5px solid var(--faint); display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1; color:var(--accent-ink); transition:background-color .15s, border-color .15s; }
+  /* W_planrail: real-time checklist of a numbered plan ("1. ... \n2. ..."), now rendered in
+     the right-rail Plan panel (see renderPlanPanel()) instead of an inline chat bubble —
+     each line ticks off as the agent completes it (plan_step_done SSE events) or all at once
+     the moment the whole task finishes successfully (a task can finish "faster" than every
+     individual per-step signal arrives/gets acted on — see renderPlanPanel()'s allDone).
+     Tighter spacing than a chat bubble needs since this now lives in a narrow persistent
+     rail column, not a wide one-off message. */
+  .plan-checklist{ list-style:none; margin:0; padding:8px; display:flex; flex-direction:column; gap:4px; }
+  .plan-checklist-item{ display:flex; align-items:flex-start; gap:7px; font-size:12.5px; line-height:1.4; color:var(--ink); }
+  .plan-checklist-box{ flex:0 0 auto; width:15px; height:15px; margin-top:1px; border-radius:4px; border:1.5px solid var(--faint); display:flex; align-items:center; justify-content:center; font-size:10px; line-height:1; color:var(--accent-ink); transition:background-color .15s, border-color .15s; }
   .plan-checklist-item.done .plan-checklist-box{ background:var(--accent); border-color:var(--accent); }
   .plan-checklist-item.done .plan-checklist-text{ color:var(--muted); text-decoration:line-through; text-decoration-color:var(--faint); }
   .plan-edit-textarea{ width:100%; background:var(--surface); border:1px solid var(--border); color:var(--ink); border-radius:6px; padding:8px; font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; min-height:110px; margin-bottom:8px; }
@@ -247,9 +285,13 @@
   .log-toggle-btn:hover{ border-color:var(--accent); color:var(--accent); }
   .log-toggle-btn.active{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
 
-  /* ---- Right rail: Log (collapsed by default — toggled by .log-toggle-btn) ---- */
+  /* ---- Right rail: Plan + Log — each .col is a flex item so when both are visible at
+     once they split the rail's height 50/50 automatically (equal flex:1, no basis set);
+     when only one is visible the other is display:none so the visible one just fills 100%
+     on its own — no separate "solo" CSS path needed. */
   .right-rail{ display:flex; flex-direction:column; min-height:0; }
-  .right-rail .col{ border-right:none; }
+  .right-rail .col{ border-right:none; flex:1; min-height:0; }
+  .right-rail .col:not(:last-child){ border-bottom:1px solid var(--border); }
   .log-placeholder{ color:var(--faint); font-size:12.5px; padding:8px 8px; }
 
   .log-line{ display:flex; gap:8px; padding:4px 8px; font-size:11.5px; border-radius:6px; align-items:baseline; }
@@ -267,6 +309,7 @@
     .col{ border-right:none; border-bottom:1px solid var(--border); }
     .history{ max-height:180px; }
     .right-rail{ max-height:280px; }
+    .live-view{ margin:10px 14px 0; }
   }
 </style>
 </head>
@@ -317,7 +360,7 @@
               <label for="maxSteps">Max steps</label>
               <input type="number" id="maxSteps" value="30" min="1" max="200">
             </div>
-            <label class="check-row"><input type="checkbox" id="headless"> Headless (hide the browser window) <span class="warn-hint">(unchecked: a real browser window opens and stays open until you close it)</span></label>
+            <label class="check-row"><input type="checkbox" id="headless" checked> Headless (hide the browser window) <span class="warn-hint">(watch progress in the Live view above instead — uncheck only if you need to interact with the real window yourself, e.g. to solve a CAPTCHA)</span></label>
             <label class="check-row"><input type="checkbox" id="useUserBrowser"> Use my browser <span class="warn-hint">(opens a new tab in your own Chrome instead of a separate window — requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup)</span></label>
             <label class="check-row" id="tabReusePolicyRow" style="display:none;">
               Continuing in that tab:
@@ -350,8 +393,16 @@
         <span class="eyebrow">Chat</span>
         <input type="url" id="url" placeholder="Target URL — https://www.example.com" value="https://www.saucedemo.com/" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
         <datalist id="urlHistory"></datalist>
+        <button type="button" id="btnEditUrl" class="btn-edit-url" title="Edit target URL" aria-label="Edit target URL" style="display:none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
         <button type="button" id="btnLearnSite" class="manual-banner-learn-btn" data-learn-site="true" style="display:none;"></button>
       </div>
+      <div class="live-view" id="liveView" style="display:none;">
+        <img id="liveViewImg" alt="Live view of the page the agent is controlling" style="display:none;">
+        <div class="live-view-placeholder" id="liveViewPlaceholder">No live preview yet — starts once a task begins.</div>
+      </div>
+      <div class="live-view-divider" id="liveViewDivider" style="display:none;"></div>
       <div class="col-body" id="transcript"></div>
       <div class="manual-banner-wrap" id="manualBanner" style="display:none;"></div>
       <div class="composer">
@@ -377,9 +428,14 @@
       </div>
     </div>
 
-    <!-- RIGHT RAIL: LOG (plan now lives in the chat, in real time) -->
+    <!-- RIGHT RAIL: Plan (shows once a plan is approved) + Log (manual toggle) — split
+         50/50 vertically when both are visible at once (see updateRightRailVisibility()). -->
     <div class="right-rail">
-      <div class="col log">
+      <div class="col plan-panel" id="planPanel" style="display:none;">
+        <div class="col-header"><span class="eyebrow">Plan</span><span id="planBadgeSlot"></span></div>
+        <div class="col-body" id="planBody"></div>
+      </div>
+      <div class="col log" id="logPanel">
         <div class="col-header"><span class="eyebrow">Log</span><span class="mono" id="logCount" style="font-size:11px;color:var(--faint)"></span></div>
         <div class="col-body mono" id="logBody"><div class="log-placeholder">Select or start a task to see its step log.</div></div>
       </div>
@@ -394,6 +450,15 @@ const API = "";
 let tasks = [];          // last known snapshot from GET /tasks
 let selectedConvId = null; // conversation currently shown in Chat/Log, or null = "new session"
 const liveSteps = {};        // task_id -> [{step, cmd, result, success}, ...] from SSE, real-time
+// W49: task_id -> {input, output, cache_read, cache_creation} — cumulative token usage from
+// the latest "step" SSE event, so the sidebar can show a running total while status is still
+// "running" (task.result.tokens only exists once the task is fully done, see task_done below).
+const liveTokens = {};
+// W_live: task_id -> latest "data:image/jpeg;base64,..." screenshot from the "screenshot" SSE
+// event (see orchestrator.py::_emit_screenshot) — lets the console show a live view of the
+// page the agent is controlling instead of the user having to alt-tab to the real browser
+// window. Kept (not cleared) after the task finishes so the final page state stays visible.
+const liveScreens = {};
 const pendingApprovals = {}; // task_id -> {request_id, cmd} — awaiting a human decision right now (permission prompts during a run)
 // W13: plan review now happens *before* any task exists — POST /api/generate_plan
 // returns the plan synchronously, the user reviews/edits/approves it locally, and only
@@ -405,6 +470,11 @@ let pendingPlan = null;      // { sessionId, url, goal, planDraft, requestParams
 // chat-composer style) — this replaces what used to be $("btnRun").disabled to gate
 // against double-submitting while a generate_plan request is already in flight.
 let planRequestInFlight = false;
+// W_instant: set the instant the user submits a goal, cleared once the /api/generate_plan
+// response lands (either as pendingPlan or as a running task for is_qa replies) — lets
+// renderTranscript() show the goal + a "Generating plan…" bubble immediately instead of
+// the composer looking unresponsive for the several seconds that LLM call actually takes.
+let planGenerating = null;  // { sessionId, goal } | null
 const runningPlans = {};     // task_id -> plan text, set right when execute_plan succeeds so the
                               // approved plan stays visible in the chat while the task is still
                               // running (task.result.plan only exists once it's done)
@@ -416,6 +486,12 @@ const liveChatReplies = {};  // task_id -> chat reply message for Q&A summarizat
 // that step, so a checked box doesn't flicker back to unchecked mid-run.
 const completedPlanSteps = {};
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
+// W_urllock: true while the pencil-edit toggle is active for the *current* turn — while
+// true, renderTopbar() leaves the URL field alone (unlocked, not overwritten with
+// latest.url) so the user's in-progress edit survives the 2.5s task poll re-render. Reset
+// to false on conversation switch, "New session", and right when a new turn is actually
+// submitted (see approvePlanWithPayload()) so the field re-locks for that new turn.
+let urlUnlocked = false;
 
 
 // W14: Website Learning & Manual Generation — banner shown above the composer when the
@@ -440,6 +516,27 @@ try {
 } catch (e) {
   conversations = {};
 }
+
+// W_fix: selectedConvId itself was never persisted (only `conversations` membership was)
+// — a plain page reload silently dropped it back to null ("new session") even though the
+// sidebar still showed the old thread selected. The next follow-up command then minted a
+// brand-new session_id (see requestPlan()'s `selectedConvId || newSessionId()`), which the
+// backend correctly treated as an unrelated session and opened a second browser window for
+// — the bug the user reported (two Chrome windows playing different videos at once). Restore
+// it here, but only if it still refers to a thread `conversations` actually knows about (a
+// stale/garbage id just falls back to "new session" same as before).
+const SELECTED_CONV_KEY = "agentConsoleSelectedConv";
+function setSelectedConvId(id) {
+  selectedConvId = id;
+  try {
+    if (id) localStorage.setItem(SELECTED_CONV_KEY, id);
+    else localStorage.removeItem(SELECTED_CONV_KEY);
+  } catch (e) {}
+}
+try {
+  const storedConvId = localStorage.getItem(SELECTED_CONV_KEY);
+  if (storedConvId && conversations[storedConvId]) selectedConvId = storedConvId;
+} catch (e) {}
 
 // ---- Blacklist: เก็บ session id และ task_id ที่ผู้ใช้ตั้งใจลบไปแล้ว (กด ×)
 // บันทึกลง localStorage เพื่อป้องกันไม่ให้ refreshTasks() สร้าง conversation กลับมาใหม่เมื่อดึง tasks จาก backend
@@ -543,8 +640,56 @@ function parsePlanSteps(planText) {
   return steps;
 }
 
+// W_planrail: the pre-approval review bubble (renderPendingPlanTurn()) used to render the
+// raw plan text with white-space:pre-wrap, which meant any blank line the model left between
+// numbered steps showed up as literal empty space in the bubble. Reusing parsePlanSteps()
+// here (same numbered-list parse used by the post-approval right-rail panel) sidesteps that
+// entirely — blank lines just aren't steps, so they never make it into the list at all — and
+// gives the reviewer the same compact one-row-per-step layout instead of a wall of text.
+// Falls back to the plain preformatted block only for text that doesn't parse into numbered
+// steps at all, same as parsePlanSteps()'s other caller.
+function renderPlanPreviewList(planText) {
+  const steps = parsePlanSteps(planText);
+  if (!steps.length) return `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`;
+  return `<ul class="plan-checklist">${steps.map((step) => `
+        <li class="plan-checklist-item">
+          <span class="plan-checklist-box"></span>
+          <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
+        </li>`).join("")}</ul>`;
+}
+
 function fmtTime(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// W49: task.result.tokens (once done) takes priority over liveTokens (still running) since
+// it's the authoritative final total — see handleStreamEvent()/task_manager.py::_log_token_usage().
+function getTaskTokens(task) {
+  if (!task) return null;
+  return (task.result && task.result.tokens) || liveTokens[task.task_id] || null;
+}
+
+function formatTokens(t) {
+  if (!t) return null;
+  const total = (t.input || 0) + (t.output || 0) + (t.cache_read || 0) + (t.cache_creation || 0);
+  if (!total) return null;
+  return total >= 1000 ? `${(total / 1000).toFixed(1)}k tok` : `${total} tok`;
+}
+
+// W49: sum token usage across every turn in a conversation (a "session" can be several
+// follow-up tasks — see tasksInConversation()) so the sidebar shows total cost of the whole
+// session, not just its latest turn.
+function sumConvTokens(convTasks) {
+  const sum = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
+  for (const t of convTasks) {
+    const tok = getTaskTokens(t);
+    if (!tok) continue;
+    sum.input += tok.input || 0;
+    sum.output += tok.output || 0;
+    sum.cache_read += tok.cache_read || 0;
+    sum.cache_creation += tok.cache_creation || 0;
+  }
+  return sum;
 }
 
 function dayLabel(epochSeconds) {
@@ -681,6 +826,9 @@ function closeStream(taskId) {
 function handleStreamEvent(taskId, event) {
   if (event.kind === "step") {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push(event);
+    if (event.tokens) liveTokens[taskId] = event.tokens;
+  } else if (event.kind === "screenshot") {
+    liveScreens[taskId] = event.image;
   } else if (event.kind === "chat_reply") {
     liveChatReplies[taskId] = event.message;
   } else if (event.kind === "approval_request") {
@@ -796,6 +944,7 @@ async function killSession(convId) {
     delete pendingApprovals[taskId];
     delete runningPlans[taskId];
     delete liveChatReplies[taskId];
+    delete liveScreens[taskId];
     if (liveConnections[taskId]) {
       closeStream(taskId);
     }
@@ -803,7 +952,7 @@ async function killSession(convId) {
 
   // 7. ถ้ากำลังดู conversation นี้อยู่ ให้ reset การเลือก
   if (selectedConvId === convId) {
-    selectedConvId = null;
+    setSelectedConvId(null);
     $("url").value = "https://www.saucedemo.com/";
     $("goal").value = "";
     $("composerError").textContent = "";
@@ -862,6 +1011,14 @@ async function requestPlan() {
     tab_reuse_policy: $("useUserBrowser").checked ? $("tabReusePolicy").value : null,
   };
   planRequestInFlight = true;
+  // W_instant: render the goal + a "Generating plan…" bubble right away — selecting this
+  // conversation now (even though no task/pendingPlan exists yet) so it renders in the
+  // right thread and, for a brand-new chat, so it doesn't look like nothing happened.
+  planGenerating = { sessionId, goal };
+  setSelectedConvId(sessionId);
+  $("goal").value = "";
+  renderHistory();
+  renderSelected();
   try {
     const r = await fetch(API + "/api/generate_plan", {
       method: "POST",
@@ -871,6 +1028,7 @@ async function requestPlan() {
     if (!r.ok) {
       const err = await r.text();
       $("composerError").textContent = "Failed to generate plan: " + err;
+      $("goal").value = goal;
       return;
     }
     const res = await r.json();
@@ -878,28 +1036,46 @@ async function requestPlan() {
     const isQa = res.is_qa;
 
     if (isQa) {
-      selectedConvId = sessionId;
-      $("goal").value = "";
       pendingPlan = null;
+      planGenerating = null;
       await approvePlanWithPayload({ sessionId, url, goal, planDraft: "", requestParams });
       return;
     }
 
-    pendingPlan = { sessionId, url, goal, planDraft: plan, requestParams, editing: false };
-    // Selecting this conversation now (even though no task exists yet) so the pending
-    // plan bubble renders in the right thread and, for a brand-new chat, so it doesn't
-    // look like nothing happened after clicking Run.
-    selectedConvId = sessionId;
-    $("goal").value = "";
-    renderHistory();
-    renderSelected();
+    // W_procmem: keep the raw fields from /api/generate_plan around so
+    // approvePlanWithPayload() can decide whether the fast-path fields (template_id/
+    // slot_values/steps) are still safe to forward — see the edited-plan check there.
+    // originalPlanText is the exact text the server returned, before any user edits.
+    pendingPlan = {
+      sessionId, url, goal, planDraft: plan, requestParams, editing: false,
+      originalPlanText: plan,
+      source: res.source, templateId: res.template_id, slotValues: res.slot_values, steps: res.steps,
+    };
   } finally {
     planRequestInFlight = false;
+    planGenerating = null;
+    renderHistory();
+    renderSelected();
   }
 }
 
 async function approvePlanWithPayload(planPayload) {
-  const { sessionId, url, goal, planDraft, requestParams } = planPayload;
+  const {
+    sessionId, url, goal, planDraft, requestParams,
+    originalPlanText, source, templateId, slotValues, steps,
+  } = planPayload;
+  // W_urllock: this turn is actually starting now — re-lock the URL field (renderTopbar()
+  // will sync it to the real value once refreshTasks() picks up the new task below), even
+  // if the pencil was used to override it for this submission.
+  urlUnlocked = false;
+  // W_procmem: only forward the structured fast-path fields (template_id/slot_values/
+  // steps) if the plan text is still exactly what the server returned — if the user
+  // hand-edited it, those steps no longer necessarily match what was reviewed/approved,
+  // so execute_plan must fall back to the normal slow path on the edited text instead of
+  // silently running stale structured steps. isQa's synthetic payload has no
+  // originalPlanText/source at all, so this is false there too, as intended.
+  const planWasEdited = originalPlanText !== undefined && planDraft !== originalPlanText;
+  const useFastpath = typeof source === "string" && source.startsWith("procedural_") && !planWasEdited && !!templateId;
   const payload = {
     url,
     goal,
@@ -911,6 +1087,10 @@ async function approvePlanWithPayload(planPayload) {
     auto_approve: requestParams.auto_approve,
     use_user_browser: requestParams.use_user_browser,
     tab_reuse_policy: requestParams.tab_reuse_policy,
+    execution_mode: useFastpath ? "fastpath" : null,
+    template_id: useFastpath ? templateId : null,
+    slot_values: useFastpath ? slotValues : null,
+    steps: useFastpath ? steps : null,
   };
   try {
     const r = await fetch(API + "/api/execute_plan", {
@@ -929,7 +1109,7 @@ async function approvePlanWithPayload(planPayload) {
     if (!conversations[sessionId]) conversations[sessionId] = [];
     conversations[sessionId].push(created.task_id);
     saveConversations();
-    selectedConvId = sessionId;
+    setSelectedConvId(sessionId);
     pendingPlan = null;
 
     liveSteps[created.task_id] = [];
@@ -1232,11 +1412,13 @@ function renderHistory() {
       ? '<span class="badge needs-approval">action needed</span>'
       : `<span class="badge ${status}">${status}</span>`;
     const turnCount = convTasks.length > 1 ? `<span class="mono">${convTasks.length}&times;</span>` : "";
+    const tokensLabel = formatTokens(sumConvTokens(convTasks));
+    const tokens = tokensLabel ? `<span class="mono tokens">${tokensLabel}</span>` : "";
     html += `
       <div class="list-item-wrap">
         <button class="list-item ${convId === selectedConvId ? "active" : ""}" data-conv-id="${convId}">
           <div class="title">${escapeHtml(first.goal)}</div>
-          <div class="meta"><span class="mono">${fmtTime(latest.created_at)}</span>${turnCount}${badge}</div>
+          <div class="meta"><span class="mono">${fmtTime(latest.created_at)}</span>${turnCount}${tokens}${badge}</div>
         </button>
         <button class="kill-session-btn" data-kill-conv="${convId}" title="Close this session">&times;</button>
       </div>`;
@@ -1248,10 +1430,12 @@ function renderHistory() {
         $("composerError").textContent = "Approve or cancel the pending plan before switching conversations.";
         return;
       }
-      selectedConvId = el.dataset.convId;
+      urlUnlocked = false; // switching threads — don't carry an in-progress URL edit over
+      setSelectedConvId(el.dataset.convId);
       const latest = latestTaskInConversation(selectedConvId);
       if (latest) {
-        // Prefill so a follow-up command doesn't require retyping the target site.
+        // renderTopbar() (called via renderSelected() below) also syncs+locks this, but set
+        // it here too so provider/openStream below don't run a beat ahead of a blank field.
         $("url").value = latest.url;
         if (latest.provider) $("provider").value = latest.provider;
         if (latest.status === "running") openStream(latest.task_id);
@@ -1277,6 +1461,7 @@ function renderHistory() {
 function statusMeta(task) {
   if (!task) {
     if (pendingPlan && pendingPlan.sessionId === selectedConvId) return { cls: "running", label: "Reviewing plan" };
+    if (planGenerating && planGenerating.sessionId === selectedConvId) return { cls: "running", label: "Generating plan" };
     return { cls: "idle", label: "Idle" };
   }
   if (pendingApprovals[task.task_id]) return { cls: "error", label: "Needs approval" };
@@ -1298,7 +1483,8 @@ function statusMeta(task) {
 // 🔥 แก้ไข: renderTopbar() — จัดการปุ่ม Stop/Send ตามสถานะจริง
 function renderTopbar(convTasks) {
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
-  const first = convTasks.length ? convTasks[0] : pending;
+  const generating = planGenerating && planGenerating.sessionId === selectedConvId ? planGenerating : null;
+  const first = convTasks.length ? convTasks[0] : (pending || generating);
   const latest = convTasks.length ? convTasks[convTasks.length - 1] : null;
   $("sessionName").innerHTML = first
     ? `Session &mdash; <b>${escapeHtml(truncate(first.goal, 70))}</b>${convTasks.length > 1 ? ` <span class="mono" style="color:var(--faint)">(${convTasks.length} turns)</span>` : ""}`
@@ -1358,6 +1544,26 @@ function renderTopbar(convTasks) {
     };
     goalInput.placeholder = "e.g. add the first item to cart and checkout";
   }
+
+  // W_urllock: once a turn exists, the URL that actually ran is a historical fact — lock
+  // the field (readonly, synced to that turn's real URL) so it can't be edited into looking
+  // like something different was used. The pencil button is the deliberate escape hatch for
+  // the one legitimate case: overriding the target for the *next* follow-up turn. Skipped
+  // entirely while urlUnlocked is true so this doesn't fight an in-progress edit on every
+  // 2.5s task poll (see urlUnlocked declaration).
+  const urlInput = $("url");
+  const editBtn = $("btnEditUrl");
+  if (urlUnlocked) {
+    urlInput.readOnly = false;
+    editBtn.style.display = "none";
+  } else if (latest) {
+    urlInput.value = latest.url;
+    urlInput.readOnly = true;
+    editBtn.style.display = "";
+  } else {
+    urlInput.readOnly = false;
+    editBtn.style.display = "none";
+  }
 }
 
 // Renders one turn (a single task run) of the conversation — a user bubble with the
@@ -1368,7 +1574,6 @@ function renderTaskTurn(task) {
       <div class="avatar">You</div>
       <div>
         <div class="bubble">${escapeHtml(task.goal)}</div>
-        <div class="meta-line mono">${escapeHtml(task.url)}</div>
       </div>
     </div>`;
 
@@ -1389,41 +1594,12 @@ function renderTaskTurn(task) {
     return html;
   }
 
-  // W13: the plan (if any) was already reviewed and approved *before* this task was
-  // even created (see requestPlan()/approvePlan()) — this bubble is purely a record of
-  // what was approved, never an in-progress approval prompt anymore. runningPlans
-  // covers the "still running" window (task.result doesn't exist yet); task.result.plan
-  // takes over once it's done.
-  const planText = runningPlans[task.task_id] || (task.result && task.result.plan) || "";
-  if (planText) {
-    const badge = task.result
-      ? `<span class="plan-badge ${task.result.success ? "ok" : "fail"}">${task.result.success ? "succeeded" : "did not finish"}</span>`
-      : "";
-    // W43: render each numbered plan line as its own checklist row, ticked off in real
-    // time as "plan_step_done" events arrive (see parsePlanSteps()/completedPlanSteps) —
-    // falls back to the old plain-text block for plans that don't parse into numbered
-    // steps at all (e.g. one generated before the numbered format was enforced).
-    const planSteps = parsePlanSteps(planText);
-    const doneSteps = completedPlanSteps[task.task_id] || new Set();
-    const planBodyHtml = planSteps.length
-      ? `<ul class="plan-checklist">${planSteps.map((step) => `
-            <li class="plan-checklist-item${doneSteps.has(step.index) ? " done" : ""}">
-              <span class="plan-checklist-box">${doneSteps.has(step.index) ? "✓" : ""}</span>
-              <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
-            </li>`).join("")}
-          </ul>`
-      : `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`;
-    html += `
-      <div class="msg agent">
-        <div class="avatar">${agentIcon}</div>
-        <div>
-          <div class="bubble plan-bubble">
-            <div class="plan-bubble-title">Plan${badge}</div>
-            ${planBodyHtml}
-          </div>
-        </div>
-      </div>`;
-  }
+  // W_planrail: the approved plan itself no longer renders as a chat bubble here — once
+  // approved it "jumps" to the persistent right-rail Plan panel instead (see
+  // renderPlanPanel()), so it stays visible and keeps ticking in real time without
+  // scrolling out of view as the conversation grows. This function only covers what's
+  // still actually chat-shaped: the pending *review* bubble (renderPendingPlanTurn(),
+  // before approval) and the turn's own progress/result messages below.
 
   if (task.status === "running") {
     if (pending && pending.cmd) {
@@ -1442,13 +1618,13 @@ function renderTaskTurn(task) {
           </div>
         </div>`;
     } else {
-      const liveCount = (liveSteps[task.task_id] || []).length;
-      const progress = liveCount ? ` &mdash; ${liveCount} step${liveCount === 1 ? "" : "s"} so far` : "";
+      // Step-by-step detail already lives in the Log panel and the Plan checklist — this
+      // bubble just needs to say a turn is in flight, not repeat that in prose every render.
       html += `
         <div class="msg agent">
           <div class="avatar">${agentIcon}</div>
           <div>
-            <div class="bubble">Working on it${progress}. See the Log panel for step-by-step progress.</div>
+            <div class="bubble">Working&hellip;</div>
           </div>
         </div>`;
     }
@@ -1500,18 +1676,41 @@ function renderTaskTurn(task) {
 function renderTranscript(convTasks) {
   const box = $("transcript");
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
+  const generating = planGenerating && planGenerating.sessionId === selectedConvId ? planGenerating : null;
   if (pending && pending.editing && box.querySelector("#pendingPlanTextarea")) {
     return;
   }
-  if (!convTasks.length && !pending) {
+  if (!convTasks.length && !pending && !generating) {
     box.innerHTML = '<div class="transcript-empty">Set a target URL and goal below, then click "Plan task" to draft a plan and start a new session.</div>';
     return;
   }
   const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   let html = convTasks.map(renderTaskTurn).join("");
+  if (generating) html += renderGeneratingPlanTurn(generating);
   if (pending) html += renderPendingPlanTurn(pending);
   box.innerHTML = html;
   if (wasNearBottom) box.scrollTop = box.scrollHeight;
+}
+
+// W_instant: optimistic bubble shown the instant the user submits a goal, before
+// /api/generate_plan has responded — see planGenerating (set in requestPlan()). Mirrors
+// the "Working…" bubble renderTaskTurn() shows for a running task, just for the plan
+// drafting call instead of an actual browser action.
+function renderGeneratingPlanTurn(generating) {
+  const agentIcon = `<svg viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 8 8" stroke="white" stroke-width="2.6" stroke-linecap="round"/></svg>`;
+  return `
+    <div class="msg user">
+      <div class="avatar">You</div>
+      <div>
+        <div class="bubble">${escapeHtml(generating.goal)}</div>
+      </div>
+    </div>
+    <div class="msg agent">
+      <div class="avatar">${agentIcon}</div>
+      <div>
+        <div class="bubble">Generating plan&hellip;</div>
+      </div>
+    </div>`;
 }
 
 // W13: a plan awaiting local review — not a task yet (no task_id, no backend state at
@@ -1535,7 +1734,7 @@ function renderPendingPlanTurn(pending) {
             <button class="btn-deny" data-cancel-plan="true">Cancel</button>
           </div>`
     : `
-          <div class="plan-bubble-text">${escapeHtml(pending.planDraft)}</div>
+          ${renderPlanPreviewList(pending.planDraft)}
           <div class="approval-actions">
             <button class="btn-approve" data-approve-plan="true">Approve &amp; Run</button>
             <button class="btn-edit" data-plan-edit="true">Edit</button>
@@ -1546,7 +1745,6 @@ function renderPendingPlanTurn(pending) {
       <div class="avatar">You</div>
       <div>
         <div class="bubble">${escapeHtml(pending.goal)}</div>
-        <div class="meta-line mono">${escapeHtml(pending.url)}</div>
       </div>
     </div>
     <div class="msg agent">
@@ -1603,18 +1801,135 @@ function renderLog(task) {
   if (task.status === "running") body.scrollTop = body.scrollHeight;
 }
 
+// W_planrail: the approved plan for the current turn, rendered in the right-rail Plan panel
+// (see updateRightRailVisibility() for when the panel itself shows/hides). Returns whether a
+// plan actually exists to render, so the caller doesn't need to duplicate that check.
+function renderPlanPanel(latest) {
+  const badgeSlot = $("planBadgeSlot");
+  const body = $("planBody");
+  const planText = latest && (runningPlans[latest.task_id] || (latest.result && latest.result.plan)) || "";
+  if (!planText) return false;
+  const planSteps = parsePlanSteps(planText);
+  const doneSteps = completedPlanSteps[latest.task_id] || new Set();
+  // W_planbug: a task can reach finish_task successfully without every single action along
+  // the way having carried a correct completed_plan_step marker (that's the LLM's own,
+  // best-effort self-report per action — see orchestrator.py::completed_plan_step) — the
+  // task's own success is the more reliable signal, so once it's done successfully every
+  // step counts as done regardless of which individual "plan_step_done" events actually
+  // arrived. Fixes checklists that finished the real task but were left with unticked rows.
+  const allDone = !!(latest.result && latest.result.success);
+  badgeSlot.innerHTML = latest.result
+    ? `<span class="plan-badge ${latest.result.success ? "ok" : "fail"}">${latest.result.success ? "Done" : "Failed"}</span>`
+    : `<span class="plan-badge running">Running</span>`;
+  body.innerHTML = planSteps.length
+    ? `<ul class="plan-checklist">${planSteps.map((step) => {
+        const done = allDone || doneSteps.has(step.index);
+        return `<li class="plan-checklist-item${done ? " done" : ""}">
+              <span class="plan-checklist-box">${done ? "✓" : ""}</span>
+              <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
+            </li>`;
+      }).join("")}</ul>`
+    : `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`;
+  return true;
+}
+
 function renderSelected() {
   const convTasks = selectedConvId ? tasksInConversation(selectedConvId) : [];
   const latest = convTasks.length ? convTasks[convTasks.length - 1] : null;
   renderTopbar(convTasks);
+  renderLiveView(latest);
   renderTranscript(convTasks);
   renderLog(latest);
+  const hasPlan = renderPlanPanel(latest);
+  updateRightRailVisibility(hasPlan);
 }
 
-// ---------------- Log panel visibility (manual "Show log" toggle) ----------------
+// W_live: shows the latest screenshot for the selected conversation's current turn (falls
+// back to the placeholder if none has arrived yet — brand-new conversation, or a turn that
+// hasn't reached its first step yet). Kept separate from renderTranscript() so a fast stream
+// of "screenshot" events doesn't have to re-render the whole chat log every time.
+function renderLiveView(latest) {
+  const wrap = $("liveView");
+  // W_live: a brand-new/"new session" conversation has no task yet at all (latest === null)
+  // — don't reserve the box (and its placeholder text) for that state; only reveal it once
+  // the first task has actually been submitted for this conversation, same moment the
+  // transcript below starts showing that first turn's plan/chat bubble.
+  // W_live: headless===false means this task's browser window is open and visible (user
+  // unchecked "Headless" to interact with it directly, e.g. to solve a CAPTCHA) — the
+  // backend skips streaming screenshots entirely in that case (see orchestrator.py::
+  // _emit_screenshot), so keeping the box around would just show a permanently-empty
+  // placeholder. Hide it instead; the real window is the live view now.
+  if (!latest || latest.headless === false) {
+    wrap.style.display = "none";
+    $("liveViewDivider").style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
+  $("liveViewDivider").style.display = "";
+  const img = $("liveViewImg");
+  const placeholder = $("liveViewPlaceholder");
+  const src = liveScreens[latest.task_id];
+  if (src) {
+    img.src = src;
+    img.style.display = "";
+    placeholder.style.display = "none";
+  } else {
+    img.removeAttribute("src");
+    img.style.display = "none";
+    placeholder.style.display = "";
+  }
+  // Re-fit even when img.src didn't change (so it won't fire "load" again) — the column's
+  // available width can still have changed since last render (e.g. Log panel just toggled).
+  fitLiveView();
+}
 
-function updateLogVisibility() {
-  $("mainGrid").classList.toggle("right-rail-hidden", !logVisible);
+// W_live: caps the box at this height (px) — big enough to actually watch the agent work,
+// small enough to always leave room for chat/plan below it. Tune here, not scattered in CSS.
+const LIVE_VIEW_MAX_HEIGHT = 380;
+
+// W_live: computes the box's exact pixel width+height together from ONE source (whichever of
+// "available column width" or LIVE_VIEW_MAX_HEIGHT is more restrictive), so the box's own
+// rendered ratio always equals the real screenshot's ratio exactly — no bars, no cropping,
+// and never taller than the cap. Two earlier CSS-only attempts each solved half the problem:
+// aspect-ratio+max-height let max-height win while width stayed column-driven (ratio broke,
+// bars came back); aspect-ratio with no cap fixed the bars but let the box swallow the whole
+// screen on a tall/wide window (no room left for chat — exactly what was just reported). No-op
+// before any frame has loaded (natural size is 0x0 — the placeholder state keeps whatever size
+// the last real frame left it at, or the CSS default if there's never been one).
+function fitLiveView() {
+  const img = $("liveViewImg");
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) return;
+  const wrap = $("liveView");
+  // Read the side margin from computed style rather than hardcoding it — the mobile
+  // breakpoint (see @media max-width:920px) sets a smaller margin than desktop.
+  const style = getComputedStyle(wrap);
+  const sideMargin = parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+  const maxWidth = wrap.parentElement.clientWidth - sideMargin;
+  const ratio = w / h;
+  let boxHeight = Math.min(LIVE_VIEW_MAX_HEIGHT, maxWidth / ratio);
+  let boxWidth = boxHeight * ratio;
+  if (boxWidth > maxWidth) {
+    boxWidth = maxWidth;
+    boxHeight = boxWidth / ratio;
+  }
+  wrap.style.width = `${boxWidth}px`;
+  wrap.style.height = `${boxHeight}px`;
+}
+$("liveViewImg").addEventListener("load", fitLiveView);
+window.addEventListener("resize", fitLiveView);
+
+// ---------------- Right rail visibility (Plan panel + manual "Show log" toggle) ----------------
+
+// W_planrail: single source of truth for the right rail as a whole — the Plan panel shows
+// automatically once a plan exists for the selected turn (see renderPlanPanel()), the Log
+// panel only on the user's manual "Show log" toggle; the rail's own grid column is visible
+// whenever *either* one is. When both are visible, right-rail's flex:1 columns (see CSS)
+// split the height 50/50 with no extra math needed here.
+function updateRightRailVisibility(hasPlan) {
+  $("planPanel").style.display = hasPlan ? "" : "none";
+  $("logPanel").style.display = logVisible ? "" : "none";
+  $("mainGrid").classList.toggle("right-rail-hidden", !(hasPlan || logVisible));
   $("btnToggleLog").textContent = logVisible ? "Hide log" : "Show log";
   $("btnToggleLog").classList.toggle("active", logVisible);
 }
@@ -1657,7 +1972,8 @@ $("btnNewSession").addEventListener("click", async () => {
     }
   }
   if (pendingPlan && pendingPlan.sessionId === oldSessionId) pendingPlan = null;
-  selectedConvId = null;
+  urlUnlocked = false;
+  setSelectedConvId(null);
   renderHistory();
   renderSelected();
   if (oldSessionId) {
@@ -1666,7 +1982,14 @@ $("btnNewSession").addEventListener("click", async () => {
 });
 $("btnToggleLog").addEventListener("click", () => {
   logVisible = !logVisible;
-  updateLogVisibility();
+  renderSelected();
+});
+$("btnEditUrl").addEventListener("click", () => {
+  urlUnlocked = true;
+  renderSelected();
+  const urlInput = $("url");
+  urlInput.focus();
+  urlInput.select();
 });
 $("themeToggle").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-theme]");
@@ -1694,6 +2017,18 @@ document.addEventListener("keydown", (e) => {
     $("settingsPanel").classList.remove("open");
     $("btnSettings").classList.remove("active");
     $("attachMenu").classList.remove("open");
+  }
+  // W_planenter: Enter confirms a pending plan (like clicking "Approve & Run") from
+  // anywhere on the page — except while the plan-edit textarea is focused, where Enter
+  // must keep inserting a newline instead. The goal composer has its own Enter handler
+  // (below) that defers to this one whenever a plan is already pending.
+  if (
+    e.key === "Enter" && !e.shiftKey &&
+    pendingPlan && !pendingPlan.editing &&
+    e.target.id !== "pendingPlanTextarea"
+  ) {
+    e.preventDefault();
+    approvePlan();
   }
 });
 
@@ -1771,6 +2106,10 @@ $("url").addEventListener("input", scheduleManualStatusCheck);
 $("goal").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
+    // A pending plan already showing (awaiting Approve/Edit/Cancel) means Enter here
+    // should confirm it instead of trying to start a second one — the document-level
+    // keydown handler above (W_planenter) handles that since this event still bubbles.
+    if (pendingPlan) return;
     if (!planRequestInFlight) requestPlan();
   }
 });
@@ -1779,7 +2118,6 @@ const savedTheme = localStorage.getItem("agentConsoleTheme")
   || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 applyTheme(savedTheme);
 
-updateLogVisibility();
 renderUrlHistory();
 renderSelected();
 checkHealth();

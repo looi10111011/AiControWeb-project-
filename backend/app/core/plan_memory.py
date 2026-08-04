@@ -26,6 +26,7 @@ None ให้ generate_plan ไปร่างจาก LLM ตามปกต�
 task ที่กำลังจะรันก็ยังรันต่อได้ปกติ)
 """
 
+import difflib
 import re
 import time
 import uuid
@@ -64,6 +65,38 @@ def _uses_unsupported_script(text: str) -> bool:
     """True ถ้า goal มีตัวอักษรจากสคริปต์ที่ embedding model ปัจจุบันไม่รองรับจริง (ดู
     comment ด้านบน) — ใช้เช็คก่อนทั้ง find_matching_plan และ save_confirmed_plan"""
     return bool(_UNSUPPORTED_SCRIPT_RE.search(text))
+
+
+# W_planvalue: บั๊กจริงที่ user เจอ — goal เดิมที่เคย confirm ไปแล้ว "edit role Cody55 to
+# admin" ถูกบันทึกเป็น lineage หนึ่ง พอ user พิมพ์ goal ใหม่ "edit role username::gfgfgf
+# to admin" (เปลี่ยนแค่ username เป้าหมาย ประโยคที่เหลือเหมือนเดิมทุกคำ) embedding
+# distance ระหว่างสองประโยคนี้ใกล้กันมาก (ต่างกันแค่ 1 token ท่ามกลางคำเดิมทั้งหมด) เลย
+# "match" แล้วคืนแผนเก่าที่มีคำว่า "Cody55" ฝังอยู่ในทุก step ตรงๆ กลับไปให้ user เห็นตอน
+# review plan (แม้ execution จริงจะ grounded กับ goal สดใหม่ ไม่ได้พังจริง แต่ plan ที่โชว์
+# ให้ user "อนุมัติ" ผิดเป้าหมายไปเลย — ทำลายจุดประสงค์ของการให้ review ก่อน) ปัญหานี้
+# เฉพาะเจาะจงกว่าเคส _UNSUPPORTED_SCRIPT_RE ด้านบน (ข้ามภาษาทั้งประโยค) — ตรงนี้คือ "ประโยค
+# แทบจะเหมือนกันเป๊ะ ต่างกันแค่คำ/ช่วงสั้นๆ 1 จุด" ซึ่งมักจะเป็น "ค่าเฉพาะเจาะจง" (username/
+# ID) ที่เปลี่ยนไป ไม่ใช่แค่ถ้อยคำที่ต่างกันแบบ "Login" vs "Sign in" (ต่างกันเกือบทั้งประโยค
+# ratio ต่ำ ไม่เข้าเงื่อนไขนี้ ปล่อยให้ semantic matching ทำงานตามปกติ เพราะนั่นคือ use case
+# ที่ Plan Memory ถูกออกแบบมาให้ reuse ได้จริงๆ)
+def _is_value_substitution_only(old_goal: str, new_goal: str) -> bool:
+    """True ถ้า old_goal (ที่ผูกกับแผนที่ semantic match เจอ) กับ new_goal (ที่ user พิมพ์
+    ตอนนี้) เป็น "ประโยคแม่แบบ" เดียวกันแทบทุกคำ ต่างกันแค่ token สั้นๆ ช่วงเดียว (<=2 token)
+    — เป็นสัญญาณว่า "เป้าหมายเฉพาะเจาะจง" (เช่นชื่อ user ที่จะแก้ไข) เปลี่ยนไปจริง แม้
+    embedding distance จะยังใกล้กันมากก็ตาม ต้องปฏิเสธการ reuse แผนเดิม (คืน False ถ้า
+    old_goal ว่างเปล่า — lineage เก่าที่บันทึกไว้ก่อนมี field นี้ ไม่มีอะไรให้เทียบ)"""
+    if not old_goal or not new_goal:
+        return False
+    old_tokens = old_goal.split()
+    new_tokens = new_goal.split()
+    sm = difflib.SequenceMatcher(None, old_tokens, new_tokens)
+    if sm.ratio() < 0.6:
+        return False
+    replaced = [op for op in sm.get_opcodes() if op[0] == "replace"]
+    if len(replaced) != 1:
+        return False
+    _, i1, i2, j1, j2 = replaced[0]
+    return (i2 - i1) <= 2 and (j2 - j1) <= 2
 
 
 def _best_match(domain: str, goal: str) -> Optional[tuple[str, float]]:
@@ -112,6 +145,8 @@ def find_matching_plan(domain: str, goal: str) -> Optional[dict]:
         version_meta = _latest_version(domain, intent_key)
         if version_meta is None:
             return None
+        if _is_value_substitution_only(version_meta.get("goal", ""), goal):
+            return None
         return {
             "intent_key": intent_key,
             "version": version_meta["version"],
@@ -141,13 +176,24 @@ def save_confirmed_plan(domain: str, goal: str, plan: str) -> Optional[dict]:
         return None
     try:
         match = _best_match(domain, goal)
+        intent_key = None
+        new_version = 1
         if match is not None and match[1] <= settings.plan_memory_max_distance:
-            intent_key = match[0]
-            latest = _latest_version(domain, intent_key)
-            if latest is not None and latest["plan"] == plan:
-                return {"intent_key": intent_key, "version": latest["version"], "plan": plan, "created": False}
-            new_version = (latest["version"] + 1) if latest is not None else 1
-        else:
+            candidate_key = match[0]
+            latest = _latest_version(domain, candidate_key)
+            # W_planvalue (ดู _is_value_substitution_only ด้านบน): goal นี้ต่างจาก goal
+            # เดิมของ lineage นี้แค่ "ค่าเฉพาะเจาะจง" 1 จุด (เช่น username เป้าหมาย) —
+            # ต้องแยกเป็น lineage ใหม่ ไม่ใช่เพิ่ม version ให้ lineage เดิม ไม่งั้น
+            # find_matching_plan() ครั้งถัดไปจะยังคง reuse แผนที่ผูกกับเป้าหมายที่เปลี่ยน
+            # ไปแล้วอยู่ดี (แค่เลื่อนปัญหาไปอีก version หนึ่ง)
+            if latest is not None and _is_value_substitution_only(latest.get("goal", ""), goal):
+                latest = None
+            else:
+                intent_key = candidate_key
+                if latest is not None and latest["plan"] == plan:
+                    return {"intent_key": intent_key, "version": latest["version"], "plan": plan, "created": False}
+                new_version = (latest["version"] + 1) if latest is not None else 1
+        if intent_key is None:
             intent_key = str(uuid.uuid4())
             new_version = 1
 

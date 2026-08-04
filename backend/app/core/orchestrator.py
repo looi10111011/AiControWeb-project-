@@ -6,6 +6,7 @@ finish_task(false) ก่อนเวลาอันควร (ด้านล�
 """
 
 import asyncio
+import base64
 import sys
 import time
 from typing import Awaitable, Callable, Optional
@@ -13,8 +14,10 @@ from typing import Awaitable, Callable, Optional
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
 from backend.app.config import settings
+from backend.app.core import fastpath_executor
 from backend.app.core import llm
 from backend.app.core import long_term_memory
+from backend.app.core import procedural_memory
 from backend.app.core.actions import (
     REJECTED_BY_USER_MESSAGE,
     ActionResult,
@@ -30,7 +33,9 @@ from backend.app.permission.rules import extract_domain
 from backend.app.rag import retriever
 
 # action ที่เปลี่ยนหน้า/DOM แบบมีนัยสำคัญ -> ต้องรอหน้านิ่งก่อน perceive รอบถัดไป
-_PAGE_CHANGING_ACTIONS = {"click", "goto", "select", "go_back"}
+# W50: press_key เพิ่มเข้ามา — กด Enter บน custom dropdown อาจ submit form/navigate ได้
+# เหมือนกัน (ดู actions.py::press_key/perception.py W50)
+_PAGE_CHANGING_ACTIONS = {"click", "goto", "select", "go_back", "press_key"}
 
 # โมเดลบางตัว (โดยเฉพาะ Llama บน Groq) ชอบเรียก finish_task(success=false) เร็วเกินไป
 # ทั้งที่ยังเหลือ step ให้ลองและยังไม่ได้ลองทางที่ชัดเจนอยู่ตรงหน้า (เช่น เห็นปุ่ม Add to
@@ -195,7 +200,18 @@ _LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
 # กับ popup/overlay บัง ไม่ต้อง trigger vision
 _VISION_FALLBACK_ACTION_TYPES = {
     "click", "fill", "select", "check", "submit", "delete", "purchase", "pay",
+    # W50: press_key พึ่ง element visibility เหมือน click (ต้อง focus element ที่มองเห็น
+    # ได้จริงก่อนถึงจะกด key ได้ผล) — failure mode เดียวกับ click ที่มี popup/overlay บัง
+    "press_key",
 }
+
+# W50 (client-side action verification): action ประเภทเหล่านี้ "ควรจะ" ทำให้หน้าเว็บ
+# เปลี่ยนแปลงบางอย่างเสมอถ้าทำงานได้จริง (เปิด dropdown, ติ๊ก checkbox, กด option ฯลฯ) —
+# ต่างจาก scroll/wait/goto/go_back/switch_tab/read_page_data ที่ "ไม่เปลี่ยน" ก็เป็นเรื่อง
+# ปกติ (เช่น scroll ถึงสุดหน้าแล้ว, wait บนหน้าที่นิ่งอยู่แล้ว) — reuse
+# _VISION_FALLBACK_ACTION_TYPES เพราะเป็น action กลุ่มเดียวกันที่พึ่ง "มีผลจริงบน DOM"
+# เหมือนกันทั้งคู่ (fill รวมอยู่ในนี้ด้วยเพราะ label ของ input เปลี่ยนตามค่าที่กรอกจริง)
+_VERIFICATION_SIGNAL_ACTION_TYPES = _VISION_FALLBACK_ACTION_TYPES
 
 # W7[B] (RAG-based permission): จำนวน chunk คู่มือที่ดึงมาเช็ค permission ของ action
 # ที่กำลังจะทำ — ตั้งใจแยก query จาก manual_context ด้านบน (query=goal) เพราะรันจริง
@@ -234,14 +250,29 @@ def _build_permission_query(cmd: dict, label: str) -> str:
 _COMPACT_AFTER_STEPS = 6
 _KEEP_RECENT_STEPS = 3
 
+# W50 (delta history / bounded digest): เดิม _build_history_digest() ถูกเรียกซ้ำทุกรอบ
+# compaction ด้วย upto_step ที่โตขึ้นเรื่อยๆ แต่ from_step เริ่มที่ 1 เสมอ (implicit) —
+# แปลว่า task ที่ยาวพอจะมีหลายรอบ compaction (ทุก _COMPACT_AFTER_STEPS step) แต่ละรอบ
+# สรุปซ้ำทุก step ตั้งแต่ต้น task ใหม่หมด ทำให้ digest text โตไม่มีเพดานตามความยาว task
+# (ไม่ใช่ตามจำนวน step ใหม่ที่เพิ่งถูกตัดออกจริง) แล้วก้อนที่โตขึ้นเรื่อยๆ นี้ถูกส่งซ้ำเข้า
+# LLM ทุก step ที่เหลือของ task จนกว่าจะ compact รอบถัดไป — เป็นสาเหตุจริงของ token cost
+# ที่โตเร็วกว่า task เอง ไม่ใช่แค่โตตามสัดส่วนปกติ — แก้โดยสะสม "delta" เท่านั้น (ดู
+# digest_lines/digest_upto_step ใน run_task()) แล้ว cap ด้วย _MAX_DIGEST_LINES กันไม่ให้
+# โตไม่มีเพดานแม้จะเป็น delta ก็ตาม (task ที่ยาวมากๆ จริงๆ ก็ยังต้องมีเพดาน)
+_MAX_DIGEST_LINES = 20
 
-def _build_history_digest(memory: ShortTermMemory, upto_step: int) -> str:
-    """สรุป step 1..upto_step (ไม่รวม step 0 ที่เป็น goto ตอนเริ่ม task) เป็น bullet
-    list บรรทัดละ step สั้นๆ — สร้างใหม่จาก ShortTermMemory.all() ทุกครั้งที่บีบอัด
-    (ไม่ใช่สะสมจาก digest รอบก่อน) เพราะ ShortTermMemory เก็บ history แบบไม่ตัดทิ้ง
-    อยู่แล้วตลอด task จึงเป็นแหล่งความจริงที่สมบูรณ์กว่า raw messages ที่ถูกตัดไปแล้ว —
-    provider-agnostic (ไม่แตะ raw messages เลย) เลยใช้ร่วมกันได้ทั้ง Anthropic/Groq/Gemini"""
-    entries = [h for h in memory.all() if 0 < h.get("step", 0) <= upto_step]
+
+def _build_history_digest(memory: ShortTermMemory, upto_step: int, from_step: int = 1) -> str:
+    """สรุป step from_step..upto_step (ไม่รวม step 0 ที่เป็น goto ตอนเริ่ม task) เป็น
+    bullet list บรรทัดละ step สั้นๆ — สร้างจาก ShortTermMemory.all() เพราะเก็บ history
+    แบบไม่ตัดทิ้งอยู่แล้วตลอด task จึงเป็นแหล่งความจริงที่สมบูรณ์กว่า raw messages ที่ถูก
+    ตัดไปแล้ว — provider-agnostic (ไม่แตะ raw messages เลย) เลยใช้ร่วมกันได้ทั้ง
+    Anthropic/Groq/Gemini
+
+    from_step (W50, default 1 = พฤติกรรมเดิมทุกประการ): จุดเริ่มของช่วงที่จะสรุป — ใช้
+    ตอน compaction รอบที่ 2 เป็นต้นไปเพื่อสรุปเฉพาะ step "ใหม่" ที่ยังไม่เคยถูกสรุปมาก่อน
+    (ดู digest_upto_step ใน run_task()) แทนที่จะสรุปซ้ำตั้งแต่ step 1 ทุกรอบ"""
+    entries = [h for h in memory.all() if from_step <= h.get("step", 0) <= upto_step]
     if not entries:
         return ""
     return "\n".join(f"- step {h['step']}: {h['cmd']} -> {h['result']}" for h in entries)
@@ -822,6 +853,29 @@ class Orchestrator:
             if on_event is not None:
                 await on_event(event)
 
+        async def _emit_screenshot(step: int) -> None:
+            """W_live: ถ่าย screenshot ของ page ปัจจุบันส่งเป็น SSE event "screenshot"
+            ให้ Test Console แสดง live view ระหว่าง task รันอยู่ (แทนที่จะต้องสลับไปดู
+            หน้าต่างเบราว์เซอร์จริงเอง) — best-effort ล้วนๆ ไม่ throw เด็ดขาด ถ้า
+            screenshot ล้มเหลว (เช่น page กำลัง navigate/ปิดพอดี) แค่ข้ามเงียบๆ ไม่ใช่
+            error ที่ควร fail ทั้ง step/task จริง — jpeg quality ต่ำ (55) ตั้งใจให้ไฟล์เล็ก
+            พอส่งผ่าน SSE ทุก step โดยไม่หน่วง loop มาก ไม่ใช่ไว้ดูรายละเอียดคมชัด
+
+            is_headless=False (uncheck "Headless" บน Test Console) แปลว่า user ตั้งใจเปิด
+            หน้าต่าง browser จริงให้เห็น (เช่น จะแก้ CAPTCHA เอง) — ข้าม live view ไปเลยใน
+            เคสนี้ ไม่ต้อง stream screenshot ซ้ำซ้อนกับหน้าต่างจริงที่เปิดโชว์อยู่แล้ว"""
+            if on_event is None or not is_headless:
+                return
+            try:
+                raw = await page.screenshot(type="jpeg", quality=55)
+            except Exception:
+                return
+            b64 = base64.b64encode(raw).decode("ascii")
+            await _emit({
+                "kind": "screenshot", "step": step,
+                "image": f"data:image/jpeg;base64,{b64}",
+            })
+
         async def _force_loop_recovery(reason: str) -> bool:
             """W31: เรียกตอน loop-detection guard (คาบ 1 หรือคาบ 2-4 — ดู
             _MAX_CONSECUTIVE_IDENTICAL_ACTIONS/_detect_repeating_cycle_period ด้านบนสุด
@@ -966,6 +1020,12 @@ class Orchestrator:
         # [(absolute_step_number, len(messages) หลังจบ step นั้น), ...] — ใช้หา cut
         # point ที่ปลอดภัย (ตรงกับจุดเริ่ม turn ใหม่จริงๆ) ตอนบีบอัด ไม่ใช่ตำแหน่งเดา
         step_boundaries: list[tuple[int, int]] = []
+        # W50 (delta history): digest_lines สะสมทีละ "delta" ข้ามหลายรอบ compaction
+        # (ไม่ใช่สร้างใหม่ทั้งก้อนทุกรอบ — ดู _build_history_digest()/_MAX_DIGEST_LINES
+        # ด้านบนสุดของไฟล์) digest_upto_step คือ step สุดท้ายที่เคยถูกสรุปไปแล้ว (0 =
+        # ยังไม่เคย compact เลย) ใช้เป็น from_step ของรอบถัดไป กันสรุปซ้ำ step เดิม
+        digest_lines: list[str] = []
+        digest_upto_step = 0
 
         # W22: dedupe manual_context/long_term_context ข้าม step ที่ page_text ไม่เปลี่ยน
         # (เช่น action step ก่อนหน้า fail หรือเป็น fill ที่ไม่ navigate ไปไหน) — ทั้งสองคำนวณ
@@ -1187,6 +1247,7 @@ class Orchestrator:
 
             for _ in range(max_steps):
                 elements, page_text = await get_snapshot(page)
+                await _emit_screenshot(steps_taken)
                 # W5[A] verify: เก็บ page_text ล่าสุดไว้เป็นหลักฐานจริงจาก DOM ตอนจบ
                 # task (ทุก path — finish_task/loop-detected/หมด max_steps) แนบไปกับ
                 # result ให้ผู้ประเมิน (เช่น W12[B] eval script/human review) เทียบกับ
@@ -1224,6 +1285,32 @@ class Orchestrator:
                     manual_context = _CONTEXT_UNCHANGED_NOTE if last_manual_context else ""
                     long_term_context = _CONTEXT_UNCHANGED_NOTE if last_long_term_context else ""
 
+                # W50 (client-side action verification): สัญญาณเสริมจากโค้ด (ไม่ต้องพึ่ง
+                # LLM สังเกตเอง) ว่า action ก่อนหน้าที่คืน [OK] แล้วจริงๆ อาจไม่มีผลอะไรกับ
+                # หน้าเว็บเลย — ใช้ page_changed_for_context ที่คำนวณไปแล้วด้านบน (เทียบ
+                # page_text ของรอบนี้กับรอบก่อนหน้า) ไม่ต้องยิง browser เพิ่มเลย: ถ้า action
+                # ก่อนหน้า (self.memory.recent(1) — บันทึกไว้แล้วท้าย iteration ก่อนหน้า)
+                # สำเร็จ (success=True) เป็นประเภทที่ "ควรจะ" เปลี่ยนอะไรบนหน้าเว็บ (ดู
+                # _VERIFICATION_SIGNAL_ACTION_TYPES) แต่ page_text เหมือนเดิมทุกตัวอักษร —
+                # แจ้งเตือน LLM รอบนี้ว่า action นั้นอาจเป็น no-op ทั้งที่ดูเหมือนสำเร็จ กัน
+                # การเสีย step ต่อๆ ไปคิดว่า "ทำไปแล้ว" ทั้งที่จริงไม่มีผล
+                verification_context = ""
+                if steps_taken > 0 and not page_changed_for_context:
+                    last_record = self.memory.recent(1)
+                    if last_record:
+                        last_cmd = last_record[0].get("cmd", {}) or {}
+                        if (
+                            last_record[0].get("success") is True
+                            and last_cmd.get("type") in _VERIFICATION_SIGNAL_ACTION_TYPES
+                        ):
+                            verification_context = (
+                                f"[ตรวจสอบผล action ก่อนหน้า ({last_cmd}): ไม่พบการเปลี่ยนแปลง"
+                                "บนหน้าเว็บเลย (element/เนื้อหาของหน้าเหมือนเดิมทุกตัวอักษร) — "
+                                "action นี้อาจไม่มีผลจริงแม้จะได้ [OK] ก็ตาม ลองพิจารณาทางอื่น "
+                                "(เช่น hover ก่อนคลิก, คลิกตำแหน่ง/index อื่น หรือถ้าเป็น custom "
+                                "dropdown ให้ลองใช้ press_key แทน)]"
+                            )
+
                 # W7[A]: สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (ดู
                 # ShortTermMemory.failed_actions_summary() docstring) ป้อนกลับเข้า prompt
                 # ทุก step เหมือน manual_context — ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย
@@ -1257,6 +1344,7 @@ class Orchestrator:
                     client, model, effective_goal, page_text, messages,
                     manual_context, memory_context, long_term_context, vision_context,
                     site_manual_context, page.url, action_history_context, plan_text or "",
+                    verification_context=verification_context,
                 )
                 last_llm_call_at = time.monotonic()
                 total_usage += usage
@@ -1427,6 +1515,21 @@ class Orchestrator:
                 action_label = next(
                     (e["label"] for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
+                # W_search follow-up: tag จริงของ element (เช่น "a") ส่งให้
+                # execute()/classify_action() เช็คสัญญาณโครงสร้างเป็นชั้นสำรองอีกชั้น —
+                # ดักเคส label เป็นเนื้อหาอิสระ (ชื่อวิดีโอ/บทความ) ที่ไม่ match ทั้ง
+                # SAFE_ACTION_LABEL_KEYWORDS และ RISKY_LABEL_KEYWORDS เลย (ดู
+                # permission/rules.py::ANCHOR_TAG)
+                action_tag = next(
+                    (e.get("tag", "") for e in elements if e["index"] == action_index), ""
+                ) if action_index is not None else ""
+                # W_search follow-up 2: attribute "type" ของ element (เช่น input ที่
+                # type="text"/"search") ส่งคู่กับ tag ให้ execute()/classify_action() แยก
+                # ช่องกรอกข้อความ/ค้นหาธรรมดาออกจาก input ที่แท้จริงอาจเสี่ยง (ดู
+                # permission/rules.py::SAFE_INPUT_TAG/RISKY_INPUT_TYPES)
+                action_element_type = next(
+                    (e.get("type", "") for e in elements if e["index"] == action_index), ""
+                ) if action_index is not None else ""
 
                 # W7[B]: RAG-based permission — ดึงคู่มือด้วย query แคบเฉพาะ action นี้
                 # (ไม่ใช่ manual_context ด้านบนที่ query=goal กว้างทั้ง task) แล้วส่งให้
@@ -1451,6 +1554,7 @@ class Orchestrator:
                 result: ActionResult = await execute(
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
                     manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
+                    element_tag=action_tag, element_type=action_element_type,
                 )
                 steps_taken += 1
                 # W10[D]: แนบ label ของ element เป้าหมาย (ชื่อปุ่ม/ช่องกรอกจริงบนหน้าเว็บ
@@ -1466,6 +1570,11 @@ class Orchestrator:
                     "result": str(result),
                     "success": result.success,
                     "tokens": _tokens_dict(usage),
+                    # W_procmem: locator ที่ "อยู่รอด" ข้าม task run ได้ (ดู
+                    # core/dom_locator.py/actions.py) — None เสมอยกเว้น
+                    # click/fill/select/check ที่สำเร็จจริง ใช้เป็น input ของ
+                    # llm.abstract_trajectory() ตอน task จบสำเร็จ (ดูจุดเรียกด้านล่าง)
+                    "locator_descriptor": result.locator_descriptor,
                 })
                 if verbose:
                     print(f"  -> {result}", flush=True)
@@ -1473,6 +1582,10 @@ class Orchestrator:
                     "kind": "step", "step": steps_taken, "cmd": tool_input,
                     "label": action_label,
                     "result": str(result), "success": result.success,
+                    # W49: cumulative token usage ของ task นี้จนถึง step นี้ — ให้ frontend
+                    # โชว์ token count สดๆ ตอน task ยัง "running" อยู่ (ก่อนหน้านี้มีแค่ใน
+                    # result["tokens"] ตอนจบ task เท่านั้น ซึ่ง SSE consumer เห็นช้าเกินไป)
+                    "tokens": _tokens_dict(total_usage),
                 })
 
                 # W43: LLM ระบุว่า action นี้ทำให้ step ของแผนเสร็จสมบูรณ์แล้ว (ดู
@@ -1557,7 +1670,30 @@ class Orchestrator:
                 if len(step_boundaries) > _COMPACT_AFTER_STEPS:
                     cut_list_index = len(step_boundaries) - _KEEP_RECENT_STEPS
                     cut_step_num, cut_at = step_boundaries[cut_list_index - 1]
-                    digest = _build_history_digest(self.memory, upto_step=cut_step_num)
+                    # W50: สรุปเฉพาะ step "ใหม่" (delta) ตั้งแต่ digest_upto_step+1 ถึง
+                    # cut_step_num นี้ ต่อท้าย digest_lines ที่สะสมมาจากรอบก่อนๆ แทนที่จะ
+                    # สรุปซ้ำตั้งแต่ step 1 ทุกรอบ (ดู _build_history_digest() ด้านบนสุด
+                    # ของไฟล์) แล้ว cap ด้วย _MAX_DIGEST_LINES กันไม่ให้ digest text โต
+                    # ไม่มีเพดานตามความยาว task — คำนวณเป็น candidate ก่อน ยังไม่ commit
+                    # เข้า digest_lines/digest_upto_step จริงจนกว่าจะรู้ว่า compact_messages()
+                    # ด้านล่างสำเร็จจริง (ไม่ no-op) ไม่งั้นถ้า no-op แล้ว advance ไปก่อน
+                    # จะเสีย step ที่เพิ่งสรุปไปฟรีๆ (ไม่เคยถูกแทรกเข้า messages จริงเลย)
+                    delta_text = _build_history_digest(
+                        self.memory, upto_step=cut_step_num, from_step=digest_upto_step + 1,
+                    )
+                    candidate_lines = list(digest_lines)
+                    if delta_text:
+                        candidate_lines.extend(delta_text.split("\n"))
+                    dropped_count = 0
+                    if len(candidate_lines) > _MAX_DIGEST_LINES:
+                        dropped_count = len(candidate_lines) - _MAX_DIGEST_LINES
+                        candidate_lines = candidate_lines[-_MAX_DIGEST_LINES:]
+                    digest_text_lines = candidate_lines
+                    if dropped_count > 0:
+                        digest_text_lines = [
+                            f"- (มี step ก่อนหน้าอีก {dropped_count} step ถูกย่อทิ้งแล้ว ไม่แสดงรายละเอียด)",
+                        ] + digest_text_lines
+                    digest = "\n".join(digest_text_lines)
                     len_before_compact = len(messages)
                     messages = compact_messages(messages, cut_at, digest)
                     # W22: อ้างจากความยาวจริงก่อน/หลัง แทนที่จะสมมติว่าลดลงเท่า cut_at
@@ -1568,13 +1704,17 @@ class Orchestrator:
                     # ตัดผิดตำแหน่ง (กลางบทสนทนา ไม่ใช่ต้น turn จริง)
                     removed = len_before_compact - len(messages)
                     if removed > 0:
+                        # W50: commit candidate digest เข้า state สะสมจริง เฉพาะตอนที่
+                        # compact_messages() แทรก digest เข้า messages สำเร็จจริงเท่านั้น
+                        digest_lines = candidate_lines
+                        digest_upto_step = cut_step_num
                         step_boundaries = [
                             (s, b - removed) for s, b in step_boundaries[cut_list_index:]
                         ]
                         if verbose:
                             print(
-                                f"[context-compact] ย่อ step 1..{cut_step_num} เหลือ digest เดียว "
-                                f"(เก็บ {_KEEP_RECENT_STEPS} step ล่าสุดแบบ raw)",
+                                f"[context-compact] ย่อ step ..{cut_step_num} เหลือ digest สะสม "
+                                f"{len(digest_lines)} บรรทัด (เก็บ {_KEEP_RECENT_STEPS} step ล่าสุดแบบ raw)",
                                 flush=True,
                             )
 
@@ -1626,6 +1766,29 @@ class Orchestrator:
                 session_id=session_id or "",
             ))
 
+            # W_procmem: กลั่น trajectory ของ task ที่สำเร็จแล้วเป็น template ให้
+            # core/procedural_memory.py เก็บไว้ reuse ในอนาคต (ดู core/llm.py::
+            # abstract_trajectory, core/procedural_memory.py::save_template) — เรียกแค่
+            # ตอน success=True เท่านั้น (template จาก task ที่ล้มเหลวไม่มีประโยชน์ให้
+            # replay ซ้ำ) ยิงเป็น background task เหมือน record_task ด้านบนทุกประการ —
+            # ไม่ await ผลลัพธ์ของ task run นี้ไม่ต้องรอ Abstractor เสร็จก่อนเลย และ
+            # settings.enable_procedural_memory_capture (default True, ดู config.py)
+            # เป็นแค่ "ฝั่งเขียน" ปิดแยกจาก enable_procedural_memory (ฝั่งอ่าน) ได้
+            if settings.enable_procedural_memory_capture and success:
+                async def _run_abstractor() -> None:
+                    try:
+                        template = await llm.abstract_trajectory(
+                            client, model, goal, url, self.memory.all(), resolved_provider,
+                        )
+                        if template is not None:
+                            await asyncio.to_thread(
+                                procedural_memory.save_template, extract_domain(url), template,
+                            )
+                    except Exception as e:
+                        print(f"⚠️ Procedural Memory abstractor hook error: {e}", flush=True)
+
+                _fire_and_forget(_run_abstractor())
+
             return {
                 "success": success,
                 "steps": steps_taken,
@@ -1670,4 +1833,96 @@ class Orchestrator:
             else:
                 # context ที่ยืมจาก pool ต้องคืนกลับเสมอไม่ว่า keep_browser_open จะเป็นอะไร
                 # (ดู docstring ของ keep_browser_open ด้านบน) ไม่งั้น pool จะรั่วทีละ context
+                await context.close()
+
+    async def run_fastpath(
+        self,
+        url: str,
+        goal: str,
+        template_id: str,
+        steps: list[dict],
+        slot_values: dict,
+        max_steps: int = 30,
+        provider: Optional[str] = None,
+        ask_user_func: Optional[AskUserFunc] = None,
+        on_event: Optional[OnEventFunc] = None,
+        browser: Optional[Browser] = None,
+        page: Optional[Page] = None,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        """W_procmem: รัน procedural template (ดู core/procedural_memory.py) ผ่าน
+        fastpath_executor.execute_template() แทน perceive->plan->act loop เต็มรูปแบบ
+        ของ run_task() — ประหยัด LLM call ต่อ step ทุกตัวตราบใดที่ replay สำเร็จตรงๆ
+
+        รองรับ resource model แค่ 2 แบบใน v1 นี้ (ตรงกับ 2 branch ที่ใช้บ่อยที่สุดใน
+        routes.py::_run_with_resolved_browser): page= (session-managed, จาก
+        session_registry — ผู้เรียกคุม lifecycle เอง ไม่ปิด/ไม่คืนอะไรที่นี่) หรือ
+        browser= (ยืมจาก BrowserPool — เปิด context+page ใหม่ แล้วปิดแค่ context ตอน
+        จบเสมอ) — โหมดอื่น (connect_to_user_browser, launch หน้าต่างเองแบบ
+        headless=False ฯลฯ) ยังไม่รองรับ ผู้เรียกต้องเช็คเองก่อนเรียกฟังก์ชันนี้ ไม่งั้น
+        fallback ไปเรียก run_task() ตรงๆ แทน (เท่ากับปิด fast-path ไปเงียบๆ สำหรับโหมด
+        ที่ยังไม่รองรับ ไม่ raise error)
+
+        escalation (ดู core/fastpath_executor.py module docstring): ถ้า template
+        replay ล้มเหลวเกิน repair quota จะเรียก run_task() แบบเต็มรูปแบบ "บน page
+        เดียวกัน" เสมอ (ไม่ acquire browser ซ้ำสองรอบ) แล้วคืนผลลัพธ์นั้นตรงๆ — page
+        อาจ navigate ไปแล้วบางส่วนจาก step ที่ทำสำเร็จก่อนล้มเหลว แต่ run_task()'s W12
+        "detect หน้าปัจจุบัน" จะ perceive ต่อจากจุดนั้นเองอยู่แล้ว ไม่ใช่เริ่มนับหนึ่งใหม่
+
+        W_procmem (แก้ไขหลังพบบั๊กจริงระหว่าง Phase 4 validation): navigate + เรียก
+        _maybe_auto_login() เองที่นี่ก่อนส่งต่อให้ fastpath_executor.execute_template()
+        เสมอ (mirror ลำดับเดียวกับ run_task() ด้านบนทุกประการ — goto/skip_initial_goto
+        -> wait_stable -> _maybe_auto_login) — เดิม execute_template() navigate เองแต่
+        ไม่เคยเรียก auto-login เลย ทำให้ domain ที่มี credential เก็บไว้ (ดู
+        site_learning/auto_login.py) replay ไม่ได้เลยถ้าหน้าเป้าหมายต้อง login ก่อน
+        (แม้ template จะไม่มี step login เองเพราะ auto-login เกิด "นอก" LLM loop เสมอ
+        ไม่ว่าทางไหน)"""
+        if page is not None and browser is not None:
+            raise ValueError("run_fastpath: ส่ง page และ browser มาพร้อมกันไม่ได้ (เลือกอย่างใดอย่างหนึ่ง)")
+        if page is None and browser is None:
+            raise ValueError("run_fastpath: ต้องส่ง page หรือ browser มาอย่างใดอย่างหนึ่ง")
+
+        owns_context = False
+        context = None
+        if page is None:
+            context = await browser.new_context()
+            page = await context.new_page()
+            owns_context = True
+
+        resolved_provider = provider or settings.llm_provider
+        client, model, _, _, _ = self._llm_backend(resolved_provider)
+
+        async def _emit(event: dict) -> None:
+            if on_event is not None:
+                await on_event(event)
+
+        async def _run_task_fallback() -> dict:
+            return await self.run_task(
+                url=url, goal=goal, max_steps=max_steps, provider=resolved_provider,
+                ask_user_func=ask_user_func, on_event=on_event, page=page, session_id=session_id,
+            )
+
+        try:
+            current_domain = extract_domain(page.url) if page.url not in ("about:blank", "") else ""
+            target_domain = extract_domain(url)
+            site_already_open = bool(target_domain) and current_domain == target_domain
+            if not site_already_open:
+                await goto(page, url)
+            await wait_stable(page)
+
+            auto_login_failure_reason = await _maybe_auto_login(page, verbose=False)
+            if auto_login_failure_reason:
+                await _emit({
+                    "kind": "auto_login_failed",
+                    "message": "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้",
+                    "reason": auto_login_failure_reason,
+                })
+
+            return await fastpath_executor.execute_template(
+                page=page, url=url, goal=goal, template_id=template_id, steps=steps,
+                slot_values=slot_values, client=client, model=model, provider=resolved_provider,
+                on_event=on_event, run_task_fallback=_run_task_fallback,
+            )
+        finally:
+            if owns_context:
                 await context.close()

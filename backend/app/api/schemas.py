@@ -62,6 +62,18 @@ class GeneratePlanRequest(BaseModel):
 class GeneratePlanResponse(BaseModel):
     plan: str
     is_qa: bool = False
+    # W_procmem: ทั้ง 4 ฟิลด์นี้เป็น additive ล้วนๆ (default ว่างเปล่า/None) — consumer เดิม
+    # ที่อ่านแค่ .plan/.is_qa ไม่ได้รับผลกระทบเลย ดู core/procedural_memory.py สำหรับ
+    # ลำดับความสำคัญเต็มๆ (procedural template -> plan_memory -> LLM ร่างใหม่)
+    # source บอกว่า plan ก้อนนี้มาจากไหน: "llm" (ร่างสดจาก LLM, ค่า default เดิม),
+    # "plan_memory" (ข้อความแผนเดิมที่เคย confirm ไว้), "procedural_reuse"/
+    # "procedural_adapt" (จาก core/procedural_memory.py — มี template_id/slot_values/
+    # steps แนบมาด้วยเสมอตอนเป็น 2 ค่านี้ ให้ frontend ส่งต่อเข้า
+    # POST /api/execute_plan ได้ตรงๆ เพื่อวิ่งผ่าน fast-path executor แทน slow loop)
+    source: str = "llm"
+    template_id: Optional[str] = None
+    slot_values: Optional[dict] = None
+    steps: Optional[list[dict]] = None
 
 
 
@@ -83,6 +95,17 @@ class ExecutePlanRequest(BaseModel):
     use_user_browser: bool = False
     tab_reuse_policy: Optional[str] = None
     session_id: Optional[str] = None
+    # W_procmem: mirror ของ GeneratePlanResponse ด้านบน — frontend ส่งต่อค่าที่ได้จาก
+    # POST /api/generate_plan กลับมาตรงๆ ที่นี่ ถ้า execution_mode == "fastpath" และ
+    # template_id/steps มีค่าจริงทั้งคู่ routes.py::execute_plan() จะวิ่งผ่าน
+    # orchestrator.run_fastpath() แทน run_task(approved_plan=...) ปกติ — ต้องเป็น None/
+    # "fastpath" ที่ตรงกับสิ่งที่ user เห็นตอน review เป๊ะเท่านั้น (ดู edited-plan safety
+    # rule ใน index.html: แก้ไขข้อความแผนเองต้อง clear 3 ฟิลด์นี้ทิ้งเสมอ ไม่งั้นจะรัน
+    # step ที่ไม่ตรงกับสิ่งที่ user อนุมัติจริง)
+    template_id: Optional[str] = None
+    slot_values: Optional[dict] = None
+    steps: Optional[list[dict]] = None
+    execution_mode: Optional[str] = None
 
 
 class TaskCreatedResponse(BaseModel):
@@ -99,6 +122,10 @@ class TaskStatusResponse(BaseModel):
     created_at: float
     result: Optional[dict] = None
     error: Optional[str] = None
+    # W_live: ค่า headless ที่ resolve แล้วของ task นี้ (ไม่มีทาง None) — frontend ใช้
+    # ตัดสินใจว่าจะโชว์ live view (True) หรือซ่อนไปเลยเพราะ browser จริงเปิดโชว์อยู่แล้ว
+    # (False) ดู index.html::renderLiveView()
+    headless: bool = True
 
 
 class PoolStatusResponse(BaseModel):

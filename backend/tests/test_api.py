@@ -447,7 +447,10 @@ def test_generate_plan_without_session_id_never_touches_browser(client):
         resp = client.post("/api/generate_plan", json={"url": "https://example.com", "goal": "ทดสอบ"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"plan": "1. Do X"}
+    assert resp.json() == {
+        "plan": "1. Do X", "is_qa": False, "source": "llm",
+        "template_id": None, "slot_values": None, "steps": None,
+    }
     mock_generate_plan.assert_awaited_once_with(
         "https://example.com", "ทดสอบ", provider=None, page=None, site_manual_context="",
     )
@@ -493,7 +496,10 @@ def test_generate_plan_with_existing_session_perceives_that_page(client):
         )
 
     assert resp2.status_code == 200
-    assert resp2.json() == {"plan": "1. Sign in"}
+    assert resp2.json() == {
+        "plan": "1. Sign in", "is_qa": False, "source": "llm",
+        "template_id": None, "slot_values": None, "steps": None,
+    }
     page_arg = mock_generate_plan.await_args.kwargs["page"]
     assert page_arg is not None
 
@@ -602,6 +608,88 @@ def test_execute_plan_without_a_plan_does_not_touch_plan_memory(client):
     mock_save.assert_not_called()
 
 
+# --- W_procmem: /api/execute_plan fast-path branch (settings.enable_procedural_memory) ---
+
+_FASTPATH_RESULT = {
+    "success": True, "steps": 2, "message": "fast-path done", "history": [], "tokens": {},
+    "plan": "", "final_page_state": "", "execution_mode": "fastpath",
+}
+_FASTPATH_BODY = {
+    "url": "https://example.com/login", "goal": "log in as alice",
+    "plan": "1. Fill Username\n2. Click Login",
+    "execution_mode": "fastpath", "template_id": "t1",
+    "slot_values": {"username": "alice"},
+    "steps": [{"action": "fill", "target": {"accessible_name": "Username"}, "value": "{{username}}"}],
+}
+
+
+def test_execute_plan_uses_run_fastpath_when_flag_enabled_and_fields_present(client, monkeypatch):
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch("backend.app.api.routes.plan_memory.save_confirmed_plan") as mock_save:
+        mock_run_fastpath = AsyncMock(return_value=_FASTPATH_RESULT)
+        MockOrchestrator.return_value.run_fastpath = mock_run_fastpath
+
+        resp = client.post("/api/execute_plan", json=_FASTPATH_BODY)
+        final = _poll_until(client, resp.json()["task_id"])
+
+    assert final["result"] == _FASTPATH_RESULT
+    kwargs = mock_run_fastpath.await_args.kwargs
+    assert kwargs["template_id"] == "t1"
+    assert kwargs["slot_values"] == {"username": "alice"}
+    # แผนที่ render จาก steps ไม่ใช่ข้อความที่ user พิมพ์เอง — ต้องไม่ปนเข้า plan_memory
+    mock_save.assert_not_called()
+
+
+def test_execute_plan_falls_back_to_run_task_when_flag_disabled(client):
+    """default settings.enable_procedural_memory=False — เพิกเฉยต่อ execution_mode/
+    template_id/steps ที่ส่งมา วิ่งผ่าน run_task ปกติเหมือนไม่มี feature นี้เลย"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        mock_run_fastpath = AsyncMock()
+        MockOrchestrator.return_value.run_task = mock_run_task
+        MockOrchestrator.return_value.run_fastpath = mock_run_fastpath
+
+        resp = client.post("/api/execute_plan", json=_FASTPATH_BODY)
+        _poll_until(client, resp.json()["task_id"])
+
+    mock_run_task.assert_awaited_once()
+    mock_run_fastpath.assert_not_called()
+
+
+def test_execute_plan_falls_back_to_run_task_when_use_user_browser_requested(client, monkeypatch):
+    """use_user_browser ยังไม่รองรับใน run_fastpath() (ดู docstring) — ต้อง fallback ไป
+    slow path เงียบๆ แม้ flag เปิดและ template_id/steps มีมาครบก็ตาม"""
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        mock_run_fastpath = AsyncMock()
+        MockOrchestrator.return_value.run_task = mock_run_task
+        MockOrchestrator.return_value.run_fastpath = mock_run_fastpath
+
+        body = {**_FASTPATH_BODY, "use_user_browser": True}
+        resp = client.post("/api/execute_plan", json=body)
+        _poll_until(client, resp.json()["task_id"])
+
+    mock_run_task.assert_awaited_once()
+    mock_run_fastpath.assert_not_called()
+
+
+def test_execute_plan_fastpath_reuses_session_page(client, monkeypatch):
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_fastpath = AsyncMock(return_value=_FASTPATH_RESULT)
+        MockOrchestrator.return_value.run_fastpath = mock_run_fastpath
+
+        body = {**_FASTPATH_BODY, "session_id": "sess-fastpath"}
+        resp = client.post("/api/execute_plan", json=body)
+        _poll_until(client, resp.json()["task_id"])
+
+    kwargs = mock_run_fastpath.await_args.kwargs
+    assert kwargs["session_id"] == "sess-fastpath"
+    assert kwargs["page"] is not None
+
+
 def test_generate_plan_returns_matched_plan_memory_result_without_calling_llm(client):
     """Plan Priority: เจอ approved plan ที่ตรงพอใน Plan Memory ต้องคืนตรงๆ ข้าม
     Orchestrator.generate_plan() (เรียก LLM) ไปเลย"""
@@ -618,7 +706,10 @@ def test_generate_plan_returns_matched_plan_memory_result_without_calling_llm(cl
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"plan": "1. Reused step"}
+    assert resp.json() == {
+        "plan": "1. Reused step", "is_qa": False, "source": "plan_memory",
+        "template_id": None, "slot_values": None, "steps": None,
+    }
     mock_generate_plan.assert_not_awaited()
 
 
@@ -633,8 +724,145 @@ def test_generate_plan_falls_back_to_llm_when_no_plan_memory_match(client):
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"plan": "1. Fresh LLM draft"}
+    assert resp.json() == {
+        "plan": "1. Fresh LLM draft", "is_qa": False, "source": "llm",
+        "template_id": None, "slot_values": None, "steps": None,
+    }
     mock_generate_plan.assert_awaited_once()
+
+
+# --- W_procmem: procedural memory check in generate_plan() (settings.enable_procedural_memory) ---
+
+_FAKE_TEMPLATE_CANDIDATE = {
+    "template_id": "t1", "intent_key": "k1", "version": 1,
+    "goal_pattern": "Log in with a username and password",
+    "url_pattern": "https://example.com/login",
+    "steps": [{"action": "fill", "target": {"accessible_name": "Username"}, "value": "{{username}}"}],
+    "slots": [{"name": "username"}],
+    "distance": 0.2,
+}
+
+
+def test_generate_plan_skips_procedural_check_when_flag_disabled(client):
+    """default settings.enable_procedural_memory=False — ไม่แตะ find_candidate_templates
+    เลยแม้แต่ครั้งเดียว"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch("backend.app.api.routes.plan_memory.find_matching_plan", return_value=None), \
+         patch("backend.app.api.routes.procedural_memory.find_candidate_templates") as mock_find:
+        MockOrchestrator.return_value.generate_plan = AsyncMock(return_value="1. Fresh LLM draft")
+
+        resp = client.post("/api/generate_plan", json={"url": "https://example.com", "goal": "log in"})
+
+    assert resp.status_code == 200
+    mock_find.assert_not_called()
+
+
+def test_generate_plan_returns_procedural_reuse_when_confident_match_found(client, monkeypatch):
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch("backend.app.api.routes.plan_memory.find_matching_plan") as mock_plan_memory, \
+         patch(
+             "backend.app.api.routes.procedural_memory.find_candidate_templates",
+             return_value=[_FAKE_TEMPLATE_CANDIDATE],
+         ), \
+         patch(
+             "backend.app.api.routes.llm.plan_with_procedural_memory",
+             AsyncMock(return_value={
+                 "decision": "reuse", "template_id": "t1", "confidence": 0.9,
+                 "slot_values": {"username": "alice"}, "patch": None, "reason": "match",
+             }),
+         ):
+        MockOrchestrator._llm_backend.return_value = ("fake-client", "fake-model", None, None, None)
+        resp = client.post("/api/generate_plan", json={"url": "https://example.com/login", "goal": "log in as alice"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "procedural_reuse"
+    assert body["template_id"] == "t1"
+    assert body["slot_values"] == {"username": "alice"}
+    assert "alice" in body["plan"]
+    # เจอ procedural match มั่นใจพอแล้ว ต้องข้าม plan_memory ไปเลย ไม่เรียกซ้ำ
+    mock_plan_memory.assert_not_called()
+
+
+def test_generate_plan_passes_credentials_exist_as_has_auto_login_to_planner(client, monkeypatch):
+    """W_procmem: บั๊กจริงที่เจอตอน Phase 4 validation — Planner ต้องรู้ว่าโดเมนนี้มี
+    auto-login credential เก็บไว้ไหม (ดู orchestrator.py::_maybe_auto_login) ไม่งั้นมัน
+    จะปฏิเสธ reuse candidate ที่ไม่มี step login ทั้งที่ auto-login จัดการให้แล้วนอก
+    template เสมอ"""
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch(
+             "backend.app.api.routes.procedural_memory.find_candidate_templates",
+             return_value=[_FAKE_TEMPLATE_CANDIDATE],
+         ), \
+         patch("backend.app.api.routes.credentials_exist", return_value=True) as mock_creds_exist, \
+         patch(
+             "backend.app.api.routes.llm.plan_with_procedural_memory",
+             AsyncMock(return_value={
+                 "decision": "plan_fresh", "template_id": None, "confidence": 0.2,
+                 "slot_values": {}, "patch": None, "reason": "n/a",
+             }),
+         ) as mock_planner:
+        MockOrchestrator._llm_backend.return_value = ("fake-client", "fake-model", None, None, None)
+        client.post("/api/generate_plan", json={"url": "https://example.com/login", "goal": "log in"})
+
+    mock_creds_exist.assert_called_once_with("example.com")
+    _, kwargs = mock_planner.call_args
+    assert kwargs["has_auto_login"] is True
+
+
+def test_generate_plan_falls_through_to_plan_memory_when_procedural_decision_is_plan_fresh(client, monkeypatch):
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch(
+             "backend.app.api.routes.plan_memory.find_matching_plan",
+             return_value={"intent_key": "k1", "version": 1, "plan": "1. Reused step", "distance": 0.1},
+         ), \
+         patch(
+             "backend.app.api.routes.procedural_memory.find_candidate_templates",
+             return_value=[_FAKE_TEMPLATE_CANDIDATE],
+         ), \
+         patch(
+             "backend.app.api.routes.llm.plan_with_procedural_memory",
+             AsyncMock(return_value={
+                 "decision": "plan_fresh", "template_id": None, "confidence": 0.2,
+                 "slot_values": {}, "patch": None, "reason": "no good match",
+             }),
+         ):
+        MockOrchestrator._llm_backend.return_value = ("fake-client", "fake-model", None, None, None)
+        resp = client.post("/api/generate_plan", json={"url": "https://example.com/login", "goal": "log in"})
+
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "plan_memory"
+    assert resp.json()["plan"] == "1. Reused step"
+
+
+def test_generate_plan_applies_patch_for_adapt_decision(client, monkeypatch):
+    monkeypatch.setattr(settings, "enable_procedural_memory", True)
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch("backend.app.api.routes.plan_memory.find_matching_plan"), \
+         patch(
+             "backend.app.api.routes.procedural_memory.find_candidate_templates",
+             return_value=[_FAKE_TEMPLATE_CANDIDATE],
+         ), \
+         patch(
+             "backend.app.api.routes.llm.plan_with_procedural_memory",
+             AsyncMock(return_value={
+                 "decision": "adapt", "template_id": "t1", "confidence": 0.8,
+                 "slot_values": {"username": "bob"},
+                 "patch": [{"op": "insert", "index": 0, "step": {"action": "goto"}}],
+                 "reason": "needs an extra goto step",
+             }),
+         ):
+        MockOrchestrator._llm_backend.return_value = ("fake-client", "fake-model", None, None, None)
+        resp = client.post("/api/generate_plan", json={"url": "https://example.com/login", "goal": "log in as bob"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "procedural_adapt"
+    assert body["steps"][0]["action"] == "goto"  # inserted by the patch
+    assert len(body["steps"]) == 2
 
 
 def test_stop_task_cancels_a_running_task(client):

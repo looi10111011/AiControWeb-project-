@@ -1,0 +1,216 @@
+{
+  "website": "youtube.com",
+  "version": 1,
+  "generated_at": 1785723351.760839,
+  "pages": [
+    {
+      "name": "หน้าแรก YouTube",
+      "url": "https://www.youtube.com/",
+      "description": "หน้าแรกของเว็บไซต์วิดีโอ YouTube สำหรับค้นหาและรับชมสื่อต่างๆ",
+      "menu_path": [
+        "หน้าแรก YouTube"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Guide",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > yt-icon-button:nth-of-type(2) > button",
+          "xpath": "//*[@id=\"button\"]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "YouTube Home",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a",
+          "xpath": "//*[@id=\"logo\"]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Skip navigation",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "Skip navigation",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[1]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search",
+          "title": "Search",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSearchboxComponentSearchButton",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/yt-searchbox[1]/div[1]/div[1]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Search with your voice",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextText.ytSpecButtonShapeNextMono.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconOnlyDefault.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[2]/div[1]/ytd-button-renderer[1]/yt-button-shape[1]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.yt-simple-endpoint.style-scope.ytd-topbar-menu-button-renderer",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-topbar-menu-button-renderer[1]/div[1]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Settings",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(3) > div:nth-of-type(2) > ytd-topbar-menu-button-renderer > div > a > yt-icon-button > button",
+          "xpath": "//*[@id=\"button\"]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Sign in",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "Sign in",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextOutline.ytSpecButtonShapeNextCallToAction.ytSpecButtonShapeNextSizeM.ytSpecButtonShapeNextIconLeading.ytSpecButtonShapeNextEnableBackdropFilterExperiment",
+          "xpath": "/html/body[1]/ytd-app[1]/div[1]/div[2]/ytd-masthead[1]/div[4]/div[3]/div[2]/ytd-button-renderer[1]/yt-button-shape[1]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "search_query",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "input.ytSearchboxComponentInput.yt-searchbox-input.title",
+          "frame_index": 0
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "ytd-app > div:nth-of-type(1) > div:nth-of-type(2) > ytd-masthead > div:nth-of-type(4) > div:nth-of-type(1) > ytd-topbar-logo-renderer > a > div > ytd-logo > yt-icon > span > div > svg > g:nth-of-type(2) > path:nth-of-type(1)",
+          "item_count": 7
+        },
+        {
+          "name": "Style Scope",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Home",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "Home",
+              "title": "Home",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "",
+              "selector": "ytd-app > div:nth-of-type(1) > ytd-mini-guide-renderer > div > ytd-mini-guide-entry-renderer:nth-of-type(1) > a",
+              "xpath": "//*[@id=\"endpoint\"]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            }
+          ],
+          "selector": "ytd-mini-guide-entry-renderer.style-scope.ytd-mini-guide-renderer",
+          "item_count": 4
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "#offline_no_content__a",
+          "item_count": 5
+        }
+      ],
+      "filters": [
+        "Skip navigation",
+        "Search with your voice",
+        "Sign in",
+        "Show more"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    }
+  ],
+  "errors": [],
+  "summary": "เว็บไซต์ YouTube เป็นแพลตฟอร์มยอดนิยมสำหรับรับชมและแชร์วิดีโอหลากหลายประเภทจากทั่วโลก ผู้ใช้งานสามารถค้นหาความบันเทิง ความรู้ บทเพลง และคลิปวิดีโอที่สนใจได้อย่างง่ายดายผ่านหน้าแรกของเว็บไซต์ นอกจากนี้ยังเปิดโอกาสให้ทุกคนสามารถสร้างสรรค์และอัปโหลดเนื้อหาของตนเองเพื่อให้ผู้อื่นรับชมได้อีกด้วย"
+}
