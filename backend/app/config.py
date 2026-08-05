@@ -167,6 +167,33 @@ class Settings(BaseSettings):
     # คล้ายกันได้ระดับหนึ่ง ปรับได้ถ้าพบว่า fuzzy match หลวม/เข้มไปสำหรับข้อมูลจริงของ user
     agent_fuzzy_match_threshold: float = 0.75
 
+    # W19 (ดู W19.txt ข้อ 8 "Semantic Redundancy Evaluator", core/llm.py::
+    # evaluate_semantic_redundancy) — เพิ่ม LLM call แยก 1 ครั้งต่อ step (ก่อน dispatch
+    # จริงใน orchestrator.py) ประเมินว่า action ที่เลือกไว้แล้วมีประโยชน์ต่อ goal จริงไหม
+    # ต่างจาก state_filter.py (ข้อ 6, deterministic ล้วนๆ ไม่มี flag เพราะไม่มีต้นทุน LLM)
+    # — ปิดไว้ default (เหมือน enable_procedural_memory) จนกว่าจะ validate คุณภาพ/ต้นทุน
+    # latency เพิ่มต่อ step บนงานจริงก่อน ค่อยพิจารณาเปิดเป็น default True
+    enable_semantic_redundancy_check: bool = False
+
+    # W19-2 (ดู core/llm.py::evaluate_safety_and_performance) — "โมดูลที่ 4" แบบ additive:
+    # รวม redundancy check (เหมือน enable_semantic_redundancy_check ด้านบน) + permission
+    # check (เหมือน permission/rules.py::classify_action) เป็น LLM call เดียว ประหยัด
+    # round-trip กว่าเรียกแยก 2 ครั้ง — เปิดพร้อมกับ enable_semantic_redundancy_check ได้
+    # แค่ orchestrator.py จะเลือกใช้ตัวนี้แทน (ไม่เรียกซ้ำสอง call สำหรับ redundancy)
+    # permission_evaluation ของตัวนี้เป็นแค่ "เพิ่มความระมัดระวัง" เท่านั้น (escalate-only
+    # ผ่าน manual_guidance เข้า classify_action() ที่ยังเป็นผู้ตัดสินสุดท้ายเสมอ ดู
+    # orchestrator.py) ไม่มีทางลดระดับความเสี่ยงที่ classify_action() ตัดสินไปแล้วได้เลย —
+    # ปิดไว้ default เหมือนโมดูล LLM ตัวอื่นในกลุ่มนี้ จนกว่าจะ validate คุณภาพก่อน
+    enable_middleware_evaluator: bool = False
+
+    # W19-3 (ดู core/llm.py::generate_persona_message) — "Voice & Persona Interface":
+    # แปลงสถานะ agent ดิบๆ เป็นข้อความไทยธรรมชาติแบบผู้ช่วยส่วนตัว ให้ UI โชว์แทน raw log —
+    # เป็นแค่ presentation layer เสริม (ไม่กระทบ control flow ของ agent loop เลย ต่างจาก 3
+    # โมดูลก่อนหน้าที่ skip/escalate ได้) เรียกเฉพาะตอนจบ task (COMPLETED/FAILED — จุดที่
+    # ความถี่ต่ำสุด/คุ้มค่าที่สุด) ไม่ได้เรียกทุก browser action step — ปิดไว้ default เหมือน
+    # โมดูล LLM ตัวอื่นในกลุ่มนี้ จนกว่าจะ validate โทน/คุณภาพข้อความก่อน
+    enable_persona_voice: bool = False
+
 
 settings = Settings()
 

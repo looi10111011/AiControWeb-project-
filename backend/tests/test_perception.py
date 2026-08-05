@@ -1019,3 +1019,251 @@ async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal
 
     assert len(elements) == 1
     assert elements[0]["label"] == "Covered Button [ถูกบังอยู่]"
+
+
+# ---------------- W19 ("Scoped Search Context"): region tagging (main vs navigation) ----------------
+
+_HTML_WITH_DUPLICATE_SEARCH_LABELS = """
+<html><body>
+  <aside class="oxd-sidepanel">
+    <input type="text" placeholder="Search" id="sidebar-search">
+  </aside>
+  <main>
+    <form>
+      <input type="text" placeholder="Search" id="main-search">
+    </form>
+  </main>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_tags_sidebar_element_as_navigation_region():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_WITH_DUPLICATE_SEARCH_LABELS)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["region"] == "navigation"
+    assert elements[1]["region"] == "main"
+    assert "(navigation)" in text_repr.splitlines()[0]
+    assert "(navigation)" not in text_repr.splitlines()[1]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_element_outside_main_or_nav_has_empty_region():
+    html = '<html><body><button id="loose-btn">Click me</button></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["region"] == ""
+    assert "(navigation)" not in text_repr
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_nested_nav_inside_main_is_still_navigation_region():
+    """breadcrumb <nav> ที่ซ้อนอยู่ใน <main> ต้องยังนับเป็น "navigation" (ancestor ที่ใกล้
+    ตัว element ที่สุดเป็นตัวตัดสิน ไม่ใช่ ancestor ไกลสุด)"""
+    html = """
+    <html><body>
+      <main>
+        <nav><a href="/">Home</a></nav>
+      </main>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["region"] == "navigation"
+
+
+# ---------------- W19 ("Exact Element Matching"): <label> association ----------------
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_uses_label_for_attribute_as_input_label():
+    html = """
+    <html><body>
+      <label for="emp-name">Employee Name</label>
+      <input type="text" id="emp-name" placeholder="Type for hints...">
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["label"] == "Employee Name"
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_uses_wrapping_label_text_as_input_label():
+    """<select> ที่มี option เลือกอยู่แล้วต้องยังโชว์ค่าที่เลือกอยู่ชนะ associatedLabel เสมอ
+    (พฤติกรรมเดิม, ดู comment ใน perception.py) — ใช้ <textarea> ว่างเปล่าแทนเพื่อทดสอบ
+    associatedLabel ตรงๆ โดยไม่ชนกับกฎ "ค่าที่กรอกอยู่จริงชนะเสมอ" ข้อนั้น"""
+    html = """
+    <html><body>
+      <label>Comments
+        <textarea id="comments-box"></textarea>
+      </label>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["label"] == "Comments"
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_select_with_option_selected_still_shows_current_value_over_label():
+    """ยืนยันพฤติกรรมเดิมไม่เปลี่ยน: select ที่มีค่าปัจจุบันอยู่แล้วต้องโชว์ค่านั้น (ไม่ใช่
+    associatedLabel) เพราะ "ค่าที่เลือกอยู่จริง" มีประโยชน์กว่าสำหรับ dropdown ที่ใช้บ่อย
+    (เช่น sort-order dropdown)"""
+    html = """
+    <html><body>
+      <label>User Role
+        <select id="role-select"><option>Admin</option></select>
+      </label>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["label"] == "Admin"
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_falls_back_to_placeholder_when_no_associated_label():
+    html = '<html><body><input type="text" placeholder="Search"></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["label"] == "Search"
+
+
+# ---------------- W19 ("Log Cleanliness"): already-active nav/tab marker ----------------
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_active_nav_link_with_aria_current():
+    html = """
+    <html><body>
+      <nav>
+        <a href="/admin" aria-current="page">Admin</a>
+        <a href="/reports">Reports</a>
+      </nav>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    admin = next(e for e in elements if "Admin" in e["label"])
+    reports = next(e for e in elements if "Reports" in e["label"])
+    assert "[active อยู่แล้ว]" in admin["label"]
+    assert "[active อยู่แล้ว]" not in reports["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_active_tab_with_active_class():
+    html = """
+    <html><body>
+      <div role="tab" class="oxd-topbar-body-nav-tab active">System Users</div>
+      <div role="tab" class="oxd-topbar-body-nav-tab">Job Titles</div>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    system_users = next(e for e in elements if "System Users" in e["label"])
+    job_titles = next(e for e in elements if "Job Titles" in e["label"])
+    assert "[active อยู่แล้ว]" in system_users["label"]
+    assert "[active อยู่แล้ว]" not in job_titles["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_mark_active_class_outside_nav_or_tab_role():
+    """class "active" นอกบริบทเมนู/แท็บ (เช่น ตัวเลือกที่ highlight อยู่ใน custom dropdown/
+    autocomplete popup กลางหน้า) ต้องไม่ติด marker — เป็น element ที่ "ควร" คลิกเพื่อเลือก
+    ไม่ใช่ตัวที่ควรข้าม"""
+    html = """
+    <html><body>
+      <main>
+        <div role="option" class="suggestion active">John Smith</div>
+      </main>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert "[active อยู่แล้ว]" not in elements[0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_mark_inactive_nav_link():
+    html = '<html><body><nav><a href="/reports">Reports</a></nav></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert "[active อยู่แล้ว]" not in elements[0]["label"]

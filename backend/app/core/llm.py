@@ -39,6 +39,7 @@ W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) �
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -216,10 +217,23 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   แก้ไขให้ดู "ถูกต้องกว่า" เด็ดขาด (เช่น เห็น "Cierra Vaga" ต้องตอบ "Cierra Vaga" ไม่ใช่เปลี่ยน
   เป็น "Cierra Vega" ทั้งที่ดูเหมือนชื่อที่คุ้นเคยกว่า) — ถ้าข้อมูลที่ดึงมามีคำอธิบายกำกับว่า
   "ใกล้เคียงกับคำค้น ... ไม่ตรงกันเป๊ะ" ให้บอก user ตรงๆ ว่าเป็นการเดา ไม่ใช่ตรงกันเป๊ะ ไม่ใช่
-  เงียบๆ ปัดเป็นคำตอบที่มั่นใจ เมื่อ goal ขอ "รายชื่อ"/list ของหลายรายการ ให้เรียงลำดับตาม
-  ตัวอักษร (A-Z) ก่อนตอบเสมอเพื่อให้อ่านง่าย เว้นแต่ goal ระบุลำดับอื่นชัดเจน (เช่น "เรียงตาม
-  วันที่") — การเรียงลำดับใหม่ทำได้เฉพาะ "ลำดับที่แสดง" เท่านั้น ห้ามเปลี่ยนตัวสะกด/เนื้อหาของ
-  แต่ละรายการระหว่างเรียงเด็ดขาด
+  เงียบๆ ปัดเป็นคำตอบที่มั่นใจ
+  - ลิสต์ธรรมดาที่มีแค่ field เดียว (เช่น แค่รายชื่อคน ไม่มีข้อมูลอื่นประกอบต่อรายการ) ให้
+    เรียงลำดับตามตัวอักษร (A-Z) ก่อนตอบเสมอเพื่อให้อ่านง่าย เว้นแต่ goal ระบุลำดับอื่นชัดเจน
+    (เช่น "เรียงตามวันที่") — การเรียงลำดับใหม่ทำได้เฉพาะ "ลำดับที่แสดง" เท่านั้น ห้ามเปลี่ยน
+    ตัวสะกด/เนื้อหาของแต่ละรายการระหว่างเรียงเด็ดขาด
+  - W19 ("Table Data Extractor & Presenter"): ข้อมูลที่มีหลาย field ต่อแถว/รายการ (เช่น
+    ตารางที่มี Username+Employee Name+Role+Status ในแถวเดียวกัน) ให้ยึดกฎตรงข้ามกับข้อบน —
+    "ห้ามเรียงลำดับใหม่เด็ดขาด" รักษาลำดับแถวตามที่ปรากฏบนหน้าจอจริง (DOM order, บนลงล่าง)
+    เสมอ ไม่ว่ากรณีใด เว้นแต่ user ขอให้เรียงแบบอื่นชัดเจนเท่านั้น — เหตุผล: การเรียงข้อมูล
+    หลาย field ใหม่ (เช่น เรียง username ตาม A-Z) ทำให้ผู้ใช้เทียบคำตอบกับสิ่งที่เห็นบนจอจริง
+    ไม่ได้อีกต่อไป ผิดจุดประสงค์ของการ "แสดงข้อมูลตามที่ปรากฏจริง" ไปเลย
+  - ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด (เช่น แยก username
+    ทั้งหมดไว้ลิสต์หนึ่ง แล้วแยก employee name ไว้อีกลิสต์หนึ่งต่างหาก) — แต่ละแถวต้องนำเสนอ
+    เป็นก้อนข้อมูลเดียว (1 atomic object ต่อแถว) เสมอ เช่น:
+      1. Admin (Employee: Surya king, Role: Admin)
+      2. AutoUser_2335 (Employee: Manoj B, Role: Admin)
+      3. ayush123 (Employee: Ayush Saha, Role: Admin)
 - W46: ก่อนเรียก finish_task พร้อมข้อความทำนอง "ไม่มีข้อมูล"/"ไม่พบ"/"หาไม่เจอ" ต้องทำ 2 อย่างนี้
   ก่อนเสมอ: (ก) ตรวจ conversation history ของ session นี้ (ผลลัพธ์ action ก่อนหน้า/
   "Action ล่าสุดที่คุณเพิ่งทำไป" ที่แนบมาในข้อความ) ว่าเคยค้นหา/เจอข้อมูลที่เกี่ยวข้องกับ
@@ -257,6 +271,39 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ณ ขณะนั้น ให้ยึดเป็นความจริงเสมอเมื่อต้องอ้างอิงวันที่/เวลาปัจจุบัน ห้ามเดาหรืออ้างอิง
   วันที่จาก training data ของตัวเองเด็ดขาด แม้คำถามจะดูเหมือนต้องใช้ "ความรู้ทั่วไป"
   เกี่ยวกับวันที่ก็ตาม (เช่น "วันนี้วันอะไร", "ตอนนี้กี่โมง", "ปีนี้ปีอะไร")
+- W19 ("Scoped Search Context"): ถ้า indexed elements มี label ซ้ำกันหลายตัว (เช่น
+  "Search" โผล่ทั้งใน sidebar เมนูหลักและในฟอร์ม/ตัวกรองของเนื้อหาหลัก) ให้สังเกตว่า element
+  ไหนมี marker "(navigation)" ต่อท้าย (แปลว่าอยู่ใน sidebar/menu/nav) — ถ้า goal ต้องการ
+  กรอกฟอร์ม/ค้นหาข้อมูล/ทำงานกับเนื้อหาหลักของหน้า ให้เลือก element ที่ "ไม่มี" marker นี้
+  (อยู่ใน main content) เสมอ ใช้ตัวที่มี "(navigation)" เฉพาะตอน goal ตั้งใจจะเปิดเมนู/
+  นำทางผ่าน sidebar จริงๆ เท่านั้น
+- W19 ("Exact Element Matching"): เลือก index จาก label ที่สื่อความหมายจริง (ชื่อ
+  field/ปุ่มที่มองเห็น เช่น "Employee Name", "User Role") ไม่ใช่จำเลข index จาก step
+  ก่อนหน้า — index เปลี่ยนใหม่ทุกครั้งที่ perceive จริง ห้ามสมมติว่า index เดิมยังชี้ไปที่
+  element เดิมข้าม step เด็ดขาด ต้องอ่าน indexed elements ล่าสุดที่แนบมาทุกครั้งเสมอ
+- W19 (Autocomplete field เช่น "Employee Name" บน OrangeHRM): ห้าม fill ข้อความลงช่อง
+  autocomplete แล้วถือว่าจบเลย — ต้อง (1) fill ข้อความค้นหาลงช่องก่อน (2) รอ/perceive หน้า
+  ใหม่ให้เห็นตัวเลือกที่ popup ขึ้นมา (มักเป็น element role=option/menuitem ใหม่ในลิสต์) แล้ว
+  (3) click ตัวเลือกแรกที่ตรงจากลิสต์ popup นั้น การ fill เฉยๆ โดยไม่คลิกเลือกจาก popup มักไม่
+  ถูกฟอร์มยอมรับจริง แม้ข้อความจะแสดงอยู่ในช่องแล้วก็ตาม
+- W19 ("Autocomplete Disambiguation", ต่างจากข้อบน): ถ้าตั้งใจ "กด Enter เพื่อค้นหา" (เช่น
+  ช่องค้นหา YouTube/Google ที่ไม่ใช่ autocomplete ที่ต้องเลือกจาก popup) ให้เลือก
+  type="press_key" key="Enter" ที่ index ของ "ช่อง input เดิม" ที่เพิ่ง fill ไปตรงๆ เท่านั้น
+  ห้ามสับสนไปเลือก index ของ suggestion/option ที่โผล่ขึ้นมาใน popup โดยไม่ตั้งใจ (จะกลาย
+  เป็นเลือก suggestion นั้นแทนการค้นหาคำที่พิมพ์จริง) — ยกเว้นตั้งใจจะเลือก suggestion นั้น
+  จริงๆ (ตามข้อ autocomplete field ด้านบน) จึงค่อย click ที่ index ของ suggestion แทน
+- W19 ("Task Completion Verifier"): ก่อนเรียก finish_task(success=true) ให้ตรวจสอบ
+  indexed elements/ข้อความบนหน้าปัจจุบันว่ามีข้อความ error/validation โผล่อยู่ไหม (เช่น
+  "Required", "Invalid", "Already Exists", หรือคำแปลไทย) ถ้ามี แปลว่า step ที่ทำไปยังไม่
+  สำเร็จจริง ห้ามเรียก finish_task(success=true) ให้แก้ field ที่มีปัญหาก่อน — มองหา
+  สัญญาณความสำเร็จจริง (navigate กลับไปหน้า list, toast/ข้อความ "Successfully Saved") แทน
+  ก่อนยืนยันว่าสำเร็จ
+- W19 ("Log Cleanliness"): element ที่มี marker "[active อยู่แล้ว]" ต่อท้าย label (เมนู/
+  แท็บที่เลือก/active อยู่แล้ว) ห้ามคลิกซ้ำเด็ดขาด เพราะบาง framework ไม่ trigger การ
+  เปลี่ยนแปลงอะไรเลยถ้าคลิกทับตัวเดิมที่ active อยู่แล้ว (โครงสร้างหน้าเหมือนเดิมทุก
+  ประการ) ทำให้เสีย step ไปเปล่าๆ รอหน้าเปลี่ยนที่จะไม่มีวันเกิดขึ้น ให้ข้ามไปทำ action ถัดไป
+  ที่เกี่ยวกับ goal บนหน้าปัจจุบันได้เลย (element นี้ "อยู่แล้ว" ตามที่ต้องการ ไม่ต้องกดซ้ำ) —
+  ยกเว้น goal สั่งให้ "รีเฟรช"/"เปิดใหม่" ชัดเจนเท่านั้นถึงคลิกซ้ำได้
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -485,7 +532,7 @@ _FINISH_TASK_PARAMS = {
     "type": "object",
     "properties": {
         "success": {"type": "boolean", "description": "goal สำเร็จไหม"},
-        "message": {"type": "string", "description": "สรุปผลสั้นๆ ว่าทำอะไรไป/ทำไมหยุด — รายชื่อ/ข้อมูลที่ดึงมาต้องคัดลอกตัวสะกดตรงตามต้นฉบับ ห้ามเดา/แก้สะกด และถ้าเป็นรายการหลายรายการให้เรียงตามตัวอักษรก่อนตอบ (ดู W_listformat ใน system prompt)"},
+        "message": {"type": "string", "description": "สรุปผลสั้นๆ ว่าทำอะไรไป/ทำไมหยุด — รายชื่อ/ข้อมูลที่ดึงมาต้องคัดลอกตัวสะกดตรงตามต้นฉบับ ห้ามเดา/แก้สะกด — ลิสต์ field เดียวเรียง A-Z ก่อนตอบ, ตารางหลาย field ต่อแถวห้ามเรียงใหม่เด็ดขาด (รักษา DOM order) และห้ามแยก field ของแถวเดียวกันออกจากกัน (ดู W_listformat ใน system prompt)"},
     },
     "required": ["success", "message"],
 }
@@ -1078,6 +1125,887 @@ async def repair_step(
         return dict(REPLAN_SIGNAL)
 
 
+# --- W19 (ดู W19.txt ข้อ 8 "Semantic Redundancy Evaluator"): single-shot call ต่างหาก
+# ประเมินว่า proposed action ที่ next_action() เพิ่งเลือก "มีประโยชน์จริง" ต่อ goal ไหม
+# หรือเป็นแค่ side-step ที่ไม่จำเป็น (เช่น scroll/อ่านข้อมูลที่ไม่เกี่ยว ทั้งที่ปุ่มที่ต้อง
+# กดอยู่ตรงหน้าแล้ว) — เรียกจาก orchestrator.py ก่อน dispatch จริงทุก step **เฉพาะตอน
+# settings.enable_semantic_redundancy_check เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือน
+# enable_procedural_memory — เพิ่ม LLM call ต่อ step 1 ครั้ง มีต้นทุน latency/token จริง
+# ต้อง validate คุณภาพก่อนเปิดเป็น default)
+#
+# ต่างจาก state_filter.py (W19 ข้อ 6) ตรงที่ตัวนั้นเช็ค "สถานะ DOM" แบบ deterministic
+# (ไม่พึ่ง LLM เลย, เร็ว, แม่นยำ 100% แต่ตอบได้แค่คำถามแคบๆ เช่น "ค่าซ้ำไหม") ส่วนตัวนี้เช็ค
+# "เจตนา" เทียบกับ goal ทั้ง task (ต้องใช้ LLM ตัดสิน ไม่มีทาง deterministic ได้จริง) — สอง
+# ชั้นทำงานคนละจุด ไม่ทับซ้อนกัน
+_SEMANTIC_REDUNDANCY_PARAMS = {
+    "type": "object",
+    "properties": {
+        "is_semantically_redundant": {
+            "type": "boolean",
+            "description": "true ถ้า action นี้ไม่ทำให้ USER_GOAL คืบหน้าเลย (side-step ที่ข้ามได้)",
+        },
+        "value_score": {
+            "type": "number",
+            "description": "0.0-1.0 — ความเกี่ยวข้องของ action นี้กับ USER_GOAL (1.0 = จำเป็นมาก, 0.0 = ไม่เกี่ยวเลย)",
+        },
+        "action_decision": {
+            "type": "string",
+            "enum": ["PASS", "SKIP_STEP", "FORCE_REPLAN"],
+            "description": (
+                "PASS = ปล่อยให้ dispatch ตามปกติ (ค่า default เมื่อไม่แน่ใจ). "
+                "SKIP_STEP = action นี้เจาะจงไม่มีประโยชน์ ข้าม step นี้ไปเลือก action อื่นแทน. "
+                "FORCE_REPLAN = ทั้งแนวทางตอนนี้ดูหลงทางไปไกลจาก goal มาก ควรคิดแผนใหม่ทั้งหมด"
+            ),
+        },
+        "reasoning": {"type": "string", "description": "เหตุผลสั้นๆ กระชับ 1-2 ประโยค"},
+    },
+    "required": ["is_semantically_redundant", "value_score", "action_decision", "reasoning"],
+}
+_SEMANTIC_REDUNDANCY_DESC = "ประเมินว่า proposed action ทำให้ USER_GOAL คืบหน้าจริงไหม หรือเป็น side-step ที่ข้ามได้"
+SEMANTIC_REDUNDANCY_TOOL = {
+    "name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "input_schema": _SEMANTIC_REDUNDANCY_PARAMS,
+}
+_GROQ_SEMANTIC_REDUNDANCY_TOOLS = [
+    {"type": "function", "function": {"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}},
+]
+_GEMINI_SEMANTIC_REDUNDANCY_TOOLS = [
+    {"function_declarations": [{"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}]},
+]
+
+_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT = (
+    "You are a Semantic Redundancy Evaluator for a browser automation agent.\n"
+    "You review ONE proposed action right before it is dispatched — you do not\n"
+    "plan, you only judge whether THIS SPECIFIC action moves the agent closer\n"
+    "to USER_GOAL.\n\n"
+    "RULES\n"
+    "- Default to PASS whenever the action is plausibly useful — you are a\n"
+    "  cheap sanity check, not the planner. Being wrong and blocking a useful\n"
+    "  action is worse than letting a mildly wasteful one through.\n"
+    "- Only choose SKIP_STEP when the action is CLEARLY unrelated to the goal\n"
+    "  (e.g. reading unrelated footer text, scrolling with no target in mind,\n"
+    "  re-navigating to a page already open) while a more direct path is\n"
+    "  visible in TARGET_CONTEXT/STEP_SUMMARY.\n"
+    "- Only choose FORCE_REPLAN when the entire recent direction looks lost\n"
+    "  (not just this one action) — this is rare, reserve it for clear cases.\n"
+    "- Output ONLY the evaluate_action_value tool call. No prose."
+)
+
+_SEMANTIC_REDUNDANCY_SAFE_DEFAULT: dict[str, Any] = {
+    "is_semantically_redundant": False,
+    "value_score": 1.0,
+    "action_decision": "PASS",
+    "reasoning": "evaluator error/uncertain — ไม่บล็อกความคืบหน้า (fail-open)",
+}
+
+
+async def evaluate_semantic_redundancy(
+    client, model: str, goal: str, step_summary: str, page_title: str, target_context: str,
+    tool_name: str, tool_input: dict, provider: str,
+) -> dict:
+    """เรียก 1 ครั้งต่อ step (เฉพาะตอน settings.enable_semantic_redundancy_check เปิด) —
+    ประเมิน proposed action (tool_name/tool_input ที่ next_action() เพิ่งเลือกมา) เทียบ
+    กับ goal ทั้ง task
+
+    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาดไม่ว่ากรณีใด (provider error/parse
+    ผิดพลาด/ไม่เรียก tool กลับมา) — คืน _SEMANTIC_REDUNDANCY_SAFE_DEFAULT (action_decision
+    PASS) แทนเสมอ เป็นค่าที่ปลอดภัยที่สุด (ปล่อยให้ dispatch ตามปกติเหมือนไม่มี evaluator
+    นี้อยู่เลย ดีกว่าเสี่ยง block action ที่จริงๆ มีประโยชน์เพราะ evaluator เองพัง)"""
+    prompt = (
+        f"USER_GOAL: {goal}\n"
+        f"STEP_SUMMARY: {step_summary}\n"
+        f"CURRENT_PAGE: {page_title}\n"
+        f"TARGET_CONTEXT: {target_context}\n"
+        f"PROPOSED_ACTION: {tool_name} {json.dumps(tool_input, ensure_ascii=False)}\n\n"
+        "Call evaluate_action_value now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=512,
+                system=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
+                tools=[SEMANTIC_REDUNDANCY_TOOL],
+                tool_choice={"type": "tool", "name": "evaluate_action_value"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=512,
+                messages=[
+                    {"role": "system", "content": _SEMANTIC_REDUNDANCY_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_SEMANTIC_REDUNDANCY_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "evaluate_action_value"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_SEMANTIC_REDUNDANCY_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "evaluate_action_value":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(_SEMANTIC_REDUNDANCY_SAFE_DEFAULT)
+    except Exception as e:
+        print(f"⚠️ evaluate_semantic_redundancy error: {e}", flush=True)
+        return dict(_SEMANTIC_REDUNDANCY_SAFE_DEFAULT)
+
+
+# --- W19-2: "Safety & Performance Middleware" — single-shot call ที่รวม redundancy check
+# (เหมือน evaluate_semantic_redundancy ด้านบน) กับ permission check (เหมือน
+# permission/rules.py::classify_action) เข้าเป็น 1 LLM call เดียว ประหยัด round-trip กว่า
+# เรียกแยก 2 ครั้ง — เรียกจาก orchestrator.py ก่อน dispatch จริง **เฉพาะตอน
+# settings.enable_middleware_evaluator เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือนโมดูล LLM
+# ตัวอื่นๆ ในไฟล์นี้ — ต้อง validate คุณภาพก่อนเปิดเป็น default)
+#
+# *** สำคัญ: เป็น "โมดูลที่ 4" แบบ additive ล้วนๆ ไม่ได้แทนที่/ลดทอนระบบความปลอดภัยเดิมเลย
+# แม้แต่น้อย — permission/rules.py::classify_action() ยังคงเป็นผู้ตัดสินสุดท้ายเสมอ
+# (final say) ต่อทุก action เหมือนเดิมทุกประการ ตัวนี้ทำได้แค่ "เพิ่มความระมัดระวัง"
+# (escalate-only): ผลลัพธ์ risk_level=REQUIRES_CONSENT/BLOCKED จากตัวนี้ถูกส่งต่อเข้า
+# classify_action() ผ่าน manual_guidance string เดียวกับที่ RAG คู่มือ (W7[B]) ใช้อยู่แล้ว
+# (ต่อท้ายวลีที่ตรงกับ MANUAL_CONFIRMATION_KEYWORDS) ทำให้ classify_action() escalate เป็น
+# NEEDS_CONFIRMATION ตามกลไกเดิมที่มีอยู่แล้ว/เทสต์ไว้แล้ว — ไม่มีทาง "ลดระดับ" ความเสี่ยงที่
+# classify_action() ตัดสินไปแล้วได้เลย (risk_level=AUTO_APPROVE ของตัวนี้ = ไม่ต่อท้ายอะไร
+# เข้า manual_guidance เลย = พฤติกรรมเดิมเป๊ะ) และไม่เรียก ask_user_func เองตรงๆ ด้วย —
+# ปล่อยให้ execute()'s classify_action()/_confirm_action() (ที่ทดสอบไว้แล้ว) เป็นคนถามจริง
+# กันการถามซ้ำสองครั้งสำหรับ action เดียวกัน
+_MIDDLEWARE_PARAMS = {
+    "type": "object",
+    "properties": {
+        "redundancy_evaluation": {
+            "type": "object",
+            "properties": {
+                "is_redundant": {"type": "boolean", "description": "true ถ้า action นี้ทำซ้ำสถานะเดิม/เป็น side-step ที่ไม่เกี่ยวกับ USER_GOAL"},
+                "redundancy_reason": {"type": "string", "description": "เหตุผลถ้า redundant, ไม่งั้นเว้นว่าง"},
+            },
+            "required": ["is_redundant", "redundancy_reason"],
+        },
+        "permission_evaluation": {
+            "type": "object",
+            "properties": {
+                "risk_level": {
+                    "type": "string", "enum": ["AUTO_APPROVE", "REQUIRES_CONSENT", "BLOCKED"],
+                    "description": (
+                        "REQUIRES_CONSENT เฉพาะ: financial (สั่งซื้อ/pay now/โอนเงิน/เพิ่มบัตร), "
+                        "account security (เปลี่ยนรหัสผ่าน/ตั้งค่าความปลอดภัย/MFA), destructive "
+                        "(ลบไฟล์/ยกเลิก subscription/purge repo/ล้างตะกร้า), PII (เลขบัตรประชาชน/"
+                        "เงินเดือน/ข้อมูลสุขภาพ/รหัสผ่าน), download executable (.exe/.bat/.sh/.zip "
+                        "จากโดเมนที่ไม่รู้จัก) เท่านั้น ที่เหลือ AUTO_APPROVE เสมอไม่ว่าเว็บไหน"
+                    ),
+                },
+                "permission_reason": {"type": "string", "description": "เหตุผลของ risk_level นี้ อ้างอิงผลกระทบจริงของ action"},
+            },
+            "required": ["risk_level", "permission_reason"],
+        },
+        "final_action_decision": {
+            "type": "string", "enum": ["EXECUTE", "SKIP_REDUNDANT", "PROMPT_USER_PERMISSION"],
+        },
+    },
+    "required": ["redundancy_evaluation", "permission_evaluation", "final_action_decision"],
+}
+_MIDDLEWARE_DESC = (
+    "ประเมิน proposed action ครั้งเดียวทั้ง redundancy (มีประโยชน์ต่อ goal ไหม) และ "
+    "permission (ต้องขออนุมัติจาก user ก่อนไหม) — ใช้ได้ทุกเว็บ ไม่เจาะจงเว็บใดเว็บหนึ่ง"
+)
+MIDDLEWARE_EVALUATOR_TOOL = {
+    "name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "input_schema": _MIDDLEWARE_PARAMS,
+}
+_GROQ_MIDDLEWARE_TOOLS = [
+    {"type": "function", "function": {"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}},
+]
+_GEMINI_MIDDLEWARE_TOOLS = [
+    {"function_declarations": [{"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}]},
+]
+
+_MIDDLEWARE_SYSTEM_PROMPT = (
+    "You are the Safety & Performance Middleware for a Universal AI Browser Automation\n"
+    "System. Evaluate proposed actions across ANY website (e-commerce, social media,\n"
+    "cloud storage, banking, government, internal tools, etc.) to optimize speed and\n"
+    "safety. Perform a SINGLE-PASS EVALUATION of ONE proposed action.\n\n"
+    "REDUNDANCY RULES (all sites)\n"
+    "- is_redundant=true if: re-typing the exact same value into an input field;\n"
+    "  clicking/toggling an option already in the desired state; performing an\n"
+    "  irrelevant side-action (social share links, footer nav, unrelated ads) that\n"
+    "  does not move closer to USER_GOAL.\n"
+    "- Default to is_redundant=false when plausibly useful — being wrong and\n"
+    "  blocking a useful action is worse than letting a mildly wasteful one through.\n\n"
+    "CONTEXT-AWARE PERMISSION RULES (generic risk assessment)\n"
+    "- risk_level=AUTO_APPROVE for routine, non-destructive interactions: searching\n"
+    "  (search bars, filter checkboxes, sorting dropdowns), reading/extracting\n"
+    "  (next page, expanding accordions, scrolling), navigation (links, category\n"
+    "  menus, tab switching), non-sensitive inputs (search queries, comments,\n"
+    "  non-financial forms).\n"
+    "- risk_level=REQUIRES_CONSENT ONLY for high-risk impact: financial (placing\n"
+    "  orders, \"Pay Now\", transferring funds, adding credit cards); account\n"
+    "  security (changing passwords, security settings, MFA); destructive\n"
+    "  (deleting items, canceling subscriptions, purging files/repos, emptying\n"
+    "  carts); sensitive PII (national ID, salary, health records, private\n"
+    "  passwords); downloads of executables (.exe/.bat/.sh/.zip from unverified\n"
+    "  domains).\n"
+    "- risk_level=BLOCKED only for clearly malicious/irreversible-and-forbidden intent.\n\n"
+    "Output ONLY the middleware_evaluate tool call. No prose."
+)
+
+_MIDDLEWARE_SAFE_DEFAULT: dict[str, Any] = {
+    "redundancy_evaluation": {"is_redundant": False, "redundancy_reason": ""},
+    "permission_evaluation": {
+        "risk_level": "AUTO_APPROVE",
+        "permission_reason": "evaluator error/uncertain — ไม่บล็อกความคืบหน้า (fail-open)",
+    },
+    "final_action_decision": "EXECUTE",
+}
+
+
+async def evaluate_safety_and_performance(
+    client, model: str, goal: str, current_domain: str, action_type: str, element_description: str,
+    action_value: str, provider: str,
+) -> dict:
+    """เรียก 1 ครั้งต่อ step (เฉพาะตอน settings.enable_middleware_evaluator เปิด) — รวม
+    redundancy check + permission check เป็น LLM call เดียว (ดู module comment ด้านบน
+    สำหรับเหตุผลที่เป็น "โมดูลที่ 4" แบบ additive ไม่แทนที่ classify_action())
+
+    current_domain: โดเมนของเว็บปัจจุบัน (extract_domain(page.url)) — ใช้แค่บอกบริบทเว็บ
+    ปัจจุบันให้ LLM เห็น ไม่ได้ผูก logic เฉพาะเว็บไหนเว็บหนึ่งเลย (generic ข้าม platform)
+
+    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาดไม่ว่ากรณีใด — คืน
+    _MIDDLEWARE_SAFE_DEFAULT (EXECUTE/AUTO_APPROVE) แทนเสมอ เป็นค่าที่ปลอดภัยที่สุด
+    (เหมือนไม่มี middleware นี้อยู่เลย — classify_action() ที่ dispatch จริงยังทำงานตามปกติ)"""
+    prompt = (
+        f"OVERALL_GOAL: {goal}\n"
+        f"ACTIVE_SITE_DOMAIN: {current_domain}\n"
+        f"ACTION_PROPOSED: {action_type} on target element {element_description} with value {action_value}\n\n"
+        "Call middleware_evaluate now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=512,
+                system=_MIDDLEWARE_SYSTEM_PROMPT,
+                tools=[MIDDLEWARE_EVALUATOR_TOOL],
+                tool_choice={"type": "tool", "name": "middleware_evaluate"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=512,
+                messages=[
+                    {"role": "system", "content": _MIDDLEWARE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_MIDDLEWARE_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "middleware_evaluate"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_MIDDLEWARE_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_MIDDLEWARE_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "middleware_evaluate":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(_MIDDLEWARE_SAFE_DEFAULT)
+    except Exception as e:
+        print(f"⚠️ evaluate_safety_and_performance error: {e}", flush=True)
+        return dict(_MIDDLEWARE_SAFE_DEFAULT)
+
+
+# --- W19-3: "Voice & Persona Interface" — แปลงสถานะ agent (ดิบๆ เช่น "[OK] click ->
+# สำเร็จ") ให้เป็นข้อความไทยธรรมชาติแบบผู้ช่วยส่วนตัว ให้ Test Console UI โชว์แทน raw log
+# (ดู module comment: ห้ามพูดแบบ system log "Status: Executing command click on selector
+# #search-btn" ต้องพูดธรรมชาติแบบคนคุยกัน) — เรียกจาก orchestrator.py **เฉพาะตอน
+# settings.enable_persona_voice เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือนโมดูล LLM ตัวอื่น)
+#
+# ต่างจาก 3 โมดูลก่อนหน้า (state_filter/semantic_redundancy/middleware) ตรงที่ตัวนี้ไม่มีผล
+# ต่อ control flow ของ agent loop เลยแม้แต่น้อย (ไม่ skip/ไม่ block/ไม่ replan อะไรทั้งสิ้น) —
+# เป็นแค่ "ชั้นการสื่อสาร" (presentation layer) ล้วนๆ คืนข้อความเสริมให้ UI แสดงคู่กับ raw
+# log เดิม (ไม่ได้แทนที่ — raw log/history ยังคงส่งครบเหมือนเดิมทุกประการ เผื่อ debug จริง)
+#
+# ความถี่การเรียก: ไม่ได้เรียกทุก step ของ browser action (จะแพงเกินไปโดยไม่จำเป็น เพราะเป็น
+# แค่ข้อความคุย ไม่ใช่การตัดสินใจที่กระทบผลลัพธ์) — เรียกเฉพาะจังหวะสำคัญที่ user จะได้เห็น/
+# สนใจจริงๆ ตามที่ RULES ระบุ: PROGRESS (เริ่ม task), PERMISSION (ขออนุมัติ), ERROR (action
+# ล้มเหลว), COMPLETION (จบ task) — ดู orchestrator.py สำหรับจุดที่เรียกจริง (ปัจจุบันต่อสาย
+# แค่ COMPLETION/ERROR ตอนจบ task เท่านั้น เป็นจุดที่คุ้มค่าที่สุด/ความถี่ต่ำสุด — PROGRESS/
+# PERMISSION ยังไม่ต่อสาย รอ validate ของจริงก่อน)
+_PERSONA_PARAMS = {
+    "type": "object",
+    "properties": {
+        "user_message": {"type": "string", "description": "ข้อความไทยธรรมชาติ สุภาพ กระชับ 1 ประโยค แสดงบน UI"},
+        "action_status": {
+            "type": "string", "enum": ["IN_PROGRESS", "WAITING_APPROVAL", "COMPLETED", "FAILED"],
+        },
+    },
+    "required": ["user_message", "action_status"],
+}
+_PERSONA_DESC = "แปลงสถานะ agent ดิบๆ เป็นข้อความไทยธรรมชาติแบบผู้ช่วยส่วนตัว สำหรับแสดงบน UI"
+PERSONA_VOICE_TOOL = {"name": "speak_to_user", "description": _PERSONA_DESC, "input_schema": _PERSONA_PARAMS}
+_GROQ_PERSONA_TOOLS = [
+    {"type": "function", "function": {"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}},
+]
+_GEMINI_PERSONA_TOOLS = [
+    {"function_declarations": [{"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}]},
+]
+
+_PERSONA_SYSTEM_PROMPT = (
+    "You are the Voice & Persona Interface for a Universal AI Browser Agent.\n"
+    "Communicate with the user in natural, polite, friendly, human-like Thai —\n"
+    "like a smart digital personal assistant, not a system log.\n\n"
+    "TONE & STYLE\n"
+    "- Friendly, concise (1 sentence), helpful, natural. Use ครับ/ค่ะ naturally.\n"
+    "- NEVER speak like a raw log (e.g. do NOT say \"Status: Executing command\n"
+    "  click on selector #search-btn\").\n\n"
+    "RULES BY AGENT_STATUS\n"
+    "- IN_PROGRESS: state the action on CURRENT_DOMAIN simply, 1 sentence\n"
+    "  (e.g. \"กำลังเข้าไปดูสินค้าที่สนใจบน Shopee ให้เลยครับ...\").\n"
+    "- WAITING_APPROVAL: contextualize WHY approval is needed from the action\n"
+    "  type, without jargon (e.g. \"ปุ่มนี้เป็นปุ่มกดยืนยันการชำระเงิน เพื่อความ\n"
+    "  ปลอดภัย ให้ผมกดชำระเงินต่อเลยไหมครับ?\").\n"
+    "- FAILED: be encouraging, transparent, solution-oriented (e.g. \"เอ๊ะ\n"
+    "  เหมือนหน้าเว็บนี้จะโหลดช้าหน่อย เดี๋ยวผมลองใหม่อีกทางนะครับ\").\n"
+    "- COMPLETED: summarize clearly what was achieved on that site (e.g.\n"
+    "  \"เรียบร้อยครับ! ผมจองคิวบนเว็บให้เสร็จแล้ว\").\n\n"
+    "Output ONLY the speak_to_user tool call. No prose, no markdown."
+)
+
+_PERSONA_SAFE_DEFAULT: dict[str, Any] = {"user_message": "", "action_status": "IN_PROGRESS"}
+
+
+async def generate_persona_message(
+    client, model: str, domain_name: str, user_goal: str, agent_status: str, status_detail: str, provider: str,
+) -> dict:
+    """agent_status (input): "starting"/"waiting_approval"/"failed"/"completed" — สถานะ
+    ดิบที่ orchestrator รู้อยู่แล้ว ใช้บอกบริบทให้ LLM เลือกโทนที่เหมาะสม (ดู RULES ด้านบน)
+    status_detail: รายละเอียดเสริมเฉพาะจังหวะนั้น (เช่น final_message ตอน COMPLETED, error
+    text ตอน FAILED, ชื่อ action ตอน WAITING_APPROVAL) — เว้นว่างได้ถ้าไม่มี
+
+    คืน {user_message, action_status} เสมอ — user_message="" หมายถึง "ไม่มีข้อความ persona
+    ให้แสดง" (ผู้เรียกควร fallback ไปโชว์ raw log/message เดิมแทน ไม่ใช่โชว์อะไรว่างเปล่า)
+
+    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาด เป็นแค่ presentation layer เสริม
+    ไม่กระทบผลลัพธ์จริงของ task เลยไม่ว่าจะพังแค่ไหน — error ใดๆ คืน _PERSONA_SAFE_DEFAULT"""
+    prompt = (
+        f"CURRENT_DOMAIN: {domain_name}\n"
+        f"USER_GOAL: {user_goal}\n"
+        f"AGENT_STATUS: {agent_status}\n"
+        f"STATUS_DETAIL: {status_detail}\n\n"
+        "Call speak_to_user now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=256,
+                system=_PERSONA_SYSTEM_PROMPT,
+                tools=[PERSONA_VOICE_TOOL],
+                tool_choice={"type": "tool", "name": "speak_to_user"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=256,
+                messages=[
+                    {"role": "system", "content": _PERSONA_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_PERSONA_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "speak_to_user"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_PERSONA_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_PERSONA_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "speak_to_user":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(_PERSONA_SAFE_DEFAULT)
+    except Exception as e:
+        print(f"⚠️ generate_persona_message error: {e}", flush=True)
+        return dict(_PERSONA_SAFE_DEFAULT)
+
+
+# --- W19-4: "Orchestrator & Planner Agent for Multi-Turn Conversations" — decides how a
+# NEW user instruction (turn N ของ conversation เดียวกัน) ควรถูกจัดการ โดยไม่เสียบริบทเดิม
+# (ไม่ navigate กลับหน้าแรก/ค้นหาใหม่ทั้งที่ user อ้างถึงของที่เจอไปแล้ว)
+#
+# *** สถานะปัจจุบัน: ต่อสายจริงแล้วใน routes.py (ดู _run_with_resolved_browser, W19-6
+# MODULE 3 "Ordinal Selection") — SessionRegistry.BrowserSession.extracted_memory (list[dict],
+# ดู session_registry.py) เป็น buffer ที่ persist ข้าม turn ตามที่ comment เดิมรอไว้ ก่อนเรียก
+# orchestrator.run_task() เลยด้วยซ้ำ (REPLY_FROM_MEMORY ข้าม run_task()/การเปิด browser
+# ไปทั้งหมดจริงตามที่ออกแบบไว้)
+async def route_multi_turn_strategy(
+    client, model: str, overall_goal: str, current_user_instruction: str, current_domain: str,
+    current_url: str, extracted_memory_buffer: str, recent_action_history: str, provider: str,
+) -> dict:
+    """extracted_memory_buffer: สรุปข้อมูลที่เคย extract ไว้จาก turn ก่อนๆ ของ conversation
+    เดียวกัน (เช่น ผลลัพธ์จาก extract_structured_items() ด้านล่าง) — ส่งเป็น string
+    (caller เป็นคนตัดสินใจ format เอง เช่น JSON dump ของ list รายการ) ว่างเปล่าได้ถ้ายังไม่
+    เคย extract อะไรมาก่อนในเทิร์นก่อนหน้า
+
+    recent_action_history: สรุป action 3 ครั้งล่าสุด (เช่น จาก ShortTermMemory.recent(3))
+    ว่างเปล่าได้ถ้าเพิ่งเริ่ม session
+
+    ห้าม throw ออกไปพังเด็ดขาดไม่ว่ากรณีใด — คืน _MULTI_TURN_SAFE_DEFAULT
+    (chosen_strategy=NEW_NAVIGATION) แทนเสมอ ซึ่งเท่ากับ "พฤติกรรมเดิมของระบบทุกวันนี้"
+    (ทุก turn ทำ task ใหม่อิสระ ไม่มี strategy router เลย) — ไม่ใช่ค่าที่สุ่มเดา แต่เป็นค่าที่
+    ปลอดภัยที่สุดเพราะเท่ากับปิด feature นี้ไปเฉยๆ เมื่อตัดสินใจไม่ได้จริง"""
+    prompt = (
+        f"OVERALL_CONVERSATION_GOAL: {overall_goal}\n"
+        f"CURRENT_USER_INSTRUCTION_TURN_N: {current_user_instruction}\n"
+        f"ACTIVE_DOMAIN: {current_domain}\n"
+        f"ACTIVE_URL: {current_url}\n"
+        f"EXTRACTED_MEMORY_BUFFER:\n{extracted_memory_buffer or '(ว่างเปล่า — ยังไม่เคย extract อะไรมาก่อน)'}\n\n"
+        f"RECENT_ACTION_HISTORY (last 3 steps):\n{recent_action_history or '(ว่างเปล่า — เพิ่งเริ่ม session)'}\n\n"
+        "Call route_strategy now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=768,
+                system=_MULTI_TURN_SYSTEM_PROMPT,
+                tools=[MULTI_TURN_STRATEGY_TOOL],
+                tool_choice={"type": "tool", "name": "route_strategy"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=768,
+                messages=[
+                    {"role": "system", "content": _MULTI_TURN_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_MULTI_TURN_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "route_strategy"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_MULTI_TURN_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_MULTI_TURN_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "route_strategy":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(_MULTI_TURN_SAFE_DEFAULT)
+    except Exception as e:
+        print(f"⚠️ route_multi_turn_strategy error: {e}", flush=True)
+        return dict(_MULTI_TURN_SAFE_DEFAULT)
+
+
+_MULTI_TURN_PARAMS = {
+    "type": "object",
+    "properties": {
+        "context_analysis": {
+            "type": "object",
+            "properties": {
+                "is_continuation_of_previous_turn": {
+                    "type": "boolean",
+                    "description": "true ถ้า CURRENT_USER_INSTRUCTION_TURN_N อ้างถึงรายการ/ข้อมูลที่เจอไปแล้วใน EXTRACTED_MEMORY_BUFFER หรือหน้าปัจจุบัน",
+                },
+                "target_entity_from_memory": {"type": "string", "description": "คำอธิบาย/ID ของรายการที่ถูกอ้างถึง ถ้ามี ไม่งั้นเว้นว่าง"},
+            },
+            "required": ["is_continuation_of_previous_turn", "target_entity_from_memory"],
+        },
+        "chosen_strategy": {
+            "type": "string",
+            "enum": ["REPLY_FROM_MEMORY", "IN_PAGE_ACTION", "NEW_NAVIGATION"],
+            "description": (
+                "REPLY_FROM_MEMORY = คำตอบอยู่ใน buffer แล้ว ไม่ต้องทำ browser action เลย. "
+                "IN_PAGE_ACTION = ต้องดู/คลิก element บนหน้าปัจจุบัน ไม่ต้อง navigate ไปไหน. "
+                "NEW_NAVIGATION = user ขอหัวข้อ/เว็บใหม่จริงๆ เท่านั้นถึงเลือกอันนี้"
+            ),
+        },
+        "reasoning": {"type": "string", "description": "เหตุผลสั้นๆ ว่าทำไมเลือก strategy นี้"},
+        "planned_action": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "เช่น reply, click, extract, type, navigate"},
+                "target_selector": {"type": "string", "description": "selector/element identity ที่ชัดเจน ถ้ามี ไม่งั้นเว้นว่าง"},
+                "parameters": {"type": "object", "description": "พารามิเตอร์เสริมของ tool นี้"},
+            },
+            "required": ["tool"],
+        },
+    },
+    "required": ["context_analysis", "chosen_strategy", "reasoning", "planned_action"],
+}
+_MULTI_TURN_DESC = "ตัดสินใจว่า user instruction ใหม่ (turn N) ควรจัดการด้วย REPLY_FROM_MEMORY/IN_PAGE_ACTION/NEW_NAVIGATION"
+MULTI_TURN_STRATEGY_TOOL = {
+    "name": "route_strategy", "description": _MULTI_TURN_DESC, "input_schema": _MULTI_TURN_PARAMS,
+}
+_GROQ_MULTI_TURN_TOOLS = [
+    {"type": "function", "function": {"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}},
+]
+_GEMINI_MULTI_TURN_TOOLS = [
+    {"function_declarations": [{"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}]},
+]
+
+_MULTI_TURN_SYSTEM_PROMPT = (
+    "You are the Orchestrator & Planner Agent for a Universal Multi-Turn AI Browser\n"
+    "System. Execute user instructions continuously across multi-turn conversations on\n"
+    "ANY website without losing context, navigating away unnecessarily, or resetting\n"
+    "session state.\n\n"
+    "STRICT BEHAVIORAL RULES\n"
+    "1. READ MEMORY BUFFER FIRST: before planning any new navigation, check\n"
+    "   EXTRACTED_MEMORY_BUFFER. If the instruction refers to previously found items\n"
+    "   (\"ราคาเท่าไหร่\", \"ขอรายละเอียดอันแรก\", \"เปรียบเทียบ 2 อันนี้\", \"เอาเข้าตระกร้า\n"
+    "   ให้หน่อย\") you MUST use the existing buffer or current page state — do NOT\n"
+    "   refresh, do NOT navigate back to the home page, do NOT start a brand-new search.\n"
+    "1b. PRONOUN / ENTITY-SWITCH CONTINUATION: a follow-up may name a DIFFERENT entity\n"
+    "    than the previous turn while implicitly repeating the same question about it\n"
+    "    (Thai ellipsis pattern ending in \"ละ\", e.g. \"Cedric Kelly ละ\", \"คนต่อไปละ\",\n"
+    "    \"คนนี้ได้เท่าไหร่\"). If that named/implied entity (by name, row position, or\n"
+    "    \"next one\") already exists as a row in EXTRACTED_MEMORY_BUFFER, this is STILL\n"
+    "    REPLY_FROM_MEMORY — set target_entity_from_memory to that row's identity and\n"
+    "    answer from the buffer, do NOT treat the new entity name as a reason to search\n"
+    "    or navigate. Only fall through to IN_PAGE_ACTION/NEW_NAVIGATION if that entity is\n"
+    "    genuinely absent from EXTRACTED_MEMORY_BUFFER.\n"
+    "2. STATEFUL ACTION DECISION: choose exactly one of 3 strategies —\n"
+    "   REPLY_FROM_MEMORY (answer exists in the buffer, no browser action at all),\n"
+    "   IN_PAGE_ACTION (need to inspect/click something on the CURRENT page's DOM,\n"
+    "   no navigation), NEW_NAVIGATION (ONLY when the user explicitly asks for a new\n"
+    "   topic or site, e.g. \"ไปหาเสื้อผ้าแทน\", \"เริ่มค้นหาใหม่\", \"เปิดเว็บอื่น\").\n"
+    "3. UNIVERSAL SITE AGNOSTIC: apply these rules the same way on e-commerce, travel/\n"
+    "   booking, social networks, productivity tools, and internal dashboards.\n"
+    "4. Default to IN_PAGE_ACTION over NEW_NAVIGATION when uncertain whether the\n"
+    "   instruction is a continuation — losing context is worse than one extra\n"
+    "   in-page inspection step.\n\n"
+    "Output ONLY the route_strategy tool call. No prose."
+)
+
+_MULTI_TURN_SAFE_DEFAULT: dict[str, Any] = {
+    "context_analysis": {"is_continuation_of_previous_turn": False, "target_entity_from_memory": ""},
+    "chosen_strategy": "NEW_NAVIGATION",
+    "reasoning": "evaluator error/uncertain — fallback ไปพฤติกรรมเดิมของระบบ (ทำ task ใหม่อิสระทุก turn เหมือนไม่มี router นี้อยู่เลย)",
+    "planned_action": {"tool": "", "target_selector": "", "parameters": {}},
+}
+
+
+# --- W19-4 (ต่อ): "Structured Data Extractor" — คู่กับ route_multi_turn_strategy() ด้านบน:
+# แปลง raw page content (เช่น ผลลัพธ์ดิบจาก perception.extract_table_data()) ให้เป็น list
+# ของ "complete package" ต่อรายการ (title+price+status+url+attributes เสริม) แทนที่จะเป็น
+# text/list ของ field เดียวโดดๆ — ใช้เป็น input ของ extracted_memory_buffer ที่
+# route_multi_turn_strategy() ด้านบนอ่าน ต่อสายจริงแล้วใน routes.py::_update_extracted_memory
+# (เก็บผลลัพธ์ลง SessionRegistry.BrowserSession.extracted_memory)
+_STRUCTURED_EXTRACT_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "item_index": {"type": "integer", "description": "ลำดับรายการ เริ่มจาก 1"},
+        "title": {"type": "string", "description": "ชื่อ/หัวข้อของรายการ"},
+        "price": {"type": "string", "description": "ราคา/มูลค่า ถ้ามีบนหน้านี้ ไม่งั้นเว้นว่าง"},
+        "status": {"type": "string", "description": "สถานะ เช่น In Stock/Sold Out/Available ถ้ามี ไม่งั้นเว้นว่าง"},
+        "url": {"type": "string", "description": "ลิงก์/ID ของรายการ ถ้ามี ไม่งั้นเว้นว่าง"},
+        "attributes": {
+            "type": "object",
+            "description": "ฟิลด์เสริมอื่นๆ ที่มีอยู่จริงบนหน้านี้แต่ไม่เข้าฟิลด์มาตรฐานด้านบน (เช่น rating, badge, quantity, date)",
+        },
+    },
+    "required": ["item_index", "title"],
+}
+_STRUCTURED_EXTRACT_PARAMS = {
+    "type": "object",
+    "properties": {
+        "items": {"type": "array", "items": _STRUCTURED_EXTRACT_ITEM_SCHEMA},
+    },
+    "required": ["items"],
+}
+_STRUCTURED_EXTRACT_DESC = "แปลง raw page content ให้เป็น structured item array (title+price+status+url ต่อรายการ)"
+STRUCTURED_EXTRACTOR_TOOL = {
+    "name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "input_schema": _STRUCTURED_EXTRACT_PARAMS,
+}
+_GROQ_STRUCTURED_EXTRACT_TOOLS = [
+    {"type": "function", "function": {"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}},
+]
+_GEMINI_STRUCTURED_EXTRACT_TOOLS = [
+    {"function_declarations": [{"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}]},
+]
+
+_STRUCTURED_EXTRACT_SYSTEM_PROMPT = (
+    "You are the Structured Data Extractor. When extracting data from ANY web page:\n"
+    "1. Always capture entities as COMPLETE PACKAGES (e.g. Name + Price + Rating + Link)\n"
+    "   — never extract a standalone attribute without pairing it to its parent item.\n"
+    "2. Never invent data that is not present in PAGE_CONTENT — leave a field empty\n"
+    "   (\"\") rather than guessing.\n"
+    "3. Fields that don't fit title/price/status/url go into \"attributes\" (e.g. rating,\n"
+    "   badge, quantity, date) — keep them tied to the same item_index.\n"
+    "4. STRICT TOP-TO-BOTTOM ORDER (W19): item_index must follow the exact order items\n"
+    "   appear in PAGE_CONTENT, top to bottom. Never reorder, sort, or rank items\n"
+    "   yourself for any reason.\n"
+    "5. FILTER OUT NON-ORGANIC ITEMS (W19): skip entries that are clearly ads,\n"
+    "   sponsored/promoted listings, \"recommended for you\"/\"people also viewed\"\n"
+    "   sections, or navigation/badge clutter mixed into PAGE_CONTENT — only extract the\n"
+    "   main organic list/search results the user actually asked for. If PAGE_CONTENT\n"
+    "   marks something as \"Ad\"/\"Sponsored\"/\"แนะนำ\", exclude it entirely (do not just\n"
+    "   flag it — leave it out of the array).\n\n"
+    "Output ONLY the emit_structured_items tool call. No prose."
+)
+
+
+async def extract_structured_items(client, model: str, page_content: str, extraction_hint: str, provider: str) -> list[dict]:
+    """page_content: raw text/markdown ที่ได้จาก perception.extract_table_data() หรือ
+    เนื้อหาดิบอื่นที่ต้องการให้จัดโครงสร้าง — extraction_hint: บริบทเสริมสั้นๆ ว่ากำลังมองหา
+    อะไร (เช่น "รายการสินค้าในผลค้นหา") ว่างเปล่าได้
+
+    คืน list ของ dict เสมอ (ไม่ใช่ dict ห่อ "items" — unwrap ให้ผู้เรียกใช้ตรงๆ) — ห้าม throw
+    ออกไปพังเด็ดขาดไม่ว่ากรณีใด คืน [] เปล่าๆ แทนเสมอตอน error (ผู้เรียก fallback ไปใช้
+    page_content ดิบต่อได้ตามปกติ เหมือนไม่มีตัวจัดโครงสร้างนี้อยู่เลย)"""
+    if not (page_content or "").strip():
+        return []
+    prompt = (
+        f"EXTRACTION_HINT: {extraction_hint or '(ไม่มี — จัดโครงสร้างทุกรายการที่เห็น)'}\n\n"
+        f"PAGE_CONTENT:\n{page_content}\n\n"
+        "Call emit_structured_items now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=2048,
+                system=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
+                tools=[STRUCTURED_EXTRACTOR_TOOL],
+                tool_choice={"type": "tool", "name": "emit_structured_items"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=2048,
+                messages=[
+                    {"role": "system", "content": _STRUCTURED_EXTRACT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_STRUCTURED_EXTRACT_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "emit_structured_items"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_STRUCTURED_EXTRACT_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "emit_structured_items":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        if result is None:
+            return []
+        items = result.get("items")
+        return items if isinstance(items, list) else []
+    except Exception as e:
+        print(f"⚠️ extract_structured_items error: {e}", flush=True)
+        return []
+
+
+# --- W19-5: "Structured Data Extractor Engine" (Query Normalizer) — ต่างจาก
+# extract_structured_items() ด้านบน (แปลง raw page CONTENT ที่ดึงมาแล้วให้เป็น item
+# array) ตัวนี้ทำงาน "ก่อน" การดึงข้อมูลเลย: แปลงคำถามภาษาธรรมชาติยาวๆ ของ user (เช่น
+# "อ่านรายชื่อผู้ใช้งานระบบในหน้าแอดมินทั้งหมด") ให้เป็น target scope/fields ที่เจาะจง
+# พอจะใช้เป็น input ของ perception.extract_table_data()/actions.read_page_data() ได้ตรงๆ
+# แทนที่จะให้ LLM หลักเดา CSS selector ดิบๆ เองจาก query ยาวๆ
+#
+# *** สถานะปัจจุบัน: standalone + tested เท่านั้น "ยังไม่ต่อสาย" เข้า actions.py::
+# read_page_data()/orchestrator.py loop เลย (ต่างจาก route_multi_turn_strategy/
+# extract_structured_items ด้านบนที่ต่อสายจริงแล้วใน routes.py — ตัวนี้ยังไม่มีจุดต่อสาย
+# เพราะเพิ่ม LLM call แยกก่อน read_page_data ทุกครั้งมีต้นทุน latency จริง ต้องตัดสินใจจุด
+# ต่อสายที่เหมาะสมก่อน ไม่ใช่แค่เพิ่ม if-branch เข้า loop เดิม) ***
+_EXTRACTION_QUERY_PARAMS = {
+    "type": "object",
+    "properties": {
+        "normalized_target_scope": {
+            "type": "string",
+            "description": "CSS selector ที่เจาะจงพอจะเป็น container ของข้อมูลที่ต้องการ (เช่น 'div.oxd-table-body', 'table', 'main')",
+        },
+        "extraction_type": {
+            "type": "string",
+            "enum": ["TABLE_MULTI_ROW", "LIST", "SINGLE_VALUE", "COUNT"],
+            "description": "TABLE_MULTI_ROW/LIST = หลายแถว/รายการ, SINGLE_VALUE = ค่าเดียว, COUNT = แค่นับจำนวน",
+        },
+        "data_fields": {
+            "type": "array", "items": {"type": "string"},
+            "description": "รายชื่อ field ที่ query ต้องการจริงๆ (เช่น ['Username', 'User Role', 'Employee Name', 'Status']) — [] ถ้า query ไม่ได้เจาะจง field ใดเป็นพิเศษ",
+        },
+    },
+    "required": ["normalized_target_scope", "extraction_type", "data_fields"],
+}
+_EXTRACTION_QUERY_DESC = "แปลงคำถามภาษาธรรมชาติยาวๆ ให้เป็น target scope/extraction type/field ที่เจาะจงสำหรับดึงข้อมูลจาก DOM"
+EXTRACTION_QUERY_NORMALIZER_TOOL = {
+    "name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "input_schema": _EXTRACTION_QUERY_PARAMS,
+}
+_GROQ_EXTRACTION_QUERY_TOOLS = [
+    {"type": "function", "function": {"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}},
+]
+_GEMINI_EXTRACTION_QUERY_TOOLS = [
+    {"function_declarations": [{"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}]},
+]
+
+_EXTRACTION_QUERY_SYSTEM_PROMPT = (
+    "You are the Structured Data Extractor Engine. Convert long natural language read\n"
+    "requests into precise DOM extraction queries.\n\n"
+    "RULES\n"
+    "- Do NOT pass the raw natural language string through as a selector.\n"
+    "- Normalize into a targeted scope: identify the container that most likely holds\n"
+    "  the requested data (e.g. a table body, card grid, or list container) using\n"
+    "  TARGET_DOM_SCOPE as a hint when given.\n"
+    "- List the specific data fields the query is actually asking for (e.g. Username,\n"
+    "  User Role, Employee Name, Status) — leave data_fields empty only if the query\n"
+    "  is genuinely unspecific about which fields matter.\n"
+    "- Prefer extraction_type=COUNT when the query is purely about how many items\n"
+    "  exist, not their contents.\n"
+    "- Output ONLY the emit_normalized_query tool call. No prose."
+)
+
+_EXTRACTION_QUERY_SAFE_DEFAULT: dict[str, Any] = {
+    "normalized_target_scope": "",
+    "extraction_type": "TABLE_MULTI_ROW",
+    "data_fields": [],
+}
+
+
+async def normalize_extraction_query(
+    client, model: str, raw_user_query: str, main_content_container: str, provider: str,
+) -> dict:
+    """raw_user_query: คำถามภาษาธรรมชาติดิบๆ จาก user (เช่น "อ่านรายชื่อผู้ใช้งานระบบใน
+    หน้าแอดมินทั้งหมด") — main_content_container: hint ของ container หลักที่ข้อมูลน่าจะ
+    อยู่ (เช่น จาก region="main" ใน perception.py, ดู "Scoped Search Context") ว่างเปล่า
+    ได้ถ้าไม่รู้
+
+    ห้าม throw ออกไปพังเด็ดขาดไม่ว่ากรณีใด — คืน _EXTRACTION_QUERY_SAFE_DEFAULT แทนเสมอ
+    (normalized_target_scope="" = ให้ผู้เรียก fallback ไปใช้ target_hint/query เดิมที่มี
+    อยู่แล้วตรงๆ เหมือนไม่มีตัว normalize นี้อยู่เลย)"""
+    if not (raw_user_query or "").strip():
+        return dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
+    prompt = (
+        f"RAW_USER_QUERY: {raw_user_query}\n"
+        f"TARGET_DOM_SCOPE: {main_content_container or '(ไม่ทราบ)'}\n\n"
+        "Call emit_normalized_query now."
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model,
+                max_tokens=512,
+                system=_EXTRACTION_QUERY_SYSTEM_PROMPT,
+                tools=[EXTRACTION_QUERY_NORMALIZER_TOOL],
+                tool_choice={"type": "tool", "name": "emit_normalized_query"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+            result = tool_use.input if tool_use is not None else None
+        elif provider == "groq":
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=512,
+                messages=[
+                    {"role": "system", "content": _EXTRACTION_QUERY_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_GROQ_EXTRACTION_QUERY_TOOLS,
+                tool_choice={"type": "function", "function": {"name": "emit_normalized_query"}},
+            )
+            tool_calls = response.choices[0].message.tool_calls or []
+            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
+        elif provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model,
+                tools=_GEMINI_EXTRACTION_QUERY_TOOLS,
+                tool_config={"function_calling_config": {"mode": "ANY"}},
+                system_instruction=_EXTRACTION_QUERY_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            result = None
+            for part in response.candidates[0].content.parts:
+                fc = getattr(part, "function_call", None)
+                if fc and fc.name == "emit_normalized_query":
+                    result = _gemini_struct_to_plain_python(fc.args)
+                    break
+        else:
+            result = None
+
+        return result if result is not None else dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
+    except Exception as e:
+        print(f"⚠️ normalize_extraction_query error: {e}", flush=True)
+        return dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
+
+
 # system ส่งเป็น content block (ไม่ใช่ string เฉยๆ) พร้อม cache_control -> Anthropic
 # cache ทั้ง tools+system prefix ไว้ (เหมือนกันทุก step ของ loop เดียวกัน ต่างแค่
 # messages ที่ยาวขึ้นเรื่อยๆ) ลด input token cost ของทุก step หลังจากตัวแรก
@@ -1431,10 +2359,17 @@ def append_tool_result_gemini(messages: list, tool_use_id: str, result_text: str
 # step แยกทีละข้อเพื่อ render เป็น checklist ที่ติ๊กได้ real-time ระหว่าง task รันจริง (ดู
 # orchestrator.py::completed_plan_step) ถ้า format ไม่ตรง parsing จะแมตช์ index ผิดข้อ
 _PLAN_PROMPT_TEMPLATE = (
-    "Goal: {goal}\n\nหน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
+    "Goal: {goal}\n\n"
+    "URL/หน้าปัจจุบันจริงตอนนี้: {current_url}\n\n"
+    "หน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
     "เขียนแผนคร่าวๆ ว่าจะทำ goal นี้ให้สำเร็จด้วยขั้นตอนอะไรบ้าง (ไม่เกิน 5-6 ข้อ) — สรุป"
     "ระดับสูงพอให้ user อ่านแล้วเข้าใจและตัดสินใจอนุมัติได้ ไม่ต้องเรียก tool ไม่ต้องระบุ "
     "index ของ element เป๊ะๆ ตอบเป็นข้อความธรรมดา ไม่ต้องมี markdown\n\n"
+    "*** Navigation Deduplication (สำคัญ): ตรวจสอบ URL/หน้าปัจจุบันด้านบนก่อนเสมอ — ถ้า"
+    "อยู่บนหน้า/module เป้าหมายอยู่แล้ว (เช่น goal พูดถึง 'หน้า Admin' และ URL ปัจจุบันคือ "
+    ".../admin/viewSystemUsers อยู่แล้ว) ห้ามใส่ขั้นตอนคลิกเมนู/ลิงก์ navigation ไปหน้านั้นซ้ำ "
+    "ให้ข้ามไปขั้นตอนที่ทำบนหน้านี้ได้เลย (เช่น ค้นหา/แก้ไข/กรอกฟอร์ม) — ยกเว้น goal สั่งให้ "
+    "'รีเฟรช'/'เปิดใหม่' ชัดเจนเท่านั้นถึงใส่ขั้นตอน navigate ซ้ำได้ ***\n\n"
     "*** ต้องตอบเป็นรายการเลขข้อเท่านั้น แต่ละข้อขึ้นต้นด้วยเลข ตามด้วยจุด แล้วเว้นวรรค "
     "เช่น '1. ค้นหาปุ่ม Login แล้วคลิก' บนบรรทัดของตัวเอง ห้ามใช้ bullet แบบอื่น (-, •, ก., "
     "ก) ฯลฯ) เด็ดขาด และห้ามมีข้อความอื่นก่อน/หลังรายการเลขข้อเลย เพราะระบบจะ parse แต่ละ"
@@ -1474,13 +2409,19 @@ async def generate_text(client, model: str, prompt: str, provider: str) -> str:
     raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
 
 
-async def generate_plan(client, model: str, goal: str, page_text: str, provider: str) -> str:
+async def generate_plan(client, model: str, goal: str, page_text: str, provider: str, current_url: str = "") -> str:
     """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
     ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
     ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
     เห็นแผนมาก่อน)
-    """
-    prompt = _PLAN_PROMPT_TEMPLATE.format(goal=goal, page_text=page_text)
+
+    current_url (W19, "Navigation Deduplication"): URL จริงของหน้าปัจจุบัน ณ ตอนร่างแผน
+    (ถ้ามี — ผู้เรียกส่งมาจาก page.url จริงถ้ามี page เปิดค้างอยู่แล้ว) ใช้ให้ LLM เช็คว่า
+    "อยู่หน้าเป้าหมายอยู่แล้วหรือยัง" ก่อนร่างขั้นตอน navigate ซ้ำที่ไม่จำเป็น — ว่างเปล่าได้
+    (default "") ถ้าไม่มี page เปิดอยู่เลย (ad-hoc task ที่ยังไม่เคย perceive อะไร)"""
+    prompt = _PLAN_PROMPT_TEMPLATE.format(
+        goal=goal, page_text=page_text, current_url=current_url or "(ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่)",
+    )
     return await generate_text(client, model, prompt, provider)
 
 
@@ -1527,10 +2468,138 @@ async def describe_screenshot(client, model: str, screenshot_png: bytes, action_
         return ""
 
 
+# --- W19-6 ("Master Controller" MODULE 1 — General QA / No-Browser Trigger): เช็คก่อน
+# classify_intent() ด้านล่างเสมอ (เร็วกว่า/ถูกกว่า — deterministic ล้วนๆ ไม่เรียก LLM เลย)
+# ว่า goal เป็นคำถามทั่วไป/ทักทาย/เวลา/คำนวณ ที่ไม่ต้องแตะ browser เลยไหม — เรียกจาก
+# routes.py::_run_with_resolved_browser() ก่อนจะ resolve session/pool ใดๆ ทั้งสิ้น (ข้าม
+# การเปิด browser ไปเลยทั้งกระบวนการ ไม่ใช่แค่ข้าม action ภายใน page ที่เปิดอยู่แล้วแบบ
+# qa_summary เดิม)
+#
+# ตั้งใจให้ "แคบ/อนุรักษ์นิยม" มาก (ผิดพลาดแบบ false negative ปลอดภัยกว่า false positive
+# เสมอ — เดาว่า "ต้องใช้ browser" ทั้งที่จริงไม่ต้องใช้ แค่เสีย browser session เปล่าๆ แต่
+# เดาว่า "ไม่ต้องใช้ browser" ทั้งที่จริงต้องใช้ = ตอบผิด/ตอบไม่ได้เลยทั้งที่ user ต้องการ
+# ให้ไปทำ action จริง) — เช็คคำที่บ่งบอกว่าเกี่ยวกับเว็บ/browser ก่อนเสมอ ถ้าเจอคืน False
+# ทันทีไม่ว่าจะดูเหมือนคำถามทั่วไปแค่ไหนก็ตาม (เช่น "hi ช่วยค้นหา iPhone ให้หน่อย" มีคำ
+# ทักทายนำหน้าแต่จริงๆ ต้องการ browser action)
+_GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS = (
+    "http://", "https://", "www.", "เว็บ", "หน้าเว็บ", "หน้านี้", "คลิก", "click", "กด",
+    "ค้นหา", "search", "กรอก", "fill", "ไปที่", "ไปยัง", "เข้าไปหน้า", "เปิดเว็บ", "goto",
+    "go to", "navigate", "ล็อกอิน", "login", "สั่งซื้อ", "ซื้อ", "checkout",
+)
+# (บั๊กจริงที่ user รายงาน — session log จริง): พิมพ์ตามด้วยคำถาม date/time เต็มรูปแบบ
+# ("วันนี้วันที่เท่าไหร่") ก่อนแล้ว "เวลา" คำเดียวโดดๆ เป็น follow-up ครั้งถัดไปในบทสนทนา
+# เดียวกัน (พึ่งบริบทก่อนหน้าแทนพิมพ์เต็มซ้ำ) — pattern เดิมที่มีแต่วลียาวๆ ("เวลาเท่าไหร่")
+# ไม่ match คำเดี่ยวๆ นี้เลย ทำให้ตกไปเปิด browser ทั้งที่ควรตอบจาก chat ตรงๆ — เพิ่มคำเดี่ยว
+# เข้าไปด้วย (ปลอดภัย ไม่กระทบ false positive เพราะ _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS
+# เช็คก่อนเสมออยู่แล้ว — goal ที่มีคำว่า "เวลา"/"วันที่" ปนกับคำเกี่ยวกับเว็บ เช่น "ค้นหาเวลา
+# เปิดร้านในหน้าเว็บนี้" จะโดน exclusion keyword กรองออกไปก่อนถึงจุดนี้อยู่ดี)
+_GENERAL_CHAT_TIME_DATE_PATTERNS = (
+    "วันนี้วันที่", "วันนี้วันอะไร", "วันนี้คือวันที่", "ตอนนี้กี่โมง", "กี่โมงแล้ว",
+    "เวลาเท่าไหร่", "เวลาเท่าไร", "เวลาปัจจุบัน", "วันนี้กี่", "ปีนี้ปีอะไร", "ปีนี้ พ.ศ.",
+    "เวลา", "วันที่", "วันนี้",
+    "what time is it", "what's the time", "what day is it", "what is today's date",
+    "today's date", "current time", "current date",
+)
+_GENERAL_CHAT_GREETING_EXACT_PHRASES = (
+    "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "หวัดดีครับ", "หวัดดีค่ะ",
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+)
+# (บั๊กจริงที่ user รายงาน): "อยากฟังเพลงแนวอกหักๆ หามาสัก 4-5 เพลงหน่อย" เปิด browser ทั้งที่
+# จริงๆ ตอบได้จากความรู้ทั่วไปของโมเดลเอง (แนะนำชื่อเพลง ไม่ได้ขอ "ค้นหา"/ลิงก์จริงจากเว็บไหน
+# เลย) — คำขอเชิง "แนะนำ/อยากฟัง-ดู-อ่าน" ล้วนๆ (ไม่มี exclusion keyword ที่เจาะจงเว็บ/การ
+# กระทำบนเว็บปน) นับเป็น general chat ได้เหมือน date/time/greeting — ปลอดภัยเพราะ
+# _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS เช็คก่อนเสมอ (เช่น "แนะนำสินค้าในเว็บนี้หน่อย" มีคำว่า
+# "เว็บ" อยู่แล้ว โดน exclusion กรองทิ้งไปก่อนถึงจุดนี้)
+_GENERAL_CHAT_RECOMMENDATION_PATTERNS = (
+    "แนะนำ", "อยากฟัง", "อยากดู", "อยากอ่าน", "ช่วยแต่ง", "แต่งเพลง", "แต่งกลอน", "แต่งนิทาน",
+    "แต่งเรื่อง", "recommend", "suggest",
+)
+# "1+1 ได้เท่าไหร่", "2*3=", "(4+5)/3 เท่ากับเท่าไหร่" — ตัวเลข/เครื่องหมายคำนวณล้วนๆ
+# (บวก ×/÷ ที่บางคนพิมพ์แทน */÷) ตามด้วยคำถามเสริมได้ (หรือไม่มีก็ได้) ไม่มีตัวอักษร
+# อื่นปนเลย — เข้มงวดตั้งใจ กัน false positive กับ goal ที่มีตัวเลขปนแต่ไม่ใช่คำนวณจริง (เช่น
+# "ไปหน้า 2" ซึ่งจะโดน exclusion keyword ด้านบนกรองออกไปก่อนอยู่ดี)
+_MATH_EXPRESSION_RE = re.compile(
+    r"^[\d\s\.\+\-\*/×÷()]+(ได้เท่าไหร่|ได้เท่าไร|เท่ากับเท่าไหร่|เท่ากับเท่าไร|=\s*\??|\?)?$"
+)
+
+
+def is_general_chat_query(goal: str) -> bool:
+    """True ถ้า goal เป็นคำถามทั่วไป/ทักทาย/ถามวันเวลา/คำนวณเลข/ขอคำแนะนำจากความรู้ทั่วไป
+    ที่ตอบได้โดยไม่ต้องแตะ browser เลยแม้แต่นิดเดียว — deterministic ล้วนๆ ไม่เรียก LLM
+    (ต่างจาก classify_intent ที่มี LLM fallback สำหรับกรณีกำกวม เพราะ False Positive ของ
+    ฟังก์ชันนี้มีต้นทุนสูงกว่า classify_intent มาก — ดู module comment ด้านบน — และเรียกจาก
+    routes.py ก่อนแม้แต่จะรู้ว่าจะใช้ provider ไหน/มี client พร้อมหรือยัง เพิ่มชั้น LLM
+    fallback ตรงนี้เคยลองแล้วจริงพบว่าทำให้ทุก task (แม้ที่ไม่ใช่ general-chat เลย) ต้องเสีย
+    LLM round-trip ก่อนเริ่มเสมอ ไม่ใช่แค่กรณีกำกวมจริงๆ — ต้องคงเป็น deterministic ล้วนๆ)"""
+    stripped = (goal or "").strip()
+    if not stripped:
+        return False
+    lower = stripped.lower()
+    if any(kw in lower for kw in _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS):
+        return False
+    if any(p in lower for p in _GENERAL_CHAT_TIME_DATE_PATTERNS):
+        return True
+    if any(
+        lower == g or lower.startswith(f"{g} ") or lower.startswith(f"{g},")
+        for g in _GENERAL_CHAT_GREETING_EXACT_PHRASES
+    ):
+        return True
+    if any(p in lower for p in _GENERAL_CHAT_RECOMMENDATION_PATTERNS):
+        return True
+    if _MATH_EXPRESSION_RE.match(stripped) and any(ch.isdigit() for ch in stripped):
+        return True
+    return False
+
+
+_CHAT_RESPONSE_SYSTEM_PROMPT = (
+    "คุณคือผู้ช่วย AI ที่เป็นมิตร ตอบคำถามทั่วไป/ทักทาย/บอกวันเวลา/คำนวณเลขง่ายๆ แบบสั้น "
+    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown"
+)
+
+
+async def chat_response(client, model: str, user_input: str, provider: str, current_time_text: str = "") -> str:
+    """ตอบคำถามทั่วไปแบบสนทนาตรงๆ ไม่แตะ browser/DOM เลย (ดู is_general_chat_query ด้านบน
+    สำหรับตัวตัดสินใจว่าควรเรียกฟังก์ชันนี้เมื่อไหร่) — current_time_text (optional):
+    วันเวลาจริงจากเซิร์ฟเวอร์ (เช่นจาก _current_bangkok_time_text()) ให้คำถามเกี่ยวกับ
+    วันที่/เวลาตอบถูกจริง ไม่เดาจาก training data — ว่างเปล่าได้ถ้าคำถามไม่เกี่ยวกับเวลา
+
+    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error"""
+    prompt = user_input
+    if current_time_text:
+        prompt = f"เวลาปัจจุบันจริง (Asia/Bangkok): {current_time_text}\n\nคำถามจากผู้ใช้: {user_input}"
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model, max_tokens=512, system=_CHAT_RESPONSE_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return "".join(b.text for b in response.content if b.type == "text").strip()
+        if provider == "groq":
+            response = await client.chat.completions.create(
+                model=model, max_tokens=512,
+                messages=[
+                    {"role": "system", "content": _CHAT_RESPONSE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        if provider == "gemini":
+            gemini_model = client.GenerativeModel(model_name=model, system_instruction=_CHAT_RESPONSE_SYSTEM_PROMPT)
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            return (response.text or "").strip()
+        return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+    except Exception as e:
+        print(f"⚠️ chat_response error: {e}", flush=True)
+        return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
+
+
 # --- Intent Classification & Page Summarization ---
 _CLASSIFY_INTENT_PROMPT = """วิเคราะห์ความต้องการ (Intent) ของผู้ใช้จากคำขอ (User Goal/Question) ด้านล่างนี้:
 - ตอบว่า "qa_summary" หากผู้ใช้ต้องการถามคำถาม, สรุปเนื้อหา, อ่านข้อมูล, แปลความหมาย, สอบถามราคา/รายละเอียด, สอบถามสินค้า/ข้อมูล หรือประมวลผลข้อมูลจากหน้าเว็บ โดยไม่ต้องการให้ทำการคลิก/กรอกฟอร์ม/นำทาง
 - ตอบว่า "action_task" หากผู้ใช้สั่งให้เบราว์เซอร์ทำ Action หรือกระบวนการใดๆ บนหน้าเว็บ เช่น คลิกปุ่ม, กรอกฟอร์ม, ค้นหา, สั่งซื้อสินค้า, ล็อกอิน, นำทางไปหน้าอื่น
+- W19: ถ้าคำขอมีทั้งคำสั่ง navigate/คลิก ("เข้าไปหน้า...", "กดปุ่ม...", "เปิดเว็บ...", "คลิก...", "go to...", "navigate to...") ปนกับคำขอให้อ่าน/สรุปข้อมูล ("...แล้วอ่าน...", "...แล้วสรุป...", "...and read...", "...and extract...") ในประโยคเดียวกัน ให้ตอบ "action_task" เสมอ ไม่ว่ากรณีใด (compound command ที่ต้อง navigate ก่อนถึงจะอ่านข้อมูลได้จริง ไม่ใช่ qa_summary)
 
 User Goal/Question: {goal}
 Page Content (ย่อ): {page_text_short}
@@ -1543,10 +2612,17 @@ async def classify_intent(client, model: str, goal: str, page_text: str = "", pr
     goal_lower = goal.lower().strip()
 
     # Action imperatives (สั่งให้เบราว์เซอร์กระทำ)
+    # W19 ("Intent Classification Router"): เพิ่ม "เข้าไปหน้า"/"เปิดเว็บ"/"เปิด"/"ไปยัง" —
+    # เดิมมีแค่ "ไปที่" ทำให้วลี navigation แบบอื่นที่ user พิมพ์จริง (เช่น "เข้าไปหน้า Admin
+    # แล้วอ่าน...") ไม่ match action_keywords เลยสักตัว ทั้งที่ "อ่าน" match qa_keywords —
+    # กลายเป็น has_qa=True, has_action=False ผิดๆ แล้วโดน step 1 ด้านล่างตัดสินเป็น
+    # qa_summary ทันทีทั้งที่ user สั่ง navigate จริง (compound command rule ด้านล่างจะทำงาน
+    # ไม่ได้เลยถ้า action_keywords ยังจับคำเหล่านี้ไม่ได้ตั้งแต่ต้น)
     action_keywords = [
         "คลิก", "click", "กด", "กรอก", "fill", "พิมพ์", "type", "ซื้อ", "buy", "submit",
         "login", "ล็อกอิน", "เข้าสู่ระบบ", "สมัคร", "register", "search", "ค้นหา",
-        "select", "เลือก", "check", "uncheck", "scroll", "ไปที่", "goto", "go to",
+        "select", "เลือก", "check", "uncheck", "scroll", "ไปที่", "ไปยัง", "เข้าไปหน้า",
+        "เข้าหน้า", "เปิดเว็บ", "เปิดหน้า", "เปิด", "goto", "go to", "navigate",
         "ป้อน", "ใส่ข้อมูล", "สั่งซื้อ", "เพิ่มลงตะกร้า", "add to cart", "checkout"
     ]
 
@@ -1573,6 +2649,16 @@ async def classify_intent(client, model: str, goal: str, page_text: str = "", pr
     if any(goal_lower.startswith(kw) for kw in ["สรุป", "หน้านี้", "คืออะไร", "มีอะไร", "ราคา", "แปล", "what", "how", "tell"]):
         if not any(goal_lower.startswith(kw) for kw in ["คลิก", "กด", "กรอก", "ค้นหา", "ไปที่", "click", "fill"]):
             return "qa_summary"
+
+    # 2.5 W19 ("Intent Classification Router" ROUTING RULE): ถึงจุดนี้แปลว่า goal match ทั้ง
+    # action_keywords และ qa_keywords พร้อมกันจริงๆ (ไม่ถูก step 2 ด้านบนจับว่าเป็น qa เพียวๆ
+    # ที่บังเอิญมี action keyword ปนมาแบบไม่ตั้งใจไปแล้ว) — นี่คือ compound command แท้ๆ (เช่น
+    # "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้", "Go to X and read Y") ต้องไป action_task เสมอ
+    # ตัดสินใจแบบ deterministic ตรงนี้เลย ไม่รอ LLM fallback ที่ step 3 (โมเดล compliance ไม่
+    # การันตี 100% — เหตุผลเดียวกับที่ permission/rules.py ต้องมีชั้นสำรองระดับโค้ดคู่กับ prompt
+    # เสมอ ไม่ใช่พึ่ง prompt อย่างเดียว)
+    if has_action and has_qa:
+        return "action_task"
 
     # 3. LLM classification fallback for ambiguous/conversational cases
     try:

@@ -132,6 +132,31 @@ def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
     assert "นับเป็นคำสั่งให้ค้นหาโดยปริยาย" in llm.SYSTEM_PROMPT
 
 
+# --- W19 ("Table Data Extractor & Presenter"): DOM order for multi-field rows, A-Z only
+# for single-field lists — the two rules must coexist without contradicting each other ---
+
+
+def test_system_prompt_preserves_dom_order_for_multi_field_table_rows():
+    assert "ห้ามเรียงลำดับใหม่เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "รักษาลำดับแถวตามที่ปรากฏบนหน้าจอจริง" in llm.SYSTEM_PROMPT
+
+
+def test_system_prompt_still_sorts_single_field_lists_alphabetically():
+    assert "ลิสต์ธรรมดาที่มีแค่ field เดียว" in llm.SYSTEM_PROMPT
+    assert "เรียงลำดับตามตัวอักษร (A-Z) ก่อนตอบเสมอ" in llm.SYSTEM_PROMPT
+
+
+def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
+    assert "ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "Admin (Employee: Surya king, Role: Admin)" in llm.SYSTEM_PROMPT
+
+
+def test_finish_task_schema_message_description_reflects_dom_order_rule():
+    message_desc = llm.FINISH_TASK_TOOL["input_schema"]["properties"]["message"]["description"]
+    assert "ตารางหลาย field ต่อแถวห้ามเรียงใหม่เด็ดขาด" in message_desc
+    assert "ห้ามแยก field ของแถวเดียวกันออกจากกัน" in message_desc
+
+
 # --- hover: ปุ่ม hover-to-reveal ที่ perception.py ติด label marker ให้แล้ว ---
 
 
@@ -1324,3 +1349,554 @@ async def test_repair_step_groq_parses_replan_signal_from_model():
     result = await llm.repair_step(client, "llama-x", _FAILED_STEP, "element gone", "page", "groq")
 
     assert result == {"action": "replan"}
+
+
+# --- W19 (ดู W19.txt ข้อ 8): llm.evaluate_semantic_redundancy() ---
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semantic_redundancy_returns_decision_on_anthropic_success():
+    decision = {
+        "is_semantically_redundant": True,
+        "value_score": 0.1,
+        "action_decision": "SKIP_STEP",
+        "reasoning": "ไม่เกี่ยวกับ goal เลย",
+    }
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("evaluate_action_value", decision)])
+    )
+
+    result = await llm.evaluate_semantic_redundancy(
+        client, "claude-x", "goal", "scroll down", "page title", "footer link", "browser_action",
+        {"type": "scroll", "direction": "down"}, "anthropic",
+    )
+
+    assert result == decision
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "evaluate_action_value"}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semantic_redundancy_defaults_to_pass_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.evaluate_semantic_redundancy(
+        client, "claude-x", "goal", "click login", "page", "target", "browser_action",
+        {"type": "click", "index": 1}, "anthropic",
+    )
+
+    assert result["action_decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semantic_redundancy_swallows_provider_errors_and_defaults_to_pass():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.evaluate_semantic_redundancy(
+        client, "claude-x", "goal", "click login", "page", "target", "browser_action",
+        {"type": "click", "index": 1}, "anthropic",
+    )
+
+    assert result["action_decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semantic_redundancy_defaults_to_pass_for_unknown_provider():
+    result = await llm.evaluate_semantic_redundancy(
+        MagicMock(), "model", "goal", "step", "page", "target", "browser_action",
+        {"type": "click", "index": 1}, "unknown",
+    )
+
+    assert result["action_decision"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semantic_redundancy_groq_parses_decision_from_model():
+    decision_json = json.dumps({
+        "is_semantically_redundant": False, "value_score": 0.9,
+        "action_decision": "PASS", "reasoning": "จำเป็นต่อ goal",
+    })
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "evaluate_action_value", decision_json)], {})
+    )
+
+    result = await llm.evaluate_semantic_redundancy(
+        client, "llama-x", "goal", "click login", "page", "target", "browser_action",
+        {"type": "click", "index": 1}, "groq",
+    )
+
+    assert result["action_decision"] == "PASS"
+    assert result["value_score"] == 0.9
+
+
+# --- W19-2: llm.evaluate_safety_and_performance() (Safety & Performance Middleware) ---
+
+_MIDDLEWARE_DECISION = {
+    "redundancy_evaluation": {"is_redundant": False, "redundancy_reason": ""},
+    "permission_evaluation": {"risk_level": "AUTO_APPROVE", "permission_reason": "routine search"},
+    "final_action_decision": "EXECUTE",
+}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_returns_decision_on_anthropic_success():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response(
+            [_fake_anthropic_tool_use_block("middleware_evaluate", _MIDDLEWARE_DECISION)]
+        )
+    )
+
+    result = await llm.evaluate_safety_and_performance(
+        client, "claude-x", "goal", "shopee.co.th", "click", "<button> 'Search'", "", "anthropic",
+    )
+
+    assert result == _MIDDLEWARE_DECISION
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "middleware_evaluate"}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_defaults_to_auto_approve_execute_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.evaluate_safety_and_performance(
+        client, "claude-x", "goal", "example.com", "click", "<button>", "", "anthropic",
+    )
+
+    assert result["final_action_decision"] == "EXECUTE"
+    assert result["permission_evaluation"]["risk_level"] == "AUTO_APPROVE"
+    assert result["redundancy_evaluation"]["is_redundant"] is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_swallows_provider_errors_and_fails_open():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.evaluate_safety_and_performance(
+        client, "claude-x", "goal", "example.com", "click", "<button>", "", "anthropic",
+    )
+
+    assert result["final_action_decision"] == "EXECUTE"
+    assert result["permission_evaluation"]["risk_level"] == "AUTO_APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_defaults_to_safe_for_unknown_provider():
+    result = await llm.evaluate_safety_and_performance(
+        MagicMock(), "model", "goal", "example.com", "click", "<button>", "", "unknown",
+    )
+
+    assert result["final_action_decision"] == "EXECUTE"
+    assert result["permission_evaluation"]["risk_level"] == "AUTO_APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_groq_parses_decision_from_model():
+    decision = {
+        "redundancy_evaluation": {"is_redundant": True, "redundancy_reason": "footer scraping ไม่เกี่ยว"},
+        "permission_evaluation": {"risk_level": "AUTO_APPROVE", "permission_reason": ""},
+        "final_action_decision": "SKIP_REDUNDANT",
+    }
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response(
+            [_fake_tool_call("call_1", "middleware_evaluate", json.dumps(decision))], {},
+        )
+    )
+
+    result = await llm.evaluate_safety_and_performance(
+        client, "llama-x", "goal", "example.com", "click", "<a> 'footer link'", "", "groq",
+    )
+
+    assert result["final_action_decision"] == "SKIP_REDUNDANT"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_safety_and_performance_flags_destructive_action_as_requires_consent():
+    decision = {
+        "redundancy_evaluation": {"is_redundant": False, "redundancy_reason": ""},
+        "permission_evaluation": {"risk_level": "REQUIRES_CONSENT", "permission_reason": "deletes the user's account"},
+        "final_action_decision": "PROMPT_USER_PERMISSION",
+    }
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("middleware_evaluate", decision)])
+    )
+
+    result = await llm.evaluate_safety_and_performance(
+        client, "claude-x", "delete my account", "example.com", "click", "<button> 'Delete Account'", "", "anthropic",
+    )
+
+    assert result["permission_evaluation"]["risk_level"] == "REQUIRES_CONSENT"
+    assert result["final_action_decision"] == "PROMPT_USER_PERMISSION"
+
+
+# --- W19-3: llm.generate_persona_message() (Voice & Persona Interface) ---
+
+
+@pytest.mark.asyncio
+async def test_generate_persona_message_returns_message_on_anthropic_success():
+    decision = {"user_message": "เรียบร้อยครับ! จองคิวให้เสร็จแล้ว", "action_status": "COMPLETED"}
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("speak_to_user", decision)])
+    )
+
+    result = await llm.generate_persona_message(
+        client, "claude-x", "Shopee", "จองคิว", "COMPLETED", "จองคิวสำเร็จ", "anthropic",
+    )
+
+    assert result == decision
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "speak_to_user"}
+
+
+@pytest.mark.asyncio
+async def test_generate_persona_message_defaults_to_empty_message_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.generate_persona_message(
+        client, "claude-x", "example.com", "goal", "FAILED", "timeout", "anthropic",
+    )
+
+    assert result["user_message"] == ""
+    assert result["action_status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_generate_persona_message_swallows_provider_errors_and_returns_empty():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.generate_persona_message(
+        client, "claude-x", "example.com", "goal", "COMPLETED", "done", "anthropic",
+    )
+
+    assert result["user_message"] == ""
+    assert result["action_status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_generate_persona_message_defaults_to_empty_for_unknown_provider():
+    result = await llm.generate_persona_message(
+        MagicMock(), "model", "example.com", "goal", "COMPLETED", "done", "unknown",
+    )
+
+    assert result["user_message"] == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_persona_message_groq_parses_message_from_model():
+    decision = {"user_message": "เดี๋ยวลองใหม่นะครับ", "action_status": "FAILED"}
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "speak_to_user", json.dumps(decision))], {})
+    )
+
+    result = await llm.generate_persona_message(
+        client, "llama-x", "example.com", "goal", "FAILED", "element not found", "groq",
+    )
+
+    assert result["action_status"] == "FAILED"
+    assert "ลองใหม่" in result["user_message"]
+
+
+# --- W19-4: llm.route_multi_turn_strategy() (Orchestrator & Planner Agent, multi-turn) ---
+
+
+def test_multi_turn_system_prompt_covers_pronoun_entity_switch_continuation():
+    assert "Cedric Kelly" in llm._MULTI_TURN_SYSTEM_PROMPT
+    assert "คนต่อไปละ" in llm._MULTI_TURN_SYSTEM_PROMPT
+    assert "STILL\n    REPLY_FROM_MEMORY" in llm._MULTI_TURN_SYSTEM_PROMPT
+
+
+_ROUTE_REPLY_FROM_MEMORY = {
+    "context_analysis": {"is_continuation_of_previous_turn": True, "target_entity_from_memory": "Nike Pegasus 42"},
+    "chosen_strategy": "REPLY_FROM_MEMORY",
+    "reasoning": "ราคาอยู่ใน buffer แล้ว ไม่ต้อง action ใดๆ",
+    "planned_action": {"tool": "reply", "target_selector": "", "parameters": {}},
+}
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_returns_decision_on_anthropic_success():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("route_strategy", _ROUTE_REPLY_FROM_MEMORY)])
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "claude-x", "ซื้อรองเท้า", "ราคาเท่าไหร่", "shopee.co.th", "https://shopee.co.th/search?q=รองเท้า",
+        '[{"item_index": 1, "title": "Nike Pegasus 42", "price": "฿4,200"}]', "", "anthropic",
+    )
+
+    assert result == _ROUTE_REPLY_FROM_MEMORY
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "route_strategy"}
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_defaults_to_new_navigation_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.route_multi_turn_strategy(
+        client, "claude-x", "goal", "instruction", "example.com", "https://example.com", "", "", "anthropic",
+    )
+
+    assert result["chosen_strategy"] == "NEW_NAVIGATION"
+    assert result["context_analysis"]["is_continuation_of_previous_turn"] is False
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_swallows_provider_errors_and_defaults_to_new_navigation():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.route_multi_turn_strategy(
+        client, "claude-x", "goal", "instruction", "example.com", "https://example.com", "", "", "anthropic",
+    )
+
+    assert result["chosen_strategy"] == "NEW_NAVIGATION"
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_defaults_to_new_navigation_for_unknown_provider():
+    result = await llm.route_multi_turn_strategy(
+        MagicMock(), "model", "goal", "instruction", "example.com", "https://example.com", "", "", "unknown",
+    )
+
+    assert result["chosen_strategy"] == "NEW_NAVIGATION"
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_groq_parses_in_page_action_from_model():
+    decision = {
+        "context_analysis": {"is_continuation_of_previous_turn": True, "target_entity_from_memory": "item #1"},
+        "chosen_strategy": "IN_PAGE_ACTION",
+        "reasoning": "ต้องคลิกดูรายละเอียดอันแรกบนหน้าปัจจุบัน",
+        "planned_action": {"tool": "click", "target_selector": "li:nth-child(1)", "parameters": {}},
+    }
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response([_fake_tool_call("call_1", "route_strategy", json.dumps(decision))], {})
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "llama-x", "goal", "ขอรายละเอียดอันแรก", "example.com", "https://example.com",
+        '[{"item_index": 1, "title": "item #1"}]', "", "groq",
+    )
+
+    assert result["chosen_strategy"] == "IN_PAGE_ACTION"
+    assert result["planned_action"]["tool"] == "click"
+
+
+# --- W19-4: llm.extract_structured_items() (Structured Data Extractor) ---
+
+_EXTRACTED_ITEMS = [
+    {"item_index": 1, "title": "Nike Men's Pegasus 42", "price": "฿4,200", "status": "In Stock", "url": "https://example.com/1"},
+    {"item_index": 2, "title": "Adidas Ultraboost", "price": "฿5,500", "status": "In Stock", "url": "https://example.com/2"},
+]
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_returns_list_on_anthropic_success():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response(
+            [_fake_anthropic_tool_use_block("emit_structured_items", {"items": _EXTRACTED_ITEMS})]
+        )
+    )
+
+    result = await llm.extract_structured_items(
+        client, "claude-x", "1. Nike Pegasus 42 - ฿4,200 - In Stock\n2. Adidas Ultraboost - ฿5,500 - In Stock",
+        "รายการสินค้า", "anthropic",
+    )
+
+    assert result == _EXTRACTED_ITEMS
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_structured_items"}
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_returns_empty_list_for_blank_content():
+    result = await llm.extract_structured_items(MagicMock(), "claude-x", "   ", "", "anthropic")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_returns_empty_list_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.extract_structured_items(client, "claude-x", "some content", "", "anthropic")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_swallows_provider_errors_and_returns_empty_list():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.extract_structured_items(client, "claude-x", "some content", "", "anthropic")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_returns_empty_list_for_unknown_provider():
+    result = await llm.extract_structured_items(MagicMock(), "model", "some content", "", "unknown")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_groq_parses_items_from_model():
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response(
+            [_fake_tool_call("call_1", "emit_structured_items", json.dumps({"items": _EXTRACTED_ITEMS}))], {},
+        )
+    )
+
+    result = await llm.extract_structured_items(client, "llama-x", "some content", "", "groq")
+
+    assert len(result) == 2
+    assert result[0]["title"] == "Nike Men's Pegasus 42"
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_returns_empty_list_when_items_field_is_not_a_list():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("emit_structured_items", {"items": "not a list"})])
+    )
+
+    result = await llm.extract_structured_items(client, "claude-x", "some content", "", "anthropic")
+
+    assert result == []
+
+
+# --- W19 ("Navigation Deduplication"): llm.generate_plan() includes current_url + dedup rule ---
+
+
+def _fake_text_response(text: str):
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    return _fake_anthropic_response([block])
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_includes_current_url_and_dedup_rule_in_prompt():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_text_response("1. Search for the user"))
+
+    result = await llm.generate_plan(
+        client, "claude-x", "หน้า Admin", "[1] input 'Search'", "anthropic",
+        current_url="https://example.com/admin/viewSystemUsers",
+    )
+
+    assert result == "1. Search for the user"
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "https://example.com/admin/viewSystemUsers" in prompt
+    assert "Navigation Deduplication" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_shows_placeholder_when_current_url_not_provided():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_text_response("1. Do X"))
+
+    await llm.generate_plan(client, "claude-x", "goal", "page text", "anthropic")
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่" in prompt
+
+
+# --- W19-5: llm.normalize_extraction_query() (Structured Data Extractor Engine) ---
+
+_NORMALIZED_QUERY = {
+    "normalized_target_scope": "div.oxd-table-body",
+    "extraction_type": "TABLE_MULTI_ROW",
+    "data_fields": ["Username", "User Role", "Employee Name", "Status"],
+}
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_returns_decision_on_anthropic_success():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_anthropic_tool_use_block("emit_normalized_query", _NORMALIZED_QUERY)])
+    )
+
+    result = await llm.normalize_extraction_query(
+        client, "claude-x", "อ่านรายชื่อผู้ใช้งานระบบในหน้าแอดมินทั้งหมด", "div.oxd-table-body", "anthropic",
+    )
+
+    assert result == _NORMALIZED_QUERY
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "emit_normalized_query"}
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_returns_empty_string_for_blank_query():
+    result = await llm.normalize_extraction_query(MagicMock(), "claude-x", "   ", "", "anthropic")
+
+    assert result["normalized_target_scope"] == ""
+    assert result["data_fields"] == []
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_defaults_to_table_multi_row_when_no_tool_call():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_anthropic_response([]))
+
+    result = await llm.normalize_extraction_query(client, "claude-x", "list all users", "table", "anthropic")
+
+    assert result["extraction_type"] == "TABLE_MULTI_ROW"
+    assert result["normalized_target_scope"] == ""
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_swallows_provider_errors_and_falls_back():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.normalize_extraction_query(client, "claude-x", "list all users", "table", "anthropic")
+
+    assert result == llm._EXTRACTION_QUERY_SAFE_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_defaults_for_unknown_provider():
+    result = await llm.normalize_extraction_query(MagicMock(), "model", "list all users", "table", "unknown")
+
+    assert result["extraction_type"] == "TABLE_MULTI_ROW"
+
+
+@pytest.mark.asyncio
+async def test_normalize_extraction_query_groq_parses_result_from_model():
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_fake_response(
+            [_fake_tool_call("call_1", "emit_normalized_query", json.dumps(_NORMALIZED_QUERY))], {},
+        )
+    )
+
+    result = await llm.normalize_extraction_query(client, "llama-x", "list all users", "table", "groq")
+
+    assert result["normalized_target_scope"] == "div.oxd-table-body"
+    assert result["data_fields"] == ["Username", "User Role", "Employee Name", "Status"]

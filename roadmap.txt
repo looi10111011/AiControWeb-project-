@@ -2863,6 +2863,156 @@
            Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ + 1 เคสใน
            test_site_learning_crawler.py — ยืนยันเหมือนเดิมทุกประการกับก่อนเริ่มงานนี้)
 
+  [x] W53  Deterministic State Filter: เช็คก่อนว่า action ที่จะ dispatch "จำเป็นจริงไหม"
+           ก่อนเสียรอบ browser round-trip เปล่าๆ — เสร็จแล้ว (2026-08-05)
+
+           ปัญหา: agent บางครั้ง fill ข้อความซ้ำเดิม/check checkbox ที่ติ๊กอยู่แล้ว/scroll
+           ทั้งที่สุดหน้าแล้ว/click element ที่ disabled ไปแล้วระหว่างที่ LLM กำลังตัดสินใจ
+           (perceive กับ dispatch ไม่ใช่ atomic กัน สถานะหน้าเปลี่ยนได้ระหว่างนั้น) — เสีย
+           รอบ browser โดยไม่มีผลอะไรเพิ่ม
+
+           แก้ด้วยโมดูลใหม่ core/state_filter.py (W19.txt ข้อ 6 "Deterministic State
+           Filter") deterministic ล้วนๆ ไม่พึ่ง LLM เลย (เหมือน permission/rules.py):
+           check_fill_redundant/check_checkbox_redundant/check_click_redundant/
+           check_scroll_redundant เช็คสถานะ DOM จริงผ่าน Playwright ตรงๆ (input_value/
+           is_checked/is_disabled/scroll position JS) timeout สั้น 500ms ต่อการเช็ค —
+           error ระหว่างเช็ค (element หาย/frame ปิด) ถือว่า "ไม่ redundant" เสมอ (fail-
+           open ปลอดภัยกว่าเดา) ต่างจาก actions.py::_dispatch_with_retry (W5) ตรงที่ตัวนั้น
+           แก้ปัญหา DOM ไม่นิ่ง (retry เพื่อให้ "สำเร็จ") ส่วนตัวนี้ตัดสินว่า action "ไม่ต้อง
+           ทำเลย" เพราะเป้าหมายบรรลุอยู่แล้ว — คนละปัญหากัน เรียกจาก actions.py::execute()
+           ก่อน dispatch จริงเสมอสำหรับ click/fill/check/scroll ไม่มี config flag (ไม่มี
+           ต้นทุน LLM เปิดตลอด)
+
+           unit test ใหม่: test_state_filter.py 11 เคส ครอบคลุมทั้ง 4 ฟังก์ชัน (redundant/
+           ไม่ redundant/error-fail-open ของแต่ละแบบ)
+
+  [x] W54  Semantic Redundancy Evaluator + Safety & Performance Middleware: LLM call
+           เสริมประเมินว่า action ที่เลือกไว้แล้ว "มีประโยชน์ต่อ goal จริงไหม" — เสร็จแล้ว
+           (2026-08-05)
+
+           ต่างจาก W53 (state_filter, เช็คสถานะ DOM แบบ deterministic) ตัวนี้เช็คเชิง
+           ความหมาย (semantic) ว่า action ที่ไม่ได้ผิดอะไรเลยทางเทคนิค (เช่น scroll อ่าน
+           เนื้อหาที่ไม่เกี่ยวกับ goal) ควรข้ามไปเลยไหม — core/llm.py::
+           evaluate_semantic_redundancy (W19.txt ข้อ 8 "Semantic Redundancy Evaluator")
+           เพิ่ม LLM call แยก 1 ครั้งต่อ step ก่อน dispatch จริงใน orchestrator.py (เฉพาะ
+           action type ที่ไม่ใช่ navigate/wait/read) คืน PASS/SKIP_STEP/FORCE_REPLAN
+           fail-safe default เป็น PASS เสมอถ้า evaluator error/ไม่แน่ใจ
+
+           core/llm.py::evaluate_safety_and_performance ("W19-2", "โมดูลที่ 4" แบบ
+           additive) รวม redundancy check เดียวกันนี้ + permission check
+           (คล้าย permission/rules.py::classify_action) เป็น LLM call เดียว ประหยัด
+           round-trip กว่าเรียกแยก 2 ครั้ง — orchestrator.py เลือกใช้ตัวนี้แทนถ้าเปิดไว้
+           (ไม่เรียกซ้ำสอง call) permission_evaluation ของตัวนี้เป็นแค่ "เพิ่มความ
+           ระมัดระวัง" เท่านั้น (escalate-only ผ่าน manual_permission_guidance เข้า
+           classify_action() ที่ยังเป็นผู้ตัดสินสุดท้ายเสมอ ไม่มีทางลดระดับความเสี่ยงที่
+           classify_action() ตัดสินไปแล้วได้เลย)
+
+           ทั้งคู่ปิดไว้ default (config.py::enable_semantic_redundancy_check,
+           enable_middleware_evaluator ทั้งคู่ False) จนกว่าจะ validate คุณภาพ/ต้นทุน
+           latency เพิ่มต่อ step บนงานจริงก่อน
+
+  [x] W55  Voice & Persona Interface: แปลงสถานะ agent ดิบๆ (log/reasoning) เป็นข้อความ
+           ไทยธรรมชาติแบบผู้ช่วยส่วนตัวให้ UI โชว์ — เสร็จแล้ว (2026-08-05)
+
+           core/llm.py::generate_persona_message ("W19-3") — เป็นแค่ presentation layer
+           เสริม ไม่กระทบ control flow ของ agent loop เลย (ต่างจาก W54 ที่ skip/replan
+           ได้จริง) เรียกเฉพาะตอน task จบ (COMPLETED/FAILED — จุดความถี่ต่ำสุด/คุ้มค่า
+           ที่สุด) ยังไม่เรียกทุก browser action step (จุดต่อ PROGRESS/WAITING_APPROVAL
+           ออกแบบ prompt ไว้แล้วแต่ยังไม่ต่อสาย) ปิดไว้ default
+           (config.py::enable_persona_voice = False) จนกว่าจะ validate โทน/คุณภาพ
+           ข้อความก่อน
+
+  [x] W56  Multi-Turn Conversation Memory: turn ถัดไปในการสนทนาเดียวกันตอบจากข้อมูลที่
+           เคยดึงมาแล้วได้ ไม่ต้อง navigate/ค้นหาใหม่ซ้ำ — เสร็จแล้ว (2026-08-05)
+
+           ปัญหา: user ถามต่อจาก turn ก่อนหน้า (เช่น "ราคาเท่าไหร่" "เอาข้อมูลคนที่ 3")
+           แต่ระบบเดิมเริ่ม task ใหม่อิสระทุก turn เหมือนไม่มีความจำเลย เสีย navigate/
+           ค้นหาซ้ำทั้งที่คำตอบอยู่ในหน้าที่เพิ่งอ่านไปแล้ว
+
+           core/llm.py::route_multi_turn_strategy ("W19-4") ตัดสินว่า instruction ใหม่
+           ควรจัดการแบบไหน: REPLY_FROM_MEMORY (ตอบจาก buffer เดิมเลย ข้าม run_task()/
+           เปิด browser ไปทั้งหมด) / IN_PAGE_ACTION / NEW_NAVIGATION คู่กับ core/llm.py::
+           extract_structured_items แปลง raw page content ที่ดึงมาแล้วเป็น list ของ item
+           แบบมี field ครบ (title/price/status/url/attributes) แทนที่จะเป็น text/list
+           โดดๆ — ต่างจาก perception.extract_table_data() เดิมที่ดึงข้อมูลดิบ ตัวนี้จัด
+           รูปแบบให้พร้อมใช้เป็น context ของ turn ถัดไป
+
+           buffer ที่ persist ข้าม turn เก็บที่ SessionRegistry.BrowserSession.
+           extracted_memory (list[dict], field ใหม่) ผูกกับ session_id เหมือน page — ต่อ
+           สายจริงใน routes.py: _update_extracted_memory() เรียก extract_structured_items
+           หลัง run_task() จบแล้วเก็บทับ extracted_memory เดิม (ไม่เจอข้อมูลใหม่ = ปล่อย
+           buffer เดิมไว้เฉยๆ ไม่ล้างทิ้ง) ส่วน _run_with_resolved_browser เรียก
+           route_multi_turn_strategy() เฉพาะตอน session มี extracted_memory เก็บไว้จาก
+           turn ก่อนหน้าจริงๆ เท่านั้น (ไม่มี memory เลย = พฤติกรรมเดิมทุกประการ)
+
+  [x] W57  Master Controller — General Chat Shortcut + แก้ Intent Classification สอง
+           อาการที่ user รายงาน — เสร็จแล้ว (2026-08-05)
+
+           อาการ (1): พิมพ์ตามหลังคำถามวันเวลาเต็มๆ ด้วยคำสั้นๆ แค่ "เวลา" หลุดไปเปิด
+           browser ทั้งที่ตอบได้จากความรู้ทั่วไป (2): "อยากฟังเพลงแนวอกหักๆ หามาสัก 4-5
+           เพลง" (ขอคำแนะนำล้วนๆ ไม่ต้องอ่านเว็บจริง) ก็หลุดไปเปิด browser เหมือนกัน
+
+           แก้ด้วย core/llm.py::is_general_chat_query ("W19-6" MODULE 1) — deterministic
+           keyword/regex matcher ล้วนๆ ไม่ผ่าน LLM เช็คก่อนสุดใน routes.py ก่อนจะ resolve
+           session/pool/browser ใดๆ เลย (เช็ค exclusion keyword ที่เกี่ยวกับเว็บก่อนเสมอ —
+           false-negative ดีกว่า false-positive ตามที่ตั้งใจไว้) ครอบคลุมทักทาย/วันเวลา/
+           คำนวณเลข/ขอคำแนะนำ — match แล้วตอบผ่าน llm.py::chat_response() (inject เวลา
+           Bangkok จริงจาก server) โดยไม่แตะ Playwright เลย คืนผลลัพธ์ทรงเดียวกับ
+           run_task() (steps=0, history ว่าง) ให้โค้ด poll/SSE ฝั่ง downstream ไม่ต้อง
+           special-case
+
+           ในชุดเดียวกัน: classify_intent() เพิ่มคำกริยา navigate ("เข้าไปหน้า"/"เปิดเว็บ"/
+           "เปิด"/"ไปยัง"/"navigate to") + กฎใหม่ว่าถ้าประโยคเดียวมีทั้งคำสั่ง navigate/คลิก
+           ปนกับคำขออ่าน/สรุปข้อมูล (เช่น "เข้าไปหน้า Admin แล้วอ่านรายชื่อ...") ให้ตอบ
+           "action_task" เสมอ (compound command ที่ต้อง navigate ก่อนถึงจะอ่านข้อมูลได้
+           จริง ไม่ใช่ qa_summary เหมือนเดิมที่ทำให้ agent พยายามอ่านข้อมูลจากหน้าที่ยังไม่
+           ได้เปิดเลย)
+
+  [x] W58  Orchestrator/Perception reliability & latency: รวม 6 จุดแก้เล็กๆ ที่ deterministic
+           ล้วนๆ ไม่มี LLM เพิ่ม — เสร็จแล้ว (2026-08-05)
+
+           (1) Task Completion Verifier — orchestrator.py::_scan_validation_errors สแกน
+           [role=alert]/.error/.invalid/selector เฉพาะของ OrangeHRM ที่มองเห็นอยู่ ก่อนจะ
+           ยอมรับ finish_task(success=true) ถ้าเจอ error ที่ยังไม่ได้แก้ ดันให้ model แก้
+           field นั้นก่อน (retry สูงสุด 2 ครั้ง) ไม่ยอมแพ้แล้ว tag
+           completion_verification: "EXECUTION_FAILED_NEEDS_REPAIR" ให้เห็นชัดในผลลัพธ์
+
+           (2) Guard Compatibility Rule — โหมด qa_summary อนุญาตให้คลิก element ที่อยู่ใน
+           region="navigation" ได้ด้วย (เดิมอนุญาตแค่ fill/click ช่องค้นหา) แก้คำถามแนว
+           "หน้า Admin มี user กี่คน" ที่ต้อง navigate ไปหน้าอื่นก่อนถึงจะตอบได้
+
+           (3) Navigation Deduplication — generate_plan() รับ current_url เพิ่ม กัน LLM
+           วางแผนใส่ step "navigate ไปหน้า X" ซ้ำทั้งที่อยู่หน้านั้นอยู่แล้ว
+
+           (4) DOM check timeout — _DOM_CHECK_TIMEOUT_MS = 3000 แทน default 30000ms ของ
+           Playwright สำหรับ locator call ที่แค่ "เช็คสถานะ" ล้วนๆ
+           (_login_form_needs_password/_scan_validation_errors) + actions.py::
+           wait_stable() ลดจาก 8000ms เหลือ 4000ms ("networkidle" แทบไม่มีวัน resolve
+           เร็วบนเว็บที่มี polling/analytics อยู่แล้ว ค่า timeout เดิมไม่เคยถือเป็นความ
+           ล้มเหลวอยู่แล้วแค่เป็นเพดานบน)
+
+           (5) Safe Input Replacement — actions.py::fill() เปลี่ยนเป็น focus -> Ctrl/Cmd+A
+           -> Backspace ก่อน .fill() จริง กัน input ที่ควบคุมด้วย React/Vue (เช่นช่องค้นหา
+           YouTube) ไม่รับรู้ raw fill ของ Playwright ว่าเป็น keystroke จริง
+
+           (6) perception.py เพิ่ม 3 สัญญาณ: region field ("main"/"navigation"/"") ต่อ
+           element แก้ปัญหา label ซ้ำกันข้าม sidebar/main content (Scoped Search
+           Context) / อ่านข้อความจาก <label for>/wrapping <label> ที่ผูกกับ field จริง
+           ชนะ aria-label/title/name/id เดิม (Exact Element Matching) / แปะ "[active
+           อยู่แล้ว]" ต่อท้าย label ของเมนู/แท็บที่ active อยู่แล้ว (Log Cleanliness กัน
+           agent เสีย step คลิกซ้ำ element ที่ไม่มีทาง trigger DOM change เพิ่ม)
+
+           unit test ใหม่/เพิ่มรวมงาน W53-W58 ทั้งหมด: test_state_filter.py (ใหม่ 11
+           เคส), test_llm.py (+41 เคส), test_orchestrator.py (+20 เคส), test_api.py (+8
+           เคส), test_perception.py (+11 เคส), test_actions.py (+6 เคส),
+           test_intent_and_summarization.py (+12 เคส)
+
+           รันจริง `pytest -q` เต็มชุดหลังรวมงาน W53-W58 ทั้งหมด: 884 เคสผ่าน, เหลือ 10
+           เคส fail เดิมที่มีมาก่อนงานทั้งหมดนี้แล้ว (9 เคสใน test_orchestrator.py ที่ยิง
+           Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ + 1 เคสใน
+           test_site_learning_crawler.py — เหมือนเดิมทุกประการกับที่ W52 บันทึกไว้ ไม่มี
+           regression ใหม่จากงานชุดนี้)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

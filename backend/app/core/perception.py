@@ -99,6 +99,68 @@ _COLLECT_JS = r"""
     return false;
   };
 
+  // W19 ("Scoped Search Context"): user รายงานปัญหาบน OrangeHRM — label เดียวกัน
+  // ("Search"/username field ฯลฯ) โผล่ซ้ำทั้งใน sidebar (เมนูหลัก) และ main content
+  // (search filter form จริง) ทำให้ agent เดา index ผิดเลือกตัวใน sidebar ทั้งที่ตั้งใจ
+  // จะกรอกฟอร์มค้นหาในเนื้อหาหลัก — เดินขึ้นจาก element หา ancestor ที่ตรงกับ
+  // navigation/main content container ที่ใกล้ที่สุดก่อน (nested <nav> ใน <main> เช่น
+  // breadcrumb ยังนับเป็น "navigation" ถูกต้อง เพราะเป็น container ที่ใกล้ตัว element
+  // ที่สุด) คืนค่าว่างถ้าไม่ match อะไรเลย (หน้าที่ไม่ได้ใช้ semantic container ชัดเจน —
+  // ไม่ใช่ error แค่ไม่มีข้อมูลให้ disambiguate เพิ่ม)
+  const NAVIGATION_REGION_SELECTOR = 'aside, nav, [role="navigation"], .oxd-sidepanel';
+  const MAIN_REGION_SELECTOR = 'main, [role="main"], .oxd-layout-context';
+
+  const getRegion = (node) => {
+    let cur = node;
+    while (cur && cur.nodeType === 1) {
+      if (cur.matches && cur.matches(NAVIGATION_REGION_SELECTOR)) return 'navigation';
+      if (cur.matches && cur.matches(MAIN_REGION_SELECTOR)) return 'main';
+      cur = cur.parentElement;
+    }
+    return '';
+  };
+
+  // W19 ("Exact Element Matching" ข้อ 2): <label for="id">/<label>...<input></label>
+  // เป็นแหล่ง label ที่น่าเชื่อถือที่สุดสำหรับ form field (เช่น OrangeHRM "Employee
+  // Name") แต่ของเดิมไม่เคยอ่านเลย (มีแค่ placeholder/aria-label/name/id เป็น fallback)
+  // — ไม่ได้ตั้งใจเปลี่ยนสถาปัตยกรรมจาก index-based เป็น selector-based (ยังใช้
+  // data-ai-index dispatch เหมือนเดิมทุกประการ) แค่ทำให้ label ที่ LLM เห็นตรงกับที่
+  // มนุษย์มองเห็นจริงมากขึ้น ลดโอกาสเดา index ผิดจาก label ที่กำกวม
+  const getAssociatedLabelText = (node) => {
+    if (node.id) {
+      try {
+        const forLabel = document.querySelector(`label[for="${CSS.escape(node.id)}"]`);
+        if (forLabel) {
+          const t = (forLabel.innerText || forLabel.textContent || '').trim();
+          if (t) return t;
+        }
+      } catch (e) { /* CSS.escape/querySelector ผิดพลาด (id แปลกๆ) -- ข้ามไปเงียบๆ */ }
+    }
+    const wrappingLabel = node.closest ? node.closest('label') : null;
+    if (wrappingLabel) {
+      const t = (wrappingLabel.innerText || wrappingLabel.textContent || '').trim();
+      if (t) return t;
+    }
+    return '';
+  };
+
+  // W19 ("Pre-Execution Planner & Navigation Guard" ข้อ "Log Cleanliness"): เมนู/แท็บที่
+  // ถูกเลือก/active อยู่แล้ว บาง framework จะไม่ trigger navigation/DOM change ซ้ำถ้าคลิก
+  // ทับตัวเดิม (โครงสร้างหน้าเหมือนเดิมทุกอย่าง) ทำให้ wait_stable() ที่รอ networkidle/
+  // การเปลี่ยนแปลงหลัง action นี้ timeout เปล่าๆ — ติด marker ให้ LLM เห็นก่อนตัดสินใจ
+  // (ไม่ใช่ deterministic hard-block แบบ state_filter.py เพราะ "active อยู่แล้ว" ไม่ได้
+  // แปลว่า "ห้ามคลิกเด็ดขาด" เสมอไป — user อาจตั้งใจสั่ง refresh/เปิดใหม่จริงๆ (ดู EXCEPTION
+  // ใน W19.txt) เป็นการตัดสินใจเชิงเจตนาที่ควรให้ LLM เห็นสัญญาณแล้วตัดสินใจเอง ไม่ใช่โค้ด
+  // เดา/บล็อกไปเลย)
+  const isElementAlreadyActive = (el) => {
+    const ariaCurrent = (el.getAttribute('aria-current') || '').toLowerCase();
+    if (ariaCurrent === 'page' || ariaCurrent === 'true' || ariaCurrent === 'step') return true;
+    if ((el.getAttribute('aria-selected') || '').toLowerCase() === 'true') return true;
+    const classStr = el.classList ? Array.from(el.classList).join(' ').toLowerCase() : '';
+    const tokens = classStr.split(/\s+/).filter(Boolean);
+    return tokens.includes('active') || tokens.includes('selected') || tokens.includes('current');
+  };
+
   // element ที่เป็นแค่ตัวเลข/badge นับจำนวนล้วนๆ (เช่น <span class="cart-badge">1</span>
   // ที่ซ้อนอยู่ใน <a class="shopping_cart_link">) ไม่ควรได้ index เป็นของตัวเอง —
   // ตัวที่คลิกแล้วมีผลจริงคือ element พ่อ (a/button) ถ้าปล่อยให้ badge ได้ index
@@ -231,6 +293,13 @@ _COLLECT_JS = r"""
     const humanize = (s) => (s || '').replace(/[-_]+/g, ' ').trim();
     const dataTest = el.getAttribute('data-test') || el.getAttribute('data-testid') ||
                      el.getAttribute('data-qa') || '';
+    // W19: <label> ที่ผูกกับ field นี้จริง (ถ้ามี) ชนะ aria-label/title/data-test/name/id
+    // เสมอ เฉพาะ form field เท่านั้น (input/select/textarea/combobox) — element อื่น
+    // (button/a/...) ไม่น่าจะมี <label for> ผูกอยู่จริงตามสเปก HTML อยู่แล้ว ข้ามการเช็ค
+    // ไปเลยกัน query เปล่าๆ
+    const isFormFieldTag = tag === 'input' || tag === 'select' || tag === 'textarea' ||
+      el.getAttribute('role') === 'combobox';
+    const associatedLabel = isFormFieldTag ? getAssociatedLabelText(el) : '';
     const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
                       humanize(dataTest) || el.getAttribute('name') ||
                       humanize(el.id) || '';
@@ -254,9 +323,15 @@ _COLLECT_JS = r"""
     if (isBareCounter && semantic) {
       label = `${semantic} (${trimmedText})`;
     } else {
+      // W19: associatedLabel (<label for>/wrapping <label>, ดูด้านบนสุดของไฟล์) แทรก
+      // ระหว่าง "ค่าที่กรอกอยู่จริง" (trimmedText/value — ยังต้องชนะเสมอถ้ามีค่าจริงอยู่
+      // แล้ว เช่น select ที่เลือกตัวเลือกไว้แล้ว/ช่องค้นหาที่พิมพ์คำไปแล้ว) กับ
+      // "placeholder ทั่วไป" (แพ้ label จริงเสมอถ้ามี — "Employee Name" สื่อความหมายกว่า
+      // "Type for hints..." เยอะ)
       label = (
         trimmedText ||
         el.value ||
+        associatedLabel ||
         el.getAttribute('placeholder') ||
         semantic ||
         ''
@@ -282,7 +357,25 @@ _COLLECT_JS = r"""
     // ตัว แค่เรียงลำดับต่างไป (data-ai-index ที่แปะไปแล้วด้านบนไม่เปลี่ยนตามการเรียงนี้)
     const inViewport = rect.bottom > 0 && rect.top < window.innerHeight;
 
-    out.push({ index: idx, tag, type, label, in_viewport: inViewport });
+    // W19 ("Scoped Search Context"): "main"/"navigation"/"" (ดู getRegion ด้านบน) — ใช้
+    // แค่ "จัดหมวด" ให้ LLM เห็นใน text_repr เท่านั้น (ดู get_snapshot() ฝั่ง Python) ไม่ใช่
+    // ตัวกรอง element ทิ้งเหมือน in_viewport เดิม — element นอก main/navigation (region
+    // ว่างเปล่า) ยังคงอยู่ครบใน list เหมือนเดิมทุกตัว
+    const region = getRegion(el);
+
+    // W19 ("Log Cleanliness"): จำกัดแค่ element ที่เป็นเมนู/แท็บจริงๆ (อยู่ใน navigation
+    // region หรือมี role=tab เจาะจง) เท่านั้นถึงเช็ค isElementAlreadyActive — ตั้งใจไม่เช็ค
+    // กับทุก element ที่มี class "active" เพราะคำนี้ใช้กว้างมากในเว็บจริง (เช่น ตัวเลือกที่
+    // ถูก highlight ด้วยคีย์บอร์ดใน custom dropdown/autocomplete ก็มักได้ class "active"
+    // เหมือนกัน แต่เป็น element ที่ "ควร" คลิกเพื่อเลือก ไม่ใช่ตัวที่ควรข้าม — ดู W19
+    // "Exact Element Matching" guidance เรื่อง autocomplete ด้วย)
+    const isNavCandidate = region === 'navigation' || el.getAttribute('role') === 'tab';
+    const alreadyActive = isNavCandidate && isElementAlreadyActive(el);
+    if (alreadyActive) {
+      label = label ? `${label} [active อยู่แล้ว]` : '[active อยู่แล้ว]';
+    }
+
+    out.push({ index: idx, tag, type, label, in_viewport: inViewport, region });
     idx++;
   }
   return out;
@@ -293,8 +386,11 @@ _COLLECT_JS = r"""
 async def get_snapshot(page: Page):
     """
     คืนค่า 2 อย่าง:
-      elements  = list ของ dict (index, tag, type, label, in_viewport) -> ไว้ให้โค้ดใช้
-                  (in_viewport ใช้แค่จัดลำดับการแสดงผล ดู W50 ด้านล่าง — ไม่ใช่ตัวกรอง)
+      elements  = list ของ dict (index, tag, type, label, in_viewport, region) -> ไว้ให้
+                  โค้ดใช้ (in_viewport ใช้แค่จัดลำดับการแสดงผล ดู W50 ด้านล่าง — ไม่ใช่ตัว
+                  กรอง, region คือ "main"/"navigation"/"" ดู getRegion ใน _COLLECT_JS — W19
+                  "Scoped Search Context" ใช้ disambiguate label ซ้ำระหว่าง sidebar/menu
+                  กับ main content)
       text_repr = string สรุปสั้นๆ (เรียงตาม in_viewport ก่อนแล้ว) -> ไว้ยัดใส่ prompt LLM
 
     W40: ไล่เก็บจากทุก frame ใน page.frames ไม่ใช่แค่ main document (ดู docstring หัวไฟล์) —
@@ -331,7 +427,12 @@ async def get_snapshot(page: Page):
     for e in elements:
         kind = f"{e['tag']}" + (f"({e['type']})" if e['type'] else "")
         label = f" '{e['label']}'" if e['label'] else ""
-        lines.append(f"[{e['index']}] {kind}{label}")
+        # W19 ("Scoped Search Context"): แปะ "(navigation)" เฉพาะ element ที่อยู่ใน
+        # nav/aside/sidepanel เท่านั้น (ไม่แปะ "(main)" ให้ทุกบรรทัดเปล่าๆ เพราะเป็น
+        # ส่วนใหญ่ของหน้าอยู่แล้ว — แปะเฉพาะกรณีที่ต้อง disambiguate จริงถึงจะมีประโยชน์
+        # เหมือน marker อื่นในไฟล์นี้ เช่น [ถูกบังอยู่]/[ซ่อนอยู่])
+        region_marker = " (navigation)" if e.get("region") == "navigation" else ""
+        lines.append(f"[{e['index']}] {kind}{label}{region_marker}")
 
     text_repr = "\n".join(lines)
     return elements, text_repr

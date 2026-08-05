@@ -77,12 +77,17 @@ _MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
 # ทุกประการ — เพิ่ม _QA_SUMMARY_MAX_STEPS จาก 3 เป็น 4 ด้วย เพราะ flow ค้นหาจริงต้องใช้อย่าง
 # น้อย 3 turn (fill -> click -> read_page_data) ก่อนจะเหลือ turn ให้เรียก finish_task ได้
 _QA_SUMMARY_MAX_STEPS = 4
+# W19 ("Guard Compatibility Rule"): เพิ่ม "หรือคลิกเมนู/nav เพื่อไปหน้าอื่นที่มีข้อมูลที่
+# ต้องการได้" ต่อท้ายข้อความเดิม — บอก LLM ตรงๆ ว่านำทางไปหน้าอื่นเพื่อหาคำตอบได้แล้ว (ดู
+# region="navigation" ใน qa_is_nav_click ด้านล่างที่อนุญาตจริง) ไม่ใช่แค่ fill/click ช่อง
+# ค้นหาเหมือนเดิม
 _QA_SUMMARY_ACTION_REJECTED_NUDGE = (
     "[ปฏิเสธ] คำถามนี้คือ qa_summary (ถามข้อมูล ไม่ใช่สั่งงาน) ไม่อนุญาตให้ทำ action ที่มีผล"
-    "ต่อหน้าเว็บ (click/fill/select/goto/...) ยกเว้น fill/click กับช่องค้นหา/ปุ่มค้นหา/ตัวกรอง"
-    "ข้อมูลเท่านั้น — ถ้าต้องการอ่านเนื้อหาเพิ่มเติมให้ใช้ type: 'read_page_data' แล้วเรียก "
-    "finish_task พร้อมคำตอบสุดท้ายทันทีที่พอตอบคำถามได้ ห้ามสรุปว่า 'ไม่มีข้อมูล' ก่อนลองค้นหา"
-    "อย่างน้อย 1 ครั้ง ถ้ายังไม่เคยลองเลย"
+    "ต่อหน้าเว็บ (fill/select/goto/...) ยกเว้น fill/click กับช่องค้นหา/ปุ่มค้นหา/ตัวกรอง"
+    "ข้อมูล หรือคลิกเมนู/nav เพื่อไปหน้าอื่นที่มีข้อมูลที่ต้องการได้เท่านั้น — ถ้าต้องการอ่าน"
+    "เนื้อหาเพิ่มเติมให้ใช้ type: 'read_page_data' แล้วเรียก finish_task พร้อมคำตอบสุดท้าย"
+    "ทันทีที่พอตอบคำถามได้ ห้ามสรุปว่า 'ไม่มีข้อมูล' ก่อนลองค้นหา/นำทางไปหาอย่างน้อย 1 ครั้ง "
+    "ถ้ายังไม่เคยลองเลย"
 )
 
 # label ที่บ่งบอกว่า element เป้าหมายเป็นช่อง/ปุ่มค้นหา/กรองข้อมูลจริงๆ — ใช้เป็นชั้นสำรอง
@@ -116,6 +121,72 @@ _PREMATURE_TRUE_FINISH_NUDGE = (
     "มีหลักฐานชัดเจนจริงๆ ว่า goal สำเร็จแล้ว ถ้าใช่จริง เรียก finish_task(success=true) "
     "อีกครั้งได้เลย ถ้าไม่แน่ใจ ให้ลองทำ action ที่เกี่ยวข้องกับ goal ก่อน"
 )
+
+# Task4 ("Task Completion Verifier", W19): symmetric กับ guard ด้านบนแต่เช็คคนละสัญญาณ —
+# guard ด้านบนเช็คแค่ "steps_taken==0" (ไม่มีหลักฐานว่าทำอะไรเลย) ตัวนี้เช็ค "หน้าเว็บ
+# ปัจจุบันมี validation error โผล่อยู่จริงไหม" (เช่น กรอกฟอร์มแล้วกด Save แต่ field ยังไม่
+# ผ่าน validation — steps_taken > 0 แล้วแต่ยังไม่สำเร็จจริง guard เดิมด้านบนจับไม่ได้เพราะ
+# เช็คแค่ step แรกสุด) — ทำงานอิสระจาก guard เดิม ไม่ทับซ้อนกัน (เช็คคนละเงื่อนไข ทำงาน
+# พร้อมกันได้ทั้งคู่) ไม่ว่า steps_taken จะเท่าไหร่ก็ตาม
+_MAX_PREMATURE_VALIDATION_ERROR_RETRIES = 2
+_PREMATURE_VALIDATION_ERROR_NUDGE_TEMPLATE = (
+    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจพบข้อความ error/validation ที่ยัง"
+    "แสดงอยู่บนหน้าปัจจุบัน: {errors} ห้ามถือว่า task สำเร็จทั้งที่ยังมี error พวกนี้ค้างอยู่ "
+    "ให้แก้ field ที่เกี่ยวข้องตามข้อความ error ก่อน (เช่น กรอกช่องที่ว่าง/แก้ค่าที่ไม่ถูกต้อง/"
+    "เปลี่ยนค่าที่ซ้ำ) แล้วลองใหม่ ถ้าแก้แล้ว error หายไปแล้วจริงๆ ค่อยเรียก "
+    "finish_task(success=true) อีกครั้ง"
+)
+
+# ARIA [role=alert] เป็นมาตรฐานข้ามเว็บ (ใช้ได้ทุกเว็บที่ทำ a11y ไว้) ส่วน [class*=error/
+# invalid] เป็นชั้นสำรองสำหรับเว็บที่ไม่ได้ใช้ ARIA (พบบ่อยมาก) — .oxd-input-field-error-
+# message เจาะจง OrangeHRM ตรงๆ (user รายงานปัญหานี้มาจากเว็บนี้โดยตรง) :not(:empty) กัน
+# นับ element placeholder ที่ framework render ทิ้งไว้เสมอแต่ว่างอยู่ตอนไม่มี error จริง
+_VALIDATION_ERROR_SELECTOR = (
+    '[role="alert"]:not(:empty), [class*="error" i]:not(:empty), '
+    '[class*="invalid" i]:not(:empty), .oxd-input-field-error-message'
+)
+
+# W19 (latency): timeout สั้นๆ สำหรับ Playwright locator call ที่เป็นแค่ "เช็คสถานะ DOM
+# เฉยๆ" (ไม่ใช่การรอ element โผล่มาจริงจากการกระทำ เช่น click/fill) — ไม่ระบุ timeout เอง
+# Playwright จะ default เป็น 30000ms ต่อ call เดียว ซึ่งนานเกินจำเป็นมากสำหรับ element ที่
+# ควรจะพร้อมอยู่แล้วตั้งแต่ perceive ผ่านมาก่อนหน้านี้ — ใช้กับ _login_form_needs_password()/
+# _scan_validation_errors() ด้านล่าง (คนละค่ากับ state_filter.py::_STATE_CHECK_TIMEOUT_MS
+# ที่ 500ms เพราะจุดประสงค์ต่างกัน: state_filter เช็คก่อน dispatch ทุก step ต้องเร็วที่สุด
+# ส่วนตัวนี้เช็คตอน finish_task/login-guard เท่านั้น ความถี่ต่ำกว่ามาก ให้เวลาเผื่อหน้าที่โหลด
+# ช้าได้มากกว่าหน่อย)
+_DOM_CHECK_TIMEOUT_MS = 3000
+
+
+async def _scan_validation_errors(page: Page) -> list[str]:
+    """สแกนหา element ที่บ่งบอกว่ามี validation error ปรากฏอยู่จริงบนหน้าปัจจุบัน (มองเห็น
+    ได้ + มีข้อความ) — เรียกก่อนยอมรับ finish_task(success=true) เท่านั้น (ไม่ใช่ทุก step
+    เพื่อไม่ให้เสีย overhead โดยไม่จำเป็น) คืน list ข้อความที่เจอ (สูงสุด 5 รายการ) หรือ []
+    ถ้าไม่เจอเลย/error ระหว่างสแกน (ไม่ throw ให้ finish_task guard พัง — ปลอดภัยกว่าเสมอที่
+    จะถือว่า "ไม่เจอ error" ถ้าสแกนไม่ได้จริงๆ ดีกว่าบล็อก finish_task ที่อาจถูกต้องอยู่แล้ว)
+
+    W19 (latency): .is_visible()/.inner_text() ของ Playwright มี actionability wait ในตัว
+    ที่ default เป็น 30000ms ถ้าไม่ระบุ timeout เอง — ถ้า element ตัวไหนหลุด/detach ไประหว่าง
+    ทาง (เช่น re-render พอดีตอนกำลังสแกน) การรอ default 30s ต่อ element เดียวจะทำให้
+    finish_task guard นี้ช้าเกินจำเป็นไปมาก ใส่ _DOM_CHECK_TIMEOUT_MS (3s) ตรงๆ ให้ทุกจุด"""
+    try:
+        locator = page.locator(_VALIDATION_ERROR_SELECTOR)
+        count = await locator.count()
+        found: list[str] = []
+        for i in range(min(count, 20)):
+            item = locator.nth(i)
+            try:
+                if not await item.is_visible(timeout=_DOM_CHECK_TIMEOUT_MS):
+                    continue
+                text = (await item.inner_text(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+            except Exception:
+                continue
+            if text:
+                found.append(text)
+            if len(found) >= 5:
+                break
+        return found
+    except Exception:
+        return []
 
 # W5: loop-detection guard — บางโมเดล (เจอกับ Llama บน Groq) ถึงจะถูกเตือนแล้วก็ยัง
 # วนเรียก browser_action เดิมเป๊ะๆ ซ้ำๆ (dict เดียวกันทุก field) ไม่ว่าจะสำเร็จหรือ fail
@@ -425,12 +496,16 @@ _PREMATURE_LOGIN_SKIP_NUDGE = (
 async def _login_form_needs_password(page: Page) -> bool:
     """เช็คจาก DOM จริง (ไม่ใช่ label จาก snapshot เพราะแยกไม่ออกชัดพอระหว่าง
     placeholder กับค่าว่างจริง) ว่าหน้าปัจจุบันมี input[type=password] ที่มองเห็นได้
-    และยังว่างอยู่ไหม — ใช้เป็นสัญญาณว่า login form ยังกรอกไม่ครบ"""
+    และยังว่างอยู่ไหม — ใช้เป็นสัญญาณว่า login form ยังกรอกไม่ครบ
+
+    W19 (latency): .input_value() ไม่ระบุ timeout เองจะ default เป็น 30000ms ของ
+    Playwright — ใส่ _DOM_CHECK_TIMEOUT_MS (3s) ตรงๆ กันรอนานเกินจำเป็นถ้า element หลุด/
+    detach ระหว่างทาง"""
     try:
         password_inputs = page.locator('input[type="password"]:visible')
         count = await password_inputs.count()
         for i in range(count):
-            value = await password_inputs.nth(i).input_value()
+            value = await password_inputs.nth(i).input_value(timeout=_DOM_CHECK_TIMEOUT_MS)
             if value == "":
                 return True
         return False
@@ -671,9 +746,15 @@ class Orchestrator:
         resolved_provider = provider or settings.llm_provider
         client, model, _, _, _ = self._llm_backend(resolved_provider)
         page_text = ""
+        # W19 (Navigation Deduplication): URL จริงของหน้าที่ perceive สำเร็จ (page.url ถ้ามี
+        # page เปิดอยู่จริง) ไม่ใช่ url param ดิบที่ user พิมพ์มาตอนแรก (session ที่มี page
+        # เปิดค้างจากเทิร์นก่อนอาจอยู่คนละหน้ากับ url param แล้วจริงๆ — page.url สะท้อน
+        # สถานะปัจจุบันจริงเสมอ) ว่างเปล่าถ้า perceive ไม่สำเร็จ/ไม่มี page เลย
+        current_url_for_plan = ""
         if page is not None:
             try:
                 _, page_text = await get_snapshot(page)
+                current_url_for_plan = page.url
             except Exception as e:
                 print(f"⚠️ generate_plan: get_snapshot ล้มเหลว ({e!r}) — ใช้ page_text ว่างแทน", flush=True)
 
@@ -683,7 +764,9 @@ class Orchestrator:
 
         if site_manual_context:
             page_text = f"[คู่มือเว็บไซต์ที่เรียนรู้มาก่อนแล้ว]\n{site_manual_context}\n\n{page_text}".strip()
-        plan_text = await llm.generate_plan(client, model, goal, page_text, resolved_provider)
+        plan_text = await llm.generate_plan(
+            client, model, goal, page_text, resolved_provider, current_url=current_url_for_plan,
+        )
         return plan_text, False
 
 
@@ -991,6 +1074,13 @@ class Orchestrator:
         premature_false_finish_count = 0
         premature_true_finish_count = 0
         premature_login_skip_count = 0
+        premature_validation_error_count = 0
+        # Task4 (W19, ดู _scan_validation_errors ด้านบนสุดของไฟล์): ผลของการ verify ครั้ง
+        # สุดท้ายก่อนจบ task — "OK" default เสมอ เปลี่ยนเป็น "EXECUTION_FAILED_NEEDS_REPAIR"
+        # เฉพาะตอนที่ยอมรับ finish_task(success=true) ไปทั้งที่ retry ครบโควตาแล้วยังเจอ
+        # validation error ค้างอยู่ (escape valve เดียวกับ guard อื่นในไฟล์นี้ — ปล่อยผ่านไป
+        # ตามที่โมเดลยืนยัน แทนที่จะค้างไม่รู้จบ แต่ tag ผลลัพธ์ไว้ให้ผู้เรียกรู้ว่าน่าสงสัย)
+        completion_verification = "OK"
         final_page_text = ""
         # W9[A] vision fallback: คำอธิบายจาก describe_screenshot() ของ step ก่อนหน้า
         # (ถ้ามี action ที่ต้องพึ่ง visibility ล้มเหลวซ้ำแม้ retry ครบแล้ว) — ใช้ครั้งเดียว
@@ -1147,11 +1237,27 @@ class Orchestrator:
                     # เป็นช่อง/ปุ่มค้นหา/กรองข้อมูลจริงๆ (ดู _label_looks_like_search() —
                     # ต่อยอด W44) action อื่นที่ไม่เข้าเงื่อนไขนี้ยังถูกปฏิเสธเหมือนเดิมทุก
                     # ประการ (login/checkout/delete/... ยังทำไม่ได้จาก intent นี้)
+                    #
+                    # W19 ("Guard Compatibility Rule"): user รายงานว่าคำถามที่ต้อง navigate
+                    # ไปหน้าย่อยก่อนถึงจะเห็นข้อมูล (เช่น "มีผู้ใช้กี่คนในหน้า Admin" ทั้งที่
+                    # ยังไม่ได้อยู่หน้า Admin) ตอบไม่ได้เลย เพราะคลิกเมนู "Admin" ไม่ใช่ช่อง
+                    # ค้นหา ไม่เข้าเงื่อนไข _label_looks_like_search() เลย โดน
+                    # _QA_SUMMARY_ACTION_REJECTED_NUDGE ปฏิเสธทุกครั้ง — ผ่อนเพิ่มให้ click
+                    # (เฉพาะ click ไม่รวม fill) ที่ region="navigation" (sidebar/nav/menu, ดู
+                    # perception.py::getRegion) ทำได้ด้วย เพราะเป็นแค่การนำทางเปลี่ยนหน้า
+                    # ไม่ mutate ข้อมูลอะไรบนเว็บเลย (คนละเรื่องกับ submit/delete/purchase —
+                    # ยังถูก classify_action() ใน execute() ด้านล่างเช็คซ้ำอีกชั้นอยู่ดี ถ้า
+                    # label ดันเป็นคำเสี่ยงจริงๆ ก็ยังโดนขอ confirm ตามปกติ ไม่ได้ข้าม
+                    # permission layer ไปเลย)
                     qa_index = qa_tool_input.get("index")
                     qa_label = next(
                         (e["label"] for e in qa_elements if e["index"] == qa_index), ""
                     ) if qa_index is not None else ""
-                    if qa_action_type in ("fill", "click") and _label_looks_like_search(qa_label):
+                    qa_region = next(
+                        (e.get("region", "") for e in qa_elements if e["index"] == qa_index), ""
+                    ) if qa_index is not None else ""
+                    qa_is_nav_click = qa_action_type == "click" and qa_region == "navigation"
+                    if (qa_action_type in ("fill", "click") and _label_looks_like_search(qa_label)) or qa_is_nav_click:
                         qa_result: ActionResult = await execute(
                             page, qa_tool_input, ask_user_func=ask_user_func, label=qa_label,
                             manual_guidance="", allowed_domains=effective_allowed_domains,
@@ -1414,6 +1520,35 @@ class Orchestrator:
                         ))
                         continue
 
+                    # Task4 (W19, ดู _scan_validation_errors ด้านบนสุดของไฟล์): เช็คทุกครั้ง
+                    # ที่ claimed_success (ไม่ผูกกับ steps_taken เหมือน guard ด้านบน) เพราะ
+                    # error อาจโผล่ขึ้นมาหลัง action ผ่านไปหลาย step แล้วก็ได้ ไม่ใช่แค่ step
+                    # แรกสุด
+                    detected_errors: list[str] = []
+                    if claimed_success and tool_use_id:
+                        detected_errors = await _scan_validation_errors(page)
+                    if (
+                        detected_errors
+                        and premature_validation_error_count < _MAX_PREMATURE_VALIDATION_ERROR_RETRIES
+                    ):
+                        premature_validation_error_count += 1
+                        errors_text = "; ".join(detected_errors)
+                        if verbose:
+                            print(
+                                f"[finish_task(true) พบ validation error {premature_validation_error_count}/"
+                                f"{_MAX_PREMATURE_VALIDATION_ERROR_RETRIES}] {errors_text}",
+                                flush=True,
+                            )
+                        nudge_text = _PREMATURE_VALIDATION_ERROR_NUDGE_TEMPLATE.format(errors=errors_text)
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        continue
+                    if detected_errors:
+                        # retry ครบโควตาแล้วยังเจอ error ค้างอยู่ — ปล่อยผ่านไปตามที่โมเดล
+                        # ยืนยัน (escape valve เดียวกับ guard อื่นในไฟล์นี้) แต่ tag ผลลัพธ์
+                        # ไว้ให้ผู้เรียกรู้ว่าน่าสงสัย แทนที่จะค้างไม่รู้จบ
+                        completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+
                     success = claimed_success
                     final_message = tool_input.get("message", "")
                     if verbose:
@@ -1544,6 +1679,76 @@ class Orchestrator:
                     if permission_query else []
                 )
                 manual_permission_guidance = "\n".join(f"- {c}" for c in permission_chunks)
+
+                # W19 (ดู W19.txt ข้อ 8 "Semantic Redundancy Evaluator") / W19-2 ("Safety &
+                # Performance Middleware", ดู llm.py::evaluate_safety_and_performance) —
+                # สองตัวนี้ mutually exclusive กัน (ไม่เรียก LLM ซ้ำสองครั้งเพื่อเช็ค
+                # redundancy เรื่องเดียวกัน): เปิด enable_middleware_evaluator แล้วใช้ตัวนั้น
+                # (รวม permission check มาด้วยในตัว) แทน enable_semantic_redundancy_check
+                # เดิม ถ้าไม่ได้เปิด middleware ค่อย fallback ไปใช้ evaluate_semantic_redundancy
+                # ตามปกติ (เฉพาะ tool_input ที่ไม่ใช่ navigate/รอ/อ่านข้อมูล — มักมีเหตุผล
+                # ชัดเจนอยู่แล้วว่าทำไมต้องทำ ไม่ใช่กลุ่ม action ที่ตัวนี้ถูกออกแบบมาจับ)
+                if settings.enable_middleware_evaluator and tool_input.get("type") not in (
+                    "goto", "go_back", "wait", "switch_tab", "read_page_data",
+                ):
+                    element_description = (
+                        f"<{action_tag or 'element'}> '{action_label}'" if action_label
+                        else f"<{action_tag}>" if action_tag else "(ไม่ทราบ label)"
+                    )
+                    middleware = await llm.evaluate_safety_and_performance(
+                        client, model, effective_goal, extract_domain(page.url),
+                        tool_input.get("type", ""), element_description,
+                        str(tool_input.get("text") or tool_input.get("label") or ""), resolved_provider,
+                    )
+                    if verbose:
+                        print(f"[middleware] {middleware}", flush=True)
+                    if middleware.get("final_action_decision") == "SKIP_REDUNDANT":
+                        skip_reason = middleware.get("redundancy_evaluation", {}).get("redundancy_reason", "")
+                        messages = append_tool_result(
+                            messages, tool_use_id,
+                            f"[ระบบข้าม step นี้อัตโนมัติ] {skip_reason} "
+                            "เลือก action อื่นที่ทำให้เป้าหมายคืบหน้าจริงแทน",
+                        )
+                        continue
+                    # escalate-only (ดู module comment ใน llm.py): risk_level REQUIRES_CONSENT/
+                    # BLOCKED ต่อวลีที่ตรงกับ permission/rules.py::MANUAL_CONFIRMATION_KEYWORDS
+                    # เข้า manual_permission_guidance เดิม (ตัวเดียวกับที่ RAG คู่มือใช้อยู่
+                    # แล้ว) ให้ classify_action() ที่ dispatch จริงด้านล่าง escalate เป็น
+                    # NEEDS_CONFIRMATION ผ่านกลไกเดิมที่ทดสอบไว้แล้ว — ไม่เรียก ask_user_func
+                    # เองตรงๆ ที่นี่ (กันถามซ้ำสองครั้งสำหรับ action เดียวกัน) และไม่มีทาง
+                    # "ลดระดับ" ความเสี่ยงที่ classify_action() จะตัดสินเองอยู่ดี (risk_level
+                    # AUTO_APPROVE = ไม่ต่อท้ายอะไรเลย = พฤติกรรมเดิมเป๊ะ)
+                    permission_eval = middleware.get("permission_evaluation", {})
+                    if permission_eval.get("risk_level") in ("REQUIRES_CONSENT", "BLOCKED"):
+                        escalation_note = (
+                            f"[Safety Middleware] {permission_eval.get('permission_reason', '')} "
+                            "— requires confirmation before proceeding."
+                        )
+                        manual_permission_guidance = (
+                            f"{manual_permission_guidance}\n- {escalation_note}"
+                            if manual_permission_guidance else f"- {escalation_note}"
+                        )
+                elif settings.enable_semantic_redundancy_check and tool_input.get("type") not in (
+                    "goto", "go_back", "wait", "switch_tab", "read_page_data",
+                ):
+                    step_summary = (
+                        f"{tool_input.get('type')} -> '{action_label}'" if action_label
+                        else str(tool_input.get("type"))
+                    )
+                    redundancy = await llm.evaluate_semantic_redundancy(
+                        client, model, effective_goal, step_summary, page.url, action_label,
+                        tool_name, tool_input, resolved_provider,
+                    )
+                    if redundancy.get("action_decision") in ("SKIP_STEP", "FORCE_REPLAN"):
+                        if verbose:
+                            print(f"[semantic-redundancy] {redundancy}", flush=True)
+                        skip_reason = redundancy.get("reasoning", "")
+                        messages = append_tool_result(
+                            messages, tool_use_id,
+                            f"[ระบบข้าม step นี้อัตโนมัติ] {skip_reason} "
+                            "เลือก action อื่นที่ทำให้เป้าหมายคืบหน้าจริงแทน",
+                        )
+                        continue
 
                 # W30: เก็บ URL ก่อน dispatch action ไว้เทียบหลัง action จบ (ดู
                 # url_changed_unexpectedly ด้านล่าง) — เฉพาะ action ที่ "ไม่ได้ตั้งใจจะ
@@ -1789,6 +1994,24 @@ class Orchestrator:
 
                 _fire_and_forget(_run_abstractor())
 
+            # W19-3 (ดู llm.py::generate_persona_message, config.py::enable_persona_voice):
+            # แปลง final_message ดิบให้เป็นข้อความไทยธรรมชาติ เรียกแค่ตอนจบ task เท่านั้น
+            # (ความถี่ต่ำสุด ไม่ได้ผูกกับทุก browser action step) — additive ล้วนๆ: เพิ่ม
+            # key "persona_message"/"persona_status" ต่อจาก "message"/"success" เดิม ไม่
+            # แก้/ลบอะไรที่มีอยู่แล้วเลย (raw message/history ยังส่งครบเหมือนเดิมทุกประการ)
+            persona_message = ""
+            persona_status = "COMPLETED" if success else "FAILED"
+            if settings.enable_persona_voice:
+                persona = await llm.generate_persona_message(
+                    client, model, extract_domain(url), goal, persona_status, final_message, resolved_provider,
+                )
+                persona_message = persona.get("user_message", "")
+                persona_status = persona.get("action_status", persona_status)
+                if persona_message:
+                    await _emit({
+                        "kind": "persona_message", "user_message": persona_message, "action_status": persona_status,
+                    })
+
             return {
                 "success": success,
                 "steps": steps_taken,
@@ -1797,6 +2020,9 @@ class Orchestrator:
                 "tokens": _tokens_dict(total_usage),
                 "plan": plan_text,
                 "final_page_state": final_page_text,
+                "persona_message": persona_message,
+                "persona_status": persona_status,
+                "completion_verification": completion_verification,
             }
         finally:
             if managed_externally:

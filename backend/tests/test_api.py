@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.config import settings
+from backend.app.core.orchestrator import Orchestrator
 from backend.app.main import app
 
 
@@ -169,6 +170,51 @@ def test_create_task_returns_202_then_completes_successfully(client):
     # task ต้องปรากฏใน GET /tasks ด้วย
     listed = client.get("/tasks").json()
     assert any(t["task_id"] == task_id for t in listed)
+
+
+# --- W19-6 ("Master Controller" MODULE 1, "General QA / No-Browser Trigger") ---
+
+
+def test_create_task_general_chat_goal_never_touches_browser_or_orchestrator(client):
+    """goal ที่เป็นคำถามทั่วไป/ทักทาย (เช่น "สวัสดีครับ") ต้องไม่แตะ Orchestrator/pool/
+    session เลยแม้แต่นิดเดียว — ตอบผ่าน llm.chat_response() ตรงๆ"""
+    with patch(
+        "backend.app.api.routes.llm.chat_response", new_callable=AsyncMock,
+    ) as mock_chat_response, patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_chat_response.return_value = "สวัสดีครับ มีอะไรให้ช่วยไหมครับ"
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "สวัสดีครับ"})
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        final = _poll_until(client, task_id)
+
+    assert final["status"] == "done"
+    assert final["result"]["message"] == "สวัสดีครับ มีอะไรให้ช่วยไหมครับ"
+    assert final["result"]["steps"] == 0
+    assert final["result"]["success"] is True
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    mock_chat_response.assert_awaited_once()
+    # ไม่มีทาง touch pool/session registry เลยจาก general-chat path นี้
+    assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
+    assert client.get("/sessions").json() == []
+
+
+def test_create_task_ordinary_goal_still_uses_orchestrator_normally(client):
+    """sanity check: goal ปกติที่ต้องใช้ browser จริง ต้องยังผ่าน Orchestrator.run_task()
+    เหมือนเดิมทุกประการ ไม่ใช่ general-chat path ที่เพิ่งเพิ่มเข้ามาโดยไม่ตั้งใจ"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "ค้นหาสินค้า iPhone"})
+        task_id = resp.json()["task_id"]
+
+        final = _poll_until(client, task_id)
+
+    assert final["status"] == "done"
+    assert final["result"] == _FAKE_RESULT
+    MockOrchestrator.return_value.run_task.assert_awaited_once()
 
 
 def test_create_task_records_error_status_on_failure(client):
@@ -387,6 +433,168 @@ def test_create_task_with_session_id_reuses_same_page_across_calls(client):
     assert first_kwargs["page"] is second_kwargs["page"]
     # pool เสียแค่ 1 ตัวให้ session นี้ ไม่ใช่ 2 ตัว (ไม่ acquire ซ้ำรอบสอง)
     assert pool_after_first == pool_after_second == {"size": 2, "available": 1, "in_use": 1}
+
+
+# --- W19-6 ("Master Controller" MODULE 2/3 — persistent extracted_memory buffer) ---
+# route_multi_turn_strategy()/extract_structured_items()/chat_response() เองมีเทสต์ครบใน
+# test_llm.py/test_intent_and_summarization.py แล้ว — กลุ่มนี้เทสต์แค่ว่า routes.py ต่อสาย
+# เข้ากับ SessionRegistry.BrowserSession.extracted_memory จริง (อ่าน/เขียน/ใช้ตัดสินใจ)
+
+
+def _create_session_with_memory(client, session_id: str, memory: list[dict]) -> None:
+    """สร้าง session ผ่าน POST /tasks จริง (mock run_task ธรรมดา) แล้ว inject
+    extracted_memory เข้า session object ตรงๆ จำลองว่าเทิร์นก่อนหน้าเคย extract list ไว้
+    แล้ว (ปกติ _update_extracted_memory() เป็นคนเติมให้ — เทสต์กลุ่มนี้ตั้งใจแยกเทสต์ส่วนนั้น
+    ต่างหาก ไม่ปนกับเทสต์การ "ใช้" memory)
+
+    ใช้ patch.object(Orchestrator, "run_task", ...) แทนการ patch ทั้ง class ตรงๆ (ต่างจาก
+    เทสต์ทั่วไปในไฟล์นี้) เพราะโค้ดที่เทสต์กลุ่มนี้ใช้เรียก Orchestrator._llm_backend() (static
+    method จริง) ด้วย — patch ทั้ง class จะทำให้ _llm_backend() กลายเป็น MagicMock ที่คืนค่า
+    unpack ไม่ได้ไปด้วยโดยไม่ตั้งใจ"""
+    with patch.object(Orchestrator, "run_task", AsyncMock(return_value=_FAKE_RESULT)):
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": session_id},
+        )
+        _poll_until(client, resp.json()["task_id"])
+    session = client.app.state.session_registry.get(session_id)
+    session.page.url = "https://example.com/search?q=เพลง"
+    session.extracted_memory = memory
+
+
+_FAKE_SONG_LIST = [
+    {"item_index": 1, "title": "เพลงที่ 1", "price": "", "status": "", "url": "", "attributes": {}},
+    {"item_index": 2, "title": "เพลงที่ 2", "price": "", "status": "", "url": "", "attributes": {}},
+    {"item_index": 3, "title": "เพลงรักชาติ", "price": "", "status": "", "url": "", "attributes": {}},
+]
+
+
+def test_create_task_replies_from_memory_without_touching_run_task(client):
+    _create_session_with_memory(client, "sess-mem-reply", _FAKE_SONG_LIST)
+    decision = {
+        "context_analysis": {"is_continuation_of_previous_turn": True, "target_entity_from_memory": ""},
+        "chosen_strategy": "REPLY_FROM_MEMORY",
+        "reasoning": "คำตอบอยู่ใน buffer แล้ว",
+        "planned_action": {"tool": "reply", "target_selector": "", "parameters": {}},
+    }
+    mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+    with patch.object(Orchestrator, "run_task", mock_run_task), \
+         patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)) as mock_route, \
+         patch("backend.app.api.routes.llm.chat_response", AsyncMock(return_value="มีเพลงทั้งหมด 3 เพลงครับ")) as mock_chat:
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "มีเพลงกี่เพลง", "session_id": "sess-mem-reply"},
+        )
+        final = _poll_until(client, resp.json()["task_id"])
+
+    assert final["status"] == "done"
+    assert final["result"]["message"] == "มีเพลงทั้งหมด 3 เพลงครับ"
+    assert final["result"]["steps"] == 0
+    mock_route.assert_awaited_once()
+    mock_run_task.assert_not_called()
+    mock_chat.assert_awaited_once()
+
+
+def test_create_task_augments_goal_with_target_entity_for_ordinal_selection(client):
+    """"เล่นเพลงที่ 3" -> IN_PAGE_ACTION พร้อม target_entity_from_memory ที่ผูกกับรายการ
+    จริงจาก buffer -> goal ที่ส่งเข้า run_task() ต้องมีรายละเอียดนั้นแนบไปด้วย ไม่ใช่แค่
+    "เล่นเพลงที่ 3" ดิบๆ ที่ loop หลักต้องตีความ ordinal เองจาก DOM ใหม่"""
+    _create_session_with_memory(client, "sess-mem-ordinal", _FAKE_SONG_LIST)
+    decision = {
+        "context_analysis": {"is_continuation_of_previous_turn": True, "target_entity_from_memory": "เพลงรักชาติ"},
+        "chosen_strategy": "IN_PAGE_ACTION",
+        "reasoning": "ต้องคลิกเล่นเพลงที่ 3 จาก buffer",
+        "planned_action": {"tool": "click", "target_selector": "", "parameters": {}},
+    }
+    mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+    with patch.object(Orchestrator, "run_task", mock_run_task), \
+         patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)):
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "เล่นเพลงที่ 3", "session_id": "sess-mem-ordinal"},
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    dispatched_goal = mock_run_task.await_args.kwargs["goal"]
+    assert "เล่นเพลงที่ 3" in dispatched_goal
+    assert "เพลงรักชาติ" in dispatched_goal
+
+
+def test_create_task_clears_memory_on_new_navigation_decision(client):
+    _create_session_with_memory(client, "sess-mem-newnav", _FAKE_SONG_LIST)
+    decision = {
+        "context_analysis": {"is_continuation_of_previous_turn": False, "target_entity_from_memory": ""},
+        "chosen_strategy": "NEW_NAVIGATION",
+        "reasoning": "user ขอหัวข้อใหม่",
+        "planned_action": {"tool": "navigate", "target_selector": "", "parameters": {}},
+    }
+    mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+    with patch.object(Orchestrator, "run_task", mock_run_task), \
+         patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)):
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "ไปหาเสื้อผ้าแทน", "session_id": "sess-mem-newnav"},
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    dispatched_goal = mock_run_task.await_args.kwargs["goal"]
+    assert dispatched_goal == "ไปหาเสื้อผ้าแทน"  # ไม่ถูกแก้ไข (NEW_NAVIGATION ไม่ augment goal)
+    session = client.app.state.session_registry.get("sess-mem-newnav")
+    assert session.extracted_memory == []
+
+
+def test_create_task_skips_multi_turn_strategy_when_no_memory_yet(client):
+    """session ใหม่/ยังไม่เคย extract อะไรเลย (extracted_memory ว่างเปล่า default) — ต้อง
+    ไม่เพิ่ม LLM call แถมโดยไม่จำเป็นสำหรับ task ปกติทั่วไป"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator, \
+         patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock()) as mock_route:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "ค้นหาสินค้า", "session_id": "sess-mem-fresh"},
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    mock_route.assert_not_awaited()
+
+
+def test_update_extracted_memory_populates_buffer_from_read_page_data_history():
+    """_update_extracted_memory() หลัง run_task() จบต้องดึงผลลัพธ์ read_page_data ล่าสุดจาก
+    history มาจัดโครงสร้างแล้วเก็บเข้า session.extracted_memory"""
+    from backend.app.api.routes import _update_extracted_memory
+
+    session = MagicMock()
+    session.extracted_memory = []
+    result = {
+        "history": [
+            {"cmd": {"type": "click", "index": 1}, "result": "[OK] click -> สำเร็จ", "success": True},
+            {
+                "cmd": {"type": "read_page_data", "query": "รายชื่อเพลง", "target_hint": "table"},
+                "result": "[OK] read_page_data -> 1. เพลงที่ 1\n2. เพลงที่ 2\n3. เพลงรักชาติ",
+                "success": True,
+            },
+        ],
+    }
+    with patch(
+        "backend.app.api.routes.llm.extract_structured_items",
+        AsyncMock(return_value=_FAKE_SONG_LIST),
+    ) as mock_extract:
+        asyncio.run(_update_extracted_memory(session, result, "anthropic"))
+
+    assert session.extracted_memory == _FAKE_SONG_LIST
+    mock_extract.assert_awaited_once()
+    call_args = mock_extract.await_args.args
+    assert "เพลงรักชาติ" in call_args[2]  # page_content ที่ส่งเข้าไปคือเนื้อหาจริงจาก history
+
+
+def test_update_extracted_memory_leaves_buffer_untouched_when_no_read_page_data():
+    from backend.app.api.routes import _update_extracted_memory
+
+    session = MagicMock()
+    session.extracted_memory = _FAKE_SONG_LIST
+    result = {"history": [{"cmd": {"type": "click", "index": 1}, "result": "[OK] click -> สำเร็จ", "success": True}]}
+
+    with patch("backend.app.api.routes.llm.extract_structured_items", AsyncMock()) as mock_extract:
+        asyncio.run(_update_extracted_memory(session, result, "anthropic"))
+
+    mock_extract.assert_not_awaited()
+    assert session.extracted_memory == _FAKE_SONG_LIST  # ไม่ถูกล้างทิ้ง
 
 
 def test_close_session_then_reusing_id_creates_new_page(client):
