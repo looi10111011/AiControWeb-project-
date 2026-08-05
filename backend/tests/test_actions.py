@@ -88,6 +88,25 @@ async def test_execute_fill_gives_up_after_max_retries(_no_real_sleep):
     assert _no_real_sleep.await_count == 2  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
 
 
+# ---------------- W19 ("Safe Input Replacement"): focus -> select-all -> Backspace -> fill ----------------
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_clears_existing_text_via_select_all_and_backspace_before_typing():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "เพลงรักชาติ"})
+
+    assert result.success is True
+    mock_page.click.assert_awaited_once_with('[data-ai-index="0"]', timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    mock_page.press.assert_any_call('[data-ai-index="0"]', "ControlOrMeta+a", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    mock_page.press.assert_any_call('[data-ai-index="0"]', "Backspace", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    mock_page.fill.assert_awaited_once_with('[data-ai-index="0"]', "เพลงรักชาติ", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    # ลำดับต้องเป็น click -> Ctrl+A -> Backspace -> fill เท่านั้น (ไม่ใช่แค่เรียกครบทุกตัว)
+    call_order = [c[0] for c in mock_page.method_calls if c[0] in ("click", "press", "fill")]
+    assert call_order == ["click", "press", "press", "fill"]
+
+
 @pytest.mark.asyncio
 async def test_execute_select_and_check_also_get_retried(_no_real_sleep):
     mock_page = _make_select_mock_page(["A"], [PWTimeout("boom"), None])
@@ -246,6 +265,86 @@ async def test_execute_does_not_retry_switch_tab_on_failure():
 
     assert result.success is False
     assert "มีแค่ 0 tab" in result.message
+
+
+# ---------------- W19: Deterministic State Filter short-circuits ก่อน dispatch จริง ----------------
+# state_filter.py เองมีเทสต์ครบใน test_state_filter.py แล้ว — กลุ่มนี้เทสต์แค่ว่า execute()
+# เรียกมันจริงและ short-circuit ตามผลลัพธ์ (ไม่แตะ page.click/fill/check/scroll เลยตอน
+# redundant) ผ่าน patch ตรงจุดที่ actions.py import เข้ามา
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_skips_dispatch_when_already_redundant():
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.state_filter.check_fill_redundant",
+        AsyncMock(return_value="ช่องนี้มีข้อความอยู่แล้ว"),
+    ):
+        result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
+
+    assert result.success is True
+    assert "[ข้าม]" in result.message
+    mock_page.fill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_check_skips_dispatch_when_already_redundant():
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.state_filter.check_checkbox_redundant",
+        AsyncMock(return_value="ติ๊กอยู่แล้ว"),
+    ):
+        result = await execute(mock_page, {"type": "check", "index": 3})
+
+    assert result.success is True
+    assert "[ข้าม]" in result.message
+    mock_page.check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_scroll_skips_dispatch_when_already_at_edge():
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.state_filter.check_scroll_redundant",
+        AsyncMock(return_value="เลื่อนหน้าจอถึงล่างสุดอยู่แล้ว"),
+    ):
+        result = await execute(mock_page, {"type": "scroll", "direction": "down"})
+
+    assert result.success is True
+    assert "[ข้าม]" in result.message
+    mock_page.mouse.wheel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_fails_without_dispatch_when_element_disabled():
+    """ต่างจาก fill/check/scroll — click ที่ redundant เพราะ disabled ต้อง success=False
+    (action ไม่ได้เกิดขึ้นจริง ไม่ใช่ "เป้าหมายบรรลุแล้ว")"""
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.state_filter.check_click_redundant",
+        AsyncMock(return_value="element นี้อยู่ในสถานะ disabled แล้ว"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is False
+    assert "[ข้าม]" in result.message
+    mock_page.click.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_dispatches_normally_when_not_redundant():
+    """sanity check: ไม่ redundant ต้อง dispatch ตามปกติทุกประการ (ไม่ใช่ short-circuit
+    ทุกครั้งไม่ว่าผลจะเป็นยังไง)"""
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.state_filter.check_fill_redundant",
+        AsyncMock(return_value=None),
+    ):
+        result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
+
+    assert result.success is True
+    assert "[ข้าม]" not in result.message
+    mock_page.fill.assert_awaited_once()
 
 
 # ---------------- W40: execute() ต้องกด element ที่อยู่ใน <iframe> ได้จริง ----------------

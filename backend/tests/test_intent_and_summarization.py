@@ -6,6 +6,86 @@ from backend.app.core.actions import ActionResult
 from backend.app.core.orchestrator import Orchestrator
 
 
+# --- W19-6 ("Master Controller" MODULE 1, "General QA / No-Browser Trigger") ---
+
+
+@pytest.mark.parametrize("goal", [
+    "วันนี้วันที่เท่าไหร่",
+    "เวลาเท่าไหร่ตอนนี้",
+    "ตอนนี้กี่โมงแล้ว",
+    "1+1 ได้เท่าไหร่",
+    "2*3=",
+    "สวัสดีครับ",
+    "hi",
+    "hello",
+])
+def test_is_general_chat_query_recognizes_greetings_time_and_math(goal):
+    assert llm.is_general_chat_query(goal) is True
+
+
+@pytest.mark.parametrize("goal", [
+    "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้",
+    "ราคาสินค้าชิ้นนี้เท่าไหร่",
+    "มีผู้ใช้กี่คนในหน้า Admin",
+    "hi, ช่วยค้นหา iPhone ให้หน่อย",
+    "ไปหน้า 2",
+    "คลิกปุ่ม login",
+    "",
+    "   ",
+])
+def test_is_general_chat_query_rejects_anything_web_related_or_ambiguous(goal):
+    assert llm.is_general_chat_query(goal) is False
+
+
+@pytest.mark.asyncio
+async def test_chat_response_returns_text_on_anthropic_success():
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "สวัสดีครับ"
+    response = MagicMock()
+    response.content = [text_block]
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    result = await llm.chat_response(client, "claude-x", "สวัสดี", "anthropic")
+
+    assert result == "สวัสดีครับ"
+
+
+@pytest.mark.asyncio
+async def test_chat_response_includes_current_time_in_prompt_when_provided():
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "วันนี้วันจันทร์ครับ"
+    response = MagicMock()
+    response.content = [text_block]
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    await llm.chat_response(client, "claude-x", "วันนี้วันอะไร", "anthropic", current_time_text="วันจันทร์ที่ 1 มกราคม 2569")
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "วันจันทร์ที่ 1 มกราคม 2569" in prompt
+
+
+@pytest.mark.asyncio
+async def test_chat_response_swallows_provider_errors_and_returns_apology():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.chat_response(client, "claude-x", "สวัสดี", "anthropic")
+
+    assert "ขออภัย" in result
+
+
+@pytest.mark.asyncio
+async def test_chat_response_returns_message_for_unknown_provider():
+    result = await llm.chat_response(MagicMock(), "model", "สวัสดี", "unknown")
+
+    assert result != ""
+
+
 @pytest.mark.asyncio
 async def test_classify_intent_heuristics():
     """ทดสอบ classify_intent ด้วยคำค้นหาประเภท QA และ Action"""
@@ -32,6 +112,54 @@ async def test_classify_intent_llm_fallback():
         intent = await llm.classify_intent(client, "mock-model", ambiguous_goal, page_text="บริษัท ABC จำกัด...", provider="gemini")
         assert intent == "qa_summary"
         mock_gen.assert_called_once()
+
+
+# --- W19 ("Intent Classification Router"): compound nav+read commands must always route
+# to action_task, deterministically, without needing the LLM fallback ---
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_compound_navigation_and_read_command_is_action_task():
+    client = MagicMock()
+
+    goal = "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้งานระบบ"
+    intent = await llm.classify_intent(client, "mock-model", goal, page_text="", provider="gemini")
+
+    assert intent == "action_task"
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_compound_command_does_not_need_llm_call():
+    """ต้องตัดสินใจแบบ deterministic ไม่เรียก LLM เลยสำหรับ compound command ที่ชัดเจน"""
+    client = MagicMock()
+    with patch("backend.app.core.llm.generate_text", new_callable=AsyncMock) as mock_gen:
+        goal = "เปิดเว็บ Admin แล้วสรุปข้อมูลตาราง"
+        intent = await llm.classify_intent(client, "mock-model", goal, page_text="", provider="gemini")
+
+        assert intent == "action_task"
+        mock_gen.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_recognizes_expanded_navigation_verbs():
+    """"เข้าไปหน้า"/"เปิดเว็บ" ไม่ match "ไปที่" เดิมเลย — ต้องถูกจับเป็น action ด้วย"""
+    client = MagicMock()
+
+    for goal in ["เข้าไปหน้า Dashboard", "เปิดเว็บ shopee แล้วดูสินค้า"]:
+        intent = await llm.classify_intent(client, "mock-model", goal, page_text="", provider="gemini")
+        assert intent == "action_task", f"goal={goal!r} ควรเป็น action_task"
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_pure_qa_with_incidental_action_word_still_qa_summary():
+    """กันไม่ให้ compound rule (2.5) ทำให้ step 2 (goal ที่ขึ้นต้นด้วยคำถามล้วนๆ) เพี้ยนไป —
+    "login" เป็น action keyword แต่ที่นี่เป็นแค่หัวข้อที่ถูกถาม ไม่ใช่คำสั่งให้ทำ action"""
+    client = MagicMock()
+
+    goal = "สรุปขั้นตอนการ login ที่เขียนอธิบายไว้ในหน้านี้ให้หน่อย"
+    intent = await llm.classify_intent(client, "mock-model", goal, page_text="", provider="gemini")
+
+    assert intent == "qa_summary"
 
 
 
@@ -150,6 +278,96 @@ async def test_orchestrator_qa_summary_allows_search_flow_before_giving_up():
     assert mock_execute.await_count == 3  # fill + click + read_page_data ถูก dispatch จริงทั้งคู่
     dispatched_types = [call.args[1]["type"] for call in mock_execute.await_args_list]
     assert dispatched_types == ["fill", "click", "read_page_data"]
+
+
+# --- W19 ("Guard Compatibility Rule"): qa_summary ต้องยอม click เมนู/nav เพื่อไปหน้าย่อยที่
+# มีคำตอบก่อน ไม่ใช่ปฏิเสธทุกครั้งเหมือน W44/W46 เดิมที่อนุญาตแค่ fill/click ช่องค้นหา ---
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_qa_summary_allows_navigation_click_to_reach_sub_page():
+    """คำถามที่คำตอบอยู่หลังการ navigate ไปหน้าย่อย (เช่น "มีผู้ใช้กี่คนในหน้า Admin" ทั้งที่
+    ยังไม่ได้อยู่หน้า Admin) ต้องคลิกเมนู "Admin" (region=navigation) ได้ ไม่ถูกปฏิเสธเหมือน
+    ปุ่มที่ไม่เกี่ยวกับการค้นหาทั่วไป"""
+    orchestrator = Orchestrator()
+    mock_page = AsyncMock()
+    mock_page.url = "http://example.com"
+
+    elements_before_nav = [
+        {"index": 0, "tag": "a", "type": "", "label": "Admin", "region": "navigation"},
+    ]
+    elements_after_nav = [
+        {"index": 1, "tag": "table", "type": "", "label": "Users", "region": "main"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 0}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "read_page_data", "query": "กี่คน", "target_hint": "table"}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "มีผู้ใช้ 5 คน"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.get_snapshot", new_callable=AsyncMock) as mock_snapshot, \
+         patch("backend.app.core.orchestrator.goto", new_callable=AsyncMock) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", new_callable=AsyncMock), \
+         patch("backend.app.core.llm.classify_intent", new_callable=AsyncMock, return_value="qa_summary"), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)), \
+         patch("backend.app.core.orchestrator.execute", new_callable=AsyncMock) as mock_execute:
+
+        mock_snapshot.side_effect = [
+            (elements_before_nav, "หน้าแรก"),
+            (elements_after_nav, "หน้า Admin"),
+        ]
+        mock_goto.return_value = MagicMock(success=True)
+        mock_execute.return_value = ActionResult(True, "ok", "สำเร็จ")
+
+        result = await orchestrator.run_task(
+            url="http://example.com",
+            goal="มีผู้ใช้กี่คนในหน้า Admin",
+            page=mock_page,
+            provider="anthropic",
+        )
+
+    assert result["status"] == "chat_reply"
+    assert result["message"] == "มีผู้ใช้ 5 คน"
+    assert mock_execute.await_count == 2  # click(nav) + read_page_data ถูก dispatch จริงทั้งคู่
+    dispatched_types = [call.args[1]["type"] for call in mock_execute.await_args_list]
+    assert dispatched_types == ["click", "read_page_data"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_qa_summary_still_rejects_click_on_main_region_non_search_button():
+    """click ที่ region="main" (ไม่ใช่ navigation) และ label ไม่เกี่ยวกับค้นหาเลย ต้องยัง
+    ถูกปฏิเสธเหมือนเดิม — ผ่อนแค่ nav-region เท่านั้น ไม่ใช่ click ทุกกรณี"""
+    orchestrator = Orchestrator()
+    mock_page = AsyncMock()
+    mock_page.url = "http://example.com"
+
+    elements = [{"index": 0, "tag": "button", "type": "", "label": "Delete Account", "region": "main"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 0}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.get_snapshot", new_callable=AsyncMock) as mock_snapshot, \
+         patch("backend.app.core.orchestrator.goto", new_callable=AsyncMock) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", new_callable=AsyncMock), \
+         patch("backend.app.core.llm.classify_intent", new_callable=AsyncMock, return_value="qa_summary"), \
+         patch("backend.app.core.llm.summarize_page", new_callable=AsyncMock, return_value="สรุป"), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)), \
+         patch("backend.app.core.orchestrator.execute", new_callable=AsyncMock) as mock_execute:
+
+        mock_snapshot.return_value = (elements, "หน้าตั้งค่า")
+        mock_goto.return_value = MagicMock(success=True)
+
+        await orchestrator.run_task(
+            url="http://example.com",
+            goal="มีปุ่มอะไรบ้างในหน้านี้",
+            page=mock_page,
+            provider="anthropic",
+        )
+
+    mock_execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio

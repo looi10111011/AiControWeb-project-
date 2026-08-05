@@ -60,6 +60,7 @@ tmp/
 # ---- IDE / ระบบปฏิบัติการ ----
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db

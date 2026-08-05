@@ -13,6 +13,11 @@ W5: execute() retry click/fill/select/check ให้เองในนี้ (_
 ส่งผลลัพธ์กลับ orchestrator — กัน false negative จาก DOM ที่ยังไม่นิ่ง โดยไม่เสีย
 LLM token สักรอบเดียว
 
+W19: execute() เช็ค core/state_filter.py ก่อน dispatch จริงสำหรับ click/fill/check/scroll
+— action ที่ "สถานะเป้าหมายบรรลุอยู่แล้ว" (fill ข้อความเดิมซ้ำ/check ที่ติ๊กอยู่แล้ว/scroll
+ที่สุดหน้าแล้ว) หรือ "ทำไม่ได้แน่นอน" (click element disabled) จะไม่แตะ browser เลย
+short-circuit กลับ ActionResult ทันที — deterministic ล้วนๆ ไม่พึ่ง LLM
+
 ใช้คู่กับ perception.py (ไฟล์เดียวกับ W2)
 
 W40: click/fill/select_option/check เดิม dispatch ผ่าน page.click()/page.fill()/
@@ -42,6 +47,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from playwright.async_api import Page, TimeoutError as PWTimeout
 
+from backend.app.core import state_filter
 from backend.app.core.dom_locator import compute_locator_descriptor
 from backend.app.core.perception import count_elements, extract_table_data, resolve_frame
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
@@ -220,11 +226,23 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
         return ActionResult(False, f"press_key({index}, {key})", f"error: {e}")
 
 
+# W19 ("Safe Input Replacement"): เว็บที่มี custom autocomplete/controlled input (React/
+# Vue state เช่น ช่องค้นหา YouTube) บางเว็บไม่เห็นการเคลียร์แบบ CDP-level ล้วนๆ ของ
+# Playwright's .fill() ว่าเป็น "การกดจริง" — ค่าที่เห็นในช่องอาจดูเหมือนเปลี่ยนแล้ว แต่
+# state ภายในของ widget (เช่น autocomplete popup) ยังอ้างอิงคำค้นหาเดิมอยู่ ก่อนพิมพ์
+# ข้อความใหม่ทุกครั้งจึงต้อง focus -> select-all (Ctrl+A) -> Backspace ก่อนเสมอ (จำลอง
+# การกดจริงของมนุษย์ trigger keyboard event ที่ widget พวกนี้ฟังอยู่จริง) แล้วค่อย .fill()
+# ข้อความใหม่ลงในช่องที่ว่างแล้ว (เร็วกว่า/เชื่อถือได้กว่าการพิมพ์ทีละตัวอักษร เพราะช่อง
+# ว่างเปล่าแล้วไม่มีอะไรให้ .fill() ต้องเคลียร์ซ้ำอีก)
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
-    """พิมพ์ข้อความลงช่อง input/textarea ตาม index"""
+    """พิมพ์ข้อความลงช่อง input/textarea ตาม index — เคลียร์ข้อความเดิมด้วย
+    focus -> select-all -> Backspace ก่อนเสมอ (ดู module comment ด้านบน)"""
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=timeout)
+        await target.press(selector, "ControlOrMeta+a", timeout=timeout)
+        await target.press(selector, "Backspace", timeout=timeout)
         await target.fill(selector, text, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
         return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ", locator_descriptor=descriptor)
@@ -345,7 +363,14 @@ async def switch_tab(page: Page, tab_index: int) -> ActionResult:
         return ActionResult(False, f"switch_tab({tab_index})", f"error: {e}")
 
 
-async def wait_stable(page: Page, timeout: int = 8000) -> ActionResult:
+# W19 (latency): ลดจาก 8000ms เดิม — "networkidle" ไม่มีวัน resolve เร็วเลยบนเว็บที่มี
+# analytics/polling/websocket ยิงต่อเนื่องตลอด (พบได้บ่อยมาก) ทำให้ page-changing action
+# ทุกตัว (click/goto/select/go_back/press_key — ดู orchestrator.py::_PAGE_CHANGING_ACTIONS)
+# ต้องรอเต็ม timeout เปล่าๆ ก่อนไป step ถัดไปเสมอบนเว็บพวกนี้ — timeout ที่นี่ไม่เคยทำให้
+# task fail อยู่แล้ว (PWTimeout ด้านล่างถูกจับเป็น success เสมอ) แค่กำหนด "เพดานเวลาสูงสุดที่
+# ยอมเสียไปเปล่าๆ" ต่อ 1 การเรียก ลดเพดานนี้ลงตรงๆ คือวิธีลด latency ที่ปลอดภัยที่สุด
+# (ไม่กระทบ correctness เลย เพราะพฤติกรรม "ไม่ fail" เหมือนเดิมทุกประการ)
+async def wait_stable(page: Page, timeout: int = 4000) -> ActionResult:
     """รอให้หน้าเว็บนิ่ง — เรียกหลังทุก action ที่ทำให้หน้าเปลี่ยน ก่อน snapshot รอบใหม่"""
     try:
         await page.wait_for_load_state("networkidle", timeout=timeout)
@@ -498,11 +523,34 @@ async def execute(
         # คลิกซ้ำเสมอ (ดู hover-to-reveal action button — hover()/_dispatch_click_with_retry()
         # ด้านบน) fill/select/check ไม่ต้องการ hover ก่อนเลย ยังใช้ _dispatch_with_retry()
         # ทั่วไปเหมือนเดิมทุกประการ
-        if t == "click":       return await _dispatch_click_with_retry(page, cmd["index"])
-        if t == "fill":        return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+        # W19: Deterministic State Filter (ดู core/state_filter.py) — เช็คก่อน dispatch
+        # จริงว่า action นี้ "จำเป็นไหม" จากสถานะ DOM ปัจจุบัน (ไม่พึ่ง LLM) เจอว่า
+        # redundant ให้ short-circuit ไม่แตะ browser เลย คืน [OK] ทันที (fill/check/scroll
+        # = เป้าหมายบรรลุอยู่แล้ว ไม่ใช่ error) ยกเว้น click ที่ disabled ซึ่งคือ action
+        # ที่ "ทำไม่ได้จริง" ไม่ใช่ "ทำไปแล้ว" จึงคืน success=False ให้ agent รู้ว่าต้องหา
+        # ทางอื่น (เช่น กรอกช่องที่ทำให้ปุ่มนี้ enable ก่อน) แทนที่จะเข้าใจผิดว่าคลิกสำเร็จ
+        if t == "click":
+            redundant = await state_filter.check_click_redundant(page, cmd["index"])
+            if redundant is not None:
+                return ActionResult(False, f"click({cmd['index']})", f"[ข้าม] {redundant}")
+            return await _dispatch_click_with_retry(page, cmd["index"])
+        if t == "fill":
+            redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
+            if redundant is not None:
+                return ActionResult(True, f"fill({cmd['index']})", f"[ข้าม] {redundant}")
+            return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
         if t == "select":      return await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
-        if t == "check":       return await _dispatch_with_retry(check, page, cmd["index"])
-        if t == "scroll":      return await scroll(page, cmd.get("direction", "down"))
+        if t == "check":
+            redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
+            if redundant is not None:
+                return ActionResult(True, f"check({cmd['index']})", f"[ข้าม] {redundant}")
+            return await _dispatch_with_retry(check, page, cmd["index"])
+        if t == "scroll":
+            direction = cmd.get("direction", "down")
+            redundant = await state_filter.check_scroll_redundant(page, direction)
+            if redundant is not None:
+                return ActionResult(True, f"scroll({direction})", f"[ข้าม] {redundant}")
+            return await scroll(page, direction)
         if t == "goto":        return await goto(page, cmd["url"])
         if t == "go_back":     return await go_back(page)
         if t == "switch_tab":  return await switch_tab(page, cmd["tab_index"])

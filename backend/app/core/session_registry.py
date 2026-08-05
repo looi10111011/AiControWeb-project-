@@ -63,6 +63,14 @@ class BrowserSession:
     pool: Optional[BrowserPool] = None
     created_at: float = field(default_factory=time.time)
     last_active_at: float = field(default_factory=time.time)
+    # W19-6 ("Master Controller" MODULE 2/3 — "extracted_memory_buffer"/"SESSION_LIST"):
+    # รายการ structured item ล่าสุดที่ llm.extract_structured_items() แยกออกมาได้ (title/
+    # price/status/url/attributes ต่อรายการ) ผูกกับ session_id นี้เหมือน page — persist
+    # ข้าม POST /tasks หลายครั้งในบทสนทนาเดียวกัน (routes.py::_run_with_resolved_browser()
+    # เป็นคนอ่าน/เขียนค่านี้โดยตรง ไม่ผ่าน method พิเศษ — เหมือนกับที่เข้าถึง session.page
+    # ตรงๆ อยู่แล้ว) ให้เทิร์นถัดไปอ้างอิงแบบ ordinal ได้ (เช่น "เล่นเพลงที่ 3" หลังจากเทิร์น
+    # ก่อนแสดง Top 5 ไปแล้ว) — [] เสมอสำหรับ session ที่ยังไม่เคย extract อะไรมาก่อน
+    extracted_memory: list[dict] = field(default_factory=list)
 
 
 class SessionRegistry:

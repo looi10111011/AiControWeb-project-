@@ -89,6 +89,72 @@ def _make_ask_user_func(task_manager: TaskManager, task_id: str, auto_approve: b
     return ask_user_func
 
 
+async def _general_chat_result(req, on_event, client, model: str, resolved_provider: str) -> dict:
+    """W19-6 ("Master Controller" MODULE 1): ตอบ goal ที่เป็นคำถามทั่วไป/ทักทาย/วันเวลา/
+    คำนวณเลข/คำขอเชิงแนะนำ-ความเห็นจากความรู้ทั่วไป (ดู llm.resolve_general_chat_query())
+    โดยไม่แตะ browser/session/pool เลยแม้แต่นิดเดียว — client/model/resolved_provider รับ
+    มาจาก caller ตรงๆ (สร้างครั้งเดียวใน _run_with_resolved_browser() แล้วใช้ร่วมกับ
+    resolve_general_chat_query() ด้วย ไม่ต้องเรียก Orchestrator._llm_backend() ซ้ำสองครั้ง)
+    คืน dict รูปแบบเดียวกับ Orchestrator.run_task() ทุกประการ (steps=0, history=[] ฯลฯ) ให้
+    TaskManager/frontend polling/SSE ใช้ต่อได้เหมือนเดิมทุกจุดโดยไม่ต้องรู้ว่า task นี้ไม่เคย
+    เปิด browser เลย"""
+    # llm._current_bangkok_time_text() เป็น private helper ของ llm.py (ใช้ฉีดเวลาจริงเข้า
+    # SYSTEM_PROMPT ทุก step อยู่แล้ว) — เรียกตรงๆ จากที่นี่แทนการ implement เวลา Bangkok
+    # ซ้ำอีกจุด กันคำถามเกี่ยวกับวันที่/เวลาตอบผิดจาก training data ของโมเดลเอง
+    chat_reply = await llm.chat_response(
+        client, model, req.goal, resolved_provider, current_time_text=llm._current_bangkok_time_text(),
+    )
+    await on_event({"kind": "chat_reply", "message": chat_reply})
+    return {
+        "success": True,
+        "steps": 0,
+        "message": chat_reply,
+        "history": [],
+        "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+        "plan": "",
+        "final_page_state": "",
+        "persona_message": "",
+        "persona_status": "COMPLETED",
+        "completion_verification": "OK",
+    }
+
+
+_READ_PAGE_DATA_OK_PREFIX = "[OK] read_page_data -> "
+
+
+async def _update_extracted_memory(session, result: dict, provider: Optional[str]) -> None:
+    """W19-6 ("Master Controller" MODULE 2, "SESSION_LIST"): หลัง run_task() จบ (ไม่ว่า
+    success หรือไม่ — task ที่ fail กลางทางอาจยัง extract ข้อมูลบางส่วนไปแล้วก่อนพังก็ได้)
+    ไล่หา step ที่เป็น read_page_data สำเร็จ (result string ขึ้นต้นด้วย
+    _READ_PAGE_DATA_OK_PREFIX) เอาแค่ "ตัวล่าสุด" (ไม่รวมทุก read_page_data ของ task นี้
+    เพราะแต่ละครั้งอาจอ่านคนละส่วนของหน้า ไม่ใช่ accumulate กันได้ตรงๆ) มาจัดโครงสร้างผ่าน
+    llm.extract_structured_items() แล้วเก็บทับ session.extracted_memory เดิม — ไม่เจอ
+    read_page_data สำเร็จเลย/จัดโครงสร้างไม่ได้ (คืน [] ว่างเปล่า) ปล่อย
+    session.extracted_memory เดิมไว้เฉยๆ ไม่ล้างทิ้ง (เผื่อ task นี้เป็นแค่ IN_PAGE_ACTION
+    ที่ไม่ได้อ่านข้อมูลใหม่ ไม่ควรทำ buffer เดิมหายไปเปล่าๆ)
+
+    ห้าม throw ออกไปทำให้ endpoint พังเด็ดขาด — เป็นแค่ enhancement (เหมือน
+    plan_memory.py/long_term_memory.py) ไม่ใช่ requirement ที่ task ต้องพึ่ง"""
+    try:
+        history = result.get("history") or []
+        latest_read_content = ""
+        for step in history:
+            step_result = step.get("result", "")
+            if isinstance(step_result, str) and step_result.startswith(_READ_PAGE_DATA_OK_PREFIX):
+                latest_read_content = step_result[len(_READ_PAGE_DATA_OK_PREFIX):]
+        if not latest_read_content:
+            return
+        resolved_provider = provider or settings.llm_provider
+        client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+        items = await llm.extract_structured_items(
+            client, model, latest_read_content, "", resolved_provider,
+        )
+        if items:
+            session.extracted_memory = items
+    except Exception as e:
+        print(f"⚠️ _update_extracted_memory error: {e}", flush=True)
+
+
 async def _run_with_resolved_browser(
     req, orchestrator: Orchestrator, ask_user_func, on_event, pool, session_registry,
     extra_run_task_kwargs: dict,
@@ -100,10 +166,29 @@ async def _run_with_resolved_browser(
     เดียวกันทั้งคู่: url/goal/max_steps/provider/headless/auto_approve/
     use_user_browser/tab_reuse_policy/session_id)
 
-    ลำดับความสำคัญ: session_id ก่อน (ครอบคลุมทั้ง 3 โหมดในตัวผ่าน session_registry
-    อยู่แล้ว) -> use_user_browser -> headless=False ตรงๆ (visible browser, launch เอง,
-    ผูก keep_browser_open=True คู่กันเสมอเพราะไม่มีประโยชน์ที่จะเปิดหน้าต่างโชว์แล้วรีบ
-    ปิดทันทีที่เสร็จ) -> fallback ไปยืมจาก pool (headless ตาม req.headless เป๊ะๆ)"""
+    W19-6 ("Master Controller" MODULE 1, "General QA / No-Browser Trigger"): เช็คก่อนสุด
+    เสมอ ก่อนแม้แต่ session_id branch ด้านล่าง — goal ที่เป็นคำถามทั่วไป/ทักทาย/วันเวลา/
+    คำนวณเลข/คำขอเชิงแนะนำจากความรู้ทั่วไป (ดู llm.is_general_chat_query()) ไม่ต้อง
+    resolve session/pool/browser อะไรเลยแม้จะมี session_id ที่เปิด page ค้างอยู่แล้วก็ตาม
+    (ตัดสินใจแบบ deterministic ล้วนๆ ไม่พึ่ง LLM เด็ดขาด — ตั้งใจ: (1) เร็ว ไม่เสีย LLM
+    round-trip ให้ทุก task ที่ไม่ใช่ general-chat จริงๆ ต้องรอเปล่าๆ ก่อนเริ่ม (2)
+    ปลอดภัยกับเทสต์/โค้ดเดิมที่ patch("...Orchestrator") ทั้ง class ไว้กว้างๆ ทั่วทั้งไฟล์
+    (เคยลองเพิ่มชั้น LLM fallback ที่นี่มาก่อนแล้วพบว่า Orchestrator._llm_backend() ถูกเรียก
+    ก่อนแม้แต่ task ปกติที่ goal ไม่มี exclusion keyword เลย เช่น "ทดสอบ" ทำให้เทสต์ที่ mock
+    Orchestrator ทั้ง class พังเป็นวงกว้าง 26 เทสต์ ถอนออกแล้ว) — ดู module comment ของ
+    is_general_chat_query() ใน llm.py สำหรับเหตุผลเต็มเรื่อง false negative ปลอดภัยกว่า
+    false positive)
+
+    ลำดับความสำคัญ (หลังผ่าน general-chat check ด้านบนแล้ว): session_id ก่อน (ครอบคลุมทั้ง
+    3 โหมดในตัวผ่าน session_registry อยู่แล้ว) -> use_user_browser -> headless=False ตรงๆ
+    (visible browser, launch เอง, ผูก keep_browser_open=True คู่กันเสมอเพราะไม่มีประโยชน์
+    ที่จะเปิดหน้าต่างโชว์แล้วรีบปิดทันทีที่เสร็จ) -> fallback ไปยืมจาก pool (headless ตาม
+    req.headless เป๊ะๆ)"""
+    if llm.is_general_chat_query(req.goal):
+        resolved_provider = req.provider or settings.llm_provider
+        client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+        return await _general_chat_result(req, on_event, client, model, resolved_provider)
+
     wants_visible_browser = req.headless is False
     # W14: โหลดคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติครั้งเดียวตรงนี้ (ถ้ามี) แล้วส่งต่อเข้า
     # run_task() ทุก branch ด้านล่าง — ว่างเปล่าเงียบๆ ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้
@@ -124,9 +209,57 @@ async def _run_with_resolved_browser(
             tab_reuse_policy=req.tab_reuse_policy,
             ask_user_func=ask_user_func,
         )
-        return await orchestrator.run_task(
+
+        # W19-6 ("Master Controller" MODULE 3, "Ordinal Selection"/multi-turn strategy):
+        # เฉพาะตอน session นี้เคยมี extracted_memory เก็บไว้จากเทิร์นก่อนหน้าจริงๆ
+        # เท่านั้นถึงเรียก route_multi_turn_strategy() (ไม่มี memory เลย = พฤติกรรมเดิม
+        # ทุกประการ ไม่เพิ่ม LLM call แถมโดยไม่จำเป็นสำหรับ task ทั่วไป/ครั้งแรกของ session)
+        effective_goal = req.goal
+        if session.extracted_memory:
+            # client/model สร้างตรงนี้ (ไม่ใช่ด้านบนสุดของฟังก์ชัน) เพราะ branch นี้ทำงาน
+            # เฉพาะตอน session มี extracted_memory จริงๆ เท่านั้น (ดู comment ด้านบน) —
+            # task ทั่วไป/session ที่ยังไม่เคย extract อะไรเลยจะไม่เสีย
+            # Orchestrator._llm_backend() call เปล่าๆ เหมือนกับเหตุผลเดียวกับ general-chat
+            # check ด้านบนสุดของฟังก์ชัน
+            resolved_provider = req.provider or settings.llm_provider
+            client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+            memory_json = json.dumps(session.extracted_memory, ensure_ascii=False)
+            decision = await llm.route_multi_turn_strategy(
+                client, model, req.goal, req.goal, extract_domain(session.page.url),
+                session.page.url, memory_json, "", resolved_provider,
+            )
+            if decision["chosen_strategy"] == "REPLY_FROM_MEMORY":
+                # คำตอบอยู่ใน buffer แล้ว — ตอบตรงๆ ไม่แตะ browser/agent loop เลย (เหมือน
+                # _general_chat_result ด้านบนแต่มี buffer เป็นบริบทเพิ่ม)
+                reply = await llm.chat_response(
+                    client, model,
+                    f"{req.goal}\n\nข้อมูลที่เคยดึงไว้จากเทิร์นก่อนหน้า (เรียงตามลำดับที่แสดงบนหน้าจอจริง):\n{memory_json}",
+                    resolved_provider,
+                )
+                await on_event({"kind": "chat_reply", "message": reply})
+                return {
+                    "success": True, "steps": 0, "message": reply, "history": [],
+                    "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+                    "plan": "", "final_page_state": "", "persona_message": "",
+                    "persona_status": "COMPLETED", "completion_verification": "OK",
+                }
+            if decision["chosen_strategy"] == "IN_PAGE_ACTION":
+                # ผูก goal เข้ากับรายการที่ผู้ใช้อ้างถึงจริงๆ จาก buffer (เช่น "เล่นเพลงที่
+                # 3" -> ชื่อเพลง/รายละเอียดจริงจาก SESSION_LIST[2]) แทนที่จะปล่อยให้ loop
+                # หลักตีความ ordinal เองล้วนๆ จาก DOM ที่อาจจัดลำดับต่างไปแล้วในเทิร์นนี้
+                target_entity = decision["context_analysis"].get("target_entity_from_memory", "")
+                if target_entity:
+                    effective_goal = (
+                        f"{req.goal}\n\n[อ้างอิงจากรายการที่เคยแสดงไว้ก่อนหน้า]: {target_entity}"
+                    )
+            elif decision["chosen_strategy"] == "NEW_NAVIGATION":
+                # user ตั้งใจเปลี่ยนหัวข้อ/เว็บใหม่จริงๆ — buffer เดิมไม่เกี่ยวข้องอีกต่อไป
+                # เคลียร์ทิ้งกันเทิร์นถัดไปอ้างอิงรายการเก่าที่ไม่เกี่ยวกับหัวข้อใหม่แล้วผิดๆ
+                session.extracted_memory = []
+
+        result = await orchestrator.run_task(
             url=req.url,
-            goal=req.goal,
+            goal=effective_goal,
             max_steps=req.max_steps,
             headless=req.headless,
             verbose=False,
@@ -138,6 +271,8 @@ async def _run_with_resolved_browser(
             session_id=req.session_id,
             **extra_run_task_kwargs,
         )
+        await _update_extracted_memory(session, result, req.provider)
+        return result
 
     # W12: user_browser bypass pool เหมือน wants_visible_browser ด้านล่าง (browser ที่
     # ต่อผ่าน CDP เป็นของ user เอง ไม่ใช่ของ pool ให้ยืม) — ตรวจก่อน wants_visible_browser
