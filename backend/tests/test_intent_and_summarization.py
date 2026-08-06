@@ -200,7 +200,12 @@ async def test_summarize_page_prompt():
 
         prompt_sent = mock_gen.call_args[0][2]
         assert "คุณคือ AI Assistant ที่มีความสามารถในการอ่านหน้าเว็บ" in prompt_sent
-        assert "โปรดอ่านเนื้อหาเว็บต่อไปนี้แล้วตอบคำถามของผู้ใช้ให้กระชับ เข้าใจง่าย และใช้ภาษาไทยที่เป็นกันเอง" in prompt_sent
+        assert "โปรดอ่านเนื้อหาเว็บต่อไปนี้แล้วตอบคำถามของผู้ใช้ให้กระชับ เข้าใจง่าย เป็นกันเอง" in prompt_sent
+        # W20 (follow-up "reply in the user's own language"): summarize_page() used to
+        # hard-require Thai output regardless of the user's own question language — now
+        # mirrors it instead (see llm._LANGUAGE_MIRROR_RULE), same as every other
+        # response-generating prompt in this module.
+        assert "ตอบเป็นภาษาเดียวกับที่ user ใช้พิมพ์คำถาม" in prompt_sent
         assert "Page Content: หน้าเว็บขายรองเท้าแตะยาง ราคา 199 บาท" in prompt_sent
         assert "User Question: สรุปราคาสินค้า" in prompt_sent
 

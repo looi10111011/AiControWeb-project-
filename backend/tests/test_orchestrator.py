@@ -31,6 +31,9 @@ from backend.app.core.orchestrator import (
     _make_dialog_handler,
     _login_form_needs_password,
     _scan_validation_errors,
+    _is_bare_required_message,
+    _label_looks_like_form_submit,
+    _should_check_validation_error_after_action,
 )
 
 
@@ -3619,6 +3622,44 @@ async def test_scan_validation_errors_fails_safe_on_bare_mock_page():
     assert result == []
 
 
+def test_validation_error_selector_in_form_prefixes_every_alternative():
+    """W20 (Task12 follow-up): _VALIDATION_ERROR_SELECTOR มีหลาย alternative คั่นด้วย comma —
+    ต้อง prefix "form " ให้ทุก alternative ไม่ใช่แค่ตัวแรก (ผิดพลาดแบบนี้จะทำให้ selector ท้าย
+    ๆ หลุด scope ไปเช็คทั้งหน้าเหมือนเดิมโดยไม่รู้ตัว)"""
+    plain_parts = orchestrator_module._VALIDATION_ERROR_SELECTOR.split(",")
+    scoped_parts = orchestrator_module._VALIDATION_ERROR_SELECTOR_IN_FORM.split(",")
+    assert len(scoped_parts) == len(plain_parts)
+    assert all(p.strip().startswith("form ") for p in scoped_parts)
+
+
+@pytest.mark.asyncio
+async def test_scan_validation_errors_within_form_scopes_selector_to_form_descendants():
+    """W20 (Task12 follow-up, บั๊กจริงที่พบ live บน opensource-demo.orangehrmlive.com): หน้า
+    login มี <div class="orangehrm-login-error">Username : Admin / Password : admin123</div>
+    (คำใบ้ demo credentials คงที่ ไม่ใช่ validation error จริง) อยู่นอก <form> เสมอ ไม่ว่าจะทำ
+    action อะไรก็ตาม — ชื่อ class ดันมีคำว่า "error" ปนอยู่ ทำให้ [class*="error" i] เดิมแมตช์
+    ผิดพลาด within_form=True ต้อง scope selector ที่ส่งเข้า page.locator() ให้อยู่แค่ใน <form>
+    เท่านั้น กัน false positive แบบนี้"""
+    mock_page = _make_locator_page([])
+
+    await _scan_validation_errors(mock_page, within_form=True)
+
+    called_selector = mock_page.locator.call_args.args[0]
+    assert called_selector == orchestrator_module._VALIDATION_ERROR_SELECTOR_IN_FORM
+
+
+@pytest.mark.asyncio
+async def test_scan_validation_errors_default_scope_is_whole_page():
+    """within_form ไม่ระบุ (guard เดิมก่อน finish_task) -> ยังคง scope ทั้งหน้าเหมือนเดิมทุก
+    ประการ ไม่เปลี่ยนพฤติกรรมเดิม"""
+    mock_page = _make_locator_page([])
+
+    await _scan_validation_errors(mock_page)
+
+    called_selector = mock_page.locator.call_args.args[0]
+    assert called_selector == orchestrator_module._VALIDATION_ERROR_SELECTOR
+
+
 @pytest.mark.asyncio
 async def test_login_form_needs_password_uses_short_timeout_not_playwright_default_30s():
     """W19 (latency): .input_value() ต้องระบุ timeout สั้นๆ ตรงๆ ไม่ปล่อยให้ Playwright
@@ -3658,12 +3699,17 @@ def test_wait_stable_default_timeout_reduced_from_original_8000ms():
 @pytest.mark.asyncio
 async def test_run_task_rejects_finish_task_true_when_validation_errors_visible():
     """เจอ validation error บนหน้าปัจจุบัน -> ปฏิเสธ finish_task(success=true) เตือนให้แก้
-    ก่อน ไม่ยอมรับทันที"""
+    ก่อน ไม่ยอมรับทันที
+
+    W20 (Task12 follow-up): action แรกใช้ "select" (ไม่ใช่ "fill") ตั้งใจ — หลังจาก fill เปิด
+    ให้ trigger hard-stop guard ใหม่ด้วยแล้ว (ดู _should_check_validation_error_after_action)
+    ต้องใช้ action type ที่ guard ใหม่ไม่ครอบคลุมเพื่อทดสอบ guard เดิม (ก่อน finish_task) แยก
+    จากกันจริงๆ ไม่งั้น hard-stop ใหม่จะดักไปก่อนตั้งแต่ step แรก ไม่ทันถึง finish_task เลย"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
-    fill_result = ActionResult(True, "fill(1)", "กรอกสำเร็จ")
+    fill_result = ActionResult(True, "select(1)", "เลือกสำเร็จ")
 
     next_action_calls = [
-        ("browser_action", {"type": "fill", "index": 1, "text": "x"}, "t0", [], llm.TokenUsage()),
+        ("browser_action", {"type": "select", "index": 1, "label": "x"}, "t0", [], llm.TokenUsage()),
         ("finish_task", {"success": True, "message": "บันทึกสำเร็จ"}, "t1", [], llm.TokenUsage()),
         ("finish_task", {"success": True, "message": "บันทึกสำเร็จจริงๆ"}, "t2", [], llm.TokenUsage()),
     ]
@@ -3719,6 +3765,166 @@ async def test_run_task_accepts_finish_task_after_retries_exhausted_and_tags_res
 
     assert result["success"] is True  # ยอมรับตามที่โมเดลยืนยัน (escape valve)
     assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
+
+
+# --- W20 (Task12, "UI Validation Error Detection" — Early Termination Guardrail): hard-stop
+# ทันทีหลังคลิกปุ่ม Save/Submit ที่เผยข้อความ validation error — บั๊กจริงที่ user รายงาน
+# (agent ไม่เคยเรียก finish_task เลย แค่วน refresh/retry ไม่จบ ทำให้ guard เดิม (ก่อน
+# finish_task) ไม่มีทางทำงาน) ---
+
+
+def test_label_looks_like_form_submit_matches_save_and_thai_keywords():
+    assert _label_looks_like_form_submit("Save") is True
+    assert _label_looks_like_form_submit("บันทึก") is True
+    assert _label_looks_like_form_submit("Change Password") is True
+    assert _label_looks_like_form_submit("Dashboard") is False
+    assert _label_looks_like_form_submit("") is False
+    assert _label_looks_like_form_submit(None) is False
+
+
+def test_should_check_validation_error_after_action_scoped_to_submit_clicks_only():
+    # click/submit บนปุ่มที่ label ดูเป็น Save/Submit -> เช็ค
+    assert _should_check_validation_error_after_action("click", "Save") is True
+    assert _should_check_validation_error_after_action("submit", "Update") is True
+    # click ทั่วไป (เมนู/ลิงก์นำทาง) -> ไม่เช็ค กัน false positive จาก error ที่ไม่เกี่ยวกับฟอร์ม
+    assert _should_check_validation_error_after_action("click", "Dashboard") is False
+    # W20 (Task12 follow-up, "แก้ไขให้ครบ"): "fill" เช็คทุกครั้งแล้ว (เดิมตั้งใจไม่รวม —
+    # false positive จาก "Required" ของช่องที่ยังไม่ได้กรอกตอนนี้จัดการที่จุดเรียกใช้แทนผ่าน
+    # _is_bare_required_message() ไม่ใช่ตัดออกจาก trigger set ทั้งชนิด)
+    assert _should_check_validation_error_after_action("fill", "Password") is True
+    assert _should_check_validation_error_after_action("scroll", "") is False
+
+
+def test_is_bare_required_message_filters_required_only_not_real_content_errors():
+    assert _is_bare_required_message("* Required") is True
+    assert _is_bare_required_message("Required") is True
+    assert _is_bare_required_message("required.") is True
+    assert _is_bare_required_message("  * Required  ") is True
+    assert _is_bare_required_message("") is False
+    assert _is_bare_required_message(None) is False
+    assert _is_bare_required_message("Should have at least 7 characters") is False
+    assert _is_bare_required_message("Employee Name already exists") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_stops_immediately_after_fill_when_real_validation_error_shown():
+    """W20 (Task12 follow-up, "แก้ไขให้ครบ"): fill เพียงอย่างเดียว (ยังไม่ทันกดปุ่ม Save เลย)
+    ก็ต้องหยุด task ทันทีถ้าหน้าเว็บโชว์ validation error ที่มีเนื้อหาจริง (ไม่ใช่แค่ "Required"
+    เฉยๆ) — ไม่เรียก llm.next_action() ต่ออีกเลย และข้อความสุดท้ายต้องชวน user ตอบกลับมาด้วยค่า
+    ใหม่ (เพื่อให้ turn ถัดไปกรอกแทนที่ในช่องเดิมต่อได้ ดู _PLAN_PROMPT_TEMPLATE::
+    "Corrected-Value Retry on Validation Error" ใน llm.py)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "fill(1)", "กรอกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "fill", "index": 1, "text": "weak"}, "t0", [], llm.TokenUsage()),
+        # ไม่ควรถูกเรียกเลย — ถ้าเทสต์ผ่านแม้ next_action ถูกเรียกครั้งที่ 2 แปลว่า guard
+        # ไม่ได้ตัด loop ออกจริงหลัง fill
+        ("finish_task", {"success": True, "message": "should never reach here"}, "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fill_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_validation_errors",
+             AsyncMock(return_value=["Should have at least 7 characters"]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is False
+    assert result["completion_verification"] == "TASK_FAILED_USER_INPUT_ERROR"
+    assert "Should have at least 7 characters" in result["message"]
+    assert "ตอบกลับมาด้วยค่าใหม่" in result["message"]
+    # หยุดทันทีหลัง action แรก (fill) — ไม่มีการเรียก next_action ครั้งที่ 2 (finish_task ปลอม
+    # ที่ไม่ควรไปถึง) และไม่มีการกด Save เลยด้วยซ้ำ
+    assert mock_next_action.await_count == 1
+    assert mock_scan.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_task_stops_immediately_when_save_click_reveals_validation_error():
+    """คลิกปุ่ม "Save" สำเร็จ (result.success=True) แต่หน้าเว็บโชว์ validation error ค้างอยู่ —
+    ต้องหยุด task ทันที ไม่เรียก llm.next_action() อีกเลย (ไม่ลอง go_back/refresh/retry ต่อ)
+    และคัดลอกข้อความ error ตรงตามที่ระบบแสดงจริงเข้า final message — scan รอบแรก (หลัง fill)
+    ตั้งใจให้ยังไม่เจอ error เลย ("weak" ยังไม่ทัน commit จนกว่าจะกด Save) เพื่อแยกพิสูจน์ว่า
+    click/submit เองก็ trigger guard นี้ได้อิสระจาก fill ไม่ใช่แค่ fill เท่านั้น"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "fill(1)", "กรอกสำเร็จ")
+    save_click_result = ActionResult(True, "click(2)", "สำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "fill", "index": 1, "text": "weak"}, "t0", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t1", [], llm.TokenUsage()),
+        # ไม่ควรถูกเรียกเลย — ถ้าเทสต์ผ่านแม้ next_action ถูกเรียกครบ 3 ครั้ง แปลว่า guard
+        # ใหม่ไม่ได้ตัด loop ออกจริง
+        ("finish_task", {"success": True, "message": "should never reach here"}, "t2", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(
+             return_value=([{"index": 2, "tag": "button", "type": "", "label": "Save"}], "page"),
+         )), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=[fill_result, save_click_result])), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_validation_errors",
+             AsyncMock(side_effect=[[], ["Should have at least 7 characters"]]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is False
+    assert result["completion_verification"] == "TASK_FAILED_USER_INPUT_ERROR"
+    assert "Should have at least 7 characters" in result["message"]
+    # หยุดทันทีหลัง action ที่ 2 (fill แล้ว click Save) — ไม่มีการเรียก next_action ครั้งที่ 3
+    # (ซึ่งจะเป็น finish_task ปลอมที่ไม่ควรไปถึง)
+    assert mock_next_action.await_count == 2
+    assert mock_scan.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_task_fill_trigger_filters_bare_required_message_and_does_not_stop():
+    """W20 (Task12 follow-up): fill ที่โผล่ "* Required" ล้วนๆ (ไม่มีเนื้อหาอื่น) ต้องไม่ถูก
+    hard-stop — เป็น false positive จากช่องพี่น้องที่ยังไม่ได้กรอก ไม่ใช่ปัญหาของค่าที่เพิ่ง
+    fill จริงๆ (เห็นจริงบน opensource-demo.orangehrmlive.com) ต่างจาก error ที่มีเนื้อหาจริงซึ่ง
+    ยัง hard-stop ตามปกติ (ดู test_run_task_stops_immediately_after_fill_when_real_validation_
+    error_shown ด้านบน)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "fill(1)", "กรอกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "fill", "index": 1, "text": "x"}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fill_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_validation_errors",
+             AsyncMock(side_effect=[["* Required"], []]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is True
+    assert result["message"] == "เสร็จแล้ว"
+    # scan ถูกเรียก 2 ครั้ง: 1) จาก fill guard ใหม่ (เจอ "* Required" แต่กรองทิ้ง ไม่ hard-stop)
+    # 2) จาก guard เดิมก่อน finish_task (ไม่เจอ error เลย -> ยอมรับทันที)
+    assert mock_scan.await_count == 2
 
 
 @pytest.mark.asyncio

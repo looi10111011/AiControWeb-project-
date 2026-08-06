@@ -498,7 +498,10 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
         )
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
-    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless)
+    record = task_manager.submit(
+        task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless,
+        attached_file_name=req.attached_file_name,
+    )
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
 
 
@@ -538,7 +541,18 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     attached_file ด้านบนทันที ด้วยเกณฑ์เดียวกับ _run_with_resolved_browser() (ดูที่นั่น
     สำหรับเหตุผลเต็มๆ) คืน is_qa=True ทันทีเหมือนกัน ให้ frontend ข้าม plan approval ไปตอบ
     จากไฟล์เดิมทันทีที่ POST /api/execute_plan (ไม่ใช่ตกไปวางแผนเปิด browser จริงด้วย url
-    ว่างเปล่าเหมือนที่เคยเกิดขึ้นจริง)"""
+    ว่างเปล่าเหมือนที่เคยเกิดขึ้นจริง)
+
+    W20 ("Context-Aware Implicit Execution", บั๊กจริงที่ user รายงาน): เทิร์นก่อนหน้าเป็น
+    general-chat ล้วนๆ (เช่น "ขอเพลงเศร้าๆหน่อย" -> agent แนะนำชื่อเพลงผ่าน chat_response()
+    เฉยๆ ไม่เคยแตะ browser/session เลย) แล้วเทิร์นถัดมา user พิมพ์คำสั่งอ้างอิงกำกวม (เช่น
+    "okเปิดให้หน่อย") — เดิมแผนที่ร่างออกมามีแค่ "เปิด youtube.com" เพราะ session.
+    extracted_memory (route_multi_turn_strategy) ไม่มีทางจับ entity จาก general-chat reply
+    ได้เลย (ไม่เคยมี read_page_data ให้ extract) ตอนนี้ req.previous_user_goal/
+    previous_assistant_message (frontend ส่งมาจาก conversation history ฝั่ง client เอง — ดู
+    index.html::requestPlan()) ส่งต่อเข้า Orchestrator.generate_plan() ให้ LLM ดึงชื่อ
+    เพลง/entity จากคำตอบเทิร์นก่อนหน้ามารวมเข้ากับ goal ก่อนร่างแผนจริง (ดู llm.py::
+    _PLAN_PROMPT_TEMPLATE ส่วน "Context-Aware Implicit Execution")"""
     # W20 (MODULE 0): เช็คก่อนสุดเสมอ เหมือน attached_file ด้านล่าง — คืน is_qa=True ทันที
     # ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปเรียก execute_plan/create_task ที่จะตอบด้วย
     # CONTEXT_INSPECTION_MODE ผ่าน _context_inspection_result() แทน (ดู routes.py::
@@ -610,6 +624,8 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
         res = await asyncio.wait_for(
             Orchestrator().generate_plan(
                 req.url, req.goal, provider=req.provider, page=page, site_manual_context=site_manual_context,
+                previous_user_goal=req.previous_user_goal or "",
+                previous_assistant_message=req.previous_assistant_message or "",
             ),
             timeout=settings.plan_generation_timeout_seconds,
         )
@@ -704,7 +720,10 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
         )
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
-    record = task_manager.submit(task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless)
+    record = task_manager.submit(
+        task_id, req.url, req.goal, req.provider, _run(), headless=resolved_headless,
+        attached_file_name=req.attached_file_name,
+    )
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
 
 
@@ -724,6 +743,7 @@ async def get_task(task_id: str, request: Request) -> TaskStatusResponse:
         result=record.result,
         error=record.error,
         headless=record.headless,
+        attached_file_name=record.attached_file_name,
     )
 
 
@@ -741,6 +761,7 @@ async def list_tasks(request: Request) -> list[TaskStatusResponse]:
             result=r.result,
             error=r.error,
             headless=r.headless,
+            attached_file_name=r.attached_file_name,
         )
         for r in task_manager.list()
     ]

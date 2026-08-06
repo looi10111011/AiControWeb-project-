@@ -1038,10 +1038,34 @@ def test_generate_plan_without_session_id_never_touches_browser(client):
     }
     mock_generate_plan.assert_awaited_once_with(
         "https://example.com", "ทดสอบ", provider=None, page=None, site_manual_context="",
+        previous_user_goal="", previous_assistant_message="",
     )
     # ไม่มีทาง touch pool/session registry เลยจาก endpoint นี้
     assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
     assert client.get("/sessions").json() == []
+
+
+def test_generate_plan_forwards_previous_turn_context_for_anaphora_resolution(client):
+    """W20 ("Context-Aware Implicit Execution", บั๊กจริงที่ user รายงาน): req.previous_user_goal/
+    previous_assistant_message (เทิร์นก่อนหน้าจาก general-chat ที่แนะนำชื่อเพลง — ส่งมาจาก
+    conversation history ฝั่ง client เอง) ต้องส่งต่อเข้า Orchestrator.generate_plan() ตรงๆ ให้
+    LLM แก้คำอ้างอิงกำกวมอย่าง "okเปิดให้หน่อย" ได้"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_generate_plan = AsyncMock(return_value="1. Open YouTube\n2. Search\n3. Play")
+        MockOrchestrator.return_value.generate_plan = mock_generate_plan
+
+        resp = client.post("/api/generate_plan", json={
+            "url": "", "goal": "okเปิดให้หน่อย",
+            "previous_user_goal": "ขอเพลงเศร้าๆหน่อย",
+            "previous_assistant_message": "แนะนำเพลง \"โปรดส่งใครมารักฉันที\" ครับ",
+        })
+
+    assert resp.status_code == 200
+    mock_generate_plan.assert_awaited_once_with(
+        "", "okเปิดให้หน่อย", provider=None, page=None, site_manual_context="",
+        previous_user_goal="ขอเพลงเศร้าๆหน่อย",
+        previous_assistant_message="แนะนำเพลง \"โปรดส่งใครมารักฉันที\" ครับ",
+    )
 
 
 def test_generate_plan_with_unknown_session_id_passes_none_page(client):
@@ -1057,6 +1081,7 @@ def test_generate_plan_with_unknown_session_id_passes_none_page(client):
     assert resp.status_code == 200
     mock_generate_plan.assert_awaited_once_with(
         "https://example.com", "ทดสอบ", provider=None, page=None, site_manual_context="",
+        previous_user_goal="", previous_assistant_message="",
     )
 
 

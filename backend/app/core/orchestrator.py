@@ -7,6 +7,7 @@ finish_task(false) ก่อนเวลาอันควร (ด้านล�
 
 import asyncio
 import base64
+import re
 import sys
 import time
 from typing import Awaitable, Callable, Optional
@@ -141,9 +142,37 @@ _PREMATURE_VALIDATION_ERROR_NUDGE_TEMPLATE = (
 # invalid] เป็นชั้นสำรองสำหรับเว็บที่ไม่ได้ใช้ ARIA (พบบ่อยมาก) — .oxd-input-field-error-
 # message เจาะจง OrangeHRM ตรงๆ (user รายงานปัญหานี้มาจากเว็บนี้โดยตรง) :not(:empty) กัน
 # นับ element placeholder ที่ framework render ทิ้งไว้เสมอแต่ว่างอยู่ตอนไม่มี error จริง
+#
+# W20 (Task12, "UI Validation Error Detection"): ยืนยันด้วยการ trigger validation error
+# จริงบน opensource-demo.orangehrmlive.com (กรอกรหัสผ่านอ่อนในฟอร์ม Change Password) — ข้อความ
+# error จริง ("Should have at least 7 characters") อยู่ใน
+# `<span class="oxd-text oxd-text--span oxd-input-field-error-message oxd-input-group__message">`
+# ซึ่ง .oxd-input-field-error-message (มีอยู่แล้ว) แมตช์อยู่แล้วจริงๆ — เพิ่ม
+# .oxd-input-group__message/.text-danger/.invalid-feedback/.oxd-input--error เป็นชั้นสำรอง
+# เพิ่มเติมสำหรับเว็บอื่นที่อาจไม่มี class "error"/"invalid" ติดมาด้วย (Bootstrap ใช้
+# .text-danger/.invalid-feedback เป็นชื่อ class มาตรฐานของตัวเอง ไม่มีคำว่า error/invalid
+# ปนเลย ตัว [class*=...] ด้านบนจะจับไม่ได้ถ้าไม่เพิ่มตรงๆ)
 _VALIDATION_ERROR_SELECTOR = (
     '[role="alert"]:not(:empty), [class*="error" i]:not(:empty), '
-    '[class*="invalid" i]:not(:empty), .oxd-input-field-error-message'
+    '[class*="invalid" i]:not(:empty), .oxd-input-field-error-message, '
+    '.oxd-input-group__message, .text-danger, .invalid-feedback, .oxd-input--error'
+)
+
+# W20 (Task12 follow-up, บั๊กจริงที่พบ live บน opensource-demo.orangehrmlive.com): หน้า login
+# ของเว็บนี้มี `<div class="orangehrm-login-error">Username : Admin / Password : admin123</div>`
+# เป็น "คำใบ้ demo credentials" คงที่อยู่นอก <form> เสมอ ไม่เกี่ยวอะไรกับ action ที่เพิ่งทำเลย —
+# แต่ชื่อ class มีคำว่า "error" ติดมาด้วย (ตั้งชื่อผิดโดย OrangeHRM เอง) ทำให้ [class*="error" i]
+# เดิมแมตช์ผิดพลาด hard-stop guard ใหม่ (หลัง fill) ทันทีตั้งแต่ step แรกโดยไม่มี validation
+# error จริงเกิดขึ้นเลย — ยืนยันด้วย DOM จริง: element นี้ไม่ได้อยู่ใน <form class="oxd-form">
+# (closest('form') === null) ต่างจาก validation error จริงทุกตัวที่เจอมา (.oxd-input-field-
+# error-message, Bootstrap .invalid-feedback ฯลฯ) ซึ่ง render อยู่ใน <form> เสมอเพราะผูกกับ
+# input field ของฟอร์มนั้นโดยตรง — จำกัด scope การสแกนให้อยู่แค่ใน <form> เท่านั้นสำหรับ hard-
+# stop guard ใหม่ (ดู _scan_validation_errors()'s within_form param) กรอง false positive แบบ
+# นี้ทิ้งได้โดยทั่วไป ไม่ใช่ hack เฉพาะเว็บนี้เว็บเดียว — ไม่แตะ guard เดิมก่อน finish_task
+# (ยังคง scope ทั้งหน้าเหมือนเดิมทุกประการ เป็น backstop สำหรับหน้าที่ไม่มี <form> tag จริงๆ
+# เช่นบาง SPA ที่ handle submit ด้วย onClick แทน)
+_VALIDATION_ERROR_SELECTOR_IN_FORM = ", ".join(
+    f"form {part.strip()}" for part in _VALIDATION_ERROR_SELECTOR.split(",")
 )
 
 # W19 (latency): timeout สั้นๆ สำหรับ Playwright locator call ที่เป็นแค่ "เช็คสถานะ DOM
@@ -157,19 +186,26 @@ _VALIDATION_ERROR_SELECTOR = (
 _DOM_CHECK_TIMEOUT_MS = 3000
 
 
-async def _scan_validation_errors(page: Page) -> list[str]:
+async def _scan_validation_errors(page: Page, within_form: bool = False) -> list[str]:
     """สแกนหา element ที่บ่งบอกว่ามี validation error ปรากฏอยู่จริงบนหน้าปัจจุบัน (มองเห็น
     ได้ + มีข้อความ) — เรียกก่อนยอมรับ finish_task(success=true) เท่านั้น (ไม่ใช่ทุก step
     เพื่อไม่ให้เสีย overhead โดยไม่จำเป็น) คืน list ข้อความที่เจอ (สูงสุด 5 รายการ) หรือ []
     ถ้าไม่เจอเลย/error ระหว่างสแกน (ไม่ throw ให้ finish_task guard พัง — ปลอดภัยกว่าเสมอที่
     จะถือว่า "ไม่เจอ error" ถ้าสแกนไม่ได้จริงๆ ดีกว่าบล็อก finish_task ที่อาจถูกต้องอยู่แล้ว)
 
+    within_form (W20, Task12 follow-up — ดู comment เหนือ _VALIDATION_ERROR_SELECTOR_IN_FORM):
+    True = จำกัด scope ให้อยู่แค่ภายใน <form> เท่านั้น กัน false positive จาก static hint/
+    banner นอกฟอร์มที่ชื่อ class บังเอิญมีคำว่า "error"/"invalid" ปนอยู่ — ใช้กับ hard-stop
+    guard ใหม่หลัง fill/click เท่านั้น ไม่ใช่ default (False = scope ทั้งหน้าเหมือนเดิม ใช้กับ
+    guard เดิมก่อน finish_task)
+
     W19 (latency): .is_visible()/.inner_text() ของ Playwright มี actionability wait ในตัว
     ที่ default เป็น 30000ms ถ้าไม่ระบุ timeout เอง — ถ้า element ตัวไหนหลุด/detach ไประหว่าง
     ทาง (เช่น re-render พอดีตอนกำลังสแกน) การรอ default 30s ต่อ element เดียวจะทำให้
     finish_task guard นี้ช้าเกินจำเป็นไปมาก ใส่ _DOM_CHECK_TIMEOUT_MS (3s) ตรงๆ ให้ทุกจุด"""
     try:
-        locator = page.locator(_VALIDATION_ERROR_SELECTOR)
+        selector = _VALIDATION_ERROR_SELECTOR_IN_FORM if within_form else _VALIDATION_ERROR_SELECTOR
+        locator = page.locator(selector)
         count = await locator.count()
         found: list[str] = []
         for i in range(min(count, 20)):
@@ -187,6 +223,63 @@ async def _scan_validation_errors(page: Page) -> list[str]:
         return found
     except Exception:
         return []
+
+
+# W20 (Task12, "UI Validation Error Detection" — บั๊กจริงที่ user รายงาน): _scan_validation_
+# errors() เดิม (ด้านบน) ถูกเรียกแค่จุดเดียวคือก่อนยอมรับ finish_task(success=true) เท่านั้น —
+# ถ้า agent ไม่เคยเรียก finish_task เลย (แค่วน fill/click/refresh ไม่จบ ตามที่ user รายงาน)
+# guard เดิมไม่มีทางทำงานเลยตลอด task นั้น ต้องเช็คทันทีหลัง action ที่ "ยืนยันว่าจะส่งฟอร์มนี้
+# จริงๆ" ด้วย ไม่ใช่รอถึงตอน finish_task เท่านั้น
+#
+# ตอนแรกตั้งใจ "ไม่" เช็คหลัง fill (แค่ click/submit ปุ่ม Save เท่านั้น) เพราะทดสอบจริงบน
+# opensource-demo.orangehrmlive.com พบว่าฟอร์มหลายช่อง (เช่น Password + Confirm Password)
+# จะโชว์ "* Required" ให้ช่องที่ "ยังไม่ได้กรอกเลย" ควบคู่ไปกับ error ของช่องที่เพิ่งกรอกจริง —
+# hard-stop ทันทีหลัง fill ช่องแรกจะ false-positive ใส่ "Required" ของช่องถัดไปที่ยังไม่ทันกรอก
+#
+# (2026-08-06) user ขอให้ครอบคลุม fill ด้วยตามสเปคเดิม ("แก้ไขให้ครบ") — เปิดให้ fill trigger
+# เช็คนี้ด้วยแล้ว แต่แก้ false-positive เดิมด้วย _is_bare_required_message() ด้านล่าง (กรอง
+# "* Required" ล้วนๆ ทิ้งก่อน hard-stop — ช่องพี่น้องที่ยังไม่ได้กรอกไม่ใช่ปัญหาจริง) ส่วน error
+# ที่มีเนื้อหาจริง (เช่น "Should have at least 7 characters") ยัง hard-stop เหมือนเดิมทุกกรณี
+# ไม่ว่าจะเกิดจาก fill หรือ click/submit ก็ตาม — ผลคือ nudge-retry เดิมของ
+# _scan_validation_errors() (ก่อน finish_task, ดูคอมเมนต์เหนือ _MAX_PREMATURE_VALIDATION_
+# ERROR_RETRIES) แทบจะไม่มีโอกาสถูกใช้งานอีกแล้วสำหรับ error ที่เกิดจาก fill โดยตรง (hard-stop
+# นี้ดักไว้ก่อนเสมอ) — คงมันไว้เป็น backstop เฉยๆ เผื่อ error ที่โผล่จาก action type อื่นที่ไม่
+# อยู่ใน _should_check_validation_error_after_action() (เช่น select/check) หรือปุ่มที่ label
+# ไม่ match _FORM_SUBMIT_LABEL_KEYWORDS
+_FORM_SUBMIT_LABEL_KEYWORDS = (
+    "save", "submit", "update", "change password", "confirm",
+    "บันทึก", "ยืนยัน", "เปลี่ยนรหัสผ่าน", "อัปเดต", "แก้ไข",
+)
+
+# "* Required"/"Required"/"Required." ล้วนๆ ไม่มีเนื้อหาอื่น (เห็นจริงบน OrangeHRM) — ต่างจาก
+# error ที่มีเนื้อหาจริงเช่น "Should have at least 7 characters" ซึ่งต้องไม่ถูกกรองทิ้ง
+_BARE_REQUIRED_MESSAGE_RE = re.compile(r'^[\*\s]*required[\.\!]?$', re.IGNORECASE)
+
+
+def _is_bare_required_message(text: str) -> bool:
+    """True ถ้าข้อความเป็นแค่ "* Required"/"Required" เฉยๆ (ไม่มีรายละเอียดว่าค่าที่กรอกผิด
+    ยังไง) — เป็น false positive ที่โผล่ให้ช่องพี่น้องที่ "ยังไม่ได้กรอกเลย" เท่านั้น ไม่ใช่
+    ปัญหาของค่าที่เพิ่ง fill จริงๆ ต้องกรองทิ้งก่อน hard-stop"""
+    return bool(_BARE_REQUIRED_MESSAGE_RE.match((text or "").strip()))
+
+
+def _label_looks_like_form_submit(label: str) -> bool:
+    lowered = (label or "").lower()
+    return any(kw in lowered for kw in _FORM_SUBMIT_LABEL_KEYWORDS)
+
+
+def _should_check_validation_error_after_action(action_type: str, label: str) -> bool:
+    """True ถ้า action ที่เพิ่ง dispatch สำเร็จ (result.success) นี้ควรเช็ค validation error
+    ทันที — "fill" เช็คทุกครั้ง (กรอง "* Required" ล้วนๆ ทิ้งที่จุดเรียกใช้แทน ดู
+    _is_bare_required_message()) ส่วน "click"/"submit" เฉพาะตอน label ดูเป็นปุ่ม Save/Submit/
+    Confirm/Update เท่านั้น (ไม่เช็คทุก click ทั่วไป เสี่ยง false positive จาก error/alert อื่น
+    ที่ไม่เกี่ยวกับฟอร์มบนหน้าที่เพิ่ง navigate ไป)"""
+    if action_type == "fill":
+        return True
+    if action_type in ("click", "submit"):
+        return _label_looks_like_form_submit(label)
+    return False
+
 
 # W5: loop-detection guard — บางโมเดล (เจอกับ Llama บน Groq) ถึงจะถูกเตือนแล้วก็ยัง
 # วนเรียก browser_action เดิมเป๊ะๆ ซ้ำๆ (dict เดียวกันทุก field) ไม่ว่าจะสำเร็จหรือ fail
@@ -724,7 +817,7 @@ class Orchestrator:
 
     async def generate_plan(
         self, url: str, goal: str, provider: Optional[str] = None, page: Optional[Page] = None,
-        site_manual_context: str = "",
+        site_manual_context: str = "", previous_user_goal: str = "", previous_assistant_message: str = "",
     ) -> tuple[str, bool]:
         """W13: ร่างแผนคร่าวๆ (llm.generate_plan) แยกเป็นเฟสของตัวเอง ไม่ผูกกับ
         run_task() เลย — ต่างจาก confirm_plan=True เดิมที่ต้อง acquire/launch/connect
@@ -742,7 +835,17 @@ class Orchestrator:
         เดาจาก page_text อย่างเดียว) ว่างเปล่า (default) ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้
 
         คืนค่าเป็น tuple (plan_text, is_qa) — ถ้า Intent เป็น qa_summary จะคืน (" ", True)
-        เพื่อให้ frontend ข้ามหน้าต่างอนุมัติ PLAN แล้วตอบคำถามได้ทันที"""
+        เพื่อให้ frontend ข้ามหน้าต่างอนุมัติ PLAN แล้วตอบคำถามได้ทันที
+
+        previous_user_goal/previous_assistant_message (W20, "Context-Aware Implicit
+        Execution"): เทิร์นก่อนหน้าล่าสุดในเซสชันเดียวกัน (ถ้ามี — ผู้เรียกส่งมาจาก
+        conversation history ฝั่ง client เอง ดู routes.py::generate_plan endpoint docstring)
+        ส่งต่อเข้า llm.generate_plan() ตรงๆ ให้ LLM แก้คำอ้างอิงกำกวมอย่าง "เปิดให้หน่อย"/
+        "play it" ได้ แม้เทิร์นก่อนหน้าจะเป็น general-chat ล้วนๆ ที่ไม่เคยแตะ browser/session
+        เลยก็ตาม (route_multi_turn_strategy/session.extracted_memory ด้านล่างจับ entity จาก
+        เทิร์นแบบนี้ไม่ได้เลย เพราะมันทำงานเฉพาะกับ session ที่มี page เปิดอยู่จริงและเคยมี
+        read_page_data สำเร็จเท่านั้น) ว่างเปล่าได้ทั้งคู่ (default) ถ้าเป็นเทิร์นแรกของ
+        session หรือไม่มีเทิร์นก่อนหน้าจริงๆ"""
         resolved_provider = provider or settings.llm_provider
         client, model, _, _, _ = self._llm_backend(resolved_provider)
         page_text = ""
@@ -766,6 +869,7 @@ class Orchestrator:
             page_text = f"[คู่มือเว็บไซต์ที่เรียนรู้มาก่อนแล้ว]\n{site_manual_context}\n\n{page_text}".strip()
         plan_text = await llm.generate_plan(
             client, model, goal, page_text, resolved_provider, current_url=current_url_for_plan,
+            previous_user_goal=previous_user_goal, previous_assistant_message=previous_assistant_message,
         )
         return plan_text, False
 
@@ -1820,6 +1924,52 @@ class Orchestrator:
                     if verbose:
                         print(f"[human-denied] {final_message}", flush=True)
                     break
+
+                # W20 (Task12, "UI Validation Error Detection" — Early Termination
+                # Guardrail, บั๊กจริงที่ user รายงาน): เช็คทันทีถ้า action ที่เพิ่งสำเร็จนี้
+                # (fill ทุกครั้ง หรือ click/submit ปุ่ม Save/Submit/Confirm/Update — ดู
+                # _should_check_validation_error_after_action ด้านบนสุดของไฟล์) ทำให้มี
+                # validation error ปรากฏอยู่บนหน้าปัจจุบันจริง — ต่างจาก
+                # _scan_validation_errors() เดิม (เรียกอยู่แล้วด้านล่างก่อนยอมรับ
+                # finish_task(success=true) เท่านั้น) ตัวนี้ทำงานได้แม้ agent จะไม่เคยเรียก
+                # finish_task เลยสักครั้ง (แค่วน fill/click/refresh ไม่จบตามที่ user รายงาน —
+                # guard เดิมไม่มีทางถูกเรียกเลยในสถานการณ์นั้น) STOP ทันที ไม่ลอง
+                # go_back()/refresh/retry ต่อเด็ดขาด (ต่างจาก guard เดิมที่ยังให้ nudge-retry
+                # ได้ 2 ครั้งก่อนตอน finish_task) เพราะ validation error พวกนี้ต้องแก้ด้วยการ
+                # เปลี่ยนค่าที่กรอกจริงๆ เท่านั้น ไม่ใช่สิ่งที่ retry/refresh เดิมซ้ำแล้วจะหายไป
+                # เอง — กรอง "* Required" ล้วนๆ ทิ้งก่อน (ดู _is_bare_required_message()) กัน
+                # false positive จากช่องพี่น้องที่ยังไม่ได้กรอก แล้วคัดลอกข้อความ error ตรงตามที่
+                # ระบบแสดงจริงส่งกลับให้ user เห็นเป๊ะๆ
+                #
+                # (2026-08-06) user ขอเพิ่ม: แทนที่จะจบด้วยการรายงาน error เฉยๆ ให้ข้อความชวน
+                # user ตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน — page/session (ตอน session_id ผูก
+                # กับ conversation) ยังเปิดค้างอยู่หลัง break นี้เหมือน "human-denied" break
+                # ด้านบน ทำให้ turn ถัดไปของ user ใน conversation เดียวกันไหลเข้า
+                # generate_plan() พร้อม previous_assistant_message = ข้อความนี้ (กลไก
+                # "Context-Aware Implicit Execution" ที่มีอยู่แล้ว) แล้ว perceive หน้าเดิมที่
+                # ฟอร์มยังค้างอยู่ได้ต่อ — LLM planner จึงกรอกค่าใหม่แทนที่ในช่องเดิมแล้วส่งฟอร์ม
+                # ต่อให้ได้เองโดยไม่ต้องมี infrastructure ใหม่ (ไม่ใช่ ask_user_func เดิมที่รองรับ
+                # แค่ approve/deny — เจตนาจริงคือ "รับ input ใหม่จาก user" ซึ่งคือข้อความ chat
+                # ตอบกลับปกติ ไม่ใช่ permission prompt)
+                if result.success and _should_check_validation_error_after_action(
+                    tool_input.get("type"), action_label,
+                ):
+                    validation_errors = [
+                        e for e in await _scan_validation_errors(page, within_form=True)
+                        if not _is_bare_required_message(e)
+                    ]
+                    if validation_errors:
+                        errors_text = " | ".join(f"'{e}'" for e in validation_errors)
+                        success = False
+                        completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
+                        final_message = (
+                            "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
+                            f"ของระบบ: {errors_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
+                            "ระบบจะกรอกค่านั้นแทนที่ในช่องเดิมแล้วดำเนินการต่อให้ทันที"
+                        )
+                        if verbose:
+                            print(f"[validation-error] {final_message}", flush=True)
+                        break
 
                 # W9[A] vision fallback (Gemini เท่านั้น): action ที่ต้องพึ่ง element
                 # visibility ล้มเหลวซ้ำแม้ retry ครบแล้ว (actions.py::
