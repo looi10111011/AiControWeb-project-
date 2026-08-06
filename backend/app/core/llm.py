@@ -38,10 +38,12 @@ W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) �
 """
 
 import asyncio
+import base64
 import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -304,6 +306,23 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ประการ) ทำให้เสีย step ไปเปล่าๆ รอหน้าเปลี่ยนที่จะไม่มีวันเกิดขึ้น ให้ข้ามไปทำ action ถัดไป
   ที่เกี่ยวกับ goal บนหน้าปัจจุบันได้เลย (element นี้ "อยู่แล้ว" ตามที่ต้องการ ไม่ต้องกดซ้ำ) —
   ยกเว้น goal สั่งให้ "รีเฟรช"/"เปิดใหม่" ชัดเจนเท่านั้นถึงคลิกซ้ำได้
+- W20 ("No Redundant Search Submission"): ตอนส่งคำค้นหา/คำกรองที่พิมพ์ไว้ในช่อง ให้เลือก
+  วิธีเดียวเท่านั้นระหว่าง (ก) type: "press_key" key: "Enter" ที่ index ของช่อง input นั้น
+  หรือ (ข) type: "click" ที่ปุ่ม "Search"/"ค้นหา" — ห้ามทำทั้งสองอย่างติดกันสำหรับคำค้นหา
+  เดียวกันเด็ดขาด (ยิง Enter แล้วยังไปคลิกปุ่ม Search ซ้ำอีกที ถือเป็น submit ซ้ำซ้อนที่อาจ
+  ค้นหาซ้ำ/รีเซ็ตผลลัพธ์เดิม) — หลังจากยิง press_key Enter แล้ว ให้ไปดูผลลัพธ์การค้นหาที่
+  หน้าเว็บเปลี่ยนไปทันที ข้าม step "คลิกปุ่ม Search" ที่วางแผนไว้ก่อนหน้าไปเลยโดยอัตโนมัติ
+- W20 ("Account Security & Password Actions", HIGHEST PRIORITY): goal ที่เกี่ยวกับ "เปลี่ยน
+  รหัสผ่าน"/"แก้ไขข้อมูลโปรไฟล์ของฉัน"/"ตั้งค่าความปลอดภัย" ของ user ที่ login อยู่ปัจจุบัน —
+  ห้ามคลิกเมนู "My Info" ในแถบเมนูหลัก (sidebar) เด็ดขาด (เมนูนี้มักเป็นข้อมูล directory ของ
+  พนักงาน ไม่ใช่การตั้งค่าบัญชีผู้ใช้ระบบ) ให้ทำตามลำดับนี้เสมอแทน: (1) คลิก element ที่เป็น
+  User Dropdown/Profile Menu มุมขวาบนของหน้าเว็บ (มักโชว์ avatar/ชื่อผู้ใช้ที่ login อยู่) (2)
+  รอให้ dropdown menu แสดงผล แล้วดู indexed elements ใหม่ (3) คลิก "Change Password" หรือ
+  "Profile Settings" จากตัวเลือกที่โผล่มาในนั้น — sidebar menu ใช้สำหรับ navigation ทั่วไป
+  เท่านั้น ส่วน dropdown มุมขวาบนใช้สำหรับการตั้งค่าที่ผูกกับ session/user คนนี้โดยเฉพาะ ถ้าเผลอ
+  ลองเส้นทาง "My Info" ไปแล้วไม่เจอฟังก์ชันเปลี่ยนรหัสผ่านที่ต้องการ ให้รับรู้ทันทีว่าผิดทาง
+  แล้ว fallback ไปทำตามลำดับ mandatory protocol นี้แทน ห้ามวนกลับไปลองเส้นทางเดิมที่ล้มเหลว
+  ซ้ำอีก
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -2523,6 +2542,18 @@ _MATH_EXPRESSION_RE = re.compile(
 )
 
 
+def goal_mentions_web_action(goal: str) -> bool:
+    """True ถ้า goal มีคำที่บ่งบอกว่าต้องการ browser action จริงๆ (เว็บ/คลิก/ค้นหา/นำทาง/ฯลฯ
+    — ดู _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS) — factored ออกมาจาก is_general_chat_query()
+    ด้านล่างเป็นฟังก์ชัน public แยกต่างหาก เพราะ routes.py ต้องใช้เช็คเดียวกันนี้ตรงๆ ด้วย
+    (ดู _run_with_resolved_browser()/generate_plan() ส่วน "file-chat memory follow-up":
+    เทิร์นที่ไม่ได้แนบไฟล์ใหม่มา แต่เคยแนบไว้ในเทิร์นก่อนหน้าของ session เดียวกัน ต้องเช็คคำ
+    ชุดเดียวกันนี้ก่อนตัดสินใจว่าเป็นคำถามต่อยอดจากไฟล์เดิม หรือ user ต้องการ browser action
+    ใหม่จริงๆ)"""
+    lower = (goal or "").strip().lower()
+    return any(kw in lower for kw in _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS)
+
+
 def is_general_chat_query(goal: str) -> bool:
     """True ถ้า goal เป็นคำถามทั่วไป/ทักทาย/ถามวันเวลา/คำนวณเลข/ขอคำแนะนำจากความรู้ทั่วไป
     ที่ตอบได้โดยไม่ต้องแตะ browser เลยแม้แต่นิดเดียว — deterministic ล้วนๆ ไม่เรียก LLM
@@ -2534,9 +2565,9 @@ def is_general_chat_query(goal: str) -> bool:
     stripped = (goal or "").strip()
     if not stripped:
         return False
-    lower = stripped.lower()
-    if any(kw in lower for kw in _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS):
+    if goal_mentions_web_action(stripped):
         return False
+    lower = stripped.lower()
     if any(p in lower for p in _GENERAL_CHAT_TIME_DATE_PATTERNS):
         return True
     if any(
@@ -2549,6 +2580,88 @@ def is_general_chat_query(goal: str) -> bool:
     if _MATH_EXPRESSION_RE.match(stripped) and any(ch.isdigit() for ch in stripped):
         return True
     return False
+
+
+_CONTEXT_INSPECTION_PREFIX = "/context"
+
+
+def is_context_inspection_command(goal: str) -> bool:
+    """W20 (MODULE 0 "Special Command Interceptor"): True ถ้า goal ขึ้นต้นด้วยหรือมีคำสั่ง
+    "/context" ปน — ตรวจก่อนทุก check อื่นเสมอ (ก่อนแม้แต่ attached_file/
+    is_general_chat_query) เพราะ /context คือ debug/inspection mode ที่ user ต้องการ "ดูว่า
+    agent เข้าใจคำสั่งว่าอะไร" โดยไม่ต้องการให้ลงมือทำจริงไม่ว่ากรณีใด (ไม่เปิด browser, ไม่
+    parse ไฟล์, ไม่เรียก external API ใดๆ) — เช็คแบบ "contains" ไม่ใช่แค่ "startswith"
+    ตามสเปค (เผื่อ user พิมพ์นำหน้าด้วยคำอื่นก่อน เช่น "ช่วย /context หน่อย")"""
+    return _CONTEXT_INSPECTION_PREFIX in (goal or "").strip().lower()
+
+
+def strip_context_inspection_command(goal: str) -> str:
+    """ตัดคำสั่ง "/context" ออกจาก goal เหลือแค่คำสั่งจริงที่ user ต้องการให้วิเคราะห์ —
+    ใช้ก่อนส่งเข้า context_inspection_reply() กันคำว่า "/context" เองไปปนกับคำสั่งจริงตอน
+    LLM วิเคราะห์ Goal/Extracted Parameters"""
+    stripped = (goal or "").strip()
+    lower = stripped.lower()
+    idx = lower.find(_CONTEXT_INSPECTION_PREFIX)
+    if idx == -1:
+        return stripped
+    return (stripped[:idx] + stripped[idx + len(_CONTEXT_INSPECTION_PREFIX):]).strip()
+
+
+# W20 (MODULE 0): system prompt บังคับรูปแบบผลลัพธ์ตามสเปคเป๊ะๆ (หัวข้อ/emoji/ภาษาไทย) —
+# ไม่ใช่ format ที่โมเดลจะเดาได้เองแม่นยำพอ ต้องล็อกด้วย system prompt ตรงๆ พร้อมตัวอย่าง
+# โครงสร้างชัดเจน ห้ามลงมือทำ action ใดๆ จริง (แค่ "อธิบายความเข้าใจ + แผนที่ตั้งใจจะทำ"
+# เท่านั้น ไม่ใช่ลงมือทำจริง)
+_CONTEXT_INSPECTION_SYSTEM_PROMPT = (
+    "คุณคือ AI agent ที่กำลังอยู่ใน CONTEXT_INSPECTION_MODE — user ต้องการดูว่าคุณเข้าใจ"
+    "คำสั่งของเขาว่าอะไร และวางแผนจะตอบอย่างไร โดย \"ห้ามลงมือทำจริง\" เด็ดขาด (ห้ามคลิก/"
+    "พิมพ์/นำทางเว็บ, ห้ามอ่าน/parse ไฟล์จริง, ห้ามเรียก API ภายนอกใดๆ) แค่วิเคราะห์คำสั่ง"
+    "แล้วอธิบายความเข้าใจ + แผนที่ตั้งใจจะใช้เท่านั้น\n\n"
+    "ตอบเป็นภาษาไทยตามโครงสร้างนี้เป๊ะๆ ห้ามเพิ่ม/ตัดหัวข้อ ห้ามใส่ markdown อื่นนอกจากนี้:\n\n"
+    "🎯 [ความเข้าใจของ Agent ต่อคำสั่งนี้]\n"
+    "- Goal: (อธิบายว่าผู้ใช้ต้องการให้ทำอะไร เป้าหมายหลักคืออะไร)\n"
+    "- Target System: (ระบุว่าเป็นงาน Browser, งานไฟล์เอกสาร หรืองานสนทนาทั่วไป)\n"
+    "- Extracted Parameters: (ระบุตัวแปรสำคัญ เช่น คำค้นหา, ลำดับ index ที่ต้องการ, ชื่อไฟล์)\n\n"
+    "💡 [แนวทางการตอบคำถาม / Plan ที่จะใช้ดำเนินการ]\n"
+    "- Strategy: (สรุปขั้นตอนสั้นๆ ที่ Agent ตั้งใจจะทำเพื่อหาคำตอบ)\n"
+    "- Expected Output: (ระบุรูปแบบคำตอบที่ Agent เตรียมจะส่งกลับให้ผู้ใช้)\n"
+    "- Data Source: (ระบุว่าจะดึงข้อมูลจาก Chat History, Live DOM หรือ File Memory)"
+)
+
+
+async def context_inspection_reply(client, model: str, user_input: str, provider: str) -> str:
+    """W20 (MODULE 0): วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context แล้วคืนคำอธิบายตามฟอร์แมต
+    Thai structured ที่ตายตัว — ไม่แตะ browser/session/pool/file parser เลย (เหมือน
+    chat_response/answer_file_query ด้านบนทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน)
+
+    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error"""
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model, max_tokens=512, system=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_input}],
+            )
+            return "".join(b.text for b in response.content if b.type == "text").strip()
+        if provider == "groq":
+            response = await client.chat.completions.create(
+                model=model, max_tokens=512,
+                messages=[
+                    {"role": "system", "content": _CONTEXT_INSPECTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_input},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        if provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model, system_instruction=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": user_input}]}],
+            )
+            return (response.text or "").strip()
+        return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+    except Exception as e:
+        print(f"⚠️ context_inspection_reply error: {e}", flush=True)
+        return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
 
 
 _CHAT_RESPONSE_SYSTEM_PROMPT = (
@@ -2592,6 +2705,147 @@ async def chat_response(client, model: str, user_input: str, provider: str, curr
         return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
     except Exception as e:
         print(f"⚠️ chat_response error: {e}", flush=True)
+        return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
+
+
+# --- pdf/xlsx: "Attached File Query" — user แนบไฟล์ PDF/XLSX เข้ามาตรงๆ ผ่าน composer
+# (ต่างจาก rag/ingestion.py::ingest_manual ที่เป็นการอัปโหลด manual ไว้ล่วงหน้าเพื่อ
+# chunk+embed เข้า ChromaDB — อันนี้เป็น one-shot query เดียว ไม่มี RAG/chunking เลย)
+# ดู routes.py::_file_query_result สำหรับจุดต่อสาย (short-circuit เหมือน chat_response
+# ด้านบน ไม่แตะ browser/session/pool เลย)
+_ANSWER_FILE_QUERY_SYSTEM_PROMPT = (
+    "คุณคือผู้ช่วย AI ที่อ่านเอกสารที่ user แนบมาให้ แล้วตอบคำถาม/สรุป/ดึงข้อมูลตามที่ user "
+    "ขอ โดยอ้างอิงจาก \"เนื้อหาเอกสาร\" ด้านล่างเท่านั้น ห้ามเดาหรือแต่งข้อมูลที่ไม่มีในเอกสาร "
+    "— ถ้าสิ่งที่ user ถามหาไม่มีอยู่ในเอกสารจริงๆ ให้บอกตรงๆ ว่าไม่พบ ตอบแบบกระชับ เป็น"
+    "ธรรมชาติ ไม่ต้องมี markdown"
+)
+
+# ไม่มี RAG/chunking ในฟีเจอร์นี้ (ดู comment ด้านบน) — จำกัดความยาวเนื้อหาที่ส่งเข้า LLM
+# ตรงๆ กันไฟล์ใหญ่มากทำให้ context ล้น/ค่าใช้จ่ายพุ่ง เอกสารที่ยาวเกินนี้จะถูกตัดท้ายทิ้ง
+# พร้อมบอก LLM ตรงๆ ว่าเนื้อหาไม่ครบ (กันตอบราวกับเห็นทั้งไฟล์ทั้งที่จริงเห็นแค่บางส่วน)
+_ANSWER_FILE_QUERY_MAX_CHARS = 40_000
+
+
+async def answer_file_query(
+    client, model: str, goal: str, file_text: str, filename: str, provider: str,
+) -> str:
+    """ตอบคำถาม/สรุป/ดึงข้อมูลจากไฟล์ PDF/XLSX ที่ user แนบมา — ไม่แตะ browser/DOM เลย
+    (เหมือน chat_response ด้านบนทุกประการ แค่มีเนื้อหาไฟล์เป็น context เพิ่ม)
+
+    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error (เหมือน chat_response)"""
+    truncated = len(file_text) > _ANSWER_FILE_QUERY_MAX_CHARS
+    content = file_text[:_ANSWER_FILE_QUERY_MAX_CHARS]
+    truncation_note = (
+        "\n\n[หมายเหตุ: เอกสารยาวเกินไป ตัดแสดงแค่บางส่วนด้านบน ไม่ใช่เนื้อหาทั้งหมดของไฟล์]"
+        if truncated else ""
+    )
+    prompt = (
+        f"ชื่อไฟล์: {filename}\n\nเนื้อหาเอกสาร:\n{content}{truncation_note}\n\n"
+        f"คำขอจากผู้ใช้: {goal}"
+    )
+    try:
+        if provider == "anthropic":
+            response = await client.messages.create(
+                model=model, max_tokens=1024, system=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return "".join(b.text for b in response.content if b.type == "text").strip()
+        if provider == "groq":
+            response = await client.chat.completions.create(
+                model=model, max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": _ANSWER_FILE_QUERY_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        if provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model, system_instruction=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            return (response.text or "").strip()
+        return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+    except Exception as e:
+        print(f"⚠️ answer_file_query error: {e}", flush=True)
+        return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
+
+
+# pdf/xlsx (ต่อ): รูปภาพที่ user แนบมาผ่าน composer เดียวกัน — ต่างจาก answer_file_query()
+# ด้านบน (extract เป็น text ก่อนด้วย load_manual_bytes()) เพราะรูปภาพไม่มี "text" ให้ extract
+# ล่วงหน้า ต้องส่ง base64 ตรงๆ ให้ LLM แบบ multimodal — ทำ 3 provider เต็มรูปแบบ (ไม่ใช่แค่
+# Gemini แบบ describe_screenshot() ด้านบน) เพราะ endpoint นี้ user เลือก provider เองได้ผ่าน
+# request ปกติ ต่างจาก vision fallback ที่เป็น internal retry mechanism เดียวที่ scope แคบไว้
+# ตั้งใจได้
+_IMAGE_EXTENSION_MIME_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
+
+_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT = (
+    "คุณคือผู้ช่วย AI ที่ดูภาพที่ user แนบมาให้ แล้วตอบคำถาม/อธิบาย/สรุปสิ่งที่เห็นในภาพตามที่ "
+    "user ขอ โดยอ้างอิงจากสิ่งที่เห็นในภาพจริงเท่านั้น ห้ามเดาหรือแต่งสิ่งที่ไม่เห็นในภาพ ตอบแบบ"
+    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown"
+)
+
+
+async def answer_image_query(
+    client, model: str, goal: str, image_bytes: bytes, filename: str, provider: str,
+) -> str:
+    """ตอบคำถามเกี่ยวกับรูปภาพที่ user แนบมาผ่าน composer — ไม่แตะ browser/DOM เลย (เหมือน
+    answer_file_query() ด้านบนทุกประการ แค่ input เป็นรูปภาพ base64 ตรงๆ แทน text ที่ extract
+    มาแล้ว) ดู routes.py::_file_query_result สำหรับจุดต่อสาย (แยกสาขาตามนามสกุลไฟล์ว่าเป็น
+    รูปภาพหรือเอกสาร ก่อนจะเลือกเรียกฟังก์ชันนี้หรือ answer_file_query())
+
+    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error (เหมือน answer_file_query)"""
+    mime_type = _IMAGE_EXTENSION_MIME_TYPES.get(Path(filename).suffix.lower(), "image/png")
+    prompt = f"คำขอจากผู้ใช้เกี่ยวกับภาพที่แนบมา (ชื่อไฟล์: {filename}): {goal}"
+    try:
+        if provider == "anthropic":
+            image_b64 = base64.b64encode(image_bytes).decode("ascii")
+            response = await client.messages.create(
+                model=model, max_tokens=1024, system=_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": image_b64}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            )
+            return "".join(b.text for b in response.content if b.type == "text").strip()
+        if provider == "groq":
+            image_b64 = base64.b64encode(image_bytes).decode("ascii")
+            response = await client.chat.completions.create(
+                model=model, max_tokens=1024,
+                messages=[
+                    {"role": "system", "content": _ANSWER_IMAGE_QUERY_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
+                        ],
+                    },
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        if provider == "gemini":
+            gemini_model = client.GenerativeModel(
+                model_name=model, system_instruction=_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT,
+            )
+            response = await gemini_model.generate_content_async(
+                contents=[{
+                    "role": "user",
+                    "parts": [{"text": prompt}, {"mime_type": mime_type, "data": image_bytes}],
+                }],
+            )
+            return (response.text or "").strip()
+        return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+    except Exception as e:
+        print(f"⚠️ answer_image_query error: {e}", flush=True)
         return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
 
 

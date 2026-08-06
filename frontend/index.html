@@ -272,13 +272,20 @@
   .stop-icon-btn:hover{ filter:brightness(1.08); }
   .stop-icon-btn:disabled{ opacity:.5; cursor:not-allowed; }
 
-  /* ---- Attach-file dropdown — UI shell only, no upload/parsing wired up yet ---- */
+  /* ---- Attach-file dropdown (pdf/xlsx: wired to a real file picker now) ---- */
   .attach-wrap{ position:relative; flex-shrink:0; }
   .attach-menu{ display:none; position:absolute; bottom:calc(100% + 8px); left:0; z-index:20; min-width:220px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); padding:6px; }
   .attach-menu.open{ display:block; }
   .attach-menu-item{ width:100%; display:flex; flex-direction:column; align-items:flex-start; gap:2px; padding:8px 10px; border:none; background:none; border-radius:7px; cursor:pointer; text-align:left; color:var(--ink); font-size:13px; font-weight:600; }
   .attach-menu-item:hover{ background:var(--surface-2); }
   .attach-menu-sub{ font-size:11px; font-weight:500; color:var(--faint); }
+
+  /* ---- Attached-file chip (shown above the composer bar while a file is pending send) ---- */
+  .attach-chip-row{ display:flex; padding:0 4px 6px; }
+  .attach-chip{ display:inline-flex; align-items:center; gap:6px; background:var(--surface-2); border:1px solid var(--border); border-radius:14px; padding:4px 6px 4px 10px; font-size:12px; color:var(--ink); max-width:100%; }
+  .attach-chip-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
+  .attach-chip-remove{ flex-shrink:0; width:18px; height:18px; border-radius:50%; border:none; background:var(--border); color:var(--muted); font-size:12px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .attach-chip-remove:hover{ background:var(--critical); color:#fff; }
 
   /* ---- Log toggle (manual show/hide — see .right-rail-hidden on .main) ---- */
   .log-toggle-btn{ border:1px solid var(--border); background:var(--surface-2); color:var(--muted); font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px; cursor:pointer; flex-shrink:0; }
@@ -391,7 +398,7 @@
     <div class="col chat">
       <div class="col-header chat-header">
         <span class="eyebrow">Chat</span>
-        <input type="url" id="url" placeholder="Target URL — https://www.example.com" value="https://www.saucedemo.com/" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
+        <input type="url" id="url" placeholder="Target URL — https://www.example.com (optional)" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
         <datalist id="urlHistory"></datalist>
         <button type="button" id="btnEditUrl" class="btn-edit-url" title="Edit target URL" aria-label="Edit target URL" style="display:none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -406,18 +413,23 @@
       <div class="col-body" id="transcript"></div>
       <div class="manual-banner-wrap" id="manualBanner" style="display:none;"></div>
       <div class="composer">
+        <div class="attach-chip-row" id="attachChipRow" style="display:none;"></div>
         <div class="composer-bar">
           <div class="attach-wrap">
             <button class="icon-round-btn" id="btnAttach" title="Attach a file" aria-label="Attach a file" type="button">+</button>
             <div class="attach-menu" id="attachMenu">
-              <!-- UI shell only for now, per request — no upload/parsing wired up yet.
-                   Clicking this just closes the menu (see the [data-attach-placeholder]
-                   handler below); nothing is read, stored, or sent anywhere. -->
-              <button class="attach-menu-item" data-attach-placeholder="true" type="button">
+              <!-- pdf/xlsx: wired up for real now — clicking opens the native file picker
+                   (#fileAttachInput below); its "change" handler reads the file, base64-
+                   encodes it client-side, and stores it in `attachedFile` until the next
+                   send (see requestPlan()/approvePlanWithPayload()). Images go through the
+                   same path but are answered via llm.answer_image_query() server-side
+                   (multimodal, no text extraction) instead of load_manual_bytes(). -->
+              <button class="attach-menu-item" data-attach-file="true" type="button">
                 <span>Attach file</span>
-                <span class="attach-menu-sub">.txt · .pdf · .docx · .xlsx · image</span>
+                <span class="attach-menu-sub">.txt · .pdf · .docx · .xlsx · .csv · image</span>
               </button>
             </div>
+            <input type="file" id="fileAttachInput" accept=".txt,.pdf,.docx,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif" style="display:none;">
           </div>
           <textarea id="goal" rows="1" placeholder="e.g. add the first item to cart and checkout"></textarea>
           <button class="stop-icon-btn" id="btnStop" style="display:none;" title="Stop" aria-label="Stop task" type="button">
@@ -475,6 +487,11 @@ let planRequestInFlight = false;
 // renderTranscript() show the goal + a "Generating plan…" bubble immediately instead of
 // the composer looking unresponsive for the several seconds that LLM call actually takes.
 let planGenerating = null;  // { sessionId, goal } | null
+// pdf/xlsx: file the user picked via the composer "+" attach menu, pending submission —
+// cleared once requestPlan()/approvePlanWithPayload() actually sends it (see submitGoal()
+// callers below). Only one at a time (attaching a new file replaces it, same as the "goal"
+// textarea holding one message at a time).
+let attachedFile = null;    // { name, base64 } | null
 const runningPlans = {};     // task_id -> plan text, set right when execute_plan succeeds so the
                               // approved plan stays visible in the chat while the task is still
                               // running (task.result.plan only exists once it's done)
@@ -953,7 +970,7 @@ async function killSession(convId) {
   // 7. ถ้ากำลังดู conversation นี้อยู่ ให้ reset การเลือก
   if (selectedConvId === convId) {
     setSelectedConvId(null);
-    $("url").value = "https://www.saucedemo.com/";
+    $("url").value = "";
     $("goal").value = "";
     $("composerError").textContent = "";
     learnProgress = null;
@@ -975,10 +992,15 @@ async function requestPlan() {
   const url = $("url").value.trim();
   const goal = $("goal").value.trim();
   $("composerError").textContent = "";
-  if (!url || !goal) {
-    $("composerError").textContent = "Please provide both a target URL and a goal.";
+  if (!goal) {
+    $("composerError").textContent = "Please provide a goal.";
     return;
   }
+  // A target URL is optional now — general chat, attached-file Q&A, and memory-buffer
+  // follow-ups (see llm.is_general_chat_query()/route_multi_turn_strategy() and
+  // routes.py::_run_with_resolved_browser/generate_plan) never touch req.url at all, and
+  // continuing a conversation that started without one keeps the field locked empty (see
+  // W_urllock below) — leaving it blank here just lets the backend decide.
   rememberUrl(url);
   if (pendingPlan) {
     $("composerError").textContent = "Approve or cancel the pending plan before requesting a new one.";
@@ -1011,6 +1033,12 @@ async function requestPlan() {
     tab_reuse_policy: $("useUserBrowser").checked ? $("tabReusePolicy").value : null,
   };
   planRequestInFlight = true;
+  // pdf/xlsx: capture+clear the pending attachment now, same timing as the goal textarea
+  // below — the plan/qa flow that follows carries this local copy through, not the
+  // (now-cleared) global, so a new attachment started mid-request can't bleed in.
+  const currentAttachedFile = attachedFile;
+  attachedFile = null;
+  renderAttachedFileChip();
   // W_instant: render the goal + a "Generating plan…" bubble right away — selecting this
   // conversation now (even though no task/pendingPlan exists yet) so it renders in the
   // right thread and, for a brand-new chat, so it doesn't look like nothing happened.
@@ -1023,12 +1051,18 @@ async function requestPlan() {
     const r = await fetch(API + "/api/generate_plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, goal, provider: requestParams.provider, session_id: sessionId }),
+      body: JSON.stringify({
+        url, goal, provider: requestParams.provider, session_id: sessionId,
+        attached_file_name: currentAttachedFile ? currentAttachedFile.name : null,
+        attached_file_content_base64: currentAttachedFile ? currentAttachedFile.base64 : null,
+      }),
     });
     if (!r.ok) {
       const err = await r.text();
       $("composerError").textContent = "Failed to generate plan: " + err;
       $("goal").value = goal;
+      attachedFile = currentAttachedFile;
+      renderAttachedFileChip();
       return;
     }
     const res = await r.json();
@@ -1038,7 +1072,9 @@ async function requestPlan() {
     if (isQa) {
       pendingPlan = null;
       planGenerating = null;
-      await approvePlanWithPayload({ sessionId, url, goal, planDraft: "", requestParams });
+      await approvePlanWithPayload({
+        sessionId, url, goal, planDraft: "", requestParams, attachedFile: currentAttachedFile,
+      });
       return;
     }
 
@@ -1062,7 +1098,7 @@ async function requestPlan() {
 async function approvePlanWithPayload(planPayload) {
   const {
     sessionId, url, goal, planDraft, requestParams,
-    originalPlanText, source, templateId, slotValues, steps,
+    originalPlanText, source, templateId, slotValues, steps, attachedFile: fileToSend,
   } = planPayload;
   // W_urllock: this turn is actually starting now — re-lock the URL field (renderTopbar()
   // will sync it to the real value once refreshTasks() picks up the new task below), even
@@ -1091,6 +1127,8 @@ async function approvePlanWithPayload(planPayload) {
     template_id: useFastpath ? templateId : null,
     slot_values: useFastpath ? slotValues : null,
     steps: useFastpath ? steps : null,
+    attached_file_name: fileToSend ? fileToSend.name : null,
+    attached_file_content_base64: fileToSend ? fileToSend.base64 : null,
   };
   try {
     const r = await fetch(API + "/api/execute_plan", {
@@ -2033,16 +2071,61 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---------------- Attach-file menu (composer "+") ----------------
-// UI shell only, per request — reading/uploading a file isn't implemented yet. The
-// menu item's click handler below just closes the menu; nothing is read, stored, or
-// sent anywhere yet.
+// pdf/xlsx: reads the picked file client-side (FileReader -> base64), stores it in
+// `attachedFile` until the next send. See requestPlan()/approvePlanWithPayload() for
+// where it gets threaded into the request body, and renderAttachedFileChip() for the
+// small removable chip shown above the composer bar while one is pending.
 $("btnAttach").addEventListener("click", (e) => {
   e.stopPropagation();
   $("attachMenu").classList.toggle("open");
 });
 // No stopPropagation on the menu itself (unlike settingsPanel) — its one menu item is
-// supposed to close the menu on click via the delegated [data-attach-placeholder]
-// handler further down, which needs the click to actually bubble to document.
+// supposed to close the menu on click via the delegated [data-attach-file] handler
+// further down, which needs the click to actually bubble to document.
+
+function renderAttachedFileChip() {
+  const row = $("attachChipRow");
+  if (!attachedFile) {
+    row.style.display = "none";
+    row.innerHTML = "";
+    return;
+  }
+  row.style.display = "flex";
+  row.innerHTML = `
+    <span class="attach-chip">
+      <span class="attach-chip-name" title="${escapeHtml(attachedFile.name)}">${escapeHtml(attachedFile.name)}</span>
+      <button type="button" class="attach-chip-remove" data-remove-attached-file="true" aria-label="Remove attached file" title="Remove">&times;</button>
+    </span>`;
+}
+
+$("fileAttachInput").addEventListener("change", () => {
+  const file = $("fileAttachInput").files && $("fileAttachInput").files[0];
+  $("attachMenu").classList.remove("open");
+  if (!file) return;
+  const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
+  const allowedExts = [".txt", ".pdf", ".docx", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".webp", ".gif"];
+  if (!allowedExts.includes(ext)) {
+    $("composerError").textContent = "Only .txt, .pdf, .docx, .xlsx, .csv, or image files can be attached.";
+    $("fileAttachInput").value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    // reader.result is "data:<mime>;base64,<data>" — the agent only needs the raw
+    // base64 payload (see routes.py::_file_query_result, which base64.b64decode()s it
+    // directly), so strip everything up to and including the first comma.
+    const base64 = String(reader.result).split(",")[1] || "";
+    attachedFile = { name: file.name, base64 };
+    $("composerError").textContent = "";
+    renderAttachedFileChip();
+  };
+  reader.onerror = () => {
+    $("composerError").textContent = "Failed to read the attached file.";
+  };
+  reader.readAsDataURL(file);
+  // Reset the input's value so picking the exact same file again still fires "change".
+  $("fileAttachInput").value = "";
+});
 document.addEventListener("click", (e) => {
   if (e.target.closest("[data-approve-plan]")) {
     approvePlan();
@@ -2079,9 +2162,14 @@ document.addEventListener("click", (e) => {
     killSession(killBtn.dataset.killConv);
     return;
   }
-  if (e.target.closest("[data-attach-placeholder]")) {
-    // Not implemented yet — see the composer "+" comment above. Just closes the menu.
+  if (e.target.closest("[data-attach-file]")) {
     $("attachMenu").classList.remove("open");
+    $("fileAttachInput").click();
+    return;
+  }
+  if (e.target.closest("[data-remove-attached-file]")) {
+    attachedFile = null;
+    renderAttachedFileChip();
     return;
   }
   const btn = e.target.closest("[data-approve]");

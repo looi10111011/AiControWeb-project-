@@ -26,6 +26,9 @@ chromadb==1.5.9
 # Doc ingestion (manual PDF/DOCX/TXT)
 pypdf==5.0.1
 python-docx==1.1.2
+# pdf/xlsx: อ่านไฟล์ XLSX ที่ user แนบเข้ามาโดยตรง (ต่างจาก 2 ตัวบนที่ใช้กับ RAG manual
+# ingestion pipeline เดิม — ดู rag/ingestion.py::load_manual_bytes())
+openpyxl==3.1.5
 
 # Testing
 pytest==8.3.3

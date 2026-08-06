@@ -29,7 +29,10 @@ from backend.app.core.browser_pool import BrowserPool
 from backend.app.core.session_registry import SessionRegistry
 from backend.app.site_learning.learn_manager import LearnManager
 
-STATIC_DIR = Path(__file__).parent / "static"
+# W20: หน้าเว็บ (index.html) ย้ายจาก backend/app/static/ ไปอยู่ที่ frontend/ (repo root)
+# แทน — แยก frontend ออกจาก backend package ให้ชัดเจนขึ้น ยังคง serve ผ่าน StaticFiles
+# ตัวเดิมทุกประการ (vanilla HTML/JS/CSS ไฟล์เดียว ไม่มี build step เพิ่ม)
+STATIC_DIR = Path(__file__).parent.parent.parent / "frontend"
 
 
 @asynccontextmanager
@@ -48,6 +51,13 @@ async def lifespan(app: FastAPI):
     # browser/session ผูกไว้ยาว (crawl ยืม/คืน browser จาก pool เองใน routes.py, ปิดทันที
     # ที่ crawl จบ) เลยไม่ต้องปิดอะไรตอน shutdown เหมือน session_registry ด้านบน
     app.state.learn_manager = LearnManager()
+    # pdf/xlsx: session_id -> {"filename", "text"} ของไฟล์ล่าสุดที่ user แนบมาใน session
+    # นี้ (ดู routes.py::_file_query_result/_file_chat_memory_reply) — ให้เทิร์นถัดไปที่ไม่ได้
+    # แนบไฟล์ใหม่มาแต่ถามต่อยอดจากไฟล์เดิมได้ (เช่น "แต่ละวันทำอะไรบ้าง") ตอบจากความจำนี้ตรงๆ
+    # โดยไม่ตกไปเปิด browser จริงทั้งที่ url ว่างเปล่า — เป็น plain dict ธรรมดา ไม่มี
+    # browser/process resource ผูกอยู่เลย ไม่ต้องปิด/cleanup ตอน shutdown เหมือน
+    # session_registry ด้านบน (แค่ text ในหน่วยความจำ)
+    app.state.file_chat_memory = {}
     yield
     await app.state.session_registry.close_all()
     await app.state.browser_pool.shutdown()

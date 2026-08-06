@@ -17,183 +17,171 @@
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > sidepanel": {
+  "หน้าแดชบอร์ดระบบ > sidepanel": {
     "css": "a.oxd-brand.toggled",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > chevron left": {
+  "หน้าแดชบอร์ดระบบ > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > Upgrade": {
+  "หน้าแดชบอร์ดระบบ > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > question lg": {
+  "หน้าแดชบอร์ดระบบ > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > OrangeHRM, Inc": {
+  "หน้าแดชบอร์ดระบบ > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > [Oxd Main Menu Item Wrapper]": {
+  "หน้าแดชบอร์ดระบบ > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าแดชบอร์ดระบบ > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > [Oxd Grid Item]": {
+  "หน้าแดชบอร์ดระบบ > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters.orangehrm-dashboard-widget",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าแดชบอร์ดหลักระบบ > [Oxd Grid Item] stopwatch": {
+  "หน้าแดชบอร์ดระบบ > [Oxd Grid Item] stopwatch": {
     "css": "button.oxd-icon-button.oxd-icon-button--solid-main.orangehrm-attendance-card-action",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > sidepanel": {
+  "จัดการผู้ใช้ระบบ > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > chevron left": {
+  "จัดการผู้ใช้ระบบ > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Upgrade": {
+  "จัดการผู้ใช้ระบบ > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Nationalities": {
+  "จัดการผู้ใช้ระบบ > Nationalities": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(5) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[5]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Corporate Branding": {
+  "จัดการผู้ใช้ระบบ > Corporate Branding": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(6) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[6]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > question lg": {
+  "จัดการผู้ใช้ระบบ > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > caret up fill": {
+  "จัดการผู้ใช้ระบบ > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Reset": {
+  "จัดการผู้ใช้ระบบ > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Search": {
+  "จัดการผู้ใช้ระบบ > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > Add": {
+  "จัดการผู้ใช้ระบบ > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > OrangeHRM, Inc": {
+  "จัดการผู้ใช้ระบบ > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Main Menu Item Wrapper]": {
+  "จัดการผู้ใช้ระบบ > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Main Menu Item Wrapper] Admin": {
+  "จัดการผู้ใช้ระบบ > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "a.oxd-main-menu-item.active",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Topbar Body Nav Tab]": {
+  "จัดการผู้ใช้ระบบ > [Oxd Topbar Body Nav Tab]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Grid Item]": {
+  "จัดการผู้ใช้ระบบ > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Table Header Cell]": {
+  "จัดการผู้ใช้ระบบ > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Table Card]": {
+  "จัดการผู้ใช้ระบบ > [Oxd Table Card]": {
     "css": "div.oxd-table-card",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Table Card] trash": {
+  "จัดการผู้ใช้ระบบ > [Oxd Table Card] trash": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(1)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการผู้ใช้ระบบ > [Oxd Table Card] pencil fill": {
+  "จัดการผู้ใช้ระบบ > [Oxd Table Card] pencil fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(2)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้าจัดการผู้ใช้ระบบ > [List Item Pattern]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้าจัดการผู้ใช้ระบบ > [List Item Pattern] 1": {
-    "css": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -377,129 +365,117 @@
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > sidepanel": {
+  "หน้าจัดการพนักงาน PIM > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > chevron left": {
+  "หน้าจัดการพนักงาน PIM > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Upgrade": {
+  "หน้าจัดการพนักงาน PIM > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Employee List": {
+  "หน้าจัดการพนักงาน PIM > Employee List": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Add Employee": {
+  "หน้าจัดการพนักงาน PIM > Add Employee": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Reports": {
+  "หน้าจัดการพนักงาน PIM > Reports": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > question lg": {
+  "หน้าจัดการพนักงาน PIM > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > caret up fill": {
+  "หน้าจัดการพนักงาน PIM > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Reset": {
+  "หน้าจัดการพนักงาน PIM > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Search": {
+  "หน้าจัดการพนักงาน PIM > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > Add": {
+  "หน้าจัดการพนักงาน PIM > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > OrangeHRM, Inc": {
+  "หน้าจัดการพนักงาน PIM > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Grid Item]": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Table Header Cell]": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Table Card]": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Table Card]": {
     "css": "div.oxd-table-card",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Table Card] pencil fill": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Table Card] pencil fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(9) > div > button:nth-of-type(1)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[9]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายชื่อพนักงาน > [Oxd Table Card] trash": {
+  "หน้าจัดการพนักงาน PIM > [Oxd Table Card] trash": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(9) > div > button:nth-of-type(2)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[9]/div[1]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "รายชื่อพนักงาน > [List Item Pattern]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "รายชื่อพนักงาน > [List Item Pattern] 1": {
-    "css": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -587,109 +563,109 @@
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > sidepanel": {
+  "Defined and Predefined Reports > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > chevron left": {
+  "Defined and Predefined Reports > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Upgrade": {
+  "Defined and Predefined Reports > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Employee List": {
+  "Defined and Predefined Reports > Employee List": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Add Employee": {
+  "Defined and Predefined Reports > Add Employee": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Reports": {
+  "Defined and Predefined Reports > Reports": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > question lg": {
+  "Defined and Predefined Reports > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > caret up fill": {
+  "Defined and Predefined Reports > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Reset": {
+  "Defined and Predefined Reports > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Search": {
+  "Defined and Predefined Reports > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > Add": {
+  "Defined and Predefined Reports > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > OrangeHRM, Inc": {
+  "Defined and Predefined Reports > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Main Menu Item Wrapper]": {
+  "Defined and Predefined Reports > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Main Menu Item Wrapper] Admin": {
+  "Defined and Predefined Reports > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Table Card]": {
+  "Defined and Predefined Reports > [Oxd Table Card]": {
     "css": "div.oxd-table-card",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Table Card] trash": {
+  "Defined and Predefined Reports > [Oxd Table Card] trash": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(3) > div > button:nth-of-type(1)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[3]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Table Card] pencil fill": {
+  "Defined and Predefined Reports > [Oxd Table Card] pencil fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(3) > div > button:nth-of-type(2)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[3]/div[1]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานพนักงาน OrangeHRM > [Oxd Table Card] file text fill": {
+  "Defined and Predefined Reports > [Oxd Table Card] file text fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(3) > div > button:nth-of-type(3)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[3]/div[1]/button[3]",
     "aria": "",
@@ -749,12 +725,6 @@
     "aria": "",
     "data_testid": ""
   },
-  "Leave List > ×": {
-    "css": "div.oxd-toast-close.oxd-toast-close--info",
-    "xpath": "/html/body[1]/div[1]/div[2]/div[1]/div[2]/div[1]",
-    "aria": "",
-    "data_testid": ""
-  },
   "Leave List > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
@@ -791,231 +761,453 @@
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > sidepanel": {
+  "หน้าสมัครการลา > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > chevron left": {
+  "หน้าสมัครการลา > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > Upgrade": {
+  "หน้าสมัครการลา > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > Apply": {
+  "หน้าสมัครการลา > Apply": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > question lg": {
+  "หน้าสมัครการลา > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > OrangeHRM, Inc": {
+  "หน้าสมัครการลา > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > [Oxd Main Menu Item Wrapper]": {
+  "หน้าสมัครการลา > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าสมัครการลา > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > [Oxd Topbar Body Nav Tab]": {
+  "หน้าสมัครการลา > [Oxd Topbar Body Nav Tab]": {
     "css": "li.oxd-topbar-body-nav-tab.--parent",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้ายื่นใบลา > [Oxd Topbar Body Nav Tab] My Leave": {
+  "หน้าสมัครการลา > [Oxd Topbar Body Nav Tab] My Leave": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > sidepanel": {
+  "รายการลาของฉัน > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > chevron left": {
+  "รายการลาของฉัน > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > Upgrade": {
+  "รายการลาของฉัน > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > My Leave": {
+  "รายการลาของฉัน > My Leave": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > question lg": {
+  "รายการลาของฉัน > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > caret up fill": {
+  "รายการลาของฉัน > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > Reset": {
+  "รายการลาของฉัน > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > Search": {
+  "รายการลาของฉัน > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > OrangeHRM, Inc": {
+  "รายการลาของฉัน > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > ×": {
-    "css": "div.oxd-toast-close.oxd-toast-close--info",
-    "xpath": "/html/body[1]/div[1]/div[2]/div[1]/div[2]/div[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้าประวัติการลาของฉัน > [Oxd Main Menu Item Wrapper]": {
+  "รายการลาของฉัน > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > [Oxd Main Menu Item Wrapper] Admin": {
+  "รายการลาของฉัน > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > [Oxd Topbar Body Nav Tab]": {
+  "รายการลาของฉัน > [Oxd Topbar Body Nav Tab]": {
     "css": "li.oxd-topbar-body-nav-tab.--parent",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > [Oxd Topbar Body Nav Tab] Apply": {
+  "รายการลาของฉัน > [Oxd Topbar Body Nav Tab] Apply": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > [Oxd Grid Item]": {
+  "รายการลาของฉัน > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าประวัติการลาของฉัน > [Oxd Table Header Cell]": {
+  "รายการลาของฉัน > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > sidepanel": {
+  "Timesheet Employee > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > chevron left": {
+  "Timesheet Employee > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > Upgrade": {
+  "Timesheet Employee > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > question lg": {
+  "Timesheet Employee > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > View": {
+  "Timesheet Employee > View": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > OrangeHRM, Inc": {
+  "Timesheet Employee > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "Timesheet Employee > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "Timesheet Employee > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Topbar Body Nav Tab]": {
+  "Timesheet Employee > [Oxd Topbar Body Nav Tab]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Table Header Cell]": {
+  "Timesheet Employee > [Oxd Table Header Cell]": {
     "css": "div.oxd-table-header-cell.oxd-padding-cell.oxd-table-th",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Table Card]": {
+  "Timesheet Employee > [Oxd Table Card]": {
     "css": "div.oxd-table-card",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าบันทึกเวลาพนักงาน > [Oxd Table Card] View": {
+  "Timesheet Employee > [Oxd Table Card] View": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(3) > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[3]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > sidepanel": {
+    "css": "a.oxd-brand",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > chevron left": {
+    "css": "button.oxd-icon-button.oxd-main-menu-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Upgrade": {
+    "css": "button.oxd-glass-button.orangehrm-upgrade-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Candidates": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Vacancies": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > question lg": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > caret up fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Reset": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[4]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Search": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[4]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > Add": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > OrangeHRM, Inc": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Main Menu Item Wrapper]": {
+    "css": "li.oxd-main-menu-item-wrapper",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Main Menu Item Wrapper] Admin": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Form Row]": {
+    "css": "div.oxd-form-row",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Table Header Cell]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Table Card]": {
+    "css": "div.oxd-table-card",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Table Card] eye fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(7) > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [Oxd Table Card] trash": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(7) > div > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [List Item Pattern]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการผู้สมัครงาน > [List Item Pattern] 1": {
+    "css": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > sidepanel": {
+    "css": "a.oxd-brand",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > chevron left": {
+    "css": "button.oxd-icon-button.oxd-main-menu-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Upgrade": {
+    "css": "button.oxd-glass-button.orangehrm-upgrade-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Candidates": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Vacancies": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > question lg": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > caret up fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Reset": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Search": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > Add": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > OrangeHRM, Inc": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Main Menu Item Wrapper]": {
+    "css": "li.oxd-main-menu-item-wrapper",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Main Menu Item Wrapper] Admin": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Grid Item]": {
+    "css": "div.oxd-grid-item.oxd-grid-item--gutters",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Table Header Cell]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Table Card]": {
+    "css": "div.oxd-table-card",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Table Card] trash": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการตำแหน่งงานว่าง > [Oxd Table Card] pencil fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[2]",
     "aria": "",
     "data_testid": ""
   },
@@ -1044,7 +1236,7 @@
     "data_testid": ""
   },
   "Personal Details > Save": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(5) > button",
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/form[1]/div[5]/button[1]",
     "aria": "",
     "data_testid": ""
@@ -1097,175 +1289,157 @@
     "aria": "",
     "data_testid": ""
   },
-  "Personal Details > [Oxd Grid Item]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(1) > div > div:nth-of-type(1)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
   "Personal Details > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(3) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Personal Details > [Oxd Table Cell]": {
-    "css": "div.oxd-table-cell.oxd-padding-cell",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Manage Performance Reviews > sidepanel": {
+  "Performance Review Search > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > chevron left": {
+  "Performance Review Search > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > Upgrade": {
+  "Performance Review Search > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > My Trackers": {
+  "Performance Review Search > My Trackers": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > Employee Trackers": {
+  "Performance Review Search > Employee Trackers": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > question lg": {
+  "Performance Review Search > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > caret up fill": {
+  "Performance Review Search > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > Reset": {
+  "Performance Review Search > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > Search": {
+  "Performance Review Search > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > OrangeHRM, Inc": {
+  "Performance Review Search > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > [Oxd Main Menu Item Wrapper]": {
+  "Performance Review Search > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > [Oxd Main Menu Item Wrapper] Admin": {
+  "Performance Review Search > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > [Oxd Grid Item]": {
+  "Performance Review Search > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters.--offset-row-2",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > [Oxd Table Header Cell]": {
+  "Performance Review Search > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Manage Performance Reviews > [Oxd Table Cell]": {
-    "css": "div.oxd-table-cell.oxd-padding-cell",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Performance Trackers ของฉัน > sidepanel": {
+  "Performance Trackers > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > chevron left": {
+  "Performance Trackers > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > Upgrade": {
+  "Performance Trackers > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > My Trackers": {
+  "Performance Trackers > My Trackers": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > Employee Trackers": {
+  "Performance Trackers > Employee Trackers": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > question lg": {
+  "Performance Trackers > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > OrangeHRM, Inc": {
+  "Performance Trackers > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > [Oxd Main Menu Item Wrapper]": {
+  "Performance Trackers > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > [Oxd Main Menu Item Wrapper] Admin": {
+  "Performance Trackers > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > [Oxd Table Header Cell]": {
+  "Performance Trackers > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Performance Trackers ของฉัน > [Oxd Table Cell]": {
+  "Performance Trackers > [Oxd Table Cell]": {
     "css": "div.oxd-table-cell.oxd-padding-cell",
     "xpath": "",
     "aria": "",
@@ -1355,213 +1529,87 @@
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > sidepanel": {
+  "Directory > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > chevron left": {
+  "Directory > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > Upgrade": {
+  "Directory > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > question lg": {
+  "Directory > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > caret up fill": {
+  "Directory > caret up fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > Reset": {
+  "Directory > Reset": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > Search": {
+  "Directory > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > OrangeHRM, Inc": {
+  "Directory > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "Directory > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "Directory > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าไดเรกทอรีพนักงาน > [Oxd Grid Item]": {
+  "Directory > [Oxd Grid Item]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div > div:nth-of-type(2) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าลบข้อมูลพนักงาน > Cancel": {
+  "Purge Employee > Cancel": {
     "css": "button.oxd-button.oxd-button--large.oxd-button--ghost.orangehrm-admin-access-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/form[1]/div[4]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าลบข้อมูลพนักงาน > Confirm": {
+  "Purge Employee > Confirm": {
     "css": "button.oxd-button.oxd-button--large.oxd-button--secondary.orangehrm-admin-access-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/form[1]/div[4]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าลบข้อมูลพนักงาน > OrangeHRM, Inc": {
+  "Purge Employee > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/p[2]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > sidepanel": {
-    "css": "a.oxd-brand",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > chevron left": {
-    "css": "button.oxd-icon-button.oxd-main-menu-button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Upgrade": {
-    "css": "button.oxd-glass-button.orangehrm-upgrade-button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Employee Claims": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > question lg": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > caret up fill": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/div[3]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Reset": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Search": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Assign Claim": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(5) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[5]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > OrangeHRM, Inc": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Main Menu Item Wrapper]": {
-    "css": "li.oxd-main-menu-item-wrapper",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Main Menu Item Wrapper] Admin": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Topbar Body Nav Tab]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Topbar Body Nav Tab] Submit Claim": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Grid Item]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(2) > div > div:nth-of-type(1)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Table Header Cell]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(8) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Table Card]": {
-    "css": "div.oxd-table-card",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Table Card] View Details": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(9) > div > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[9]/div[1]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > Back": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost.orangehrm-sm-button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[9]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Assign Claim]": {
-    "css": "div.oxd-form-row",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย > [Oxd Table Cell]": {
-    "css": "div.oxd-table-cell.oxd-padding-cell",
-    "xpath": "",
     "aria": "",
     "data_testid": ""
   },
@@ -1583,9 +1631,9 @@
     "aria": "",
     "data_testid": ""
   },
-  "Assign Claim > Assign Claim": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[1]/button[1]",
+  "Assign Claim > Employee Claims": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -1595,15 +1643,27 @@
     "aria": "",
     "data_testid": ""
   },
-  "Assign Claim > Cancel": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/form[1]/div[4]/button[1]",
+  "Assign Claim > caret up fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/div[3]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Assign Claim > Create": {
+  "Assign Claim > Reset": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Assign Claim > Search": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/form[1]/div[4]/button[2]",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Assign Claim > Assign Claim": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -1637,36 +1697,6 @@
     "aria": "",
     "data_testid": ""
   },
-  "Assign Claim > [Create Claim Request]": {
-    "css": "div.oxd-form-row",
-    "xpath": "",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Assign Claim > Employee Claims": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Assign Claim > caret up fill": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/div[3]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Assign Claim > Reset": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Assign Claim > Search": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
   "Assign Claim > [Oxd Grid Item]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(2) > div > div:nth-of-type(1)",
     "xpath": "",
@@ -1691,105 +1721,279 @@
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > sidepanel": {
+  "Submit Claim Details > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > chevron left": {
+  "Submit Claim Details > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > Upgrade": {
+  "Submit Claim Details > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > question lg": {
+  "Submit Claim Details > Submit Claim": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Submit Claim Details > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > Post": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--main",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/form[1]/div[1]/div[1]/button[1]",
+  "Submit Claim Details > Back": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost.orangehrm-sm-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[9]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > Share Photos": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/button[1]",
+  "Submit Claim Details > Cancel": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--danger.orangehrm-sm-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[9]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > Share Video": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(2)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Buzz Feed หน้าหลัก > Most Recent Posts": {
-    "css": "button.oxd-button.oxd-button--medium.oxd-button--label-warn.orangehrm-post-filters-button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[1]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Buzz Feed หน้าหลัก > Most Liked Posts": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > button:nth-of-type(2)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[2]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Buzz Feed หน้าหลัก > Most Commented Posts": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > button:nth-of-type(3)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[3]",
-    "aria": "",
-    "data_testid": ""
-  },
-  "Buzz Feed หน้าหลัก > OrangeHRM, Inc": {
+  "Submit Claim Details > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Main Menu Item Wrapper]": {
+  "Submit Claim Details > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Main Menu Item Wrapper] Admin": {
+  "Submit Claim Details > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Grid Item]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1)",
+  "Submit Claim Details > [Oxd Topbar Body Nav Tab]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Grid Item] three dots": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > li > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[2]/li[1]/button[1]",
+  "Submit Claim Details > [Oxd Topbar Body Nav Tab] My Claims": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Grid Item] chat text fill": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(1)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[3]/div[1]/button[1]",
+  "Submit Claim Details > [Submit Claim]": {
+    "css": "div.oxd-form-row",
+    "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "Buzz Feed หน้าหลัก > [Oxd Grid Item] share fill": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(2)",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[3]/div[1]/button[2]",
+  "Submit Claim Details > [Oxd Table Header Cell]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(8) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "Submit Claim Details > [Oxd Table Cell]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(4) > div > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > sidepanel": {
+    "css": "a.oxd-brand",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > chevron left": {
+    "css": "button.oxd-icon-button.oxd-main-menu-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > Upgrade": {
+    "css": "button.oxd-glass-button.orangehrm-upgrade-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > My Claims": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > question lg": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > caret up fill": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/div[3]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > Reset": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > Search": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/form[1]/div[3]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > Submit Claim": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > OrangeHRM, Inc": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Main Menu Item Wrapper]": {
+    "css": "li.oxd-main-menu-item-wrapper",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Main Menu Item Wrapper] Admin": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Topbar Body Nav Tab]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Topbar Body Nav Tab] Submit Claim": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Grid Item]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(1) > div > div:nth-of-type(1)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Table Header Cell]": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(3)",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Table Card]": {
+    "css": "div.oxd-table-card",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าจัดการการเบิกจ่าย > [Oxd Table Card] View Details": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(8) > div > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[8]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > sidepanel": {
+    "css": "a.oxd-brand",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > chevron left": {
+    "css": "button.oxd-icon-button.oxd-main-menu-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Upgrade": {
+    "css": "button.oxd-glass-button.orangehrm-upgrade-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > question lg": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Post": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--main",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/form[1]/div[1]/div[1]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Share Photos": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Share Video": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Most Recent Posts": {
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--label-warn.orangehrm-post-filters-button",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Most Liked Posts": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > button:nth-of-type(2)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[2]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > Most Commented Posts": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > button:nth-of-type(3)",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/button[3]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > OrangeHRM, Inc": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > [Oxd Main Menu Item Wrapper]": {
+    "css": "li.oxd-main-menu-item-wrapper",
+    "xpath": "",
+    "aria": "",
+    "data_testid": ""
+  },
+  "หน้าฟีดโพสต์ Buzz > [Oxd Main Menu Item Wrapper] Admin": {
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -1818,14 +2022,14 @@
     "data_testid": ""
   },
   "หน้าข้อมูลการติดต่อพนักงาน > Save": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(2) > button",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[1]/form[1]/div[2]/button[1]",
+    "css": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/form[1]/div[4]/button[1]",
     "aria": "",
     "data_testid": ""
   },
   "หน้าข้อมูลการติดต่อพนักงาน > Add": {
     "css": "button.oxd-button.oxd-button--medium.oxd-button--text",
-    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/div[1]/div[1]/button[1]",
+    "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
@@ -1860,13 +2064,13 @@
     "data_testid": ""
   },
   "หน้าข้อมูลการติดต่อพนักงาน > [Contact Details]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(1)",
+    "css": "div.oxd-form-row",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
   "หน้าข้อมูลการติดต่อพนักงาน > [Oxd Table Header Cell]": {
-    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(3) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
+    "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
@@ -1937,421 +2141,421 @@
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > sidepanel": {
+  "จัดการข้อมูลการเข้าเมือง > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > chevron left": {
+  "จัดการข้อมูลการเข้าเมือง > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > Upgrade": {
+  "จัดการข้อมูลการเข้าเมือง > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > question lg": {
+  "จัดการข้อมูลการเข้าเมือง > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > Add": {
+  "จัดการข้อมูลการเข้าเมือง > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(1) > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[5]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > OrangeHRM, Inc": {
+  "จัดการข้อมูลการเข้าเมือง > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "จัดการข้อมูลการเข้าเมือง > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "จัดการข้อมูลการเข้าเมือง > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Orangehrm Tabs Wrapper]": {
+  "จัดการข้อมูลการเข้าเมือง > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
+  "จัดการข้อมูลการเข้าเมือง > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Oxd Table Header Cell]": {
+  "จัดการข้อมูลการเข้าเมือง > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน > [Oxd Table Cell]": {
+  "จัดการข้อมูลการเข้าเมือง > [Oxd Table Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(3) > div > div:nth-of-type(2) > div > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > sidepanel": {
+  "หน้าจัดการข้อมูลงานพนักงาน > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > chevron left": {
+  "หน้าจัดการข้อมูลงานพนักงาน > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > Upgrade": {
+  "หน้าจัดการข้อมูลงานพนักงาน > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > question lg": {
+  "หน้าจัดการข้อมูลงานพนักงาน > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > OrangeHRM, Inc": {
+  "หน้าจัดการข้อมูลงานพนักงาน > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Orangehrm Tabs Wrapper]": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Oxd Grid Item]": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Oxd Grid Item]": {
     "css": "div.oxd-grid-item.oxd-grid-item--gutters",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าจัดการข้อมูลพนักงาน > [Oxd Table Header Cell]": {
+  "หน้าจัดการข้อมูลงานพนักงาน > [Oxd Table Header Cell]": {
     "css": "div.oxd-table-header-cell.oxd-padding-cell.oxd-table-th",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > sidepanel": {
+  "Salary List > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > chevron left": {
+  "Salary List > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > Upgrade": {
+  "Salary List > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > question lg": {
+  "Salary List > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > OrangeHRM, Inc": {
+  "Salary List > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "Salary List > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "Salary List > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > [Orangehrm Tabs Wrapper]": {
+  "Salary List > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
+  "Salary List > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน > [Oxd Table Header Cell]": {
+  "Salary List > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > sidepanel": {
+  "รายละเอียดรายงานพนักงาน > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > chevron left": {
+  "รายละเอียดรายงานพนักงาน > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > Upgrade": {
+  "รายละเอียดรายงานพนักงาน > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > question lg": {
+  "รายละเอียดรายงานพนักงาน > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > OrangeHRM, Inc": {
+  "รายละเอียดรายงานพนักงาน > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "รายละเอียดรายงานพนักงาน > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "รายละเอียดรายงานพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > [Orangehrm Tabs Wrapper]": {
+  "รายละเอียดรายงานพนักงาน > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
+  "รายละเอียดรายงานพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "รายงานความสัมพันธ์พนักงาน > [Oxd Table Header Cell]": {
+  "รายละเอียดรายงานพนักงาน > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(4) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > sidepanel": {
+  "หน้าจัดการคุณสมบัติพนักงาน > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > chevron left": {
+  "หน้าจัดการคุณสมบัติพนักงาน > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > Upgrade": {
+  "หน้าจัดการคุณสมบัติพนักงาน > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > question lg": {
+  "หน้าจัดการคุณสมบัติพนักงาน > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > Add": {
+  "หน้าจัดการคุณสมบัติพนักงาน > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(7) > div:nth-of-type(1) > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[7]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > OrangeHRM, Inc": {
+  "หน้าจัดการคุณสมบัติพนักงาน > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [Oxd Main Menu Item Wrapper]": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [Orangehrm Tabs Wrapper]": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [Orangehrm Tabs Wrapper] Personal Details": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [List Item Pattern]": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [List Item Pattern]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [List Item Pattern] Add": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [List Item Pattern] Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [List Item Pattern] trash": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [List Item Pattern] trash": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div > div > div:nth-of-type(7) > div > button:nth-of-type(1)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [List Item Pattern] pencil fill": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [List Item Pattern] pencil fill": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div > div > div:nth-of-type(7) > div > button:nth-of-type(2)",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[2]",
     "aria": "",
     "data_testid": ""
   },
-  "ประวัติพนักงาน: คุณสมบัติ > [Oxd Table Header Cell]": {
+  "หน้าจัดการคุณสมบัติพนักงาน > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(7) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > sidepanel": {
+  "หน้าสมาชิกพนักงาน > sidepanel": {
     "css": "a.oxd-brand",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > chevron left": {
+  "หน้าสมาชิกพนักงาน > chevron left": {
     "css": "button.oxd-icon-button.oxd-main-menu-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > Upgrade": {
+  "หน้าสมาชิกพนักงาน > Upgrade": {
     "css": "button.oxd-glass-button.orangehrm-upgrade-button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > question lg": {
+  "หน้าสมาชิกพนักงาน > question lg": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > Add": {
+  "หน้าสมาชิกพนักงาน > Add": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(1) > div > button",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[5]/div[1]/div[1]/button[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > OrangeHRM, Inc": {
+  "หน้าสมาชิกพนักงาน > OrangeHRM, Inc": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Oxd Main Menu Item Wrapper]": {
+  "หน้าสมาชิกพนักงาน > [Oxd Main Menu Item Wrapper]": {
     "css": "li.oxd-main-menu-item-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
+  "หน้าสมาชิกพนักงาน > [Oxd Main Menu Item Wrapper] Admin": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Orangehrm Tabs Wrapper]": {
+  "หน้าสมาชิกพนักงาน > [Orangehrm Tabs Wrapper]": {
     "css": "div.orangehrm-tabs-wrapper",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
+  "หน้าสมาชิกพนักงาน > [Orangehrm Tabs Wrapper] Personal Details": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > a",
     "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/a[1]",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Oxd Table Header Cell]": {
+  "หน้าสมาชิกพนักงาน > [Oxd Table Header Cell]": {
     "css": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(5) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
     "xpath": "",
     "aria": "",
     "data_testid": ""
   },
-  "จัดการข้อมูลสมาชิกพนักงาน > [Oxd Table Cell]": {
+  "หน้าสมาชิกพนักงาน > [Oxd Table Cell]": {
     "css": "div.oxd-table-cell.oxd-padding-cell",
     "xpath": "",
     "aria": "",
