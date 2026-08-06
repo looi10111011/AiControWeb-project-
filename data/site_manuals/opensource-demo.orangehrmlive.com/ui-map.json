@@ -3,13 +3,13 @@
     "children": {},
     "page": "หน้าเข้าสู่ระบบ"
   },
-  "หน้าแดชบอร์ดหลักระบบ": {
+  "หน้าแดชบอร์ดระบบ": {
     "children": {},
-    "page": "หน้าแดชบอร์ดหลักระบบ"
+    "page": "หน้าแดชบอร์ดระบบ"
   },
-  "หน้าจัดการผู้ใช้ระบบ": {
+  "จัดการผู้ใช้ระบบ": {
     "children": {},
-    "page": "หน้าจัดการผู้ใช้ระบบ"
+    "page": "จัดการผู้ใช้ระบบ"
   },
   "จัดการสัญชาติ": {
     "children": {},
@@ -19,69 +19,81 @@
     "children": {},
     "page": "ตั้งค่าธีมองค์กร"
   },
-  "รายชื่อพนักงาน": {
+  "หน้าจัดการพนักงาน PIM": {
     "children": {},
-    "page": "รายชื่อพนักงาน"
+    "page": "หน้าจัดการพนักงาน PIM"
   },
   "เพิ่มพนักงานใหม่": {
     "children": {},
     "page": "เพิ่มพนักงานใหม่"
   },
-  "รายงานพนักงาน OrangeHRM": {
+  "Defined and Predefined Reports": {
     "children": {},
-    "page": "รายงานพนักงาน OrangeHRM"
+    "page": "Defined and Predefined Reports"
   },
   "Leave List": {
     "children": {},
     "page": "Leave List"
   },
-  "หน้ายื่นใบลา": {
+  "หน้าสมัครการลา": {
     "children": {},
-    "page": "หน้ายื่นใบลา"
+    "page": "หน้าสมัครการลา"
   },
-  "หน้าประวัติการลาของฉัน": {
+  "รายการลาของฉัน": {
     "children": {},
-    "page": "หน้าประวัติการลาของฉัน"
+    "page": "รายการลาของฉัน"
   },
-  "หน้าบันทึกเวลาพนักงาน": {
+  "Timesheet Employee": {
     "children": {},
-    "page": "หน้าบันทึกเวลาพนักงาน"
+    "page": "Timesheet Employee"
+  },
+  "หน้าจัดการผู้สมัครงาน": {
+    "children": {},
+    "page": "หน้าจัดการผู้สมัครงาน"
+  },
+  "หน้าจัดการตำแหน่งงานว่าง": {
+    "children": {},
+    "page": "หน้าจัดการตำแหน่งงานว่าง"
   },
   "Personal Details": {
     "children": {},
     "page": "Personal Details"
   },
-  "Manage Performance Reviews": {
+  "Performance Review Search": {
     "children": {},
-    "page": "Manage Performance Reviews"
+    "page": "Performance Review Search"
   },
-  "Performance Trackers ของฉัน": {
+  "Performance Trackers": {
     "children": {},
-    "page": "Performance Trackers ของฉัน"
+    "page": "Performance Trackers"
   },
   "Employee Trackers": {
     "children": {},
     "page": "Employee Trackers"
   },
-  "หน้าไดเรกทอรีพนักงาน": {
+  "Directory": {
     "children": {},
-    "page": "หน้าไดเรกทอรีพนักงาน"
+    "page": "Directory"
   },
-  "หน้าลบข้อมูลพนักงาน": {
+  "Purge Employee": {
     "children": {},
-    "page": "หน้าลบข้อมูลพนักงาน"
-  },
-  "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย": {
-    "children": {},
-    "page": "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย"
+    "page": "Purge Employee"
   },
   "Assign Claim": {
     "children": {},
     "page": "Assign Claim"
   },
-  "Buzz Feed หน้าหลัก": {
+  "Submit Claim Details": {
     "children": {},
-    "page": "Buzz Feed หน้าหลัก"
+    "page": "Submit Claim Details"
+  },
+  "หน้าจัดการการเบิกจ่าย": {
+    "children": {},
+    "page": "หน้าจัดการการเบิกจ่าย"
+  },
+  "หน้าฟีดโพสต์ Buzz": {
+    "children": {},
+    "page": "หน้าฟีดโพสต์ Buzz"
   },
   "หน้าข้อมูลการติดต่อพนักงาน": {
     "children": {},
@@ -91,28 +103,28 @@
     "children": {},
     "page": "หน้าข้อมูลติดต่อฉุกเฉินพนักงาน"
   },
-  "จัดการข้อมูลการเข้าเมืองพนักงาน": {
+  "จัดการข้อมูลการเข้าเมือง": {
     "children": {},
-    "page": "จัดการข้อมูลการเข้าเมืองพนักงาน"
+    "page": "จัดการข้อมูลการเข้าเมือง"
   },
-  "หน้าจัดการข้อมูลพนักงาน": {
+  "หน้าจัดการข้อมูลงานพนักงาน": {
     "children": {},
-    "page": "หน้าจัดการข้อมูลพนักงาน"
+    "page": "หน้าจัดการข้อมูลงานพนักงาน"
   },
-  "หน้าข้อมูลเงินเดือนพนักงาน": {
+  "Salary List": {
     "children": {},
-    "page": "หน้าข้อมูลเงินเดือนพนักงาน"
+    "page": "Salary List"
   },
-  "รายงานความสัมพันธ์พนักงาน": {
+  "รายละเอียดรายงานพนักงาน": {
     "children": {},
-    "page": "รายงานความสัมพันธ์พนักงาน"
+    "page": "รายละเอียดรายงานพนักงาน"
   },
-  "ประวัติพนักงาน: คุณสมบัติ": {
+  "หน้าจัดการคุณสมบัติพนักงาน": {
     "children": {},
-    "page": "ประวัติพนักงาน: คุณสมบัติ"
+    "page": "หน้าจัดการคุณสมบัติพนักงาน"
   },
-  "จัดการข้อมูลสมาชิกพนักงาน": {
+  "หน้าสมาชิกพนักงาน": {
     "children": {},
-    "page": "จัดการข้อมูลสมาชิกพนักงาน"
+    "page": "หน้าสมาชิกพนักงาน"
   }
 }

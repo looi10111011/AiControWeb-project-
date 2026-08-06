@@ -43,6 +43,14 @@ class CreateTaskRequest(BaseModel):
     # page ตัวเดิมกลับมาทันที ไม่เปิดใหม่ — ปิด session ด้วย POST /sessions/{id}/close
     # เท่านั้น (ปุ่ม "New Session" บน Test Console)
     session_id: Optional[str] = None
+    # pdf/xlsx: user แนบไฟล์ PDF/XLSX ผ่าน composer โดยตรง (ต่างจาก site-manual/RAG
+    # upload) — ทั้งคู่ None (default) = พฤติกรรมเดิมทุกประการ ส่งมาทั้งคู่ =
+    # routes.py::_run_with_resolved_browser ตอบจากเนื้อหาไฟล์ตรงๆ ไม่แตะ browser/session/
+    # pool เลย (เหมือน general-chat shortcut) — content เป็น base64 ของไฟล์ดิบ (ไม่ใช่
+    # multipart เพราะทั้งระบบนี้เป็น JSON body ล้วนๆ อยู่แล้ว ดู core/rag/ingestion.py::
+    # load_manual_bytes สำหรับตัว decode/extract จริง)
+    attached_file_name: Optional[str] = None
+    attached_file_content_base64: Optional[str] = None
 
 
 class GeneratePlanRequest(BaseModel):
@@ -57,6 +65,11 @@ class GeneratePlanRequest(BaseModel):
     # แค่ lookup เฉยๆ (session_registry.get(), ไม่ใช่ get_or_create()) ไม่มีทางสร้าง
     # session/เปิด browser ใหม่จาก endpoint นี้เด็ดขาด ไม่ว่า session_id จะมีอยู่จริงไหม
     session_id: Optional[str] = None
+    # pdf/xlsx: mirror ของ CreateTaskRequest ด้านบน — มีค่า = routes.py::generate_plan
+    # คืน is_qa=True ทันที (ข้าม classify_intent()/LLM call ไปเลย เหมือน qa_summary intent
+    # ปกติ) ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปตอบจากไฟล์ได้ทันที
+    attached_file_name: Optional[str] = None
+    attached_file_content_base64: Optional[str] = None
 
 
 class GeneratePlanResponse(BaseModel):
@@ -106,6 +119,9 @@ class ExecutePlanRequest(BaseModel):
     slot_values: Optional[dict] = None
     steps: Optional[list[dict]] = None
     execution_mode: Optional[str] = None
+    # pdf/xlsx: mirror ของ CreateTaskRequest — ดู comment ที่นั่นสำหรับรายละเอียดเต็ม
+    attached_file_name: Optional[str] = None
+    attached_file_content_base64: Optional[str] = None
 
 
 class TaskCreatedResponse(BaseModel):

@@ -37,6 +37,29 @@ def test_is_general_chat_query_rejects_anything_web_related_or_ambiguous(goal):
     assert llm.is_general_chat_query(goal) is False
 
 
+# pdf/xlsx: llm.goal_mentions_web_action() — factored out of is_general_chat_query()'s
+# exclusion-keyword gate above so routes.py can reuse the same check for the
+# "file-chat memory follow-up" decision (see test_api.py)
+@pytest.mark.parametrize("goal", [
+    "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้",
+    "ค้นหา iPhone ให้หน่อย",
+    "คลิกปุ่ม login",
+    "ไปที่ https://example.com",
+])
+def test_goal_mentions_web_action_true_for_web_keywords(goal):
+    assert llm.goal_mentions_web_action(goal) is True
+
+
+@pytest.mark.parametrize("goal", [
+    "แต่ละวันทำอะไรบ้าง",
+    "ยอดรวมเท่าไหร่",
+    "",
+    "   ",
+])
+def test_goal_mentions_web_action_false_for_plain_followup_questions(goal):
+    assert llm.goal_mentions_web_action(goal) is False
+
+
 @pytest.mark.asyncio
 async def test_chat_response_returns_text_on_anthropic_success():
     text_block = MagicMock()

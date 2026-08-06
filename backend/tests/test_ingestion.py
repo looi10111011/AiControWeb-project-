@@ -1,10 +1,12 @@
 import re
+from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from openpyxl import Workbook
 
-from backend.app.rag.ingestion import chunk_text, ingest_manual, load_manual
+from backend.app.rag.ingestion import chunk_text, ingest_manual, load_manual, load_manual_bytes
 
 MANUAL_TXT = Path(__file__).parent / "manual_test.txt"
 
@@ -257,3 +259,178 @@ def test_ingest_manual_chunk_index_is_sequential():
         _, kwargs = mock_collection.upsert.call_args
         indices = [m["chunk_index"] for m in kwargs["metadatas"]]
         assert indices == list(range(5))
+
+
+# --- pdf/xlsx: load_manual_bytes (ต่างจาก load_manual ด้านบนตรงรับ bytes ไม่ต้องมีไฟล์บน
+# ดิสก์ — ใช้กับไฟล์ที่ user แนบเข้ามาผ่าน API โดยตรง) ---
+
+def _xlsx_bytes(*sheets: tuple[str, list[list]]) -> bytes:
+    """สร้างไฟล์ XLSX จริงในหน่วยความจำ (openpyxl round-trip เต็มรูปแบบ ไม่ mock) —
+    sheets: (sheet_name, rows) หลายแผ่นได้ ชื่อ sheet แรกจะทับ default "Sheet" ของ Workbook()"""
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets:
+        ws = wb.create_sheet(title=name)
+        for row in rows:
+            ws.append(row)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_load_manual_bytes_txt_reads_content():
+    text = load_manual_bytes("Facebook login page".encode("utf-8"), "note.txt")
+    assert text == "Facebook login page"
+
+
+def test_load_manual_bytes_unsupported_extension_raises():
+    with pytest.raises(ValueError):
+        load_manual_bytes(b"whatever", "script.py")
+
+
+def test_load_manual_bytes_pdf_extracts_page_text():
+    # mock PdfReader ตรงจุดขอบเขตเดียวกับที่ test_ingest_manual_* ด้านบน mock get_collection
+    # (ขอบเขต external library ไม่ใช่ logic ของเราเอง) — สร้าง PDF ไบนารีจริงด้วยมือเปราะบาง
+    # เกินไป ไม่มีประโยชน์เพิ่มเทียบกับ mock ตรงนี้
+    mock_page = MagicMock()
+    mock_page.extract_text.return_value = "Invoice total: 1,250 THB"
+    with patch("backend.app.rag.ingestion.PdfReader") as mock_reader_cls:
+        mock_reader_cls.return_value.pages = [mock_page]
+        text = load_manual_bytes(b"%PDF-1.4 fake bytes", "invoice.pdf")
+    assert "Invoice total: 1,250 THB" in text
+    mock_reader_cls.assert_called_once()
+    # ต้องส่ง BytesIO เข้า PdfReader (ไม่ใช่ path) — คือหัวใจของ "ไม่แตะดิสก์" ของฟังก์ชันนี้
+    assert isinstance(mock_reader_cls.call_args[0][0], BytesIO)
+
+
+def test_load_manual_bytes_xlsx_single_sheet():
+    content = _xlsx_bytes(("Data", [["Name", "Price"], ["Widget", 9.99], ["Gadget", 19.99]]))
+    text = load_manual_bytes(content, "report.xlsx")
+    assert "# Sheet: Data" in text
+    assert "Name | Price" in text
+    assert "Widget | 9.99" in text
+    assert "Gadget | 19.99" in text
+
+
+def test_load_manual_bytes_xlsx_multiple_sheets():
+    content = _xlsx_bytes(
+        ("Q1", [["Jan", 100]]),
+        ("Q2", [["Apr", 200]]),
+    )
+    text = load_manual_bytes(content, "quarters.xlsx")
+    assert "# Sheet: Q1" in text
+    assert "Jan | 100" in text
+    assert "# Sheet: Q2" in text
+    assert "Apr | 200" in text
+
+
+def test_load_manual_bytes_xlsx_skips_fully_empty_rows():
+    content = _xlsx_bytes(("Data", [["A", "B"], [None, None], ["C", "D"]]))
+    text = load_manual_bytes(content, "report.xlsx")
+    lines = [line for line in text.split("\n") if line]
+    assert lines == ["# Sheet: Data", "A | B", "C | D"]
+
+
+def test_load_manual_bytes_xlsx_none_cells_become_empty_string():
+    content = _xlsx_bytes(("Data", [["A", None, "C"]]))
+    text = load_manual_bytes(content, "report.xlsx")
+    assert "A |  | C" in text
+
+
+# Excel extractor: merged-cell forward-fill — openpyxl only stores a value in the
+# top-left cell of a merged range; every other cell in that range reads back as None
+# even though Excel visually shows the same value there (e.g. an employee name merged
+# across several date rows in a timesheet). Sub-rows must not go blank because of this.
+
+def test_load_manual_bytes_xlsx_vertically_merged_cell_forward_fills_to_subrows():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Name", "Date", "Hours"])
+    ws.append(["Somchai", "2026-07-01", 8])
+    ws.append([None, "2026-07-02", 8])
+    ws.append([None, "2026-07-03", 8])
+    ws.merge_cells("A2:A4")
+    buf = BytesIO()
+    wb.save(buf)
+
+    text = load_manual_bytes(buf.getvalue(), "timesheet.xlsx")
+
+    lines = [line for line in text.split("\n") if line]
+    assert lines == [
+        "# Sheet: Data",
+        "Name | Date | Hours",
+        "Somchai | 2026-07-01 | 8",
+        "Somchai | 2026-07-02 | 8",
+        "Somchai | 2026-07-03 | 8",
+    ]
+
+
+def test_load_manual_bytes_xlsx_horizontally_merged_header_forward_fills():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Department", None, "Total"])
+    ws.append(["Engineering", None, 4000])
+    ws.merge_cells("A1:B1")
+    ws.merge_cells("A2:B2")
+    buf = BytesIO()
+    wb.save(buf)
+
+    text = load_manual_bytes(buf.getvalue(), "report.xlsx")
+
+    lines = [line for line in text.split("\n") if line]
+    assert lines == [
+        "# Sheet: Data",
+        "Department | Department | Total",
+        "Engineering | Engineering | 4000",
+    ]
+
+
+def test_load_manual_bytes_xlsx_merged_cell_does_not_break_empty_row_skip():
+    """merge ไม่ควรทำให้แถวที่ว่างจริงๆ (ไม่ได้อยู่ใน merge range ไหนเลย) กลายเป็นแถวที่มี
+    ข้อมูลไปเฉยๆ — เช็คว่า _xlsx_bytes_to_text() ยัง skip แถวว่างล้วนๆ ได้ตามปกติ"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(["Name", "Hours"])
+    ws.append(["Somchai", 8])
+    ws.append([None, None])
+    ws.append(["Somsri", 6])
+    buf = BytesIO()
+    wb.save(buf)
+
+    text = load_manual_bytes(buf.getvalue(), "timesheet.xlsx")
+
+    lines = [line for line in text.split("\n") if line]
+    assert lines == ["# Sheet: Data", "Name | Hours", "Somchai | 8", "Somsri | 6"]
+
+
+# --- Excel extractor: .csv support (spec ระบุ .xlsx / .csv ทั้งคู่ แต่ก่อนหน้านี้
+# load_manual_bytes() รองรับแค่ .xlsx เท่านั้น) ---
+
+def test_load_manual_bytes_csv_parses_rows_pipe_delimited():
+    content = "Name,Date,Hours\nSomchai,2026-07-01,8\nSomsri,2026-07-02,6\n".encode("utf-8")
+    text = load_manual_bytes(content, "timesheet.csv")
+    lines = [line for line in text.split("\n") if line]
+    assert lines == ["Name | Date | Hours", "Somchai | 2026-07-01 | 8", "Somsri | 2026-07-02 | 6"]
+
+
+def test_load_manual_bytes_csv_skips_fully_empty_rows():
+    content = "A,B\n1,2\n,\n3,4\n".encode("utf-8")
+    text = load_manual_bytes(content, "data.csv")
+    lines = [line for line in text.split("\n") if line]
+    assert lines == ["A | B", "1 | 2", "3 | 4"]
+
+
+def test_load_manual_bytes_csv_handles_quoted_commas_in_fields():
+    content = 'Name,Note\nSomchai,"Oic claim, urgent"\n'.encode("utf-8")
+    text = load_manual_bytes(content, "data.csv")
+    assert 'Somchai | Oic claim, urgent' in text
+
+
+def test_load_manual_bytes_csv_strips_bom_if_present():
+    content = "Name,Hours\nSomchai,8\n".encode("utf-8-sig")
+    text = load_manual_bytes(content, "data.csv")
+    lines = [line for line in text.split("\n") if line]
+    assert lines[0] == "Name | Hours"

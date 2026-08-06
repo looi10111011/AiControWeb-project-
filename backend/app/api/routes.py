@@ -12,13 +12,16 @@ request_approval/resolve_approval (ดู task_manager.py)
 """
 
 import asyncio
+import base64
 import json
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from playwright.async_api import async_playwright
 
+from backend.app.rag.ingestion import load_manual_bytes
 from backend.app.api.schemas import (
     CreateTaskRequest,
     CredentialsStatusResponse,
@@ -89,6 +92,17 @@ def _make_ask_user_func(task_manager: TaskManager, task_id: str, auto_approve: b
     return ask_user_func
 
 
+async def _context_inspection_result(req, on_event, client, model: str, resolved_provider: str) -> dict:
+    """W20 (MODULE 0 "Special Command Interceptor"): goal มีคำสั่ง "/context" ปน — ตอบด้วย
+    คำอธิบายความเข้าใจ/แผนที่ตั้งใจจะทำ (ดู llm.context_inspection_reply()) โดยไม่ลงมือทำ
+    จริงเลยไม่ว่ากรณีใด (ไม่แตะ browser/session/pool/file parser) เหมือน
+    _general_chat_result ทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน"""
+    real_goal = llm.strip_context_inspection_command(req.goal)
+    reply = await llm.context_inspection_reply(client, model, real_goal, resolved_provider)
+    await on_event({"kind": "chat_reply", "message": reply})
+    return _chat_shaped_result(reply)
+
+
 async def _general_chat_result(req, on_event, client, model: str, resolved_provider: str) -> dict:
     """W19-6 ("Master Controller" MODULE 1): ตอบ goal ที่เป็นคำถามทั่วไป/ทักทาย/วันเวลา/
     คำนวณเลข/คำขอเชิงแนะนำ-ความเห็นจากความรู้ทั่วไป (ดู llm.resolve_general_chat_query())
@@ -117,6 +131,108 @@ async def _general_chat_result(req, on_event, client, model: str, resolved_provi
         "persona_status": "COMPLETED",
         "completion_verification": "OK",
     }
+
+
+def _chat_shaped_result(message: str) -> dict:
+    """dict รูปแบบเดียวกับ _general_chat_result()/Orchestrator.run_task() ทุกประการ —
+    แยกออกมาเพราะ _file_query_result() ด้านล่างต้องคืนรูปแบบเดียวกันนี้ทั้งตอนสำเร็จและตอน
+    error (ไฟล์อ่านไม่ได้/base64 เสีย) ไม่ใช่แค่ตอนสำเร็จแบบ _general_chat_result เดิม"""
+    return {
+        "success": True,
+        "steps": 0,
+        "message": message,
+        "history": [],
+        "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0},
+        "plan": "",
+        "final_page_state": "",
+        "persona_message": "",
+        "persona_status": "COMPLETED",
+        "completion_verification": "OK",
+    }
+
+
+_IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+async def _file_query_result(
+    req, on_event, client, model: str, resolved_provider: str, file_chat_memory: dict,
+) -> dict:
+    """pdf/xlsx: user แนบไฟล์ (.txt/.pdf/.docx/.xlsx/.csv หรือรูปภาพ) ผ่าน composer โดยตรง
+    (req.attached_file_name/attached_file_content_base64 — ดู schemas.py::
+    CreateTaskRequest) — เหมือน _general_chat_result ด้านบนทุกประการ (ไม่แตะ
+    browser/session/pool เลย, คืน dict รูปแบบเดียวกับ run_task()) แค่มีเนื้อหาไฟล์เป็น
+    context แทนความรู้ทั่วไปล้วนๆ
+
+    รูปภาพ (นามสกุลใน _IMAGE_FILE_EXTENSIONS) แยกสาขาไปทาง llm.answer_image_query()
+    (ส่ง bytes ดิบแบบ multimodal ตรงๆ) แทน load_manual_bytes()+answer_file_query() เพราะ
+    ไม่มี "text" ให้ extract ล่วงหน้าเหมือนเอกสาร
+
+    file_chat_memory: app.state.file_chat_memory (session_id -> {"filename","text"}) —
+    เอกสาร (ไม่ใช่รูปภาพ) ที่ extract สำเร็จแล้วและมี req.session_id มาด้วย จะถูกจำไว้ที่นี่
+    ให้เทิร์นถัดไปในเซสชันเดียวกันที่ไม่ได้แนบไฟล์ใหม่มาตอบต่อยอดได้ (ดู
+    _file_chat_memory_reply()/_run_with_resolved_browser() ด้านล่าง) — ไม่ทำแบบเดียวกันกับ
+    รูปภาพ (ไม่มี "text" ให้เก็บ ขอบเขตจำกัดไว้แค่เอกสารก่อน)
+
+    ห้าม throw ออกไปทำให้ task พังเด็ดขาด — decode/extract ผิดพลาด (base64 เสีย/ไฟล์เสีย/
+    นามสกุลไม่รองรับ) ต้องคืนข้อความ error ที่ user อ่านเข้าใจได้ผ่านช่องทางเดียวกับคำตอบ
+    ปกติ ไม่ใช่ 500 ที่ทำให้ frontend ไม่รู้จะแสดงอะไร"""
+    try:
+        content = base64.b64decode(req.attached_file_content_base64)
+    except Exception as e:
+        print(f"⚠️ _file_query_result base64 decode error: {e}", flush=True)
+        error_message = (
+            f'ขออภัยครับ ไม่สามารถอ่านไฟล์ "{req.attached_file_name}" ได้ '
+            "ลองแนบไฟล์ใหม่อีกครั้งนะครับ"
+        )
+        await on_event({"kind": "chat_reply", "message": error_message})
+        return _chat_shaped_result(error_message)
+
+    if Path(req.attached_file_name or "").suffix.lower() in _IMAGE_FILE_EXTENSIONS:
+        reply = await llm.answer_image_query(
+            client, model, req.goal, content, req.attached_file_name, resolved_provider,
+        )
+        await on_event({"kind": "chat_reply", "message": reply})
+        return _chat_shaped_result(reply)
+
+    try:
+        file_text = load_manual_bytes(content, req.attached_file_name)
+    except Exception as e:
+        print(f"⚠️ _file_query_result extract error: {e}", flush=True)
+        error_message = (
+            f'ขออภัยครับ ไม่สามารถอ่านไฟล์ "{req.attached_file_name}" ได้ '
+            "(รองรับ .txt/.pdf/.docx/.xlsx/.csv และรูปภาพ) ลองแนบไฟล์ใหม่อีกครั้งนะครับ"
+        )
+        await on_event({"kind": "chat_reply", "message": error_message})
+        return _chat_shaped_result(error_message)
+
+    if req.session_id:
+        file_chat_memory[req.session_id] = {"filename": req.attached_file_name, "text": file_text}
+
+    reply = await llm.answer_file_query(
+        client, model, req.goal, file_text, req.attached_file_name, resolved_provider,
+    )
+    await on_event({"kind": "chat_reply", "message": reply})
+    return _chat_shaped_result(reply)
+
+
+async def _file_chat_memory_reply(
+    req, on_event, client, model: str, resolved_provider: str, remembered: dict,
+) -> dict:
+    """pdf/xlsx (ต่อ): เทิร์นถัดไปในเซสชันเดียวกันที่ไม่ได้แนบไฟล์ใหม่มา (goal ล้วนๆ) แต่
+    session_id นี้เคยมีไฟล์แนบไว้แล้วในเทิร์นก่อนหน้า (ดู file_chat_memory ใน
+    _file_query_result() ด้านบน) — ตอบต่อจากเนื้อหาไฟล์เดิมได้เลย ไม่ต้องให้ user แนบไฟล์
+    ซ้ำทุกเทิร์น เหมือน _file_query_result() ทุกประการ (ไม่แตะ browser/session_registry/
+    pool เลย) แค่ไม่มี base64/extraction ให้ทำซ้ำเพราะ remembered["text"] extract ไว้แล้ว
+
+    บั๊กจริงที่ user รายงาน: เทิร์น 1 แนบไฟล์ถามสำเร็จ (ผ่าน _file_query_result() ด้านบน)
+    แต่ไม่เคยเก็บ text ไว้ที่ไหนเลย เทิร์น 2 ("แต่ละวันทำอะไรบ้าง" ไม่มีไฟล์แนบ ไม่มี url)
+    เลยตกไปเปิด browser จริงด้วย url ว่างเปล่า (orchestrator.run_task) ค้าง — ดู
+    _run_with_resolved_browser()/generate_plan() สำหรับจุดเรียกฟังก์ชันนี้"""
+    reply = await llm.answer_file_query(
+        client, model, req.goal, remembered["text"], remembered["filename"], resolved_provider,
+    )
+    await on_event({"kind": "chat_reply", "message": reply})
+    return _chat_shaped_result(reply)
 
 
 _READ_PAGE_DATA_OK_PREFIX = "[OK] read_page_data -> "
@@ -157,7 +273,7 @@ async def _update_extracted_memory(session, result: dict, provider: Optional[str
 
 async def _run_with_resolved_browser(
     req, orchestrator: Orchestrator, ask_user_func, on_event, pool, session_registry,
-    extra_run_task_kwargs: dict,
+    extra_run_task_kwargs: dict, file_chat_memory: dict,
 ) -> dict:
     """W13: ตรรกะร่วม "จะเอา page มาจากไหน" ระหว่าง POST /tasks (create_task,
     confirm_plan) และ POST /api/execute_plan (approved_plan) — ต่างกันแค่
@@ -179,15 +295,52 @@ async def _run_with_resolved_browser(
     is_general_chat_query() ใน llm.py สำหรับเหตุผลเต็มเรื่อง false negative ปลอดภัยกว่า
     false positive)
 
-    ลำดับความสำคัญ (หลังผ่าน general-chat check ด้านบนแล้ว): session_id ก่อน (ครอบคลุมทั้ง
+    pdf/xlsx: ไฟล์ที่ user แนบมา (req.attached_file_content_base64) เช็คก่อน
+    is_general_chat_query() แม้แต่ก็ตาม — เป็นสัญญาณที่ชัดเจนกว่า/แรงกว่า keyword matching
+    ด้านล่างเสมอ (user แนบไฟล์มาแล้วแปลว่าต้องการให้อ่านไฟล์นั้นแน่ๆ ไม่ต้องเดาจาก goal
+    text อีกชั้น) ดู _file_query_result() ด้านบน — เหมือน general-chat check ทุกประการ
+    (ไม่แตะ browser/session/pool เลย)
+
+    pdf/xlsx (ต่อ, บั๊กจริงที่ user รายงาน): เทิร์นถัดไปในเซสชันเดียวกันที่ไม่ได้แนบไฟล์ใหม่
+    มา (req.attached_file_content_base64 ว่างเปล่า) แต่ session_id นี้เคยมีไฟล์แนบไว้แล้ว
+    (ดู file_chat_memory) เช็คก่อน is_general_chat_query() ไม่ทัน (goal อย่าง "แต่ละวันทำ
+    อะไรบ้าง" ไม่ match pattern ไหนเลย) และก่อน session_id branch ด้านล่างด้วย (ซึ่งเดิมจะ
+    เปิด browser จริงด้วย url ว่างเปล่าแล้วค้าง เพราะ session ที่มาจาก _file_query_result()
+    ไม่เคยแตะ session_registry เลย ไม่มี page ให้ perceive) — ต้องไม่ใช่ goal ที่มีคำบ่งบอก
+    web action จริงๆ (llm.goal_mentions_web_action — เกณฑ์เดียวกับ exclusion keyword ของ
+    is_general_chat_query) และไม่มี req.url มาด้วย (มี url = สัญญาณชัดเจนว่าต้องการ browse
+    จริง ไม่ใช่ถามต่อจากไฟล์เดิม) ถึงจะตอบจากไฟล์เดิมได้เลย ไม่งั้น fall through ไปเส้นทาง
+    ปกติด้านล่างตามเดิมทุกประการ
+
+    ลำดับความสำคัญ (หลังผ่านทุก check ด้านบนแล้ว): session_id ก่อน (ครอบคลุมทั้ง
     3 โหมดในตัวผ่าน session_registry อยู่แล้ว) -> use_user_browser -> headless=False ตรงๆ
     (visible browser, launch เอง, ผูก keep_browser_open=True คู่กันเสมอเพราะไม่มีประโยชน์
     ที่จะเปิดหน้าต่างโชว์แล้วรีบปิดทันทีที่เสร็จ) -> fallback ไปยืมจาก pool (headless ตาม
     req.headless เป๊ะๆ)"""
+    # W20 (MODULE 0 "Special Command Interceptor"): เช็คก่อนทุก check อื่นเสมอ (ก่อนแม้แต่
+    # attached_file ด้านล่าง) — "/context" คือ debug/inspection mode ที่ user ต้องการดูว่า
+    # agent เข้าใจคำสั่งว่าอะไร ไม่ต้องการให้ลงมือทำจริงไม่ว่ากรณีใด (ดู
+    # llm.is_context_inspection_command() สำหรับเหตุผลเต็ม)
+    if llm.is_context_inspection_command(req.goal):
+        resolved_provider = req.provider or settings.llm_provider
+        client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+        return await _context_inspection_result(req, on_event, client, model, resolved_provider)
+
+    if req.attached_file_content_base64:
+        resolved_provider = req.provider or settings.llm_provider
+        client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+        return await _file_query_result(req, on_event, client, model, resolved_provider, file_chat_memory)
+
     if llm.is_general_chat_query(req.goal):
         resolved_provider = req.provider or settings.llm_provider
         client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
         return await _general_chat_result(req, on_event, client, model, resolved_provider)
+
+    remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
+    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+        resolved_provider = req.provider or settings.llm_provider
+        client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
+        return await _file_chat_memory_reply(req, on_event, client, model, resolved_provider, remembered_file)
 
     wants_visible_browser = req.headless is False
     # W14: โหลดคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติครั้งเดียวตรงนี้ (ถ้ามี) แล้วส่งต่อเข้า
@@ -329,6 +482,7 @@ async def _run_with_resolved_browser(
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
+    file_chat_memory = request.app.state.file_chat_memory
     task_manager: TaskManager = request.app.state.task_manager
     orchestrator = Orchestrator()
     task_id = task_manager.new_task_id()
@@ -340,7 +494,7 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
     async def _run() -> dict:
         return await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
-            extra_run_task_kwargs={"confirm_plan": req.confirm_plan},
+            extra_run_task_kwargs={"confirm_plan": req.confirm_plan}, file_chat_memory=file_chat_memory,
         )
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
@@ -370,7 +524,36 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     เจอ candidate + Planner ตัดสินใจ reuse/adapt ด้วย confidence ผ่านเกณฑ์ จะคืนแผนที่
     render จาก steps จริง (พร้อม template_id/slot_values/steps ให้ frontend ส่งต่อเข้า
     POST /api/execute_plan เพื่อวิ่งผ่าน fast-path executor ได้) — ไม่เจอ/ไม่มั่นใจพอ
-    (plan_fresh) fallback ไปที่ plan_memory/LLM ตามปกติด้านล่างเหมือนไม่มี feature นี้เลย"""
+    (plan_fresh) fallback ไปที่ plan_memory/LLM ตามปกติด้านล่างเหมือนไม่มี feature นี้เลย
+
+    pdf/xlsx: ไฟล์ที่ user แนบมา (req.attached_file_content_base64) เช็คก่อนสุดเสมอ เหมือน
+    _run_with_resolved_browser() ด้านล่าง — คืน is_qa=True ทันที ไม่เรียก classify_intent()
+    เลย (deterministic ล้วนๆ ไม่ต้องเสีย LLM round-trip เพื่อรู้สิ่งที่รู้อยู่แล้วจากการมี
+    ไฟล์แนบมา) ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปตอบจากไฟล์ได้ทันที (เหมือน qa_summary
+    intent ปกติทุกประการ)
+
+    pdf/xlsx (ต่อ, บั๊กจริงที่ user รายงาน): เทิร์นถัดไปในเซสชันเดียวกันที่ไม่ได้แนบไฟล์ใหม่มา
+    แต่ session_id นี้เคยมีไฟล์แนบไว้แล้ว (ดู app.state.file_chat_memory) และ goal ไม่มีคำ
+    บ่งบอก web action จริงๆ (llm.goal_mentions_web_action) ไม่มี req.url มาด้วย — เช็คถัดจาก
+    attached_file ด้านบนทันที ด้วยเกณฑ์เดียวกับ _run_with_resolved_browser() (ดูที่นั่น
+    สำหรับเหตุผลเต็มๆ) คืน is_qa=True ทันทีเหมือนกัน ให้ frontend ข้าม plan approval ไปตอบ
+    จากไฟล์เดิมทันทีที่ POST /api/execute_plan (ไม่ใช่ตกไปวางแผนเปิด browser จริงด้วย url
+    ว่างเปล่าเหมือนที่เคยเกิดขึ้นจริง)"""
+    # W20 (MODULE 0): เช็คก่อนสุดเสมอ เหมือน attached_file ด้านล่าง — คืน is_qa=True ทันที
+    # ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปเรียก execute_plan/create_task ที่จะตอบด้วย
+    # CONTEXT_INSPECTION_MODE ผ่าน _context_inspection_result() แทน (ดู routes.py::
+    # _run_with_resolved_browser)
+    if llm.is_context_inspection_command(req.goal):
+        return GeneratePlanResponse(plan="", is_qa=True)
+
+    if req.attached_file_content_base64:
+        return GeneratePlanResponse(plan="", is_qa=True)
+
+    file_chat_memory: dict = request.app.state.file_chat_memory
+    remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
+    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+        return GeneratePlanResponse(plan="", is_qa=True)
+
     domain = extract_domain(req.url)
 
     page = None
@@ -486,6 +669,7 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
 
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
+    file_chat_memory = request.app.state.file_chat_memory
     task_manager: TaskManager = request.app.state.task_manager
     orchestrator = Orchestrator()
     task_id = task_manager.new_task_id()
@@ -516,7 +700,7 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
                 )
         return await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
-            extra_run_task_kwargs={"approved_plan": req.plan},
+            extra_run_task_kwargs={"approved_plan": req.plan}, file_chat_memory=file_chat_memory,
         )
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
@@ -655,10 +839,16 @@ async def close_session(session_id: str, request: Request) -> dict:
     page/context/browser ที่ session นี้ถืออยู่ (ดู core/session_registry.py::
     SessionRegistry.close() สำหรับรายละเอียดตาม mode) คืน 404 ถ้าไม่พบ session_id นี้
     (ปิดไปแล้ว/ไม่เคยมีอยู่จริง) — ไม่กระทบ task ที่กำลังรันอยู่บน session นี้เลยถ้ามี
-    (เป็นหน้าที่ของ frontend ที่จะเช็คก่อนว่าไม่มี task รันค้างอยู่ก่อนเรียก endpoint นี้)"""
+    (เป็นหน้าที่ของ frontend ที่จะเช็คก่อนว่าไม่มี task รันค้างอยู่ก่อนเรียก endpoint นี้)
+
+    pdf/xlsx: เคลียร์ app.state.file_chat_memory ของ session_id นี้ด้วยเสมอ (ถ้ามี) —
+    session ที่เป็น file-chat ล้วนๆ (ไม่เคยแนบ url/เปิด browser เลย) ไม่มีอยู่ใน
+    session_registry เลย ไม่งั้นปุ่ม "New Session" จะโดน 404 ทั้งที่จริงมี state ให้เคลียร์"""
     session_registry = request.app.state.session_registry
     closed = await session_registry.close(session_id)
-    if not closed:
+    file_chat_memory: dict = request.app.state.file_chat_memory
+    had_file_memory = file_chat_memory.pop(session_id, None) is not None
+    if not closed and not had_file_memory:
         raise HTTPException(status_code=404, detail=f"ไม่พบ session_id: {session_id!r}")
     return {"status": "closed"}
 

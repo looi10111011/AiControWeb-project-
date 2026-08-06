@@ -4,7 +4,9 @@ W3: เปลี่ยนมาใช้ local embedding (all-MiniLM-L6-v2 ผ�
     — collection.upsert() ส่ง documents ดิบไป ให้ ChromaDB embed ให้เองอัตโนมัติ
 """
 
+from io import BytesIO
 from pathlib import Path
+import csv
 import hashlib
 import re
 from typing import List
@@ -12,6 +14,7 @@ from typing import List
 # สำหรับอ่านไฟล์
 from pypdf import PdfReader
 from docx import Document
+from openpyxl import load_workbook
 
 from backend.app.rag.chroma_client import get_collection
 
@@ -41,7 +44,87 @@ def load_manual(path: Path) -> str:
         for page in reader.pages:
             text += page.extract_text() + '\n'
         return text
-    
+
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+
+
+def _xlsx_bytes_to_text(content: bytes) -> str:
+    """แปลง XLSX เป็น text แบบตาราง อ่านง่ายสำหรับ LLM (ไม่ใช่ data structure) — เรียงตาม
+    sheet, ข้ามแถวที่ว่างทั้งแถว, cell ในแถวเดียวกันคั่นด้วย " | " ให้เห็นขอบเขตคอลัมน์ชัด
+    data_only=True: อ่านค่าที่ cache ไว้ล่าสุดของ formula cell (ไม่ใช่สูตรดิบ) — ตรงกับที่
+    user เห็นตอนเปิดไฟล์จริงใน Excel
+
+    Excel extractor: merged cell (เช่น ชื่อพนักงาน/แผนกที่ merge ครอบหลายแถววันที่ในไฟล์
+    ลงเวลา) openpyxl เก็บค่าจริงไว้แค่ cell มุมบนซ้ายของแต่ละ merge range เท่านั้น — cell
+    อื่นๆ ในช่วงเดียวกันเป็น MergedCell ที่ .value เป็น None เสมอแม้จะมองเห็นค่าใน Excel จริง
+    ก็ตาม ต้อง forward-fill ค่าจาก top-left cell ให้ทุก cell ในช่วง merge เดียวกันก่อน ไม่งั้น
+    sub-row ที่พึ่ง merge จาก parent จะกลายเป็นค่าว่างเปล่าไปเฉยๆ ทั้งที่ข้อมูลมีอยู่จริง"""
+    workbook = load_workbook(BytesIO(content), data_only=True)
+    sections = []
+    for sheet in workbook.worksheets:
+        merged_values = {}
+        for merged_range in sheet.merged_cells.ranges:
+            top_left_value = sheet.cell(merged_range.min_row, merged_range.min_col).value
+            for r in range(merged_range.min_row, merged_range.max_row + 1):
+                for c in range(merged_range.min_col, merged_range.max_col + 1):
+                    merged_values[(r, c)] = top_left_value
+
+        rows_text = []
+        for row in sheet.iter_rows():
+            values = [
+                merged_values.get((cell.row, cell.column)) if cell.value is None else cell.value
+                for cell in row
+            ]
+            if all(v is None for v in values):
+                continue
+            rows_text.append(' | '.join('' if v is None else str(v) for v in values))
+        if rows_text:
+            sections.append(f"# Sheet: {sheet.title}\n" + '\n'.join(rows_text))
+    return '\n\n'.join(sections)
+
+
+def _csv_bytes_to_text(content: bytes) -> str:
+    """แปลง CSV เป็น text แบบตาราง รูปแบบเดียวกับ _xlsx_bytes_to_text() ด้านบน (cell คั่นด้วย
+    " | ", ข้ามแถวที่ว่างทั้งแถว) ให้ LLM อ่านสม่ำเสมอไม่ว่าไฟล์จะเป็น .xlsx หรือ .csv — ใช้
+    csv.reader() (ไม่ใช่ split(",") มือ) เพื่อรองรับ field ที่มี comma/quote อยู่ในค่าเองถูก
+    ต้องตามสเปค CSV จริง utf-8-sig: ตัด BOM ทิ้งถ้ามี (Excel ใส่ BOM มาด้วยเวลา export CSV)"""
+    text = content.decode('utf-8-sig')
+    rows_text = []
+    for row in csv.reader(text.splitlines()):
+        if not row or all(not cell.strip() for cell in row):
+            continue
+        rows_text.append(' | '.join(row))
+    return '\n'.join(rows_text)
+
+
+def load_manual_bytes(content: bytes, filename: str) -> str:
+    """เหมือน load_manual() ด้านบนแต่รับ bytes ตรงๆ ไม่ต้องเขียนลงดิสก์ก่อน — ใช้กับไฟล์ที่
+    user แนบเข้ามาผ่าน API โดยตรง (ต่างจาก load_manual ที่ใช้กับ manual ที่มีอยู่บนดิสก์แล้ว
+    ของ RAG ingestion pipeline เดิม) ไม่มี temp file ให้ต้อง cleanup และไม่มีช่องโหว่ path
+    traversal จาก filename ที่ user ตั้งเอง (ใช้แค่ดู extension ไม่เคยใช้เป็น path จริง)"""
+    ext = Path(filename).suffix.lower()
+
+    if ext == '.txt':
+        return content.decode('utf-8')
+
+    elif ext == '.docx':
+        doc = Document(BytesIO(content))
+        return '\n'.join([para.text for para in doc.paragraphs])
+
+    elif ext == '.pdf':
+        reader = PdfReader(BytesIO(content))
+        text = ''
+        for page in reader.pages:
+            text += page.extract_text() + '\n'
+        return text
+
+    elif ext == '.xlsx':
+        return _xlsx_bytes_to_text(content)
+
+    elif ext == '.csv':
+        return _csv_bytes_to_text(content)
+
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 

@@ -1609,6 +1609,192 @@ async def test_generate_persona_message_groq_parses_message_from_model():
     assert "ลองใหม่" in result["user_message"]
 
 
+# --- pdf/xlsx: llm.answer_file_query() (Attached File Query) ---
+
+
+def _fake_text_block(text):
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    return block
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_anthropic_returns_text():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_text_block("ยอดรวมคือ 1,250 บาท")])
+    )
+
+    result = await llm.answer_file_query(
+        client, "claude-x", "ยอดรวมเท่าไหร่", "Invoice total: 1,250 THB", "invoice.pdf", "anthropic",
+    )
+
+    assert result == "ยอดรวมคือ 1,250 บาท"
+    _, kwargs = client.messages.create.call_args
+    assert "invoice.pdf" in kwargs["messages"][0]["content"]
+    assert "Invoice total: 1,250 THB" in kwargs["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_groq_returns_text():
+    message = MagicMock()
+    message.content = "สรุปแล้วครับ"
+    choice = MagicMock()
+    choice.message = message
+    response = MagicMock()
+    response.choices = [choice]
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    result = await llm.answer_file_query(
+        client, "llama-x", "สรุปให้หน่อย", "some document text", "notes.pdf", "groq",
+    )
+
+    assert result == "สรุปแล้วครับ"
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_gemini_returns_text():
+    response = MagicMock()
+    response.text = "แถวที่ 3 คือ Gadget"
+    client = MagicMock()
+    client.GenerativeModel = MagicMock(return_value=MagicMock(
+        generate_content_async=AsyncMock(return_value=response),
+    ))
+
+    result = await llm.answer_file_query(
+        client, "gemini-x", "แถวที่ 3 คืออะไร", "# Sheet: Data\nA | B\nWidget | 1\nGadget | 2", "report.xlsx", "gemini",
+    )
+
+    assert result == "แถวที่ 3 คือ Gadget"
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_unknown_provider_returns_apology():
+    result = await llm.answer_file_query(
+        MagicMock(), "model", "goal", "text", "file.pdf", "unknown",
+    )
+    assert "ขออภัย" in result
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_swallows_provider_errors():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.answer_file_query(
+        client, "claude-x", "goal", "text", "file.pdf", "anthropic",
+    )
+
+    assert "ขออภัย" in result
+
+
+@pytest.mark.asyncio
+async def test_answer_file_query_truncates_long_file_text_and_notes_it():
+    long_text = "a" * (llm._ANSWER_FILE_QUERY_MAX_CHARS + 5000)
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_text_block("ok")])
+    )
+
+    # goal ตั้งใจใช้ข้อความไทยล้วน (ไม่มีตัวอักษร "a") กันชนกับการนับ "a" ของเนื้อหาไฟล์ด้านล่าง
+    await llm.answer_file_query(client, "claude-x", "สรุปให้หน่อย", long_text, "big.pdf", "anthropic")
+
+    _, kwargs = client.messages.create.call_args
+    sent_content = kwargs["messages"][0]["content"]
+    # ตัดที่ _ANSWER_FILE_QUERY_MAX_CHARS ตัวอักษรของเนื้อหาไฟล์เท่านั้น (ไม่ใช่ทั้ง prompt)
+    assert sent_content.count("a") == llm._ANSWER_FILE_QUERY_MAX_CHARS
+    assert "ตัดแสดงแค่บางส่วน" in sent_content
+
+
+# --- pdf/xlsx (ต่อ): llm.answer_image_query() (Attached Image Query) ---
+
+_FAKE_PNG_BYTES = b"\x89PNG\r\n\x1a\nfake image bytes"
+
+
+@pytest.mark.asyncio
+async def test_answer_image_query_anthropic_sends_base64_image_block():
+    client = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_fake_anthropic_response([_fake_text_block("ในภาพเห็นใบเสร็จร้านกาแฟ")])
+    )
+
+    result = await llm.answer_image_query(
+        client, "claude-x", "ในภาพนี้มีอะไรบ้าง", _FAKE_PNG_BYTES, "receipt.png", "anthropic",
+    )
+
+    assert result == "ในภาพเห็นใบเสร็จร้านกาแฟ"
+    _, kwargs = client.messages.create.call_args
+    content_blocks = kwargs["messages"][0]["content"]
+    image_block = next(b for b in content_blocks if b["type"] == "image")
+    assert image_block["source"]["media_type"] == "image/png"
+    text_block = next(b for b in content_blocks if b["type"] == "text")
+    assert "receipt.png" in text_block["text"]
+
+
+@pytest.mark.asyncio
+async def test_answer_image_query_groq_sends_data_url_image():
+    message = MagicMock()
+    message.content = "รูปนี้คือแมวสีส้ม"
+    choice = MagicMock()
+    choice.message = message
+    response = MagicMock()
+    response.choices = [choice]
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+
+    result = await llm.answer_image_query(
+        client, "llama-vision-x", "ในรูปคืออะไร", _FAKE_PNG_BYTES, "cat.jpg", "groq",
+    )
+
+    assert result == "รูปนี้คือแมวสีส้ม"
+    _, kwargs = client.chat.completions.create.call_args
+    image_part = next(p for p in kwargs["messages"][1]["content"] if p["type"] == "image_url")
+    assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_answer_image_query_gemini_sends_inline_image_data():
+    response = MagicMock()
+    response.text = "ภาพนี้เป็นสไลด์นำเสนอ"
+    client = MagicMock()
+    client.GenerativeModel = MagicMock(return_value=MagicMock(
+        generate_content_async=AsyncMock(return_value=response),
+    ))
+
+    result = await llm.answer_image_query(
+        client, "gemini-x", "ภาพนี้คืออะไร", _FAKE_PNG_BYTES, "slide.webp", "gemini",
+    )
+
+    assert result == "ภาพนี้เป็นสไลด์นำเสนอ"
+    _, kwargs = client.GenerativeModel.return_value.generate_content_async.call_args
+    parts = kwargs["contents"][0]["parts"]
+    image_part = next(p for p in parts if "mime_type" in p)
+    assert image_part["mime_type"] == "image/webp"
+    assert image_part["data"] == _FAKE_PNG_BYTES
+
+
+@pytest.mark.asyncio
+async def test_answer_image_query_unknown_provider_returns_apology():
+    result = await llm.answer_image_query(
+        MagicMock(), "model", "goal", _FAKE_PNG_BYTES, "file.png", "unknown",
+    )
+    assert "ขออภัย" in result
+
+
+@pytest.mark.asyncio
+async def test_answer_image_query_swallows_provider_errors():
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("API down"))
+
+    result = await llm.answer_image_query(
+        client, "claude-x", "goal", _FAKE_PNG_BYTES, "file.png", "anthropic",
+    )
+
+    assert "ขออภัย" in result
+
+
 # --- W19-4: llm.route_multi_turn_strategy() (Orchestrator & Planner Agent, multi-turn) ---
 
 

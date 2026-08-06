@@ -1,12 +1,12 @@
 {
   "website": "opensource-demo.orangehrmlive.com",
-  "version": 10,
-  "generated_at": 1785750491.8359902,
+  "version": 11,
+  "generated_at": 1785926051.086589,
   "pages": [
     {
       "name": "หน้าเข้าสู่ระบบ",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/auth/login",
-      "description": "หน้าเว็บสำหรับให้ผู้ใช้งานกรอกชื่อผู้ใช้และรหัสผ่านเพื่อเข้าสู่ระบบ OrangeHRM",
+      "description": "หน้าสำหรับกรอกชื่อผู้ใช้และรหัสผ่านเพื่อเข้าสู่ระบบ OrangeHRM",
       "menu_path": [
         "หน้าเข้าสู่ระบบ"
       ],
@@ -84,11 +84,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าแดชบอร์ดหลักระบบ",
+      "name": "หน้าแดชบอร์ดระบบ",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/dashboard/index",
-      "description": "หน้าจอหลักของระบบ OrangeHRM สำหรับดูภาพรวมและเข้าถึงเมนูการใช้งานต่างๆ",
+      "description": "หน้าหลักของระบบจัดการทรัพยากรบุคคลสำหรับดูภาพรวมและเข้าถึงเมนูการใช้งานต่างๆ",
       "menu_path": [
-        "หน้าแดชบอร์ดหลักระบบ"
+        "หน้าแดชบอร์ดระบบ"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -284,11 +284,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าจัดการผู้ใช้ระบบ",
+      "name": "จัดการผู้ใช้ระบบ",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/admin/viewSystemUsers",
-      "description": "หน้าระบบสำหรับค้นหา ดูข้อมูล และจัดการผู้ใช้งานในระบบ OrangeHRM",
+      "description": "หน้านี้ใช้สำหรับค้นหา เพิ่ม และจัดการข้อมูลผู้ใช้งานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าจัดการผู้ใช้ระบบ"
+        "จัดการผู้ใช้ระบบ"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -597,34 +597,7 @@
             }
           ],
           "selector": "div.oxd-table-card",
-          "item_count": 50
-        },
-        {
-          "name": "List Item Pattern",
-          "ui_type": "List Item",
-          "components": [
-            "Action Button"
-          ],
-          "buttons": [
-            {
-              "text": "1",
-              "description": "",
-              "has_icon": false,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "pagination navigation",
-              "selector": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
-              "is_nav_menu_item": true,
-              "is_form_submit": false,
-              "tier": "nav",
-              "frame_index": 0
-            }
-          ],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
-          "item_count": 3
+          "item_count": 21
         }
       ],
       "filters": [
@@ -641,7 +614,7 @@
     {
       "name": "จัดการสัญชาติ",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/admin/nationality",
-      "description": "หน้าสำหรับดูและจัดการรายการสัญชาติในระบบ OrangeHRM",
+      "description": "หน้านี้ใช้สำหรับจัดการและแสดงรายการสัญชาติในระบบ OrangeHRM",
       "menu_path": [
         "จัดการสัญชาติ"
       ],
@@ -922,7 +895,7 @@
     {
       "name": "ตั้งค่าธีมองค์กร",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/admin/addTheme",
-      "description": "หน้าสำหรับปรับแต่งและเผยแพร่ธีมสีของระบบ OrangeHRM ให้เข้ากับองค์กร",
+      "description": "หน้าสำหรับจัดการและปรับแต่งธีมสีหรือการสร้างแบรนด์องค์กรของระบบ OrangeHRM",
       "menu_path": [
         "ตั้งค่าธีมองค์กร"
       ],
@@ -1204,11 +1177,11 @@
       "tabs": []
     },
     {
-      "name": "รายชื่อพนักงาน",
+      "name": "หน้าจัดการพนักงาน PIM",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewEmployeeList",
-      "description": "หน้ารายการพนักงานสำหรับจัดการ ค้นหา และดูข้อมูลพนักงานทั้งหมดในระบบ",
+      "description": "หน้ารายชื่อพนักงานในระบบ OrangeHRM สำหรับค้นหาและจัดการข้อมูลพนักงาน",
       "menu_path": [
-        "รายชื่อพนักงาน"
+        "หน้าจัดการพนักงาน PIM"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -1525,34 +1498,7 @@
             }
           ],
           "selector": "div.oxd-table-card",
-          "item_count": 50
-        },
-        {
-          "name": "List Item Pattern",
-          "ui_type": "List Item",
-          "components": [
-            "Action Button"
-          ],
-          "buttons": [
-            {
-              "text": "1",
-              "description": "",
-              "has_icon": false,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "pagination navigation",
-              "selector": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
-              "is_nav_menu_item": true,
-              "is_form_submit": false,
-              "tier": "nav",
-              "frame_index": 0
-            }
-          ],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
-          "item_count": 6
+          "item_count": 34
         }
       ],
       "filters": [
@@ -1838,11 +1784,11 @@
       "tabs": []
     },
     {
-      "name": "รายงานพนักงาน OrangeHRM",
+      "name": "Defined and Predefined Reports",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewDefinedPredefinedReports",
-      "description": "หน้านี้ใช้สำหรับจัดการและดูรายงานที่กำหนดไว้ล่วงหน้าของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับจัดการและดูรายงานที่กำหนดไว้ล่วงหน้าของระบบ OrangeHRM",
       "menu_path": [
-        "รายงานพนักงาน OrangeHRM"
+        "Defined and Predefined Reports"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -2182,7 +2128,7 @@
     {
       "name": "Leave List",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/leave/viewLeaveList",
-      "description": "หน้ารายการการลาสำหรับตรวจสอบและค้นหาข้อมูลการลาของพนักงาน",
+      "description": "หน้าสำหรับค้นหาและตรวจสอบรายการการลาของพนักงานในระบบ OrangeHRM",
       "menu_path": [
         "Leave List"
       ],
@@ -2347,22 +2293,6 @@
           "is_form_submit": false,
           "tier": "core",
           "frame_index": 0
-        },
-        {
-          "text": "×",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "button",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "div.oxd-toast-close.oxd-toast-close--info",
-          "xpath": "/html/body[1]/div[1]/div[2]/div[1]/div[2]/div[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
         }
       ],
       "forms": [
@@ -2485,11 +2415,11 @@
       "tabs": []
     },
     {
-      "name": "หน้ายื่นใบลา",
+      "name": "หน้าสมัครการลา",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/leave/applyLeave",
-      "description": "หน้าเว็บสำหรับกรอกและส่งคำขอลาหยุดงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับยื่นคำขอลาหยุดงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้ายื่นใบลา"
+        "หน้าสมัครการลา"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -2690,11 +2620,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าประวัติการลาของฉัน",
+      "name": "รายการลาของฉัน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/leave/viewMyLeaveList",
-      "description": "หน้านี้ใช้สำหรับตรวจสอบและค้นหาประวัติการลาของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับตรวจสอบและค้นหาประวัติการลาของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าประวัติการลาของฉัน"
+        "รายการลาของฉัน"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -2857,22 +2787,6 @@
           "is_form_submit": false,
           "tier": "core",
           "frame_index": 0
-        },
-        {
-          "text": "×",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "button",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "div.oxd-toast-close.oxd-toast-close--info",
-          "xpath": "/html/body[1]/div[1]/div[2]/div[1]/div[2]/div[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
         }
       ],
       "forms": [
@@ -2983,11 +2897,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าบันทึกเวลาพนักงาน",
+      "name": "Timesheet Employee",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/time/viewEmployeeTimesheet",
-      "description": "หน้าเว็บสำหรับดูและจัดการข้อมูลการลงเวลาทำงานของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับดูและจัดการบันทึกเวลาทำงานของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าบันทึกเวลาพนักงาน"
+        "Timesheet Employee"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -3206,9 +3120,676 @@
       "tabs": []
     },
     {
+      "name": "หน้าจัดการผู้สมัครงาน",
+      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/recruitment/viewCandidates",
+      "description": "หน้ารายการผู้สมัครงานในระบบสรรหาบุคลากรเพื่อให้ผู้ใช้งานค้นหาและจัดการข้อมูลผู้สมัครได้",
+      "menu_path": [
+        "หน้าจัดการผู้สมัครงาน"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "sidepanel",
+          "selector": "a.oxd-brand",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "none",
+          "data_testid": "",
+          "icon_hint": "chevron left",
+          "selector": "button.oxd-icon-button.oxd-main-menu-button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Upgrade",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.orangehrm-upgrade-link",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Upgrade",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-glass-button.orangehrm-upgrade-button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Candidates",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "topbar menu",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Vacancies",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "topbar menu",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "Help",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "question lg",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "caret up fill",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Reset",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[4]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Search",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[4]/button[2]",
+          "is_nav_menu_item": false,
+          "is_form_submit": true,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Add",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "plus",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "OrangeHRM, Inc",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > div > div > input",
+          "frame_index": 0
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Oxd Main Menu Item Wrapper",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Admin",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "sidepanel",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            }
+          ],
+          "selector": "li.oxd-main-menu-item-wrapper",
+          "item_count": 12
+        },
+        {
+          "name": "Oxd Form Row",
+          "ui_type": "List Item",
+          "components": [
+            "Badge"
+          ],
+          "buttons": [],
+          "selector": "div.oxd-form-row",
+          "item_count": 3
+        },
+        {
+          "name": "Oxd Table Header Cell",
+          "ui_type": "List Item",
+          "components": [
+            "Badge"
+          ],
+          "buttons": [],
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
+          "item_count": 6
+        },
+        {
+          "name": "Oxd Table Card",
+          "ui_type": "Grid Item",
+          "components": [
+            "Badge",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "eye fill",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(7) > div > button:nth-of-type(1)",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[1]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            },
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "trash",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(7) > div > button:nth-of-type(2)",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[7]/div[1]/button[2]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            }
+          ],
+          "selector": "div.oxd-table-card",
+          "item_count": 50
+        },
+        {
+          "name": "List Item Pattern",
+          "ui_type": "List Item",
+          "components": [
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "1",
+              "description": "",
+              "has_icon": false,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "pagination navigation",
+              "selector": "button.oxd-pagination-page-item.oxd-pagination-page-item--page.oxd-pagination-page-item--page-selected",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[4]/nav[1]/ul[1]/li[1]/button[1]",
+              "is_nav_menu_item": true,
+              "is_form_submit": false,
+              "tier": "nav",
+              "frame_index": 0
+            }
+          ],
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(4) > nav > ul > li:nth-of-type(1)",
+          "item_count": 3
+        }
+      ],
+      "filters": [
+        "Candidates\nJob Title\n-- Select --\nVacancy\n-- Select --\nHiring Manager\n-- Select --\nStatus\n-- Select --\nCandidate Name\nKeywords\nDate of Application\n \nMethod of Application\n-- Select --\nReset\nSearch",
+        "Candidates",
+        "Candidates",
+        "Candidates",
+        "Job Title\n-- Select --\nVacancy\n-- Select --\nHiring Manager\n-- Select --\nStatus\n-- Select --\nCandidate Name\nKeywords\nDate of Application\n \nMethod of Application\n-- Select --\nReset\nSearch"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    },
+    {
+      "name": "หน้าจัดการตำแหน่งงานว่าง",
+      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/recruitment/viewJobVacancy",
+      "description": "หน้านี้ใช้สำหรับค้นหา ดูรายการ และเพิ่มข้อมูลตำแหน่งงานว่างในระบบสรรหาบุคลากร",
+      "menu_path": [
+        "หน้าจัดการตำแหน่งงานว่าง"
+      ],
+      "breadcrumb": [],
+      "buttons": [
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "sidepanel",
+          "selector": "a.oxd-brand",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "none",
+          "data_testid": "",
+          "icon_hint": "chevron left",
+          "selector": "button.oxd-icon-button.oxd-main-menu-button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Upgrade",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "a.orangehrm-upgrade-link",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Upgrade",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-glass-button.orangehrm-upgrade-button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Candidates",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "topbar menu",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(1) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[1]/a[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "Vacancies",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "topbar menu",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "Help",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "question lg",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
+          "is_nav_menu_item": true,
+          "is_form_submit": false,
+          "tier": "nav",
+          "frame_index": 0
+        },
+        {
+          "text": "",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "caret up fill",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Reset",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Search",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[2]/form[1]/div[2]/button[2]",
+          "is_nav_menu_item": false,
+          "is_form_submit": true,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "Add",
+          "description": "",
+          "has_icon": true,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "plus",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(1) > button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[1]/button[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
+          "text": "OrangeHRM, Inc",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        }
+      ],
+      "forms": [
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "Search",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "input.oxd-input.oxd-input--active",
+          "frame_index": 0
+        }
+      ],
+      "tables": [],
+      "ui_patterns": [
+        {
+          "name": "Oxd Main Menu Item Wrapper",
+          "ui_type": "List Item",
+          "components": [
+            "Title",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "Admin",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "sidepanel",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            }
+          ],
+          "selector": "li.oxd-main-menu-item-wrapper",
+          "item_count": 12
+        },
+        {
+          "name": "Oxd Grid Item",
+          "ui_type": "Grid Item",
+          "components": [
+            "Badge"
+          ],
+          "buttons": [],
+          "selector": "div.oxd-grid-item.oxd-grid-item--gutters",
+          "item_count": 4
+        },
+        {
+          "name": "Oxd Table Header Cell",
+          "ui_type": "List Item",
+          "components": [
+            "Badge"
+          ],
+          "buttons": [],
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
+          "item_count": 5
+        },
+        {
+          "name": "Oxd Table Card",
+          "ui_type": "Grid Item",
+          "components": [
+            "Badge",
+            "Action Button"
+          ],
+          "buttons": [
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "trash",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(1)",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[1]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            },
+            {
+              "text": "",
+              "description": "",
+              "has_icon": true,
+              "aria_label": "",
+              "title": "",
+              "role": "",
+              "data_testid": "",
+              "icon_hint": "pencil fill",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(6) > div > button:nth-of-type(2)",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[6]/div[1]/button[2]",
+              "is_nav_menu_item": false,
+              "is_form_submit": false,
+              "tier": "core",
+              "frame_index": 0
+            }
+          ],
+          "selector": "div.oxd-table-card",
+          "item_count": 12
+        }
+      ],
+      "filters": [
+        "Vacancies\nJob Title\n-- Select --\nVacancy\n-- Select --\nHiring Manager\n-- Select --\nStatus\n-- Select --\nReset\nSearch",
+        "Vacancies",
+        "Vacancies",
+        "Vacancies",
+        "Job Title\n-- Select --\nVacancy\n-- Select --\nHiring Manager\n-- Select --\nStatus\n-- Select --\nReset\nSearch"
+      ],
+      "search_box": true,
+      "modals": [],
+      "tabs": []
+    },
+    {
       "name": "Personal Details",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewPersonalDetails/empNumber/7",
-      "description": "หน้าจอแสดงและแก้ไขข้อมูลส่วนบุคคลของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับดูและแก้ไขข้อมูลส่วนตัวของพนักงานในระบบ OrangeHRM",
       "menu_path": [
         "Personal Details"
       ],
@@ -3367,7 +3948,7 @@
           "role": "",
           "data_testid": "",
           "icon_hint": "",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(5) > button",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
           "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/form[1]/div[5]/button[1]",
           "is_nav_menu_item": false,
           "is_form_submit": true,
@@ -3419,7 +4000,7 @@
         {
           "field_name": "",
           "label": "",
-          "placeholder": "yyyy-mm-dd",
+          "placeholder": "yyyy-dd-mm",
           "required": false,
           "input_type": "text",
           "validation": "",
@@ -3429,11 +4010,21 @@
         {
           "field_name": "",
           "label": "",
-          "placeholder": "yyyy-mm-dd",
+          "placeholder": "yyyy-dd-mm",
           "required": false,
           "input_type": "text",
           "validation": "",
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(3) > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div > input",
+          "frame_index": 0
+        },
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div:nth-of-type(2) > input",
           "frame_index": 0
         },
         {
@@ -3469,7 +4060,7 @@
         {
           "field_name": "",
           "label": "",
-          "placeholder": "yyyy-mm-dd",
+          "placeholder": "yyyy-dd-mm",
           "required": false,
           "input_type": "text",
           "validation": "",
@@ -3479,7 +4070,7 @@
         {
           "field_name": "",
           "label": "",
-          "placeholder": "yyyy-mm-dd",
+          "placeholder": "yyyy-dd-mm",
           "required": false,
           "input_type": "text",
           "validation": "",
@@ -3564,32 +4155,12 @@
           "item_count": 3
         },
         {
-          "name": "Oxd Grid Item",
-          "ui_type": "Grid Item",
-          "components": [
-            "Badge"
-          ],
-          "buttons": [],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(1) > div > div:nth-of-type(1)",
-          "item_count": 3
-        },
-        {
           "name": "Oxd Table Header Cell",
           "ui_type": "List Item",
           "components": [],
           "buttons": [],
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(3) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
           "item_count": 7
-        },
-        {
-          "name": "Oxd Table Cell",
-          "ui_type": "List Item",
-          "components": [
-            "Badge"
-          ],
-          "buttons": [],
-          "selector": "div.oxd-table-cell.oxd-padding-cell",
-          "item_count": 8
         }
       ],
       "filters": [],
@@ -3609,11 +4180,11 @@
       ]
     },
     {
-      "name": "Manage Performance Reviews",
+      "name": "Performance Review Search",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/performance/searchEvaluatePerformanceReview",
       "description": "หน้าสำหรับค้นหาและประเมินผลการปฏิบัติงานของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "Manage Performance Reviews"
+        "Performance Review Search"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -3871,14 +4442,6 @@
           "buttons": [],
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
           "item_count": 3
-        },
-        {
-          "name": "Oxd Table Cell",
-          "ui_type": "List Item",
-          "components": [],
-          "buttons": [],
-          "selector": "div.oxd-table-cell.oxd-padding-cell",
-          "item_count": 7
         }
       ],
       "filters": [
@@ -3893,11 +4456,11 @@
       "tabs": []
     },
     {
-      "name": "Performance Trackers ของฉัน",
+      "name": "Performance Trackers",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/performance/viewMyPerformanceTrackerList",
-      "description": "หน้านี้ใช้สำหรับดูและจัดการรายการ Performance Trackers ของพนักงานแต่ละคน",
+      "description": "หน้าสำหรับดูและติดตามบันทึกผลการปฏิบัติงานของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "Performance Trackers ของฉัน"
+        "Performance Trackers"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -4097,7 +4660,7 @@
     {
       "name": "Employee Trackers",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/performance/viewEmployeePerformanceTrackerList",
-      "description": "หน้าสำหรับค้นหาและติดตามผลการปฏิบัติงานของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับค้นหาและติดตามบันทึกผลการปฏิบัติงานของพนักงานในระบบ OrangeHRM",
       "menu_path": [
         "Employee Trackers"
       ],
@@ -4361,11 +4924,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าไดเรกทอรีพนักงาน",
+      "name": "Directory",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/directory/viewDirectory",
-      "description": "หน้านี้ใช้สำหรับค้นหาและดูข้อมูลรายชื่อพนักงานทั้งหมดในองค์กร",
+      "description": "หน้าไดเรกทอรีพนักงานสำหรับค้นหาและดูข้อมูลบุคลากรในองค์กร",
       "menu_path": [
-        "หน้าไดเรกทอรีพนักงาน"
+        "Directory"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -4591,11 +5154,11 @@
       "tabs": []
     },
     {
-      "name": "หน้าลบข้อมูลพนักงาน",
+      "name": "Purge Employee",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/maintenance/purgeEmployee",
-      "description": "หน้าสำหรับยืนยันการลบข้อมูลพนักงานในระบบ OrangeHRM โดยต้องกรอกข้อมูลยืนยันตัวตนก่อนดำเนินการ",
+      "description": "หน้าสำหรับยืนยันการลบข้อมูลพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าลบข้อมูลพนักงาน"
+        "Purge Employee"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -4678,11 +5241,11 @@
       "tabs": []
     },
     {
-      "name": "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย",
+      "name": "Assign Claim",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/viewAssignClaim",
-      "description": "หน้าสำหรับผู้ดูแลระบบในการค้นหาและมอบหมายการเรียกร้องค่าใช้จ่ายให้กับพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับมอบหมายการเบิกจ่ายค่าใช้จ่ายให้กับพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย"
+        "Assign Claim"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -4993,7 +5556,7 @@
             }
           ],
           "selector": "div.oxd-table-card",
-          "item_count": 4
+          "item_count": 3
         }
       ],
       "filters": [
@@ -5008,11 +5571,11 @@
       "tabs": []
     },
     {
-      "name": "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย",
-      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/assignClaim/id/7",
-      "description": "หน้าเว็บสำหรับผู้ดูแลระบบในการตรวจสอบและมอบหมายคำร้องขอเบิกจ่ายค่าใช้จ่ายให้กับพนักงาน",
+      "name": "Submit Claim Details",
+      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/submitClaim/id/3",
+      "description": "หน้ารายละเอียดสำหรับการยื่นคำร้องเบิกค่าใช้จ่ายในระบบ OrangeHRM",
       "menu_path": [
-        "หน้ามอบหมายการเรียกร้องค่าใช้จ่าย"
+        "Submit Claim Details"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -5081,7 +5644,7 @@
           "frame_index": 0
         },
         {
-          "text": "Assign Claim",
+          "text": "Submit Claim",
           "description": "",
           "has_icon": false,
           "aria_label": "",
@@ -5089,8 +5652,8 @@
           "role": "",
           "data_testid": "",
           "icon_hint": "topbar menu",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(5) > a",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[5]/a[1]",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
           "is_nav_menu_item": true,
           "is_form_submit": false,
           "tier": "nav",
@@ -5129,6 +5692,22 @@
           "frame_index": 0
         },
         {
+          "text": "Cancel",
+          "description": "",
+          "has_icon": false,
+          "aria_label": "",
+          "title": "",
+          "role": "",
+          "data_testid": "",
+          "icon_hint": "",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--danger.orangehrm-sm-button",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[9]/button[2]",
+          "is_nav_menu_item": false,
+          "is_form_submit": false,
+          "tier": "core",
+          "frame_index": 0
+        },
+        {
           "text": "OrangeHRM, Inc",
           "description": "",
           "has_icon": false,
@@ -5195,7 +5774,7 @@
           ],
           "buttons": [
             {
-              "text": "Submit Claim",
+              "text": "My Claims",
               "description": "",
               "has_icon": false,
               "aria_label": "",
@@ -5203,26 +5782,26 @@
               "role": "",
               "data_testid": "",
               "icon_hint": "topbar menu",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
               "is_nav_menu_item": true,
               "is_form_submit": false,
               "tier": "nav",
               "frame_index": 0
             }
           ],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3)",
           "item_count": 3
         },
         {
-          "name": "Assign Claim",
+          "name": "Submit Claim",
           "ui_type": "List Item",
           "components": [
             "Badge"
           ],
           "buttons": [],
           "selector": "div.oxd-form-row",
-          "item_count": 4
+          "item_count": 3
         },
         {
           "name": "Oxd Table Header Cell",
@@ -5237,7 +5816,15 @@
           "ui_type": "List Item",
           "components": [],
           "buttons": [],
-          "selector": "div.oxd-table-cell.oxd-padding-cell",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(4) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(1)",
+          "item_count": 4
+        },
+        {
+          "name": "Oxd Table Cell",
+          "ui_type": "List Item",
+          "components": [],
+          "buttons": [],
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div:nth-of-type(4) > div > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1)",
           "item_count": 4
         },
         {
@@ -5255,11 +5842,11 @@
       "tabs": []
     },
     {
-      "name": "Assign Claim",
-      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/assignClaim",
-      "description": "หน้าสำหรับสร้างและมอบหมายคำขอเบิกเงินหรือค่าใช้จ่ายให้กับพนักงาน",
+      "name": "หน้าจัดการการเบิกจ่าย",
+      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/viewClaim",
+      "description": "หน้าสำหรับค้นหาและยื่นเรื่องการเบิกจ่ายค่าใช้จ่ายพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "Assign Claim"
+        "หน้าจัดการการเบิกจ่าย"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -5328,7 +5915,7 @@
           "frame_index": 0
         },
         {
-          "text": "Assign Claim",
+          "text": "My Claims",
           "description": "",
           "has_icon": false,
           "aria_label": "",
@@ -5336,247 +5923,8 @@
           "role": "",
           "data_testid": "",
           "icon_hint": "topbar menu",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(5) > a",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[5]/a[1]",
-          "is_nav_menu_item": true,
-          "is_form_submit": false,
-          "tier": "nav",
-          "frame_index": 0
-        },
-        {
-          "text": "",
-          "description": "",
-          "has_icon": true,
-          "aria_label": "",
-          "title": "Help",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "question lg",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > div > button",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/div[1]/button[1]",
-          "is_nav_menu_item": true,
-          "is_form_submit": false,
-          "tier": "nav",
-          "frame_index": 0
-        },
-        {
-          "text": "Cancel",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "button.oxd-button.oxd-button--medium.oxd-button--ghost",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/form[1]/div[4]/button[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
-        },
-        {
-          "text": "Create",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/form[1]/div[4]/button[2]",
-          "is_nav_menu_item": false,
-          "is_form_submit": true,
-          "tier": "core",
-          "frame_index": 0
-        },
-        {
-          "text": "OrangeHRM, Inc",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(3) > p:nth-of-type(2) > a",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[3]/p[2]/a[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
-        }
-      ],
-      "forms": [
-        {
-          "field_name": "",
-          "label": "",
-          "placeholder": "Search",
-          "required": false,
-          "input_type": "text",
-          "validation": "",
-          "selector": "input.oxd-input.oxd-input--active",
-          "frame_index": 0
-        }
-      ],
-      "tables": [],
-      "ui_patterns": [
-        {
-          "name": "Oxd Main Menu Item Wrapper",
-          "ui_type": "List Item",
-          "components": [
-            "Title",
-            "Action Button"
-          ],
-          "buttons": [
-            {
-              "text": "Admin",
-              "description": "",
-              "has_icon": true,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "sidepanel",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > ul > li:nth-of-type(1) > a",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/ul[1]/li[1]/a[1]",
-              "is_nav_menu_item": false,
-              "is_form_submit": false,
-              "tier": "core",
-              "frame_index": 0
-            }
-          ],
-          "selector": "li.oxd-main-menu-item-wrapper",
-          "item_count": 12
-        },
-        {
-          "name": "Oxd Topbar Body Nav Tab",
-          "ui_type": "List Item",
-          "components": [
-            "Action Button"
-          ],
-          "buttons": [
-            {
-              "text": "Submit Claim",
-              "description": "",
-              "has_icon": false,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "topbar menu",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2) > a",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[2]/a[1]",
-              "is_nav_menu_item": true,
-              "is_form_submit": false,
-              "tier": "nav",
-              "frame_index": 0
-            }
-          ],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(2)",
-          "item_count": 3
-        },
-        {
-          "name": "Create Claim Request",
-          "ui_type": "List Item",
-          "components": [
-            "Badge"
-          ],
-          "buttons": [],
-          "selector": "div.oxd-form-row",
-          "item_count": 3
-        }
-      ],
-      "filters": [],
-      "search_box": true,
-      "modals": [],
-      "tabs": []
-    },
-    {
-      "name": "Assign Claim",
-      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/claim/viewAssignClaim",
-      "description": "หน้าสำหรับมอบหมายการเรียกร้องค่าใช้จ่ายให้กับพนักงานในระบบ OrangeHRM",
-      "menu_path": [
-        "Assign Claim"
-      ],
-      "breadcrumb": [],
-      "buttons": [
-        {
-          "text": "",
-          "description": "",
-          "has_icon": true,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "sidepanel",
-          "selector": "a.oxd-brand",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[1]/a[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
-        },
-        {
-          "text": "",
-          "description": "",
-          "has_icon": true,
-          "aria_label": "",
-          "title": "",
-          "role": "none",
-          "data_testid": "",
-          "icon_hint": "chevron left",
-          "selector": "button.oxd-icon-button.oxd-main-menu-button",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/aside[1]/nav[1]/div[2]/div[1]/div[1]/button[1]",
-          "is_nav_menu_item": true,
-          "is_form_submit": false,
-          "tier": "nav",
-          "frame_index": 0
-        },
-        {
-          "text": "Upgrade",
-          "description": "",
-          "has_icon": true,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "a.orangehrm-upgrade-link",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": false,
-          "tier": "core",
-          "frame_index": 0
-        },
-        {
-          "text": "Upgrade",
-          "description": "",
-          "has_icon": true,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "button.oxd-glass-button.orangehrm-upgrade-button",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[1]/div[2]/a[1]/button[1]",
-          "is_nav_menu_item": true,
-          "is_form_submit": false,
-          "tier": "nav",
-          "frame_index": 0
-        },
-        {
-          "text": "Employee Claims",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "topbar menu",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(4) > a",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[4]/a[1]",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > header > div:nth-of-type(2) > nav > ul > li:nth-of-type(3) > a",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[1]/header[1]/div[2]/nav[1]/ul[1]/li[3]/a[1]",
           "is_nav_menu_item": true,
           "is_form_submit": false,
           "tier": "nav",
@@ -5647,7 +5995,7 @@
           "frame_index": 0
         },
         {
-          "text": "Assign Claim",
+          "text": "Submit Claim",
           "description": "",
           "has_icon": true,
           "aria_label": "",
@@ -5688,6 +6036,26 @@
           "input_type": "text",
           "validation": "",
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > div > div > input",
+          "frame_index": 0
+        },
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "yyyy-dd-mm",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > div > div > input",
+          "frame_index": 0
+        },
+        {
+          "field_name": "",
+          "label": "",
+          "placeholder": "yyyy-dd-mm",
+          "required": false,
+          "input_type": "text",
+          "validation": "",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(2) > div > div:nth-of-type(2) > div > div:nth-of-type(2) > div > div > input",
           "frame_index": 0
         }
       ],
@@ -5756,16 +6124,6 @@
           ],
           "buttons": [],
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(1) > div > div:nth-of-type(1)",
-          "item_count": 4
-        },
-        {
-          "name": "Oxd Grid Item",
-          "ui_type": "Grid Item",
-          "components": [
-            "Badge"
-          ],
-          "buttons": [],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > form > div:nth-of-type(2) > div > div:nth-of-type(1)",
           "item_count": 3
         },
         {
@@ -5774,14 +6132,14 @@
           "components": [],
           "buttons": [],
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(1)",
-          "item_count": 5
+          "item_count": 4
         },
         {
           "name": "Oxd Table Header Cell",
           "ui_type": "List Item",
           "components": [],
           "buttons": [],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(4)",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(3)",
           "item_count": 4
         },
         {
@@ -5800,8 +6158,8 @@
               "role": "",
               "data_testid": "",
               "icon_hint": "",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(9) > div > button",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[9]/div[1]/button[1]",
+              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(2) > div:nth-of-type(1) > div > div:nth-of-type(8) > div > button",
+              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[2]/div[3]/div[1]/div[2]/div[1]/div[1]/div[8]/div[1]/button[1]",
               "is_nav_menu_item": false,
               "is_form_submit": false,
               "tier": "core",
@@ -5809,26 +6167,26 @@
             }
           ],
           "selector": "div.oxd-table-card",
-          "item_count": 4
+          "item_count": 3
         }
       ],
       "filters": [
-        "Employee Claims\nEmployee Name\nReference Id\nEvent Name\n-- Select --\nStatus\n-- Select --\nFrom Date\nTo Date\nInclude\nCurrent Employees Only\nReset\nSearch",
-        "Employee Claims",
-        "Employee Claims",
-        "Employee Claims",
-        "Employee Name\nReference Id\nEvent Name\n-- Select --\nStatus\n-- Select --\nFrom Date\nTo Date\nInclude\nCurrent Employees Only\nReset\nSearch"
+        "My Claims\nReference Id\nEvent Name\n-- Select --\nStatus\n-- Select --\nFrom Date\nTo Date\nReset\nSearch",
+        "My Claims",
+        "My Claims",
+        "My Claims",
+        "Reference Id\nEvent Name\n-- Select --\nStatus\n-- Select --\nFrom Date\nTo Date\nReset\nSearch"
       ],
       "search_box": true,
       "modals": [],
       "tabs": []
     },
     {
-      "name": "Buzz Feed หน้าหลัก",
+      "name": "หน้าฟีดโพสต์ Buzz",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/buzz/viewBuzz",
-      "description": "หน้าสำหรับแชร์โพสต์ รูปภาพ วิดีโอ และดูโพสต์ยอดนิยมของพนักงานในบริษัท",
+      "description": "หน้าสำหรับดู แชร์ และโต้ตอบกับโพสต์ข้อความ รูปภาพ หรือวิดีโอภายในองค์กร",
       "menu_path": [
-        "Buzz Feed หน้าหลัก"
+        "หน้าฟีดโพสต์ Buzz"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -6076,68 +6434,6 @@
           ],
           "selector": "li.oxd-main-menu-item-wrapper",
           "item_count": 12
-        },
-        {
-          "name": "Oxd Grid Item",
-          "ui_type": "Grid Item",
-          "components": [
-            "Image",
-            "Title",
-            "Description",
-            "Action Button"
-          ],
-          "buttons": [
-            {
-              "text": "",
-              "description": "",
-              "has_icon": true,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "three dots",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(1) > div > div:nth-of-type(2) > li > button",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[1]/div[1]/div[2]/li[1]/button[1]",
-              "is_nav_menu_item": false,
-              "is_form_submit": false,
-              "tier": "core",
-              "frame_index": 0
-            },
-            {
-              "text": "",
-              "description": "",
-              "has_icon": true,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "chat text fill",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(1)",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[3]/div[1]/button[1]",
-              "is_nav_menu_item": false,
-              "is_form_submit": false,
-              "tier": "core",
-              "frame_index": 0
-            },
-            {
-              "text": "",
-              "description": "",
-              "has_icon": true,
-              "aria_label": "",
-              "title": "",
-              "role": "",
-              "data_testid": "",
-              "icon_hint": "share fill",
-              "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1) > button:nth-of-type(2)",
-              "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[3]/div[1]/div[1]/div[3]/div[1]/button[2]",
-              "is_nav_menu_item": false,
-              "is_form_submit": false,
-              "tier": "decorative",
-              "frame_index": 0
-            }
-          ],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div:nth-of-type(1) > div > div:nth-of-type(3) > div:nth-of-type(1)",
-          "item_count": 6
         }
       ],
       "filters": [
@@ -6248,24 +6544,8 @@
           "role": "",
           "data_testid": "",
           "icon_hint": "",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(4) > button",
+          "selector": "button.oxd-button.oxd-button--medium.oxd-button--secondary.orangehrm-left-space",
           "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[1]/form[1]/div[4]/button[1]",
-          "is_nav_menu_item": false,
-          "is_form_submit": true,
-          "tier": "core",
-          "frame_index": 0
-        },
-        {
-          "text": "Save",
-          "description": "",
-          "has_icon": false,
-          "aria_label": "",
-          "title": "",
-          "role": "",
-          "data_testid": "",
-          "icon_hint": "",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(2) > button",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[1]/form[1]/div[2]/button[1]",
           "is_nav_menu_item": false,
           "is_form_submit": true,
           "tier": "core",
@@ -6281,7 +6561,7 @@
           "data_testid": "",
           "icon_hint": "plus",
           "selector": "button.oxd-button.oxd-button--medium.oxd-button--text",
-          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[3]/div[1]/div[1]/button[1]",
+          "xpath": "/html/body[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/div[1]/div[2]/div[2]/div[1]/div[1]/button[1]",
           "is_nav_menu_item": false,
           "is_form_submit": false,
           "tier": "core",
@@ -6313,16 +6593,6 @@
           "input_type": "text",
           "validation": "",
           "selector": "div > div:nth-of-type(1) > div:nth-of-type(1) > aside > nav > div:nth-of-type(2) > div > div > input",
-          "frame_index": 0
-        },
-        {
-          "field_name": "",
-          "label": "",
-          "placeholder": "",
-          "required": false,
-          "input_type": "text",
-          "validation": "",
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div > form > div:nth-of-type(1) > div > div > div > div:nth-of-type(2) > input",
           "frame_index": 0
         }
       ],
@@ -6406,7 +6676,7 @@
             "Badge"
           ],
           "buttons": [],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(1) > form > div:nth-of-type(1)",
+          "selector": "div.oxd-form-row",
           "item_count": 3
         },
         {
@@ -6414,7 +6684,7 @@
           "ui_type": "List Item",
           "components": [],
           "buttons": [],
-          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(3) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
+          "selector": "div > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(2) > div > div > div > div:nth-of-type(2) > div:nth-of-type(2) > div:nth-of-type(3) > div > div:nth-of-type(1) > div > div:nth-of-type(2)",
           "item_count": 7
         }
       ],
@@ -6437,7 +6707,7 @@
     {
       "name": "หน้าข้อมูลติดต่อฉุกเฉินพนักงาน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewEmergencyContacts/empNumber/7",
-      "description": "หน้าเว็บสำหรับจัดการและแสดงรายชื่อผู้ติดต่อกรณีฉุกเฉินของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าเว็บสำหรับจัดการและแสดงรายการผู้ติดต่อฉุกเฉินของพนักงานในระบบ OrangeHRM",
       "menu_path": [
         "หน้าข้อมูลติดต่อฉุกเฉินพนักงาน"
       ],
@@ -6675,11 +6945,11 @@
       ]
     },
     {
-      "name": "จัดการข้อมูลการเข้าเมืองพนักงาน",
+      "name": "จัดการข้อมูลการเข้าเมือง",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewImmigration/empNumber/7",
-      "description": "หน้าสำหรับดูและจัดการข้อมูลเอกสารการเข้าเมืองหรือวีซ่าของพนักงานในระบบ OrangeHRM",
+      "description": "หน้าสำหรับดูและจัดการข้อมูลการตรวจคนเข้าเมืองของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "จัดการข้อมูลการเข้าเมืองพนักงาน"
+        "จัดการข้อมูลการเข้าเมือง"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -6935,11 +7205,11 @@
       ]
     },
     {
-      "name": "หน้าจัดการข้อมูลพนักงาน",
+      "name": "หน้าจัดการข้อมูลงานพนักงาน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewJobDetails/empNumber/7",
-      "description": "หน้ารายละเอียดงานและการจ้างงานของพนักงานในระบบ OrangeHRM",
+      "description": "หน้านี้ใช้สำหรับดูและจัดการรายละเอียดข้อมูลการจ้างงานของพนักงานแต่ละคนในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าจัดการข้อมูลพนักงาน"
+        "หน้าจัดการข้อมูลงานพนักงาน"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -7145,11 +7415,11 @@
       ]
     },
     {
-      "name": "หน้าข้อมูลเงินเดือนพนักงาน",
+      "name": "Salary List",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewSalaryList/empNumber/7",
-      "description": "หน้านี้ใช้สำหรับแสดงและจัดการรายการข้อมูลเงินเดือนของพนักงานในระบบ OrangeHRM",
+      "description": "หน้ารายการข้อมูลเงินเดือนของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "หน้าข้อมูลเงินเดือนพนักงาน"
+        "Salary List"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -7353,11 +7623,11 @@
       ]
     },
     {
-      "name": "รายงานความสัมพันธ์พนักงาน",
+      "name": "รายละเอียดรายงานพนักงาน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewReportToDetails/empNumber/7",
-      "description": "หน้านี้ใช้สำหรับแสดงและจัดการข้อมูลสายการบังคับบัญชาหรือรายงานผู้ใต้บังคับบัญชาของพนักงานในระบบ PIM",
+      "description": "หน้านี้ใช้สำหรับดูและจัดการข้อมูลรายงานความสัมพันธ์ของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "รายงานความสัมพันธ์พนักงาน"
+        "รายละเอียดรายงานพนักงาน"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -7553,11 +7823,11 @@
       ]
     },
     {
-      "name": "ประวัติพนักงาน: คุณสมบัติ",
+      "name": "หน้าจัดการคุณสมบัติพนักงาน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewQualifications/empNumber/7",
-      "description": "หน้าสำหรับจัดการและแสดงข้อมูลคุณสมบัติและการศึกษาของพนักงานในระบบ OrangeHRM",
+      "description": "หน้านี้ใช้สำหรับดูและจัดการข้อมูลคุณสมบัติ ทักษะ และประวัติการทำงานของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "ประวัติพนักงาน: คุณสมบัติ"
+        "หน้าจัดการคุณสมบัติพนักงาน"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -7830,11 +8100,11 @@
       ]
     },
     {
-      "name": "จัดการข้อมูลสมาชิกพนักงาน",
+      "name": "หน้าสมาชิกพนักงาน",
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/pim/viewMemberships/empNumber/7",
-      "description": "หน้าสำหรับดูและจัดการข้อมูลการเป็นสมาชิกของพนักงานในระบบ OrangeHRM",
+      "description": "จัดการและแสดงข้อมูลการเป็นสมาชิกของพนักงานในระบบ OrangeHRM",
       "menu_path": [
-        "จัดการข้อมูลสมาชิกพนักงาน"
+        "หน้าสมาชิกพนักงาน"
       ],
       "breadcrumb": [],
       "buttons": [
@@ -8088,15 +8358,10 @@
       "error": "TimeoutError: Page.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\"button.oxd-glass-button.orangehrm-upgrade-button\")\n    - locator resolved to <button size=\"large\" type=\"button\" data-v-78cde31a=\"\" data-v-e60dde10=\"\" class=\"oxd-glass-button orangehrm-upgrade-button\">…</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <a target=\"_blank\" data-v-e60dde10=\"\" class=\"orangehrm-upgrade-link\" href=\"https://orangehrm.com/open-source/upgrade-to-advanced\">…</a> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <a target=\"_blank\" data-v-e60dde10=\"\" class=\"orangehrm-upgrade-link\" href=\"https://orangehrm.com/open-source/upgrade-to-advanced\">…</a> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    9 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <a target=\"_blank\" data-v-e60dde10=\"\" class=\"orangehrm-upgrade-link\" href=\"https://orangehrm.com/open-source/upgrade-to-advanced\">…</a> intercepts pointer events\n    - retrying click action\n      - waiting 500ms\n"
     },
     {
-      "url": "https://opensource-demo.orangehrmlive.com/web/index.php/recruitment/viewRecruitmentModule",
-      "phase": "goto",
-      "error": "TimeoutError: Timeout 8000ms exceeded."
-    },
-    {
       "url": "https://opensource-demo.orangehrmlive.com/web/index.php/maintenance/purgeEmployee",
       "phase": "login",
       "error": "เจอฟอร์ม login ซ้ำระหว่าง crawl หลัง login ไปแล้วก่อนหน้านี้ — ไม่ login ซ้ำ ถือเป็น dead-end (manual ส่วนนี้อาจไม่สมบูรณ์เพราะสำรวจได้ในสถานะยังไม่ login)"
     }
   ],
-  "summary": "เว็บไซต์ opensource-demo.orangehrmlive.com คือระบบบริหารจัดการทรัพยากรบุคคล (HRM) แบบครบวงจรที่ช่วยให้องค์กรสามารถดูแลพนักงานได้ตั้งแต่เริ่มเข้างานจนถึงการเกษียณ ระบบนี้ช่วยอำนวยความสะดวกในการจัดการข้อมูลส่วนตัวของพนักงาน การบันทึกเวลาทำงาน การลา การเบิกจ่ายค่าใช้จ่าย และการประเมินผลการปฏิบัติงาน นอกจากนี้ยังมีฟังก์ชันสำหรับผู้บริหารและฝ่าย HR ในการตรวจสอบรายงาน ติดตามสถานะการทำงาน และจัดการสิทธิ์ผู้ใช้งานภายในระบบได้อย่างมีประสิทธิภาพ พร้อมทั้งมีพื้นที่ส่วนกลางสำหรับให้พนักงานอัปเดตข่าวสารและปฏิสัมพันธ์กันภายในองค์กร"
+  "summary": "เว็บไซต์นี้คือระบบบริหารจัดการทรัพยากรบุคคลแบบครบวงจรที่ช่วยให้องค์กรสามารถดูแลพนักงานตั้งแต่เริ่มสมัครงาน บันทึกประวัติ ข้อมูลส่วนตัว การจ้างงาน เงินเดือน ไปจนถึงการจัดการโครงสร้างและรายงานต่างๆ ภายในระบบเดียว พนักงานสามารถใช้งานผ่านระบบเพื่อยื่นคำขอลาหยุด บันทึกเวลาทำงาน ยื่นเรื่องเบิกจ่ายค่าใช้จ่าย ตลอดจนติดตามผลการปฏิบัติงานของตนเองได้อย่างสะดวกสบาย ผู้ดูแลระบบและหัวหน้างานยังสามารถบริหารจัดการบุคลากร ค้นหาข้อมูล ติดตามประสิทธิภาพการทำงาน และตรวจสอบคำขอต่างๆ ของทีมได้อย่างมีประสิทธิภาพ นอกจากนี้ยังมีฟีเจอร์ไดเรกทอรีองค์กรและพื้นที่โซเชียลภายในเพื่อให้พนักงานสามารถติดต่อสื่อสารและแชร์ข้อมูลร่วมกันได้อีกด้วย"
 }

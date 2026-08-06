@@ -13,7 +13,7 @@ start/shutdown/acquire) ก่อนเข้า TestClient context เสมอ
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -199,6 +199,383 @@ def test_create_task_general_chat_goal_never_touches_browser_or_orchestrator(cli
     # ไม่มีทาง touch pool/session registry เลยจาก general-chat path นี้
     assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
     assert client.get("/sessions").json() == []
+
+
+# --- W20 (MODULE 0): "/context" special command interceptor ---
+
+
+def test_create_task_context_command_never_touches_browser_or_orchestrator(client):
+    """goal ที่มีคำสั่ง "/context" ปน -> ต้องไม่แตะ Orchestrator/pool/session เลย ตอบผ่าน
+    llm.context_inspection_reply() ตรงๆ (ไม่ใช่ chat_response/answer_file_query)"""
+    with patch(
+        "backend.app.api.routes.llm.context_inspection_reply", new_callable=AsyncMock,
+    ) as mock_reply, patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_reply.return_value = "🎯 [ความเข้าใจของ Agent ต่อคำสั่งนี้]\n- Goal: ..."
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "/context เล่นเพลงที่ 3",
+        })
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        final = _poll_until(client, task_id)
+
+    assert final["status"] == "done"
+    assert "ความเข้าใจของ Agent" in final["result"]["message"]
+    assert final["result"]["steps"] == 0
+    assert final["result"]["success"] is True
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    mock_reply.assert_awaited_once()
+    # คำสั่ง "/context" เองต้องถูกตัดออกก่อนส่งเข้า LLM วิเคราะห์ ไม่ปนกับคำสั่งจริง
+    assert mock_reply.await_args.args[2] == "เล่นเพลงที่ 3"
+    assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
+    assert client.get("/sessions").json() == []
+
+
+def test_create_task_context_command_takes_priority_over_attached_file(client):
+    """"/context" ต้องเช็คก่อนแม้แต่ attached_file — ไม่ไป parse ไฟล์/เรียก
+    answer_file_query() เลยตอนอยู่ใน /context mode"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch(
+            "backend.app.api.routes.llm.context_inspection_reply", new_callable=AsyncMock,
+        ) as mock_reply,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_reply.return_value = "🎯 [ความเข้าใจของ Agent ต่อคำสั่งนี้]\n- Goal: ..."
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "/context อ่านตารางหน้าแรกให้หน่อย",
+            "attached_file_name": "report.xlsx", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, resp.json()["task_id"])
+
+    mock_load_bytes.assert_not_called()
+    mock_answer_file_query.assert_not_called()
+    mock_reply.assert_awaited_once()
+
+
+def test_generate_plan_context_command_short_circuits_to_qa_without_calling_llm(client):
+    """"/context" -> /api/generate_plan ต้องคืน is_qa=True ทันที ไม่เรียก
+    Orchestrator.generate_plan() เลย (ให้ frontend ข้าม plan-approval ไปตอบ inspection ตรงๆ)"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_generate_plan = AsyncMock(return_value="should not be called")
+        MockOrchestrator.return_value.generate_plan = mock_generate_plan
+
+        resp = client.post("/api/generate_plan", json={
+            "url": "https://example.com", "goal": "/context ทำอะไรอยู่",
+        })
+
+    assert resp.status_code == 200
+    assert resp.json()["is_qa"] is True
+    assert resp.json()["plan"] == ""
+    mock_generate_plan.assert_not_called()
+
+
+# --- pdf/xlsx: attached-file query (never touches browser, priority over general-chat) ---
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+    return base64.b64encode(raw).decode("ascii")
+
+
+def test_create_task_attached_file_never_touches_browser_or_orchestrator(client):
+    """แนบไฟล์มา -> ต้องตอบจากเนื้อหาไฟล์ตรงๆ ไม่แตะ Orchestrator/pool/session เลย
+    (เหมือน general-chat path แต่ผ่าน load_manual_bytes/answer_file_query แทน)"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_load_bytes.return_value = "Invoice total: 1,250 THB"
+        mock_answer_file_query.return_value = "ยอดรวม 1,250 บาทครับ"
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "ยอดรวมเท่าไหร่",
+            "attached_file_name": "invoice.pdf", "attached_file_content_base64": _b64(b"fake pdf bytes"),
+        })
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        final = _poll_until(client, task_id)
+
+    assert final["status"] == "done"
+    assert final["result"]["message"] == "ยอดรวม 1,250 บาทครับ"
+    assert final["result"]["steps"] == 0
+    assert final["result"]["success"] is True
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    mock_load_bytes.assert_called_once_with(b"fake pdf bytes", "invoice.pdf")
+    mock_answer_file_query.assert_awaited_once()
+    assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
+    assert client.get("/sessions").json() == []
+
+
+def test_create_task_attached_file_takes_priority_over_general_chat_check(client):
+    """goal ที่จะ match is_general_chat_query() ด้วย (เช่น "สวัสดี") แต่มีไฟล์แนบมาด้วย —
+    ต้องไปทาง attached-file path เสมอ ไม่ใช่ general-chat (เช็คไฟล์ก่อน keyword matching)"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes", return_value="doc text") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch(
+            "backend.app.api.routes.llm.chat_response", new_callable=AsyncMock,
+        ) as mock_chat_response,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_answer_file_query.return_value = "reply from file"
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "สวัสดีครับ",
+            "attached_file_name": "note.pdf", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, resp.json()["task_id"])
+
+    mock_load_bytes.assert_called_once()
+    mock_answer_file_query.assert_awaited_once()
+    mock_chat_response.assert_not_called()
+
+
+def test_create_task_attached_file_read_error_returns_graceful_message(client):
+    """ไฟล์อ่านไม่ได้ (นามสกุลไม่รองรับ/เสีย) ต้องคืนข้อความ error ที่อ่านได้ผ่านช่องทาง
+    ปกติเหมือนคำตอบสำเร็จ ไม่ใช่ 500/task status "error" ที่ frontend ไม่รู้จะแสดงอะไร"""
+    with (
+        patch(
+            "backend.app.api.routes.load_manual_bytes",
+            side_effect=ValueError("Unsupported file type: .docx"),
+        ),
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "อ่านให้หน่อย",
+            "attached_file_name": "notes.docx", "attached_file_content_base64": _b64(b"x"),
+        })
+        final = _poll_until(client, resp.json()["task_id"])
+
+    assert final["status"] == "done"
+    assert final["result"]["success"] is True
+    assert "notes.docx" in final["result"]["message"]
+    mock_answer_file_query.assert_not_called()
+
+
+def test_create_task_attached_image_routes_to_answer_image_query_not_answer_file_query(client):
+    """ไฟล์แนบเป็นรูปภาพ (.png) -> ต้องไปทาง llm.answer_image_query() ตรงๆ (ส่ง bytes ดิบ)
+    ไม่ผ่าน load_manual_bytes()/answer_file_query() เลย (ไม่มี "text" ให้ extract)"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch(
+            "backend.app.api.routes.llm.answer_image_query", new_callable=AsyncMock,
+        ) as mock_answer_image_query,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_answer_image_query.return_value = "ในภาพเห็นใบเสร็จร้านกาแฟครับ"
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "ในภาพนี้มีอะไรบ้าง",
+            "attached_file_name": "receipt.png", "attached_file_content_base64": _b64(b"fake png bytes"),
+        })
+        assert resp.status_code == 202
+        final = _poll_until(client, resp.json()["task_id"])
+
+    assert final["status"] == "done"
+    assert final["result"]["message"] == "ในภาพเห็นใบเสร็จร้านกาแฟครับ"
+    assert final["result"]["success"] is True
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    mock_load_bytes.assert_not_called()
+    mock_answer_file_query.assert_not_called()
+    mock_answer_image_query.assert_awaited_once_with(
+        ANY, "model-x", "ในภาพนี้มีอะไรบ้าง", b"fake png bytes", "receipt.png", ANY,
+    )
+
+
+def test_create_task_attached_file_base64_decode_error_returns_graceful_message(client):
+    """base64 payload เสีย (decode ไม่ได้เลย) -> คืนข้อความ error ผ่านช่องทางปกติเหมือนกัน
+    ไม่ใช่ 500 — ต้องไม่ไปถึง load_manual_bytes()/answer_image_query() เลย"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_image_query", new_callable=AsyncMock,
+        ) as mock_answer_image_query,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+
+        resp = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "อ่านให้หน่อย",
+            "attached_file_name": "broken.pdf", "attached_file_content_base64": "not-valid-base64!!!",
+        })
+        final = _poll_until(client, resp.json()["task_id"])
+
+    assert final["status"] == "done"
+    assert final["result"]["success"] is True
+    assert "broken.pdf" in final["result"]["message"]
+    mock_load_bytes.assert_not_called()
+    mock_answer_image_query.assert_not_called()
+
+
+def test_generate_plan_attached_file_short_circuits_to_qa_without_calling_llm(client):
+    """แนบไฟล์มา -> /api/generate_plan ต้องคืน is_qa=True ทันที ไม่เรียก
+    Orchestrator.generate_plan()/classify_intent() เลย (deterministic, ไม่มี LLM call)"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_generate_plan = AsyncMock(return_value="should not be called")
+        MockOrchestrator.return_value.generate_plan = mock_generate_plan
+
+        resp = client.post("/api/generate_plan", json={
+            "url": "https://example.com", "goal": "สรุปให้หน่อย",
+            "attached_file_name": "report.xlsx", "attached_file_content_base64": _b64(b"x"),
+        })
+
+    assert resp.status_code == 200
+    assert resp.json()["is_qa"] is True
+    assert resp.json()["plan"] == ""
+    mock_generate_plan.assert_not_called()
+
+
+# --- pdf/xlsx (บั๊กจริงที่ user รายงาน): file_chat_memory follow-up ---
+# เทิร์น 1 แนบไฟล์ถามสำเร็จ -> เทิร์น 2 ในเซสชันเดียวกันไม่ได้แนบไฟล์ใหม่มา (goal ล้วนๆ,
+# ไม่มี url) แต่ควรตอบต่อจากไฟล์เดิมได้เลย ไม่ตกไปเปิด browser จริงด้วย url ว่างเปล่า
+
+
+def test_create_task_file_chat_memory_answers_followup_without_url_or_browser(client):
+    with (
+        patch("backend.app.api.routes.load_manual_bytes", return_value="Day 1: 8h, Day 2: 8h") as mock_load_bytes,
+        patch(
+            "backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock,
+        ) as mock_answer_file_query,
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_answer_file_query.side_effect = ["สรุปไฟล์ให้แล้วครับ", "แต่ละวันทำงาน 8 ชั่วโมงครับ"]
+
+        turn1 = client.post("/tasks", json={
+            "url": "", "goal": "อ่านไฟล์นี้หน่อย", "session_id": "sess-file-memory",
+            "attached_file_name": "timesheet.xlsx", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, turn1.json()["task_id"])
+
+        turn2 = client.post("/tasks", json={
+            "url": "", "goal": "แต่ละวันทำอะไรบ้าง", "session_id": "sess-file-memory",
+        })
+        final2 = _poll_until(client, turn2.json()["task_id"])
+
+    assert final2["status"] == "done"
+    assert final2["result"]["message"] == "แต่ละวันทำงาน 8 ชั่วโมงครับ"
+    assert final2["result"]["success"] is True
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    assert mock_answer_file_query.await_count == 2
+    second_call_args = mock_answer_file_query.await_args_list[1].args
+    assert second_call_args[2] == "แต่ละวันทำอะไรบ้าง"
+    assert second_call_args[3] == "Day 1: 8h, Day 2: 8h"
+    assert second_call_args[4] == "timesheet.xlsx"
+
+
+def test_create_task_file_chat_memory_falls_through_when_goal_mentions_web_action(client):
+    """เทิร์น 2 มีคำบ่งบอก web action จริงๆ ("ค้นหา") -> ต้องไม่ตอบจาก file memory เดิม
+    ต้องผ่าน Orchestrator.run_task() ตามปกติ"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes", return_value="doc text"),
+        patch("backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock, return_value="reply"),
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+
+        turn1 = client.post("/tasks", json={
+            "url": "", "goal": "อ่านไฟล์นี้หน่อย", "session_id": "sess-file-memory-2",
+            "attached_file_name": "notes.txt", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, turn1.json()["task_id"])
+
+        turn2 = client.post("/tasks", json={
+            "url": "https://example.com", "goal": "ค้นหาสินค้า iPhone ให้หน่อย",
+            "session_id": "sess-file-memory-2",
+        })
+        final2 = _poll_until(client, turn2.json()["task_id"])
+
+    assert final2["status"] == "done"
+    assert final2["result"] == _FAKE_RESULT
+    MockOrchestrator.return_value.run_task.assert_awaited_once()
+
+
+def test_generate_plan_file_chat_memory_followup_short_circuits_to_qa(client):
+    """generate_plan endpoint ต้องคืน is_qa=True ทันทีสำหรับเทิร์นต่อยอดจากไฟล์เดิมด้วย
+    (ไม่ใช่แค่ execute_plan/_run_with_resolved_browser) — ไม่งั้น frontend จะโชว์ plan
+    approval panel ที่ไม่จำเป็นก่อนตอบจาก memory"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes", return_value="doc text"),
+        patch("backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock, return_value="reply"),
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        mock_generate_plan = AsyncMock(return_value="should not be called")
+        MockOrchestrator.return_value.generate_plan = mock_generate_plan
+
+        turn1 = client.post("/tasks", json={
+            "url": "", "goal": "อ่านไฟล์นี้หน่อย", "session_id": "sess-file-memory-3",
+            "attached_file_name": "notes.txt", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, turn1.json()["task_id"])
+
+        resp = client.post("/api/generate_plan", json={
+            "url": "", "goal": "แต่ละวันทำอะไรบ้าง", "session_id": "sess-file-memory-3",
+        })
+
+    assert resp.status_code == 200
+    assert resp.json()["is_qa"] is True
+    assert resp.json()["plan"] == ""
+    mock_generate_plan.assert_not_called()
+
+
+def test_close_session_clears_file_chat_memory_for_file_only_session(client):
+    """session ที่เป็น file-chat ล้วนๆ (ไม่เคยแตะ session_registry/browser เลย) ต้องปิดได้
+    โดยไม่ 404 (ปุ่ม "New Session" เรียก endpoint นี้เสมอ) และเคลียร์ memory จริง — เทิร์นถัดไป
+    ด้วย session_id เดิมหลังปิดต้องกลับไปพฤติกรรมปกติ (ไม่มี memory ให้ตอบจากอีกต่อไป)"""
+    with (
+        patch("backend.app.api.routes.load_manual_bytes", return_value="doc text"),
+        patch("backend.app.api.routes.llm.answer_file_query", new_callable=AsyncMock, return_value="reply"),
+        patch("backend.app.api.routes.Orchestrator") as MockOrchestrator,
+    ):
+        MockOrchestrator._llm_backend.return_value = (MagicMock(), "model-x", None, None, None)
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+
+        turn1 = client.post("/tasks", json={
+            "url": "", "goal": "อ่านไฟล์นี้หน่อย", "session_id": "sess-file-memory-4",
+            "attached_file_name": "notes.txt", "attached_file_content_base64": _b64(b"x"),
+        })
+        _poll_until(client, turn1.json()["task_id"])
+
+        close_resp = client.post("/sessions/sess-file-memory-4/close")
+        assert close_resp.status_code == 200
+
+        # session_id เดิม แต่ memory ถูกเคลียร์ไปแล้ว — ต้อง fall through ไป Orchestrator
+        # ตามปกติแม้ url ว่างเปล่าเหมือนเดิมและ goal เป็นคำถามต่อยอดแบบเดิมทุกประการ
+        turn2 = client.post("/tasks", json={
+            "url": "", "goal": "แต่ละวันทำอะไรบ้าง", "session_id": "sess-file-memory-4",
+        })
+        final2 = _poll_until(client, turn2.json()["task_id"])
+
+    assert final2["status"] == "done"
+    assert final2["result"] == _FAKE_RESULT
+    MockOrchestrator.return_value.run_task.assert_awaited_once()
 
 
 def test_create_task_ordinary_goal_still_uses_orchestrator_normally(client):
