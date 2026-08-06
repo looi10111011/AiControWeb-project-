@@ -406,6 +406,124 @@ def test_load_manual_bytes_xlsx_merged_cell_does_not_break_empty_row_skip():
     assert lines == ["# Sheet: Data", "Name | Hours", "Somchai | 8", "Somsri | 6"]
 
 
+# --- Task7 (W20, "Document Structure & Data Extraction Specialist"): dynamic header/
+# metadata boundary detection — employee metadata (ชื่อ-สกุล/สังกัดแผนก) printed above the
+# real data table must not be folded into the table body as if it were part of the header/
+# data rows, and the header row isn't always row 1. ---
+
+def test_load_manual_bytes_xlsx_splits_metadata_rows_above_detected_header():
+    content = _xlsx_bytes(("Data", [
+        ["ชื่อ-สกุล", "สมชาย ใจดี"],
+        ["สังกัดแผนก", "IT"],
+        ["วันที่", "รายละเอียด", "เวลาทำงาน", "จำนวนชั่วโมง"],
+        ["2026-07-01", "ประชุมทีม", "09:00-17:00", 8],
+    ]))
+    text = load_manual_bytes(content, "timesheet.xlsx")
+    lines = [line for line in text.split("\n") if line]
+    assert lines == [
+        "# Sheet: Data",
+        "## Document Metadata",
+        # sheet.iter_rows() reads the full rectangular used range (max_column across every
+        # row = 4, from the header/data rows below) — these shorter 2-cell metadata rows
+        # pad out to 4 cells with trailing empty strings, same as any other short row would
+        # (see test_load_manual_bytes_xlsx_none_cells_become_empty_string above).
+        "ชื่อ-สกุล | สมชาย ใจดี |  | ",
+        "สังกัดแผนก | IT |  | ",
+        "## Table",
+        "วันที่ | รายละเอียด | เวลาทำงาน | จำนวนชั่วโมง",  # header row itself: plain, defines the labels
+        "วันที่: 2026-07-01 | รายละเอียด: ประชุมทีม | เวลาทำงาน: 09:00-17:00 | จำนวนชั่วโมง: 8",
+    ]
+
+
+def test_load_manual_bytes_xlsx_no_header_keyword_leaves_sheet_unchanged():
+    """ไม่มีแถวไหนตรงกับ header keyword ที่รู้จักเลย (เช่นตารางราคาสินค้าทั่วไป) — ต้องไม่ใส่
+    "## Document Metadata"/"## Table" แทรกเข้ามาเลย และไม่ label คอลัมน์เพิ่ม (คงรูปแบบเดิม
+    positional "a | b" ทุกประการ — feature นี้ scope เฉพาะ sheet ที่ตรงกับ known header keywords)"""
+    content = _xlsx_bytes(("Data", [["Name", "Price"], ["Widget", 9.99]]))
+    text = load_manual_bytes(content, "report.xlsx")
+    assert "## Document Metadata" not in text
+    assert "## Table" not in text
+    assert "Name: " not in text
+    lines = [line for line in text.split("\n") if line]
+    assert lines == ["# Sheet: Data", "Name | Price", "Widget | 9.99"]
+
+
+def test_load_manual_bytes_xlsx_header_on_first_row_still_labels_data_rows():
+    """header keyword เจอที่แถวแรกพอดี (ไม่มี metadata แทรกอยู่ก่อนหน้าให้ต้องแยก section) —
+    ไม่ต้องมี "## Document Metadata"/"## Table" (ไม่มีอะไรให้แยก) แต่แถวข้อมูลยังต้องถูก label
+    ชื่อคอลัมน์กำกับอยู่ดี (ดู test_load_manual_bytes_xlsx_daily_detail_column_stays_labeled_
+    and_readable_across_many_rows ด้านล่างสำหรับเหตุผลเต็ม — บั๊กจริงที่ user รายงาน)"""
+    content = _xlsx_bytes(("Data", [
+        ["วันที่", "รายละเอียด", "เวลาทำงาน", "จำนวนชั่วโมง"],
+        ["2026-07-01", "ประชุมทีม", "09:00-17:00", 8],
+    ]))
+    text = load_manual_bytes(content, "timesheet.xlsx")
+    assert "## Document Metadata" not in text
+    assert "## Table" not in text
+    lines = [line for line in text.split("\n") if line]
+    assert lines == [
+        "# Sheet: Data",
+        "วันที่ | รายละเอียด | เวลาทำงาน | จำนวนชั่วโมง",
+        "วันที่: 2026-07-01 | รายละเอียด: ประชุมทีม | เวลาทำงาน: 09:00-17:00 | จำนวนชั่วโมง: 8",
+    ]
+
+
+def test_load_manual_bytes_xlsx_daily_detail_column_stays_labeled_and_readable_across_many_rows():
+    """บั๊กจริงที่ user รายงาน (พร้อมสกรีนช็อตไฟล์จริง): LLM ยืนยันหนักแน่นว่าคอลัมน์
+    "รายละเอียดการฝึกงาน" "ไม่มีข้อมูล"/"ทุกแถวเว้นว่างไว้" ทั้งที่ในไฟล์จริงมีข้อความ (Setup,
+    Oic claim, ...) อยู่ครบทุกแถว — สาเหตุที่น่าจะเป็นไปได้คือ bare positional "a | b | c" text
+    ที่ยาวหลายสิบแถวทำให้โมเดลนับตำแหน่งคอลัมน์ผิดพลาด ต้อง label ชื่อคอลัมน์กำกับไว้ที่ทุกค่า
+    โดยตรง (ไม่ต้องนับตำแหน่ง) — จำลองโครงสร้างเดียวกับไฟล์จริง (header 1 แถว, ตามด้วยหลายแถว
+    ข้อมูลที่มีคอลัมน์ "รายละเอียดการฝึกงาน" ไม่ว่างเปล่าเลยสักแถว)"""
+    content = _xlsx_bytes(("Data", [
+        ["วันที่", "รายละเอียดการฝึกงาน", "เวลาทำงาน", "ชั่วโมง"],
+        ["1 ก.ค. 69", "Setup", "9.00-18.00", 8],
+        ["2 ก.ค. 69", "Oic claim", "9.00-18.00", 8],
+        ["3 ก.ค. 69", "Oic claim", "9.00-18.00", 8],
+        ["6 ก.ค. 69", "Oic claim", "9.00-18.00", 8],
+    ]))
+    text = load_manual_bytes(content, "timesheet.xlsx")
+    lines = [line for line in text.split("\n") if line]
+    # ทุกแถวข้อมูลต้องมี "รายละเอียดการฝึกงาน: <ค่าจริง>" ปรากฏชัดเจน ไม่ใช่แค่ค่าดิบลอยๆ ที่ต้อง
+    # นับตำแหน่งเทียบ header เอาเอง
+    assert "รายละเอียดการฝึกงาน: Setup" in lines[2]
+    assert "รายละเอียดการฝึกงาน: Oic claim" in lines[3]
+    assert "รายละเอียดการฝึกงาน: Oic claim" in lines[4]
+    assert "รายละเอียดการฝึกงาน: Oic claim" in lines[5]
+    # และต้องกำกับคู่กับ "วันที่" ของแถวเดียวกันด้วย (ไม่ใช่แค่ label เดี่ยวๆ ลอยไม่มีบริบทวันที่)
+    assert lines[2].startswith("วันที่: 1 ก.ค. 69 |")
+    assert lines[3].startswith("วันที่: 2 ก.ค. 69 |")
+
+
+def test_load_manual_bytes_xlsx_merged_title_row_does_not_get_picked_as_header():
+    """บั๊กจริงที่ user รายงาน (ไล่ debug ด้วยไฟล์จริงของ user ตรงๆ): แถวหัวเอกสาร (title) ที่
+    merge ครอบทั้งแถว เช่น "ใบลงเวลาทำงานนักศึกษาฝึกงาน" บังเอิญมีคำว่า "เวลาทำงาน" ปนอยู่เป็น
+    substring — ถ้าเจอ keyword แค่ตัวเดียวก็ถือว่าเป็น header แล้ว แถว title นี้จะถูกเข้าใจผิดว่า
+    เป็น header แทนที่จะเป็น header จริงที่อยู่ถัดไปอีก 2 แถว ทำให้ label ของทุกคอลัมน์ในตารางทั้ง
+    หมดผิดเพี้ยนไปหมด (ทุกค่ากลายเป็น "ใบลงเวลาทำงานนักศึกษาฝึกงาน: ..." แทนชื่อคอลัมน์จริง เช่น
+    "รายละเอียดการฝึกงาน") — ต้องเจอ keyword อย่างน้อย 2 ตัวที่ "ต่างกัน" ถึงจะนับเป็น header แถว
+    title ที่ merge ค่าเดียวซ้ำทั้งแถวจะแมตช์ได้แค่ keyword เดียวเสมอ (ไม่นับเป็น header)"""
+    content = _xlsx_bytes(("Data", [
+        ["ใบลงเวลาทำงานนักศึกษาฝึกงาน"] * 6,  # title row — merged in the real file, "ใบลงเวลา"
+                                                # part of "เวลาทำงาน" false-matches 1 keyword
+        ["ชื่อ-สกุล", "สยามยุทธ์ ผาสีดา"],
+        ["วันที่", "รายละเอียดการฝึกงาน", "เวลาทำงาน", "จาก", "ถึง", "ชั่วโมง"],
+        ["2026-07-01", "Setup", "", "9.00 น.", "18.00 น.", 8],
+    ]))
+    text = load_manual_bytes(content, "timesheet.xlsx")
+    lines = [line for line in text.split("\n") if line]
+    assert lines == [
+        "# Sheet: Data",
+        "## Document Metadata",
+        "ใบลงเวลาทำงานนักศึกษาฝึกงาน | ใบลงเวลาทำงานนักศึกษาฝึกงาน | ใบลงเวลาทำงานนักศึกษาฝึกงาน | "
+        "ใบลงเวลาทำงานนักศึกษาฝึกงาน | ใบลงเวลาทำงานนักศึกษาฝึกงาน | ใบลงเวลาทำงานนักศึกษาฝึกงาน",
+        "ชื่อ-สกุล | สยามยุทธ์ ผาสีดา |  |  |  | ",
+        "## Table",
+        "วันที่ | รายละเอียดการฝึกงาน | เวลาทำงาน | จาก | ถึง | ชั่วโมง",
+        "วันที่: 2026-07-01 | รายละเอียดการฝึกงาน: Setup | เวลาทำงาน:  | จาก: 9.00 น. | ถึง: 18.00 น. | ชั่วโมง: 8",
+    ]
+
+
 # --- Excel extractor: .csv support (spec ระบุ .xlsx / .csv ทั้งคู่ แต่ก่อนหน้านี้
 # load_manual_bytes() รองรับแค่ .xlsx เท่านั้น) ---
 

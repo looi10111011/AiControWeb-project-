@@ -118,6 +118,16 @@ def test_system_prompt_instructs_read_page_data_and_favors_counting():
     assert "favor การนับตรงๆ เสมอ" in llm.SYSTEM_PROMPT
 
 
+# --- W20 (Task12 follow-up, บั๊กจริงที่ user รายงาน): agent เผลอกรอกรหัสผ่านใหม่ซ้ำลงช่อง
+# "Current Password" แทนที่จะเป็นรหัสผ่านจริงที่ user ใช้ล็อกอินอยู่ ทำให้ submit ล้มเหลวเสมอ ---
+
+
+def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
+    assert "Current Password ≠ New Password" in llm.SYSTEM_PROMPT
+    assert "ห้ามกรอกรหัสผ่านใหม่ลงช่อง\n    (ก) เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "ให้เรียก finish_task(success=false) ทันทีก่อนแตะช่อง (ก) เลย" in llm.SYSTEM_PROMPT
+
+
 # --- ป้องกัน agent ยอมแพ้เร็วเกินไป: ต้องลองค้นหาก่อนสรุปว่า "ไม่พบ" ---
 
 
@@ -148,7 +158,17 @@ def test_system_prompt_still_sorts_single_field_lists_alphabetically():
 
 def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
     assert "ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert "Admin (Employee: Surya king, Role: Admin)" in llm.SYSTEM_PROMPT
+
+
+# --- W20 (Task11, "Response Formatter"): readable bullet/card list by default, raw markdown
+# table only when the user explicitly asks for one ---
+
+
+def test_system_prompt_shows_card_list_format_example_not_raw_table():
+    assert "* **Admin**" in llm.SYSTEM_PROMPT
+    assert "• Employee: Surya king" in llm.SYSTEM_PROMPT
+    assert "รวม N รายการ" in llm.SYSTEM_PROMPT
+    assert 'user พิมพ์ขอ "ตาราง"/"table" ตรงๆ ในคำถามเท่านั้น' in llm.SYSTEM_PROMPT
 
 
 def test_finish_task_schema_message_description_reflects_dom_order_rule():
@@ -2010,6 +2030,47 @@ async def test_generate_plan_shows_placeholder_when_current_url_not_provided():
     _, kwargs = client.messages.create.call_args
     prompt = kwargs["messages"][0]["content"]
     assert "ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่" in prompt
+
+
+# --- W20 ("Context-Aware Implicit Execution", บั๊กจริงที่ user รายงาน): llm.generate_plan()
+# ต้องรวมเทิร์นก่อนหน้าเข้า prompt ให้ LLM แก้คำอ้างอิงกำกวมอย่าง "เปิดให้หน่อย" ได้ ---
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_includes_previous_turn_context_when_provided():
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_text_response("1. Open YouTube\n2. Search\n3. Play"))
+
+    await llm.generate_plan(
+        client, "claude-x", "okเปิดให้หน่อย", "", "anthropic",
+        previous_user_goal="ขอเพลงเศร้าๆหน่อย",
+        previous_assistant_message='แนะนำเพลง "โปรดส่งใครมารักฉันที" ครับ',
+    )
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "ขอเพลงเศร้าๆหน่อย" in prompt
+    assert "โปรดส่งใครมารักฉันที" in prompt
+    assert "บทสนทนาก่อนหน้า" in prompt
+    assert "Context-Aware Implicit Execution" in prompt
+    assert "Complete Execution on Content Platforms" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_omits_previous_turn_section_when_not_provided():
+    """เทิร์นแรกของ session (ไม่มีเทิร์นก่อนหน้าจริงๆ) — ต้องไม่มี "บทสนทนาก่อนหน้า" ตัวจริง
+    (ที่กรอกข้อมูล User/Assistant มาให้) แทรกอยู่ในพรอมต์เลย (คงพฤติกรรมเดิมทุกประการก่อนมี
+    feature นี้) — instruction ทั่วไปที่ *พูดถึง* คำว่า "บทสนทนาก่อนหน้า" (บอกว่าให้ไปดูตรงนั้น
+    ถ้ามี) ยังคงอยู่เสมอ ไม่ใช่สิ่งที่เทสต์นี้เช็ค เช็คเฉพาะ header ของ block ข้อมูลจริงที่ควร
+    หายไปเมื่อไม่มีเทิร์นก่อนหน้า"""
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=_fake_text_response("1. Do X"))
+
+    await llm.generate_plan(client, "claude-x", "goal", "page text", "anthropic")
+
+    _, kwargs = client.messages.create.call_args
+    prompt = kwargs["messages"][0]["content"]
+    assert "เทิร์นล่าสุดก่อนหน้า Goal นี้" not in prompt
 
 
 # --- W19-5: llm.normalize_extraction_query() (Structured Data Extractor Engine) ---

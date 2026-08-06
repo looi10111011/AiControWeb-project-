@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-04)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-06)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -3012,6 +3012,86 @@
            Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ + 1 เคสใน
            test_site_learning_crawler.py — เหมือนเดิมทุกประการกับที่ W52 บันทึกไว้ ไม่มี
            regression ใหม่จากงานชุดนี้)
+
+  [x] W59  Task1-12 (W20.txt spec): /context mode, UI polish, context-aware planning,
+           validation-error retry flow — เสร็จแล้ว (2026-08-06)
+
+           (1) Task1/2 — Intent routing (FAST_CHAT_MODE/BROWSER_ACTION_MODE) แยกคำถาม
+           general chat ออกจาก browser action ชัดเจนขึ้น + "/context" inspection mode
+           ใหม่: interceptor สั้นๆ ก่อน browser/file action ใดๆ ทั้งใน
+           _run_with_resolved_browser() และ generate_plan() วิ่งผ่าน 7-phase "Context
+           Extraction and Validation Agent" framework แบบ silent reasoning (hidden จาก
+           user ตามที่ขอ) เหลือแค่การ์ด "🎯 Agent Understanding / 💡 Plan" กระชับๆ
+
+           (2) Task3/4/6 — Test Console UI polish: live preview เงื่อนไข (ซ่อนตอน
+           chat_reply/headless=false) + URL header locked/edit state ไม่ทับ pending
+           override, chat bubble แสดง thumbnail/file card ของไฟล์แนบ (รูปจริงถ้ายังอยู่
+           ใน session, การ์ดไฟล์ทั่วไปถ้าไม่ใช่), quick action autocomplete dropdown
+           แยกจาก "/context"/"/quickaction" commands ชัดเจน + tooltip บนปุ่มไอคอน
+
+           (3) Task5/10 — Account Security & Password Actions protocol: บังคับ goal
+           เกี่ยวกับเปลี่ยนรหัสผ่าน/ตั้งค่าความปลอดภัยต้องผ่าน User Profile Menu มุมขวาบน
+           เท่านั้น (ห้าม sidebar "My Info") + perception.py แปะ marker "[เมนูโปรไฟล์/
+           บัญชีผู้ใช้]" ให้ element ที่ตรง pattern จริง (แก้บั๊กที่พบ live บน
+           opensource-demo.orangehrmlive.com: ancestor exclusion เดิมเช็คแค่ class name
+           ไปตัด element ที่คลิกได้จริงทิ้งเพราะ parent ที่ไม่ใช่ตัวคลิกได้ก็ match class
+           เดียวกัน — แก้โดยเช็ค cursor:pointer ของ ancestor เพิ่มด้วย)
+
+           (4) Task7/8 — Excel extraction correctness: header-row detection ต้อง match
+           keyword คอลัมน์ ≥2 คำ (ไม่ใช่ ≥1) กัน false-positive จากแถวหัวเรื่องที่มีคำ
+           บังเอิญตรงกับ keyword คอลัมน์ + render แต่ละแถวเป็น "column_label: value" ชัดๆ
+           (ไม่ใช่ "a | b | c" ตำแหน่งเปล่าๆ) กัน LLM นับคอลัมน์ผิดพลาดตอนมีหลายแถว —
+           ยืนยันด้วยไฟล์ .xlsx จริงของ user
+
+           (5) Task9/Context Loss — Context-Aware Implicit Execution: generate_plan()
+           รับ previous_user_goal/previous_assistant_message เพิ่ม แก้บั๊ก "เปิดให้หน่อย"
+           หลัง assistant เพิ่งแนะนำเพลง/สิ่งของไปก่อนหน้าไม่ถูกดึง entity มารวมกับ goal
+           (planner หลุดไปเปิดแค่หน้าแพลตฟอร์มเฉยๆ ไม่ search/เล่นต่อ) + บังคับ 4 ขั้นตอน
+           เต็มสำหรับ YouTube/Spotify-แบบ goal (navigate→search→submit→เลือกผลลัพธ์)
+
+           (6) Task11 — Response Formatter: เปลี่ยน default การตอบข้อมูลหลายแถว/หลาย
+           field จาก raw table เป็นการ์ด (ชื่อตัวหนา + indented "• field: value") + สรุป
+           หัวข้อ "📊 ... (รวม N รายการ)" ตาราง render เฉพาะตอน user ขอ "ตาราง"/"table"
+           ตรงๆ เท่านั้น
+
+           (7) Task12 (+ 2 follow-up รอบนี้) — UI Validation Error Detection: hard-stop
+           guard ใหม่ (แยกจาก guard เดิมก่อน finish_task ที่มี nudge-retry) เช็คทันทีหลัง
+           fill/click-Save ถ้าหน้าเว็บโชว์ validation error ค้างอยู่ — วนซ้ำ 3 รอบตาม
+           feedback จริงจาก user:
+             - รอบแรก: จำกัดแค่ click/submit ปุ่ม Save เท่านั้น (ไม่รวม fill เพราะกลัว
+               false positive จาก "* Required" ของช่องพี่น้องที่ยังไม่ได้กรอก)
+             - รอบสอง ("แก้ไขให้ครบ"): เปิดให้ fill trigger ด้วยตามสเปคเดิม แต่กรอง
+               "* Required" ล้วนๆ ทิ้งด้วย _is_bare_required_message() แทน + เปลี่ยนข้อความ
+               final message จาก "รายงานแล้วจบ" เป็นชวน user ตอบกลับด้วยค่าใหม่ (ใช้
+               session/page ที่ยังเปิดค้างอยู่ + previous_assistant_message ที่มีอยู่แล้ว
+               จาก (5) ให้ turn ถัดไปกรอกแทนที่ในช่องเดิมได้เอง ไม่ต้องมี infrastructure
+               ใหม่) — เพิ่มปุ่ม/ช่องพิมพ์ correction-form ในหน้า UI ให้ตอบได้จากตรงนั้นเลย
+             - รอบสาม (บั๊กจริงที่พบ live): หน้า login ของ OrangeHRM มี
+               `<div class="orangehrm-login-error">` เป็นคำใบ้ demo credentials คงที่
+               (ไม่ใช่ error จริง) อยู่นอก `<form>` เสมอ แต่ชื่อ class มีคำว่า "error"
+               ปนอยู่ทำให้ selector เดิมจับผิด hard-stop ตั้งแต่ fill ช่องแรกโดยไม่มี error
+               จริงเกิดขึ้น — แก้ด้วย _scan_validation_errors(within_form=True) จำกัด scope
+               การสแกนให้อยู่แค่ใน `<form>` เท่านั้น (guard เดิมก่อน finish_task ไม่แตะ ยัง
+               scope ทั้งหน้าเหมือนเดิมเป็น backstop) + พบบั๊กคู่กัน: agent กรอกรหัสผ่านใหม่
+               ซ้ำลงช่อง Current Password (ทั้งที่ต้องเป็นรหัสผ่านจริงที่ล็อกอินอยู่) — เพิ่ม
+               กฎ "Current Password ≠ New Password" ใน SYSTEM_PROMPT บังคับให้ถามหารหัสผ่าน
+               ปัจจุบันจาก user ก่อนถ้าไม่รู้จริงๆ ห้ามเดา
+             - แก้บั๊ก UI คู่กัน: correction-form input โดน renderTranscript() (2.5s poll)
+               ทับ DOM ทิ้งทุกครั้งที่พิมพ์ (ไม่มี anti-jump guard เหมือน pending-plan
+               textarea) ทำให้พิมพ์ไม่ได้เลย — เพิ่ม guard เดียวกัน (skip re-render ทั้งก้อน
+               ขณะ .correction-input มี focus) + ปรับดีไซน์การ์ดให้เหมือน approval-bubble
+               (title + boxed input + action row, โทนสี critical แทน warning)
+
+           รันจริงยืนยันหลายจุดผ่าน Browser tool บน opensource-demo.orangehrmlive.com
+           (marker เมนูโปรไฟล์, validation error selector, orangehrm-login-error false
+           positive) + จำลอง re-render ผ่าน javascript_tool ยืนยัน correction-input ไม่ถูก
+           ทำลายระหว่าง focus — unit test เพิ่ม: test_orchestrator.py (+ผ่านหลายเคสใหม่
+           รวม fill-trigger, bare-required filter, form-scoped selector), test_llm.py
+           (+เคส Current Password rule), test_ingestion.py/test_perception.py/
+           test_api.py ตามงาน Task ที่เกี่ยวข้อง — รันเต็มชุด backend/tests/: ผ่านหมดยกเว้น
+           9 เคสเดิมใน test_orchestrator.py ที่ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้
+           ในเครื่อง dev นี้ (เหมือนเดิมทุกประการกับ baseline ที่ W58 บันทึกไว้ ไม่มี
+           regression ใหม่)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

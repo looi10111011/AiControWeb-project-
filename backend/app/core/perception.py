@@ -211,6 +211,60 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
+  // W20 (Task10, "Element Finder/Selector Resolver" — บั๊กจริงที่ user รายงาน: agent มองหา
+  // "Profile Menu/Avatar" มุมขวาบนไม่เจอ แล้วเผลอไปคลิก element ใกล้เคียงผิด เช่นปุ่ม "Help")
+  // — ตรวจ DOM จริงของ opensource-demo.orangehrmlive.com พบสาเหตุตรงๆ: ตัว trigger จริงคือ
+  // `<span class="oxd-userdropdown-tab">` ที่ไม่มีทั้ง role/tabindex/onclick attribute (ไม่
+  // ตรงกับ selectors มาตรฐานด้านบนเลย) และไม่มีทั้ง title/aria-label/data-test* (ไม่ตรงกับ
+  // ICON_LABEL_SELECTOR ด้านบนด้วย) มีแค่ cursor:pointer + class name เป็นสัญญาณเดียวว่ากดได้
+  // จริง — element นี้จึง "ไม่เคยติด index เลยตั้งแต่ต้น" ไม่ใช่แค่ label ไม่ดี ทำให้ LLM ไม่มี
+  // ทางเลือกอื่นนอกจากเดา index ของ element อื่นที่ใกล้เคียงในหน้า header แทน — จับด้วย
+  // class-name pattern ที่เว็บ dashboard/SPA สมัยใหม่มักใช้ตั้งชื่อ (userdropdown, profile-menu,
+  // account-menu, avatar) + cursor:pointer เป็นชั้นสำรองที่ 2 ต่อจาก ICON_LABEL_SELECTOR
+  const PROFILE_MENU_CLASS_RE = /user-?dropdown|profile-?menu|account-?menu|avatar/i;
+  // W20 (Task10, ต่อ): DOM จริงของ OrangeHRM ยืนยันว่า class pattern นี้ไม่ได้ตรงแค่ตัว
+  // container เดียว — child ข้างใน (<img class="oxd-userdropdown-img">, <p class="oxd-
+  // userdropdown-name">, <i class="...oxd-userdropdown-icon">) ก็ตรง regex เดียวกันด้วยตัวเอง
+  // และ cursor:pointer สืบทอดมาจาก parent ด้วย ถ้าไม่กันไว้จะได้ index แยกกัน 4 อัน สำหรับพื้นที่
+  // คลิกเดียวกัน (เหมือนปัญหา badge-leaf ที่ isBadgeLikeLeaf() กันไว้ด้านบน แต่ทิศทางตรงข้าม
+  // — ที่นี่ต้องมองหา "บรรพบุรุษ" ที่ตรง pattern เดียวกัน ไม่ใช่ "ลูก") ข้าม candidate ที่มี
+  // บรรพบุรุษตรง pattern นี้อยู่แล้วไปเลย ให้บรรพบุรุษตัวนอกสุดเป็นตัวแทนพื้นที่คลิกทั้งก้อน —
+  // แต่ต้องเช็ค cursor:pointer ของบรรพบุรุษด้วยเสมอ ไม่ใช่แค่ class ตรง (ยืนยันจริงจาก DOM
+  // ของ OrangeHRM: <li class="oxd-userdropdown"> ที่ห่อ span ไว้ตรง class pattern เหมือนกัน
+  // แต่ตัวมันเอง cursor:auto ไม่ใช่ pointer — ไม่ใช่ element ที่กดได้จริง แค่ชื่อ class บังเอิญ
+  // ตรงเฉยๆ ถ้าเช็คแค่ class จะไปกัน span ตัวจริงที่กดได้ (cursor:pointer) ไม่ให้ติด index เลย
+  // ทั้งที่ตั้งใจจะแก้บั๊กนี้อยู่)
+  const hasProfileMenuAncestor = (node) => {
+    let cur = node.parentElement;
+    while (cur) {
+      const cls = typeof cur.className === 'string' ? cur.className : '';
+      if (PROFILE_MENU_CLASS_RE.test(cls) && window.getComputedStyle(cur).cursor === 'pointer') return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+  const profileMenuNodes = new Set();
+  for (const cand of document.querySelectorAll('[class]')) {
+    const classStr = typeof cand.className === 'string' ? cand.className : '';
+    if (!PROFILE_MENU_CLASS_RE.test(classStr)) continue;
+    if (window.getComputedStyle(cand).cursor !== 'pointer') continue;
+    if (hasProfileMenuAncestor(cand)) continue;
+    // target = element ที่จะได้ index จริงสำหรับ candidate นี้ — อาจเป็นบรรพบุรุษที่ตรงกับ
+    // selectors มาตรฐานอยู่แล้ว (เช่น cand เป็น <span> ลูกของ <button class="user-dropdown">
+    // ตัว button คือสิ่งที่ได้ index จริง ไม่ใช่ span) หรือ cand เองถ้าไม่มีบรรพบุรุษแบบนั้น
+    const target = cand.closest(selectors) || cand;
+    if (target === cand && !nodes.includes(cand)) {
+      // ยังไม่เคยถูกเพิ่มเลยทั้งจาก selectors มาตรฐานและ ICON_LABEL_SELECTOR ด้านบน (เคสจริง
+      // ของ oxd-userdropdown-tab) — เพิ่มเข้า nodes เอง ยกเว้นถ้า cand ห่อ element ที่ตรงกับ
+      // selectors มาตรฐานไว้ข้างในอีกที (ให้ element ข้างในนั้นได้ index+marker ของตัวเองแทน)
+      if (!cand.querySelector(selectors)) nodes.push(cand);
+    }
+    // ไม่ว่า target จะได้ index มาจาก pass ไหน (selectors มาตรฐาน/ICON_LABEL_SELECTOR/เพิ่งเพิ่ม
+    // เอง) ก็ต้องแปะ marker เสมอ — กันไม่ให้ element ที่มี title/aria-label อยู่แล้วด้วย (ผ่าน
+    // ICON_LABEL_SELECTOR ไปแล้ว) เสีย marker พิเศษนี้ไปเฉยๆ เพราะไปเจอ pass อื่นก่อน
+    profileMenuNodes.add(target);
+  }
+
   const out = [];
   let idx = startIndex;
 
@@ -338,6 +392,13 @@ _COLLECT_JS = r"""
       );
     }
     label = label.trim().replace(/\s+/g, ' ').slice(0, 80);
+    // W20 (Task10): แปะ marker ที่ชัดเจนไม่กำกวมให้ element ที่จับได้จาก
+    // PROFILE_MENU_CLASS_RE ด้านบน — ให้ LLM มั่นใจได้ 100% ว่านี่คือ target ที่ SYSTEM_PROMPT
+    // สั่งให้หา (ดู "Account Security & Password Actions" ข้อ mandatory protocol) ไม่ต้องเดา
+    // จาก username text เฉยๆ (ซึ่งเปลี่ยนไปตาม user ที่ login อยู่ ไม่ใช่ label คงที่)
+    if (profileMenuNodes.has(el)) {
+      label = label ? `${label} [เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]` : '[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]';
+    }
     if (obscured) {
       label = label ? `${label} [ถูกบังอยู่]` : '[ถูกบังอยู่]';
     }

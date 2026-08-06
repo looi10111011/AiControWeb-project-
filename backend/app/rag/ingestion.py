@@ -49,9 +49,81 @@ def load_manual(path: Path) -> str:
         raise ValueError(f"Unsupported file type: {ext}")
 
 
+
+# Task7 (W20, "Document Structure & Data Extraction Specialist" — MODULE: DYNAMIC HEADER &
+# DATA BOUNDARY DETECTION): the real column-header row of a Thai timesheet-style export
+# isn't always row 1 — document metadata printed above the table (ชื่อ-สกุล/สังกัดแผนก, see
+# _split_metadata_and_table() below) pushes it down. Scan for these known header labels to
+# *find* the header row instead of assuming index 0.
+_XLSX_HEADER_KEYWORDS = ("วันที่", "รายละเอียด", "เวลาทำงาน", "จำนวนชั่วโมง")
+
+
+def _label_row_cells(header_values: List[str], row_values: List[str]) -> str:
+    """Task8-follow-up (real bug user hit: the LLM confidently claimed a column that clearly
+    had data on every row — see screenshot in W20 session — was "empty on every row"): a bare
+    positional "value | value | value" line forces the reader to *count* pipe segments against
+    the header row to know which value belongs to which column, which gets error-prone fast
+    once a sheet has 20+ data rows and a header that itself spans two merged rows (like the
+    "เวลาทำงาน" header here, merged over "จาก"/"ถึง" sub-columns) — pair every cell with its own
+    column label explicitly instead, so a fact like "รายละเอียดการฝึกงาน: Setup" is unambiguous
+    standing completely on its own, no column-counting required at all."""
+    pairs = []
+    for i, value in enumerate(row_values):
+        label = header_values[i] if i < len(header_values) and header_values[i] else f"col{i + 1}"
+        pairs.append(f"{label}: {value}")
+    return ' | '.join(pairs)
+
+
+def _split_metadata_and_table(rows_values: List[List[str]]) -> List[str]:
+    """Task7 + Task8 follow-up: rows *above* the detected header row (first row matching
+    _XLSX_HEADER_KEYWORDS) are document metadata (เช่น "ชื่อ-สกุล: สมชาย ใจดี", "สังกัดแผนก:
+    IT") — split into their own "## Document Metadata" section instead of being folded into
+    the table body as if they were extra header/data rows. Every row from the header onward
+    (the header row itself stays as plain "a | b | c" — it's what *defines* the labels, not a
+    fact that needs one) is rendered as explicit "column_label: value" pairs via
+    _label_row_cells() instead of bare positional text, so column identity survives even in a
+    wide/irregular table (see _label_row_cells() docstring for the bug this fixes).
+
+    No row matches at least 2 *distinct* header keywords (most sheets — plain data tables with
+    an ordinary header already on row 1, like a price list) -> plain positional "a | b | c"
+    dump for every row, completely unchanged from before this rule existed.
+
+    Real bug this guards against (found debugging a real user-reported file): a document
+    title merged across the whole row (e.g. "ใบลงเวลาทำงานนักศึกษาฝึกงาน", forward-filled
+    identically into every cell of that row by the merge) happens to contain "เวลาทำงาน" as a
+    plain substring — with a "match >= 1 keyword" rule that title row won on being scanned
+    *before* the real header 2 rows down, silently mislabeling every column for the entire
+    rest of the table. A genuine header row always has multiple *different* keywords landing
+    in different cells (วันที่ in one cell, รายละเอียด in another, ...); a single merged title
+    only ever matches the same one keyword repeated verbatim across every cell — requiring 2+
+    distinct keyword hits tells those two cases apart without needing to special-case merges
+    or titles explicitly."""
+    header_idx = next(
+        (
+            i for i, row in enumerate(rows_values)
+            if len({kw for cell in row for kw in _XLSX_HEADER_KEYWORDS if kw in cell}) >= 2
+        ),
+        None,
+    )
+    if header_idx is None:
+        return [' | '.join(row) for row in rows_values]
+
+    header_values = rows_values[header_idx]
+    metadata_lines = [' | '.join(row) for row in rows_values[:header_idx]]
+    table_lines = [
+        ' | '.join(header_values),
+        *(_label_row_cells(header_values, row) for row in rows_values[header_idx + 1:]),
+    ]
+    if not metadata_lines:
+        return table_lines
+    return ["## Document Metadata", *metadata_lines, "## Table", *table_lines]
+
+
 def _xlsx_bytes_to_text(content: bytes) -> str:
     """แปลง XLSX เป็น text แบบตาราง อ่านง่ายสำหรับ LLM (ไม่ใช่ data structure) — เรียงตาม
-    sheet, ข้ามแถวที่ว่างทั้งแถว, cell ในแถวเดียวกันคั่นด้วย " | " ให้เห็นขอบเขตคอลัมน์ชัด
+    sheet, ข้ามแถวที่ว่างทั้งแถว — คอลัมน์ของแถวข้อมูล (หลังเจอ header ที่รู้จัก ดู
+    _split_metadata_and_table()) ถูก label ชื่อคอลัมน์กำกับไว้ให้ชัดเจนต่อ cell เลย ไม่ใช่แค่
+    " | " คั่นตำแหน่งเฉยๆ (ดู _label_row_cells())
     data_only=True: อ่านค่าที่ cache ไว้ล่าสุดของ formula cell (ไม่ใช่สูตรดิบ) — ตรงกับที่
     user เห็นตอนเปิดไฟล์จริงใน Excel
 
@@ -70,7 +142,7 @@ def _xlsx_bytes_to_text(content: bytes) -> str:
                 for c in range(merged_range.min_col, merged_range.max_col + 1):
                     merged_values[(r, c)] = top_left_value
 
-        rows_text = []
+        rows_values: List[List[str]] = []
         for row in sheet.iter_rows():
             values = [
                 merged_values.get((cell.row, cell.column)) if cell.value is None else cell.value
@@ -78,9 +150,10 @@ def _xlsx_bytes_to_text(content: bytes) -> str:
             ]
             if all(v is None for v in values):
                 continue
-            rows_text.append(' | '.join('' if v is None else str(v) for v in values))
-        if rows_text:
-            sections.append(f"# Sheet: {sheet.title}\n" + '\n'.join(rows_text))
+            rows_values.append(['' if v is None else str(v) for v in values])
+        if rows_values:
+            lines = _split_metadata_and_table(rows_values)
+            sections.append(f"# Sheet: {sheet.title}\n" + '\n'.join(lines))
     return '\n\n'.join(sections)
 
 
