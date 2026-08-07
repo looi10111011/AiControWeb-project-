@@ -3,8 +3,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from playwright.async_api import TimeoutError as PWTimeout, async_playwright
 
-from backend.app.core.actions import ActionResult, _ELEMENT_ACTION_TIMEOUT_MS, execute
+from backend.app.core.actions import (
+    ActionResult,
+    _DIALOG_CONTAINER_SELECTOR,
+    _ELEMENT_ACTION_TIMEOUT_MS,
+    _MODAL_CONFIRM_BUTTON_SELECTORS,
+    _MODAL_CONFIRM_CLICK_RETRIES,
+    _MODAL_DETACH_TIMEOUT_MS,
+    _MODAL_RELOAD_TIMEOUT_MS,
+    _detect_confirmation_modal,
+    execute,
+    resolve_confirmation_modal,
+)
 from backend.app.core.perception import get_snapshot
+
+
+def _make_locator(count, visible, click_raises=False):
+    """W23: mock ของ Locator (.first ที่ page.locator(selector).first คืนมา) — count()/
+    is_visible()/click() เป็น async method จริงตาม Playwright API"""
+    m = MagicMock()
+    m.count = AsyncMock(return_value=count)
+    m.is_visible = AsyncMock(return_value=visible)
+    m.click = AsyncMock(side_effect=Exception("not clickable")) if click_raises else AsyncMock()
+    return m
 
 
 def _make_select_mock_page(option_texts, select_side_effect):
@@ -221,6 +242,287 @@ async def test_execute_retries_needs_confirmation_alias_action():
     assert result.action == "submit(3)"
     assert mock_page.click.await_count == 2
     ask_user_func.assert_awaited_once()  # permission check ถามแค่ครั้งเดียว ไม่ถามซ้ำต่อ retry
+
+
+# ---------------- W23 ("Confirmation Modal Handler" / "Overlay Action Resolver") ----------------
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_true_when_dialog_visible():
+    mock_page = MagicMock()
+    dialog = _make_locator(count=1, visible=True)
+    wrapper = MagicMock()
+    wrapper.first = dialog
+    mock_page.locator = MagicMock(return_value=wrapper)
+
+    result = await _detect_confirmation_modal(mock_page)
+
+    assert result is True
+    mock_page.locator.assert_called_once_with(_DIALOG_CONTAINER_SELECTOR)
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_false_when_no_dialog_in_dom():
+    mock_page = MagicMock()
+    wrapper = MagicMock()
+    wrapper.first = _make_locator(count=0, visible=False)
+    mock_page.locator = MagicMock(return_value=wrapper)
+
+    result = await _detect_confirmation_modal(mock_page)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_fails_safe_on_bare_mock_page():
+    """page ที่ไม่ได้ config เฉพาะ (bare AsyncMock ทั้งก้อน) — ต้องคืน False เงียบๆ ไม่ throw
+    (เหมือน orchestrator.py::_scan_validation_errors: เช็คไม่ได้ ถือว่าไม่มีโมดัล ปลอดภัยกว่า
+    เสมอที่จะไม่บล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)"""
+    result = await _detect_confirmation_modal(AsyncMock())
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_clicks_most_specific_selector_first():
+    """เจอปุ่ม "Yes, Delete" ตาม selector แรกสุด (เจาะจงที่สุด) ในลิสต์ priority — ไม่ต้องไล่
+    ไปหา fallback ตัวอื่นต่อ"""
+    mock_page = MagicMock()
+    yes_delete = _make_locator(count=1, visible=True)
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        if selector == _MODAL_CONFIRM_BUTTON_SELECTORS[0]:
+            wrapper.first = yes_delete
+        else:
+            wrapper.first = _make_locator(count=0, visible=False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    mock_page.wait_for_selector = AsyncMock()
+    mock_page.wait_for_load_state = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is not None
+    assert _MODAL_CONFIRM_BUTTON_SELECTORS[0] in result
+    yes_delete.click.assert_awaited_once_with(force=True, timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    mock_page.wait_for_selector.assert_awaited_once_with(
+        _DIALOG_CONTAINER_SELECTOR, state="detached", timeout=_MODAL_DETACH_TIMEOUT_MS,
+    )
+    mock_page.wait_for_load_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_falls_back_to_general_dialog_selector():
+    """ปุ่ม OrangeHRM-specific ทุกตัวไม่เจอ (ไม่ใช่ OrangeHRM) แต่มี [role="dialog"] ปุ่ม
+    "Confirm" ทั่วไป — ต้องเจอผ่าน fallback selector ตัวสุดท้ายในลิสต์"""
+    mock_page = MagicMock()
+    confirm_btn = _make_locator(count=1, visible=True)
+    last_selector = _MODAL_CONFIRM_BUTTON_SELECTORS[-1]
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        wrapper.first = confirm_btn if selector == last_selector else _make_locator(count=0, visible=False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    mock_page.wait_for_selector = AsyncMock()
+    mock_page.wait_for_load_state = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is not None
+    assert last_selector in result
+    confirm_btn.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_returns_none_when_no_confirm_button_found():
+    """ไม่เจอปุ่มยืนยันเลยสักตัว (ไม่ตรง selector ไหนในลิสต์เลย) -> คืน None เงียบๆ ไม่ throw
+    ไม่เรียก wait_for_selector/wait_for_load_state เลย ปล่อยให้ LLM ตัดสินใจเองต่อในรอบถัดไป"""
+    mock_page = MagicMock()
+    wrapper = MagicMock()
+    wrapper.first = _make_locator(count=0, visible=False)
+    mock_page.locator = MagicMock(return_value=wrapper)
+    mock_page.wait_for_selector = AsyncMock()
+    mock_page.wait_for_load_state = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is None
+    mock_page.wait_for_selector.assert_not_awaited()
+    mock_page.wait_for_load_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_survives_detach_wait_timeout():
+    """โมดัลบางตัวไม่ detach ออกจาก DOM จริง (แค่ซ่อนด้วย CSS) — wait_for_selector timeout
+    ต้องไม่ทำให้ resolve_confirmation_modal() throw ออกไป ยังคืนข้อความสรุปสำเร็จตามปกติ"""
+    mock_page = MagicMock()
+    yes_delete = _make_locator(count=1, visible=True)
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        wrapper.first = yes_delete if selector == _MODAL_CONFIRM_BUTTON_SELECTORS[0] else _make_locator(0, False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    mock_page.wait_for_selector = AsyncMock(side_effect=PWTimeout("still attached"))
+    mock_page.wait_for_load_state = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is not None
+    mock_page.wait_for_load_state.assert_awaited_once()  # ยัง wait_stable ต่อแม้ detach-wait timeout
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_retries_then_succeeds_without_reload(_no_real_sleep):
+    """W24: รอบแรกคลิกแล้วโมดัลยังเปิดค้างอยู่จริง (ไม่ใช่ detach-wait timeout เฉยๆ) — retry
+    รอบสองสำเร็จ ปิดโมดัลได้จริง -> ต้องไม่ไป reload หน้าเว็บเลย (reload คือ fallback สุดท้าย
+    เท่านั้น ไม่ใช่ default behavior ตั้งแต่ retry แรกที่ยังไม่สำเร็จ)"""
+    mock_page = MagicMock()
+    yes_delete = _make_locator(count=1, visible=True)
+    still_open_dialog = _make_locator(count=1, visible=True)
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        if selector == _MODAL_CONFIRM_BUTTON_SELECTORS[0]:
+            wrapper.first = yes_delete
+        elif selector == _DIALOG_CONTAINER_SELECTOR:
+            wrapper.first = still_open_dialog
+        else:
+            wrapper.first = _make_locator(count=0, visible=False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    # รอบแรก detach-wait timeout (โมดัลยังไม่ปิด) รอบสอง detach สำเร็จจริง
+    mock_page.wait_for_selector = AsyncMock(side_effect=[PWTimeout("still attached"), None])
+    mock_page.wait_for_load_state = AsyncMock()
+    mock_page.reload = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is not None
+    assert "ไม่ตอบสนอง" not in result
+    assert "ลองครั้งที่ 2" in result
+    assert yes_delete.click.await_count == 2
+    mock_page.reload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_reloads_page_after_button_unresponsive_for_all_retries(_no_real_sleep):
+    """W24 (บั๊กจริงที่ user รายงาน — multi-batch operations): ปุ่มยืนยันไม่ตอบสนองจริงทุก
+    ครั้งที่ลอง (โมดัลยังเปิดค้างอยู่แม้คลิกไปแล้ว _MODAL_CONFIRM_CLICK_RETRIES ครั้งเต็มโควตา)
+    -> ต้อง page.reload() + รอ networkidle เป็น fallback สุดท้าย (จำลองพฤติกรรม "กด F5" ที่
+    user ยืนยันว่าแก้ปัญหาได้จริงเวลาทำเอง) และข้อความคืนกลับต้องบอก LLM ให้รู้ว่าต้อง
+    navigate/กรองข้อมูลใหม่เองต่อ"""
+    mock_page = MagicMock()
+    yes_delete = _make_locator(count=1, visible=True)
+    still_open_dialog = _make_locator(count=1, visible=True)
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        if selector == _MODAL_CONFIRM_BUTTON_SELECTORS[0]:
+            wrapper.first = yes_delete
+        elif selector == _DIALOG_CONTAINER_SELECTOR:
+            wrapper.first = still_open_dialog
+        else:
+            wrapper.first = _make_locator(count=0, visible=False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    mock_page.wait_for_selector = AsyncMock(side_effect=PWTimeout("still attached"))
+    mock_page.wait_for_load_state = AsyncMock()
+    mock_page.reload = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)
+
+    assert result is not None
+    assert "ไม่ตอบสนอง" in result
+    assert "navigate" in result or "กรองข้อมูลใหม่" in result
+    assert yes_delete.click.await_count == _MODAL_CONFIRM_CLICK_RETRIES
+    mock_page.reload.assert_awaited_once()
+    mock_page.wait_for_load_state.assert_awaited_once_with("networkidle", timeout=_MODAL_RELOAD_TIMEOUT_MS)
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_modal_reload_does_not_throw_if_reload_itself_fails(_no_real_sleep):
+    """W24: page.reload() เองอาจ fail ได้ (เช่น network เพี้ยนชั่วคราว) — ต้องไม่ throw ออกไป
+    ทำให้ action หลักที่เพิ่ง success (คลิก "Delete Selected") กลายเป็น fail ไปด้วย"""
+    mock_page = MagicMock()
+    yes_delete = _make_locator(count=1, visible=True)
+    still_open_dialog = _make_locator(count=1, visible=True)
+
+    def _locator_side_effect(selector):
+        wrapper = MagicMock()
+        if selector == _MODAL_CONFIRM_BUTTON_SELECTORS[0]:
+            wrapper.first = yes_delete
+        elif selector == _DIALOG_CONTAINER_SELECTOR:
+            wrapper.first = still_open_dialog
+        else:
+            wrapper.first = _make_locator(count=0, visible=False)
+        return wrapper
+
+    mock_page.locator = MagicMock(side_effect=_locator_side_effect)
+    mock_page.wait_for_selector = AsyncMock(side_effect=PWTimeout("still attached"))
+    mock_page.reload = AsyncMock(side_effect=Exception("network hiccup"))
+    mock_page.wait_for_load_state = AsyncMock()
+
+    result = await resolve_confirmation_modal(mock_page)  # ต้องไม่ throw
+
+    assert result is not None
+    assert "ไม่ตอบสนอง" in result
+
+
+@pytest.mark.asyncio
+async def test_execute_click_auto_resolves_confirmation_modal_after_success():
+    """W23 (บั๊กจริงที่ user รายงาน): คลิกสำเร็จแล้วเจอ confirmation modal เปิดขึ้นมา ต้อง
+    resolve อัตโนมัติทันทีในระดับโค้ด (ไม่รอ LLM ตัดสินใจเรียก action แยกอีกรอบ) — ข้อความสรุป
+    ต้องต่อท้าย message ของ action หลักให้เห็นแบบโปร่งใส"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.actions.resolve_confirmation_modal",
+             AsyncMock(return_value=" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว (x)]"),
+         ) as mock_resolve:
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    assert "ตรวจพบ confirmation modal" in result.message
+    mock_resolve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_skips_modal_resolution_when_no_modal_detected():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=False)) as mock_detect, \
+         patch("backend.app.core.actions.resolve_confirmation_modal", AsyncMock()) as mock_resolve:
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    assert "ตรวจพบ confirmation modal" not in result.message
+    mock_detect.assert_awaited_once()
+    mock_resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_delete_action_also_auto_resolves_confirmation_modal():
+    """W23: submit/delete/purchase/pay dispatch ผ่าน _dispatch_click_with_retry() ตัวเดียวกับ
+    plain click (ดู DEFAULT_NEEDS_CONFIRMATION branch ใน execute()) — modal handler ต้อง
+    ทำงานเหมือนกันทุกประการ ไม่ใช่แค่ plain click"""
+    mock_page = AsyncMock()
+    ask_user_func = AsyncMock(return_value=True)
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.actions.resolve_confirmation_modal",
+             AsyncMock(return_value=" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว (x)]"),
+         ):
+        result = await execute(mock_page, {"type": "delete", "index": 3}, ask_user_func=ask_user_func)
+
+    assert result.success is True
+    assert "ตรวจพบ confirmation modal" in result.message
 
 
 # W3[A] (ปิดจ็อบ 2026-07-15): switch_tab() implement ไว้แล้วตั้งแต่ก่อนหน้านี้ (dispatch

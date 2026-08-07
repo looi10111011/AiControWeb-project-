@@ -5,12 +5,19 @@ human-in-the-loop จริง (ask_user_func รอ asyncio.Future จนกว
 pytest-asyncio รันทั้งฟังก์ชันทดสอบในลูปเดียวกันเสมอ ต่างจากการยิงผ่าน TestClient ที่
 background task ของ jobจริงรันอยู่คนละ event loop (ดูเหตุผลที่ test_api.py เลือก mock
 request_approval() แทนแทนที่จะเล่น queue/future จริงข้าม loop)
+
+W26 ("Broadcast live events to every subscribed tab"): TaskRecord.events (asyncio.Queue
+เดียว) ถูกแทนที่ด้วย TaskRecord.event_subscribers (list ของ Queue หนึ่งอันต่อ SSE
+connection ที่เปิดอยู่จริง — ดู task_manager.py::_broadcast()) — เทสต์ในไฟล์นี้ต้อง
+"สมัคร" queue ของตัวเองก่อนเสมอ (ดู _subscribe() ด้านล่าง) แทนที่จะอ่านจาก record.events
+ตรงๆ เหมือนเดิม
 """
 
 import asyncio
 
 import pytest
 
+from backend.app.api.routes import _stream_task_events
 from backend.app.api.task_manager import TaskManager
 
 
@@ -26,10 +33,20 @@ def _controllable_coro(finish: asyncio.Event):
     return _coro()
 
 
-async def _drain_task_done(record) -> None:
+def _subscribe(record) -> asyncio.Queue:
+    """W26: จำลอง SSE connection หนึ่งตัวสมัครเป็น subscriber ของ task นี้ — เทียบเท่ากับ
+    ส่วนแรกของ routes.py::_stream_task_events() (สร้าง Queue + append เข้า
+    record.event_subscribers) แต่ข้าม replay-pending-approval/SSE-string-formatting ไป
+    เพราะเทสต์พวกนี้สนใจแค่กลไก push/broadcast ของ TaskManager เอง ไม่ใช่ HTTP layer"""
+    queue: asyncio.Queue = asyncio.Queue()
+    record.event_subscribers.append(queue)
+    return queue
+
+
+async def _drain_task_done(queue: asyncio.Queue) -> None:
     """ปล่อยให้ background task (จาก submit()) จบแบบสะอาด กัน 'Task was destroyed but it
     is pending' warning ตอน event loop ปิดท้าย test"""
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
     assert event["kind"] == "task_done"
 
 
@@ -38,9 +55,10 @@ async def test_request_approval_blocks_until_resolved():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t1", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     approval_task = asyncio.create_task(tm.request_approval("t1", {"type": "purchase"}))
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
     assert event["kind"] == "approval_request"
     assert event["cmd"] == {"type": "purchase"}
     assert "request_id" in event
@@ -49,7 +67,7 @@ async def test_request_approval_blocks_until_resolved():
     assert await asyncio.wait_for(approval_task, timeout=1) is True
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -57,15 +75,16 @@ async def test_request_approval_can_resolve_to_denied():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t2", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     approval_task = asyncio.create_task(tm.request_approval("t2", {"type": "delete", "index": 5}))
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
 
     assert tm.resolve_approval("t2", event["request_id"], False) is True
     assert await asyncio.wait_for(approval_task, timeout=1) is False
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -73,11 +92,12 @@ async def test_resolve_approval_returns_false_for_unknown_request_id():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t3", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     assert tm.resolve_approval("t3", "does-not-exist", True) is False
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -85,16 +105,17 @@ async def test_resolve_approval_returns_false_after_already_resolved():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t4", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     approval_task = asyncio.create_task(tm.request_approval("t4", {"type": "pay"}))
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
 
     assert tm.resolve_approval("t4", event["request_id"], False) is True
     assert tm.resolve_approval("t4", event["request_id"], True) is False  # ตอบไปแล้ว
     await asyncio.wait_for(approval_task, timeout=1)
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 def test_resolve_approval_returns_false_for_unknown_task_id():
@@ -121,11 +142,12 @@ async def test_task_completion_cancels_pending_approval_as_denied():
         raise RuntimeError("boom")
 
     record = tm.submit("t5", "https://example.com", "goal", None, _coro())
+    queue = _subscribe(record)
     approval_task = asyncio.create_task(tm.request_approval("t5", {"type": "purchase"}))
-    await asyncio.wait_for(record.events.get(), timeout=1)  # approval_request
+    await asyncio.wait_for(queue.get(), timeout=1)  # approval_request
 
     finish.set()
-    done_event = await asyncio.wait_for(record.events.get(), timeout=1)
+    done_event = await asyncio.wait_for(queue.get(), timeout=1)
     assert done_event["kind"] == "task_done"
     assert done_event["status"] == "error"
 
@@ -143,11 +165,12 @@ async def test_cancel_stops_a_running_task_and_marks_it_cancelled():
         return {}
 
     record = tm.submit("t6", "https://example.com", "goal", None, _coro())
+    queue = _subscribe(record)
     await asyncio.wait_for(started.wait(), timeout=1)
 
     assert await tm.cancel("t6") is True
 
-    done_event = await asyncio.wait_for(record.events.get(), timeout=1)
+    done_event = await asyncio.wait_for(queue.get(), timeout=1)
     assert done_event["kind"] == "task_done"
     assert done_event["status"] == "cancelled"
     assert record.status == "cancelled"
@@ -167,8 +190,9 @@ async def test_cancel_resolves_pending_approval_as_denied():
         return {}
 
     record = tm.submit("t7", "https://example.com", "goal", None, _coro())
+    queue = _subscribe(record)
     approval_task = asyncio.create_task(tm.request_approval("t7", {"type": "purchase"}))
-    await asyncio.wait_for(record.events.get(), timeout=1)  # approval_request
+    await asyncio.wait_for(queue.get(), timeout=1)  # approval_request
 
     assert await tm.cancel("t7") is True
 
@@ -183,8 +207,8 @@ async def test_cancel_waits_for_the_task_to_actually_stop_before_returning():
     routes.py::stop_task()/killSession() ใน index.html) — พิสูจน์ด้วยการเช็คว่า
     record.status เป็น "cancelled" ไปแล้วทันทีที่ cancel() คืนค่า โดยไม่ต้องรอ event อื่น
     เพิ่มก่อนเลย (ต่างจาก test_cancel_stops_a_running_task_and_marks_it_cancelled เดิมที่
-    await record.events.get() เพิ่มก่อนเช็ค — พิสูจน์ได้แค่ "sequence ถูกต้องในที่สุด" ไม่ได้
-    พิสูจน์ timing ว่า cancel() เองรอจริงไหม)"""
+    รอ event เพิ่มก่อนเช็ค — พิสูจน์ได้แค่ "sequence ถูกต้องในที่สุด" ไม่ได้พิสูจน์ timing ว่า
+    cancel() เองรอจริงไหม)"""
     tm = TaskManager()
     started = asyncio.Event()
 
@@ -214,7 +238,8 @@ async def test_cancel_returns_false_for_already_finished_task():
         return {"success": True}
 
     record = tm.submit("t8", "https://example.com", "goal", None, _coro())
-    await asyncio.wait_for(record.events.get(), timeout=1)  # task_done
+    queue = _subscribe(record)
+    await asyncio.wait_for(queue.get(), timeout=1)  # task_done
 
     assert await tm.cancel("t8") is False
 
@@ -228,22 +253,23 @@ async def test_request_approval_times_out_and_denies_if_nobody_responds():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t9", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     approval_task = asyncio.create_task(tm.request_approval("t9", {"type": "purchase"}, timeout=0.05))
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
     assert event["kind"] == "approval_request"
     request_id = event["request_id"]
 
     assert await asyncio.wait_for(approval_task, timeout=1) is False
 
-    timeout_event = await asyncio.wait_for(record.events.get(), timeout=1)
+    timeout_event = await asyncio.wait_for(queue.get(), timeout=1)
     assert timeout_event == {"kind": "approval_timeout", "request_id": request_id, "cmd": {"type": "purchase"}}
 
     # request_id หมดอายุไปแล้ว (ถูก pop ออกจาก record.pending ตอน timeout) — ตอบทีหลังไม่มีผล
     assert tm.resolve_approval("t9", request_id, True) is False
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -253,9 +279,10 @@ async def test_request_approval_no_timeout_waits_indefinitely():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t10", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     approval_task = asyncio.create_task(tm.request_approval("t10", {"type": "purchase"}))
-    event = await asyncio.wait_for(record.events.get(), timeout=1)
+    event = await asyncio.wait_for(queue.get(), timeout=1)
 
     # ไม่มีใครตอบสักพัก (จำลองด้วย short sleep) — ต้องยังไม่ resolve เอง
     await asyncio.sleep(0.1)
@@ -265,7 +292,7 @@ async def test_request_approval_no_timeout_waits_indefinitely():
     assert await asyncio.wait_for(approval_task, timeout=1) is True
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -277,10 +304,11 @@ async def test_resolve_approval_with_edited_plan_mutates_the_pending_cmd():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t11", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     cmd = {"type": "confirm_plan", "plan": "1. original plan"}
     approval_task = asyncio.create_task(tm.request_approval("t11", cmd))
-    await asyncio.wait_for(record.events.get(), timeout=1)  # approval_request
+    await asyncio.wait_for(queue.get(), timeout=1)  # approval_request
 
     assert tm.resolve_approval("t11", list(record.pending.keys())[0], True, edited_plan="1. corrected plan") is True
     assert await asyncio.wait_for(approval_task, timeout=1) is True
@@ -289,7 +317,7 @@ async def test_resolve_approval_with_edited_plan_mutates_the_pending_cmd():
     assert cmd["plan"] == "1. corrected plan"
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
 
 
 @pytest.mark.asyncio
@@ -300,14 +328,170 @@ async def test_resolve_approval_edited_plan_ignored_for_non_plan_requests():
     tm = TaskManager()
     finish = asyncio.Event()
     record = tm.submit("t12", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
 
     cmd = {"type": "purchase", "index": 3}
     approval_task = asyncio.create_task(tm.request_approval("t12", cmd))
-    await asyncio.wait_for(record.events.get(), timeout=1)
+    await asyncio.wait_for(queue.get(), timeout=1)
 
     assert tm.resolve_approval("t12", list(record.pending.keys())[0], True, edited_plan="should be ignored") is True
     assert await asyncio.wait_for(approval_task, timeout=1) is True
     assert "plan" not in cmd
 
     finish.set()
-    await _drain_task_done(record)
+    await _drain_task_done(queue)
+
+
+# ---------------- W26 ("Broadcast live events to every subscribed tab") ----------------
+# บั๊กจริงที่ user รายงาน (ยังเจออยู่แม้หลัง W25): approval prompt/log ไม่ขึ้นสด ต้องกด F5
+# — root cause แท้จริง: frontend (index.html::ensureConversationFor) ตั้งใจให้ "ทุกแท็บที่
+# เปิดค้างไว้เห็น task จากแท็บอื่นด้วย" (GET /tasks คืน task ทั้งระบบ ไม่กรองเฉพาะแท็บที่
+# สร้าง แล้ว refreshTasks() เปิด SSE ให้ทุก task ที่ "running" โดยอัตโนมัติทุกแท็บ) ทำให้
+# หลายแท็บ subscribe task เดียวกันพร้อมกันเป็นเรื่องปกติ ไม่ใช่ edge case หายาก — W25 เดิม
+# แก้ด้วย "connection ล่าสุดชนะเสมอ" (สมมติว่ามีผู้ชมสดแค่คนเดียว) กลับกลายเป็นทำให้แท็บที่
+# ผู้ใช้กำลังดูอยู่จริงถูกแท็บอื่นแย่ง event ไปเงียบๆ แทน (ยืนยันจากการทดสอบสด) — เทสต์ด้านล่าง
+# พิสูจน์ว่าตอนนี้ "ทุก connection ที่เปิดอยู่จริงได้รับ event ครบทุกตัวพร้อมกัน" (broadcast
+# จริง) แทนที่ test เดิมของ W25 ที่พิสูจน์พฤติกรรม "ล่าสุดชนะ" ซึ่งตอนนี้ถือเป็นพฤติกรรมที่
+# ต้องการแก้ทิ้งแล้ว ไม่ใช่ของที่ต้องรักษาไว้อีกต่อไป
+
+
+@pytest.mark.asyncio
+async def test_stream_task_events_delivers_to_a_single_connection_as_before():
+    """พฤติกรรมพื้นฐานที่ต้องยังทำงานถูกต้องเหมือนเดิม (ไม่ใช่แค่เคสหลายแท็บ) — connection
+    เดียวต้องได้รับทุก event ที่ push เข้ามาหลังจากมันเปิดจริง"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("s1", "https://example.com", "goal", None, _controllable_coro(finish))
+
+    chunks: list = []
+
+    async def _drain():
+        # W26: ไม่ break เร็วเมื่อเจอ task_done — ปล่อยให้ async for วนต่ออีกรอบจน generator
+        # คืน StopAsyncIteration เอง (_stream_task_events() break+return ภายในตัวมันเอง
+        # หลัง task_done อยู่แล้ว) ให้แน่ใจว่า finally block ของ generator (ถอนตัวเองออกจาก
+        # record.event_subscribers) รันจริงทันทีแบบ synchronous กับ iteration นี้ — break
+        # จากฝั่ง consumer เองจะไม่ trigger aclose() ทันที (รอ GC/async-generator finalizer
+        # ของ event loop แทน ซึ่ง timing ไม่แน่นอน)
+        async for chunk in _stream_task_events(record):
+            chunks.append(chunk)
+
+    task = asyncio.create_task(_drain())
+    await asyncio.sleep(0)  # ให้ generator รันจนถึง await queue.get() (สมัคร subscriber เสร็จแล้ว)
+
+    await tm.push_event("s1", {"kind": "step", "step": 1, "cmd": {}, "result": "ok", "success": True})
+    finish.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert any('"kind": "step"' in c for c in chunks)
+    assert any('"kind": "task_done"' in c for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_stream_task_events_broadcasts_to_every_overlapping_connection():
+    """W26 (บั๊กหลักที่ user รายงาน): 2 แท็บเปิดดู task เดียวกันพร้อมกันจริง (สถานการณ์ปกติ
+    ของแอปนี้ ไม่ใช่ edge case) — event ที่ push เข้ามาหลังจากนั้นต้องไปถึง *ทั้งสอง*
+    connection ครบถ้วน ไม่มีตัวไหนถูกทิ้งไว้ข้างหลังเงียบๆ (ต่างจากพฤติกรรม W25 เดิมที่มีแค่
+    connection ล่าสุดเท่านั้นที่ได้รับ)"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("s2", "https://example.com", "goal", None, _controllable_coro(finish))
+
+    tab_a_chunks: list = []
+    tab_b_chunks: list = []
+
+    async def _drain(out: list, gen):
+        # W26: ไม่ break เร็วเมื่อเจอ task_done — ให้ generator คืน StopAsyncIteration เอง
+        # (ดูเหตุผลเต็มในเทสต์ก่อนหน้า) กัน finally block (ถอนตัวเองออกจาก
+        # record.event_subscribers) รันช้า/ไม่แน่นอน
+        async for chunk in gen:
+            out.append(chunk)
+
+    tab_a_task = asyncio.create_task(_drain(tab_a_chunks, _stream_task_events(record)))
+    await asyncio.sleep(0)  # แท็บ A สมัคร subscriber ของตัวเองเสร็จแล้ว
+
+    tab_b_task = asyncio.create_task(_drain(tab_b_chunks, _stream_task_events(record)))
+    await asyncio.sleep(0)  # แท็บ B สมัคร subscriber ของตัวเองเพิ่มเข้ามาด้วย (ไม่แทนที่แท็บ A)
+
+    assert len(record.event_subscribers) == 2
+
+    await tm.push_event("s2", {"kind": "step", "step": 1, "cmd": {}, "result": "ok", "success": True})
+    await asyncio.sleep(0.05)
+
+    assert any('"kind": "step"' in c for c in tab_a_chunks)
+    assert any('"kind": "step"' in c for c in tab_b_chunks)  # ทั้งสองแท็บได้รับเหมือนกัน
+
+    finish.set()
+    await asyncio.wait_for(tab_a_task, timeout=1)
+    await asyncio.wait_for(tab_b_task, timeout=1)
+
+    # ทั้งสอง subscriber ต้องถอนตัวเองออกเรียบร้อยหลัง task_done (ดู _stream_task_events()
+    # finally block) ไม่เหลือค้างให้ _broadcast() ป้อน event เข้าไปเปล่าๆ ต่อไปอีก
+    assert record.event_subscribers == []
+
+
+@pytest.mark.asyncio
+async def test_stream_task_events_one_connection_disconnecting_does_not_affect_the_other():
+    """แท็บหนึ่งปิด connection กลางคัน (จำลอง client disconnect ด้วย .cancel()) ต้องไม่
+    กระทบแท็บที่ยังเปิดอยู่เลย — ยังคงได้รับ event ถัดไปตามปกติ"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("s4", "https://example.com", "goal", None, _controllable_coro(finish))
+
+    tab_b_chunks: list = []
+
+    async def _drain(out: list, gen):
+        # W26: ไม่ break เร็วเมื่อเจอ task_done — ให้ generator คืน StopAsyncIteration เอง
+        # (ดูเหตุผลเต็มในเทสต์ก่อนหน้า) กัน finally block (ถอนตัวเองออกจาก
+        # record.event_subscribers) รันช้า/ไม่แน่นอน
+        async for chunk in gen:
+            out.append(chunk)
+
+    tab_a_task = asyncio.create_task(_drain([], _stream_task_events(record)))
+    await asyncio.sleep(0)
+    tab_b_task = asyncio.create_task(_drain(tab_b_chunks, _stream_task_events(record)))
+    await asyncio.sleep(0)
+    assert len(record.event_subscribers) == 2
+
+    # จำลองแท็บ A ปิด connection กลางคัน (ASGI server จะ cancel generator ตอน client หลุด)
+    tab_a_task.cancel()
+    try:
+        await tab_a_task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0)
+    assert len(record.event_subscribers) == 1  # แท็บ A ถอนตัวเองออกแล้วผ่าน finally block
+
+    await tm.push_event("s4", {"kind": "step", "step": 1, "cmd": {}, "result": "ok", "success": True})
+    finish.set()
+    await asyncio.wait_for(tab_b_task, timeout=1)
+
+    assert any('"kind": "step"' in c for c in tab_b_chunks)
+    assert any('"kind": "task_done"' in c for c in tab_b_chunks)
+
+
+@pytest.mark.asyncio
+async def test_stream_task_events_replays_delivered_pending_approval_on_reconnect():
+    """W10[B] (ไม่กระทบจาก W26): reconnect ระหว่างที่มี approval ค้างรออยู่ (delivered=True
+    จากการส่งออกไปให้ subscriber ตัวเก่าไปแล้วอย่างน้อยหนึ่งครั้ง) ต้อง replay ให้ connection
+    ใหม่เห็นทันที ไม่ต้องรอ event ใหม่จาก queue"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("s3", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)  # จำลอง subscriber ตัวเก่าที่เคยได้รับ event นี้ไปแล้ว
+
+    approval_task = asyncio.create_task(tm.request_approval("s3", {"type": "delete", "index": 1}))
+    await asyncio.wait_for(queue.get(), timeout=1)  # "ส่งออกไปแล้ว" ให้ subscriber ตัวเก่า (จำลอง)
+    request_id = next(iter(record.pending))
+    record.pending[request_id]["delivered"] = True
+
+    chunks: list = []
+    async for chunk in _stream_task_events(record):
+        chunks.append(chunk)
+        break  # แค่ chunk แรก (replay) พอสำหรับเทสต์นี้
+
+    assert any('"kind": "approval_request"' in c for c in chunks)
+
+    tm.resolve_approval("s3", request_id, True)
+    await asyncio.wait_for(approval_task, timeout=1)
+    finish.set()
+    await _drain_task_done(queue)

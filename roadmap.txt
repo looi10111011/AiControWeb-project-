@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-06)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-07)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -3092,6 +3092,102 @@
            9 เคสเดิมใน test_orchestrator.py ที่ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้
            ในเครื่อง dev นี้ (เหมือนเดิมทุกประการกับ baseline ที่ W58 บันทึกไว้ ไม่มี
            regression ใหม่)
+
+  [x] W60  Task1-5 (W21.txt spec) + deletion-verification, modal-handling,
+           SSE live-update redesign, dropdown-selection bugfix, loop-guard
+           blind-spot fix — เสร็จแล้ว (2026-08-07)
+
+           (1) อ่าน Task/W21.txt (สรุปให้ user ฟังก่อนเริ่ม ตามที่ขอ 2 รอบเพราะไฟล์
+           มีเนื้อหาเพิ่มระหว่างอ่าน) แล้ว implement ครบ 5 task: nav-vs-filter
+           disambiguation (แยกคำสั่ง "ไปหน้า X" ออกจาก "filter หา X" ใน
+           llm.py SYSTEM_PROMPT ไม่ให้ agent สับสนระหว่าง navigation link กับ
+           filter dropdown ที่หน้าตาคล้ายกัน), bulk delete/edit protocol
+           (กติกาการเลือกหลายแถวด้วย checkbox แล้วลบ/แก้ทีเดียวใน SYSTEM_PROMPT),
+           chat input history navigation (ArrowUp/ArrowDown ย้อนดูคำสั่งเก่าใน
+           frontend/index.html: goalHistory, goalHistoryIndex,
+           goalHistoryTempInput, pushGoalToHistory()), custom checkbox
+           handling (perception.py: CHECKBOX_WRAPPER_SELECTOR,
+           isCheckboxWrapperCandidate ตรวจจับ custom checkbox ของ OrangeHRM ที่
+           ไม่ใช่ <input type=checkbox> ตรงๆ + actions.py: check() คำนวณ
+           _is_effectively_checked() พร้อม fallback 3 ชั้น native/force-click/
+           JS-dispatch), icon-only button resolution (perception.py:
+           ICON_CLASS_LABEL_RULES, getIconClassLabel() แปล icon class เช่น
+           bi-trash, bi-pencil เป็น label ที่มีความหมายให้ LLM เลือกถูกปุ่ม), และ
+           self-learned site manual planning (routes.py:
+           _resolve_site_manual_context() + site_learning/storage.py:
+           find_matching_page(), build_learned_page_flow_text(),
+           build_strict_manual_context() ให้ planner ดึงคู่มือที่เรียนรู้จากการ
+           crawl มาก่อนมาช่วยวางแผนแทนการเดาจาก DOM สดอย่างเดียว)
+
+           (2) เช็คพบว่า branch W21 ตามหลัง main อยู่ (ตาม user ถาม) จึง merge
+           origin/main เข้ามาโดย resolve conflict 3 ไฟล์ด้วยมือ (llm.py,
+           perception.py, frontend/index.html) รวมงานทั้งสองฝั่งเข้าด้วยกันแทน
+           เลือกทิ้งฝั่งใดฝั่งหนึ่ง แล้วแก้ isQuickActionDropdownOpen() ที่ผิด
+           เพราะ merge เอา Quick Action dropdown จริง (ใช้
+           quickActionMatches.length) เข้ามาทับ placeholder เดิม
+
+           (3) W22 — เพิ่มการยืนยันผลลัพธ์การลบจาก DOM จริงหลังทำ action เสร็จ
+           (ก่อนหน้านี้ agent อาจรายงานว่าลบสำเร็จทั้งที่ record ยังอยู่ในตาราง)
+           เพิ่ม orchestrator.py: _is_deletion_intent_goal(),
+           _scan_remaining_target_records(), _RECORD_COUNT_SELECTOR,
+           _RECORD_COUNT_RE ให้ agent เช็คจำนวน record ที่เหลือจริงจากตารางก่อน
+           สรุปว่างานเสร็จ
+
+           (4) W23/W24 — แก้ปัญหา confirmation modal (popup "Are you sure you
+           want to delete...") บางครั้ง agent กดปุ่มยืนยันไม่ติดเพราะ modal
+           ยังไม่ render เต็มหรือปิดไปแล้วจาก re-render โดย user เลือก (ผ่าน
+           AskUserQuestion) ให้ทำเฉพาะแผน "Auto-Refresh & Re-attachment
+           Guardrail" (ข้ามแผนแรกที่ขัดจังหวะไว้) — เพิ่ม actions.py:
+           _detect_confirmation_modal(), _is_modal_still_open(),
+           _find_visible_modal_confirm_button(),
+           resolve_confirmation_modal() พร้อม retry 3 ครั้ง + reload guard ผูก
+           เข้ากับ _dispatch_click_with_retry()
+
+           (5) W25/W26 — user รายงานว่าหน้า agent ต้องกด F5 เองถึงจะเห็นข้อความ
+           ขอ approve และ log ไม่อัปเดตตามเวลาจริง บางทีงานเสร็จแล้ว log ยังไม่ขึ้น
+           ตรวจพบ root cause คือ TaskRecord ใช้ asyncio.Queue เดี่ยวต่อ task ทำให้
+           ถ้ามีหลาย tab/connection เปิดดู task เดียวกัน (ซึ่งเป็น design ปกติของ
+           frontend ตาม ensureConversationFor()) จะแย่ง event กันจนบาง
+           connection ไม่เห็นอะไรเลย ลองแก้แบบ "queue-swap ล่าสุดชนะ" (W25) ก่อน
+           แต่ทดสอบ multi-tab จริงแล้วพบว่าแค่ย้ายปัญหาไป tab อื่นแทน จึง redesign
+           ใหม่เป็น broadcast/pub-sub (W26): task_manager.py เปลี่ยน
+           TaskRecord.events (Queue เดี่ยว) เป็น event_subscribers (list ของ
+           Queue) + เพิ่ม _broadcast() กระจาย event ให้ subscriber ทุกตัว,
+           routes.py แยก _stream_task_events(record) เป็นฟังก์ชันเดี่ยวที่
+           subscribe/unsubscribe ตัวเองเข้า list นี้ (try/finally cleanup) —
+           แก้ปัญหาข้อความ approve และ log ไม่อัปเดตแบบ real-time ได้ตรงจุด
+
+           (6) W28 — user รายงานว่า agent filter หา role admin แล้วกดลบทั้งที่สั่ง
+           หา role ess พร้อมสั่งให้เข้าไปเช็คโครงสร้างหน้าเว็บจริงก่อนแก้โค้ด จึงเปิด
+           browser tool เข้า opensource-demo.orangehrmlive.com ตรวจ dropdown
+           ของ OrangeHRM จริง พบว่า custom Vue dropdown เปิดแล้ว render
+           [role="option"] ที่ชัดเจนไม่กำกวม แต่ SYSTEM_PROMPT เดิม (จากงาน W50)
+           สั่งให้ agent เดา ArrowDown/Enter นับตำแหน่งแทนการคลิก label ตรงๆ
+           "ถ้ามั่นใจว่าเป็น custom dropdown ตั้งแต่แรก" ทำให้เลือกผิดตัวได้ถ้านับ
+           ตำแหน่งพลาด — เขียนกติกาใหม่ใน llm.py ให้คลิก label ที่ตรงกับที่ต้องการ
+           โดยตรงเป็นหลัก ใช้ keyboard nav เป็นแค่ fallback และบังคับ verify ค่า
+           ที่เลือกจริงหลังเลือกเสร็จทุกครั้ง พร้อมเพิ่มกติกา verify filter
+           criteria ให้ตรงก่อนกดลบใน batch/bulk delete protocol กันเหตุการณ์
+           ลบผิด role ซ้ำ
+
+           (7) W29 — user ส่งภาพหน้าจอ agent ติดลูปกดสลับ index 22/25 (role
+           dropdown) ซ้ำไปเรื่อยๆ ไม่ยอมกด search ต่อ ตรวจพบว่า
+           loop-guard เดิม (period-1 และ period-2-4 cycle detection) เทียบ
+           dict ของ action คำสั่งตรงๆ แต่ field completed_plan_step จะมีอยู่
+           เฉพาะครั้งแรกที่ action นั้นทำให้ plan step เสร็จเท่านั้น ทำให้ dict
+           ไม่เท่ากันในรอบถัดๆ ไปและ guard มองไม่เห็นว่าเป็น loop เดียวกัน แก้ด้วย
+           orchestrator.py: _cmd_for_repeat_comparison() ตัด key
+           completed_plan_step ออกก่อนเทียบ/บันทึกทุกจุด (period-1 compare,
+           recent_actions history สำหรับ cycle detection, และใน
+           _force_loop_recovery())
+
+           รันเต็มชุด backend/tests/ ทุกครั้งหลังแก้แต่ละ W ย่อย: ผ่านสม่ำเสมอ
+           970-979 เคส เหลือ fail เดิม 9-10 เคสที่ยิง Anthropic API จริงด้วย key
+           ที่ใช้ไม่ได้ในเครื่อง dev นี้ (เหมือนเดิมทุกประการกับ baseline ก่อนหน้า
+           ไม่มี regression ใหม่) + ยืนยันซ้ำด้วยการทดสอบจริงผ่าน Browser tool
+           บน dev server และ opensource-demo.orangehrmlive.com สำหรับ W25/W26
+           (multi-tab live update), W28 (dropdown selection), W29 (loop
+           recovery)
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

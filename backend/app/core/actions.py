@@ -44,8 +44,8 @@ text จริงจาก DOM มาก่อน (target.locator(selector).loca
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
-from playwright.async_api import Page, TimeoutError as PWTimeout
+from typing import Awaitable, Callable, Optional, Union
+from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 
 from backend.app.core import state_filter
 from backend.app.core.dom_locator import compute_locator_descriptor
@@ -188,7 +188,14 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
     round-trip ไป Playwright เพิ่ม) กับปุ่มทั่วไปที่ไม่ต้อง hover เลยตั้งแต่แรก (ส่วนใหญ่
     ของ click ทั้งหมด) ผลของ hover() เองไม่ถูกนำมาตัดสิน success/fail ของรอบนั้น (แค่เป็น
     ขั้นเตรียมก่อนคลิก — hover ไม่เจอ/ล้มเหลวก็ปล่อยให้ click() ลองต่อแล้วรายงานผลจริงของ
-    click() เอง ไม่ใช่ของ hover())"""
+    click() เอง ไม่ใช่ของ hover())
+
+    W23 ("Confirmation Modal Handler"): จุดเดียวที่ click-family ทั้งหมด (plain "click" และ
+    "submit"/"delete"/"purchase"/"pay" ที่ execute() dispatch ผ่านฟังก์ชันนี้เหมือนกันทุก
+    ประการ — ดู execute() ด้านล่าง) วิ่งผ่านเสมอ เหมาะเป็นจุดเดียวที่จะเช็ค+resolve
+    confirmation modal ("Are you Sure?") ที่อาจเพิ่งเปิดขึ้นมาจาก click นี้ ก่อนคืนผลลัพธ์
+    กลับไปให้ LLM ตัดสินใจ action ถัดไป (ดู _detect_confirmation_modal()/
+    resolve_confirmation_modal() ด้านล่าง สำหรับเหตุผลเต็ม)"""
     result: ActionResult = None
     for attempt in range(1, _ACTION_RETRIES + 1):
         if attempt > 1:
@@ -199,10 +206,160 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
                 result = ActionResult(
                     True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
                 )
+            if await _detect_confirmation_modal(page):
+                modal_note = await resolve_confirmation_modal(page)
+                if modal_note:
+                    result = ActionResult(
+                        result.success, result.action, f"{result.message}{modal_note}",
+                        locator_descriptor=result.locator_descriptor,
+                    )
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
     return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+
+
+# W23 ("Confirmation Modal Handler" — บั๊กจริงที่ user รายงาน): agent คลิก "Delete Selected"/
+# "Remove" สำเร็จ เปิด confirmation modal ("Are you Sure?") ขึ้นมาจริง แต่แล้ว "ค้าง"/
+# "หยุดนิ่ง" อยู่ตรงนั้น ไม่กดปุ่มยืนยัน ("Yes, Delete") ในโมดัลต่อ — สาเหตุ: modal เป็น
+# element ใหม่ที่เพิ่ง render ขึ้นมาหลัง click แต่ agent loop ปกติต้องรอ LLM ตัดสินใจเรียก
+# action ถัดไปเองก่อนถึงจะเห็น/กด (เสีย round-trip เต็มๆ ต่อโมดัลหนึ่งอัน) ถ้า LLM ตีความ
+# index/label ผิด/ไม่รู้ว่าต้องกดต่อ จะค้างจริงๆ ตามที่ user รายงาน — แก้ด้วยการ resolve
+# modal นี้ "อัตโนมัติในระดับโค้ด" ทันทีหลัง click สำเร็จ ไม่ต้องรอ LLM ตัดสินใจเรียก action
+# แยกอีกรอบเลย (เหมือน pattern เดียวกับ auto-hover-on-retry ด้านบน — เติมเต็ม "สิ่งที่ควร
+# เกิดขึ้นจริง" ด้วยโค้ดกำหนดตายตัว แทนที่จะฝากความหวังไว้กับการตัดสินใจของ LLM ล้วนๆ)
+#
+# ไม่ต้องขอ human-in-the-loop ซ้ำอีกรอบสำหรับปุ่มยืนยันในโมดัลนี้ — human อนุมัติ action ที่
+# เปิดโมดัลนี้ไปแล้วครั้งเดียว (ผ่าน classify_action()/ask_user_func ปกติที่ execute() เช็คก่อน
+# dispatch action เดิมอยู่แล้ว ก่อนจะมาถึง _dispatch_click_with_retry() นี้เลยด้วยซ้ำ) ปุ่ม
+# ยืนยันในโมดัลเป็นแค่ UX ของเว็บที่ถาม "ซ้ำ" สำหรับ action เดียวกันที่อนุมัติไปแล้ว ไม่ใช่การ
+# ตัดสินใจใหม่ที่ต้องขออนุมัติเพิ่ม
+_DIALOG_CONTAINER_SELECTOR = '.oxd-dialog-container, [role="dialog"], .orangehrm-modal-header'
+
+# เรียงจากเจาะจงที่สุด (OrangeHRM "Yes, Delete" ปุ่มสีแดง) ไปหากว้างที่สุด (fallback ทั่วไป
+# สำหรับ dialog framework อื่นที่ไม่ใช่ OrangeHRM) — ลองทีละตัวจนกว่าจะเจอปุ่มที่ visible จริง
+_MODAL_CONFIRM_BUTTON_SELECTORS = [
+    "div.oxd-dialog-container-default button.oxd-button--label-danger",
+    ".oxd-button--label-danger",
+    'button:has-text("Yes, Delete")',
+    '[role="dialog"] button.oxd-button--secondary',
+    '[role="dialog"] button:has-text("Confirm")',
+]
+
+_MODAL_DETACH_TIMEOUT_MS = 5000
+
+# W24 ("Auto-Refresh & Re-attachment Guardrail" — บั๊กจริงที่ user รายงาน: ในงาน batch หลาย
+# รอบ (ลบ user หลายชุดติดกัน) โมดัลยืนยัน/ปุ่มของรอบที่ 2 เป็นต้นไป "ไม่ตอบสนอง" ทั้งที่รอบแรก
+# ทำงานปกติ — กด F5 มือแล้วหายเสมอ แปลว่า DOM node หลุด event binding หรือ UI desync กับ
+# state จริงหลัง AJAX table reload ของรอบก่อนหน้า ไม่ใช่ปัญหา selector ผิด/element หาไม่เจอ
+# (ถ้าเป็นแบบนั้น count()==0 จะกรองออกไปตั้งแต่ _find_visible_modal_confirm_button() แล้ว) —
+# คลิกซ้ำเฉยๆ ไม่ช่วยเพราะปัญหาไม่ใช่ timing แต่เป็น state desync ระดับหน้าเว็บ ต้องจำลอง
+# พฤติกรรม "กด F5" จริงๆ (page.reload()) ถึงจะ sync กลับมาได้ — retry ธรรมดาก่อน (เผื่อเป็น
+# แค่ animation/timing ปกติ) แล้วค่อย fallback ไป reload ถ้า retry ครบแล้วยังไม่หาย
+_MODAL_CONFIRM_CLICK_RETRIES = 3
+_MODAL_CONFIRM_RETRY_DELAY_SEC = 1.0
+_MODAL_RELOAD_TIMEOUT_MS = 15000
+
+
+async def _detect_confirmation_modal(page: Page) -> bool:
+    """W23: True ถ้ามี dialog/modal container ปรากฏอยู่จริงบนหน้าตอนนี้ (มองเห็นได้) — ไม่
+    throw ออกไปพัง (เหมือนหลักการเดียวกับ orchestrator.py::_scan_validation_errors: เช็ค
+    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)"""
+    return await _is_modal_still_open(page)
+
+
+async def _is_modal_still_open(page: Page) -> bool:
+    """W24: ใช้ตรรกะเดียวกับ _detect_confirmation_modal() ทุกประการ แยกฟังก์ชันเพราะ
+    resolve_confirmation_modal() ด้านล่างต้องเรียกซ้ำหลายจุด (เช็คตอนเข้า/เช็คซ้ำหลัง
+    detach-wait timeout) — ตั้งชื่อสื่อบริบทการใช้งานที่ต่างกันให้อ่านง่ายกว่าเรียก
+    _detect_confirmation_modal() ตรงๆ ซ้ำๆ"""
+    try:
+        locator = page.locator(_DIALOG_CONTAINER_SELECTOR).first
+        if await locator.count() == 0:
+            return False
+        return await locator.is_visible(timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    except Exception:
+        return False
+
+
+async def _find_visible_modal_confirm_button(page: Page):
+    """W23/W24: ไล่ตาม _MODAL_CONFIRM_BUTTON_SELECTORS ทีละตัว (เจาะจงที่สุดก่อน) คืน
+    (selector, locator) คู่แรกที่เจอ+visible จริง หรือ (None, None) ถ้าไม่เจอเลยสักตัว —
+    แยกออกมาจาก resolve_confirmation_modal() เพราะ W24 ต้อง "หาปุ่มครั้งเดียว แล้วคลิกซ้ำได้
+    หลายรอบ" (ปุ่มเดิมตัวเดียวกัน ไม่ใช่ query หา element ใหม่ทุกรอบ retry — การ query ใหม่ทุก
+    รอบเสี่ยงหยิบปุ่มที่ "หน้าตาเหมือนเดิมแต่จริงๆ คือ element คนละตัว" หลัง desync ได้เช่นกัน)"""
+    for selector in _MODAL_CONFIRM_BUTTON_SELECTORS:
+        try:
+            candidate = page.locator(selector).first
+            if await candidate.count() == 0:
+                continue
+            if not await candidate.is_visible(timeout=_ELEMENT_ACTION_TIMEOUT_MS):
+                continue
+            return selector, candidate
+        except Exception:
+            continue
+    return None, None
+
+
+async def resolve_confirmation_modal(page: Page) -> Optional[str]:
+    """W23/W24: หาปุ่มยืนยันของ confirmation modal (_find_visible_modal_confirm_button())
+    แล้วคลิกด้วย force=True (ข้าม actionability check ของ Playwright — modal บางตัว animate
+    เข้ามาทำให้ element "ยังไม่ visible ตามนิยามของ Playwright" ชั่วขณะแม้จะมองเห็นได้จริงบนจอ
+    แล้วก็ตาม) — ลองคลิก+รอ detach สูงสุด _MODAL_CONFIRM_CLICK_RETRIES ครั้ง ห่างกันครั้งละ
+    _MODAL_CONFIRM_RETRY_DELAY_SEC วินาที (เผื่อเป็นแค่ animation/timing ปกติ) ถ้าครบโควตา
+    แล้วโมดัลยังไม่ปิดจริง (ปุ่ม "ไม่ตอบสนอง" ตามที่ user รายงาน — ไม่ใช่ timing ธรรมดาแล้ว
+    แต่เป็น UI state desync หลัง AJAX reload ของรอบก่อนหน้า) ให้ page.reload() จำลอง "กด F5"
+    จริง แล้วรอ networkidle ก่อน return
+
+    คืนข้อความสรุปสั้นๆ ให้ต่อท้าย message ของ action หลักที่ trigger โมดัลนี้ (เช่น
+    "delete(3)") ให้ LLM/log เห็นว่าเกิดอะไรขึ้นเพิ่มเติมหลัง action นั้นแบบโปร่งใส (รวมถึงกรณี
+    reload — ข้อความจะบอก LLM ให้รู้ว่าต้อง navigate/กรองข้อมูลใหม่เองต่อ เพราะ reload ล้าง
+    client-side state เช่นคำค้นหาที่กรองไว้ทิ้งไปด้วย) — None ถ้าไม่เจอปุ่มยืนยันเลยสักตัวตั้งแต่
+    แรก (ปล่อยผ่านเงียบๆ ให้ LLM ตัดสินใจเองต่อในรอบถัดไปตามปกติ ไม่ throw/ไม่ทำให้ action หลัก
+    ที่เพิ่ง success กลายเป็น fail ไปด้วยเพราะเหตุนี้)"""
+    clicked_selector, candidate = await _find_visible_modal_confirm_button(page)
+    if clicked_selector is None:
+        return None
+
+    for attempt in range(1, _MODAL_CONFIRM_CLICK_RETRIES + 1):
+        try:
+            await candidate.click(force=True, timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+        except Exception:
+            pass  # ปุ่ม "ไม่ตอบสนอง" ก็เข้าเงื่อนไขนี้ได้เหมือนกัน — ยัง retry ต่อได้ ไม่ throw ทันที
+
+        try:
+            await page.wait_for_selector(
+                _DIALOG_CONTAINER_SELECTOR, state="detached", timeout=_MODAL_DETACH_TIMEOUT_MS,
+            )
+            await wait_stable(page)
+            retry_note = "" if attempt == 1 else f" (ลองครั้งที่ {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
+            return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector}){retry_note}]"
+        except Exception:
+            # detach-wait timeout: อาจเป็นเพราะโมดัลปิดจริงแล้วแค่ไม่ detach ออกจาก DOM (บาง
+            # framework ซ่อนด้วย CSS อย่างเดียว ไม่ลบ element) หรืออาจเป็นเพราะยังเปิดค้างอยู่
+            # จริงๆ (ปุ่มไม่ตอบสนอง) — เช็คแยกให้ชัดก่อนตัดสินใจ retry/reload ต่อ ไม่เดาว่า
+            # timeout = ปิดสำเร็จเหมือนพฤติกรรมเดิม (W23) อีกต่อไป
+            if not await _is_modal_still_open(page):
+                await wait_stable(page)
+                return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector})]"
+            if attempt < _MODAL_CONFIRM_CLICK_RETRIES:
+                await asyncio.sleep(_MODAL_CONFIRM_RETRY_DELAY_SEC)
+
+    # W24: ครบโควตา retry แล้วโมดัลยังเปิดค้างอยู่จริง — ปุ่มยืนยัน "ไม่ตอบสนอง" จริงๆ ตามที่
+    # user รายงาน จำลองพฤติกรรม "กด F5" ด้วย page.reload() แทน ไม่ throw ออกไปแม้ reload เอง
+    # จะ fail (เช่น network เพี้ยนชั่วคราว) — ปลอดภัยกว่าเสมอที่จะแจ้ง LLM ให้รู้สถานการณ์ต่อ
+    # ดีกว่าทำให้ action หลักที่เพิ่ง success (คลิก "Delete Selected") กลายเป็น fail ไปด้วย
+    try:
+        await page.reload(timeout=_MODAL_RELOAD_TIMEOUT_MS)
+        await page.wait_for_load_state("networkidle", timeout=_MODAL_RELOAD_TIMEOUT_MS)
+    except Exception:
+        pass
+    return (
+        f" [ปุ่มยืนยัน confirmation modal ไม่ตอบสนองหลังลองแล้ว {_MODAL_CONFIRM_CLICK_RETRIES} "
+        f"ครั้ง — ระบบ reload หน้าเว็บอัตโนมัติเพื่อ sync สถานะใหม่ (เหมือนกด F5) ต้องตรวจสอบ "
+        f"indexed elements ล่าสุดหลังจากนี้แล้ว navigate/กรองข้อมูลใหม่ตามที่ goal ต้องการก่อน"
+        f"ทำงานต่อ เพราะ reload ล้าง state เดิม (เช่นคำค้นหาที่กรองไว้) ทิ้งไปแล้ว]"
+    )
 
 
 # W50: keyboard-based interaction สำหรับ custom dropdown/menu widget (MUI/Ant Design/
@@ -310,14 +467,91 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
         )
 
 
-async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
-    """ติ๊ก checkbox/radio ตาม index"""
+async def _is_effectively_checked(target: Union[Page, Frame], selector: str) -> bool:
+    """W21: เช็คว่า element (หรือ input/state ที่เกี่ยวข้อง) อยู่ในสถานะ "ติ๊กแล้ว" จริงหรือไม่
+    หลัง force-click/JS-click ด้านล่างใน check() — ใช้แทน Playwright's is_checked() ตรงๆ
+    เพราะ custom checkbox (เช่น OrangeHRM .oxd-checkbox-input) มักไม่ใช่ <input> ที่ index ชี้
+    ไปตรงๆ (Playwright's is_checked() ต้องการ input/[role=checkbox] เป๊ะๆ ไม่งั้น throw) —
+    ไล่เช็คหลายสัญญาณตามลำดับความน่าเชื่อถือ: (1) ตัวเองเป็น input/[role=checkbox] จริง ใช้
+    .checked/aria-checked ตรงๆ (2) มี <input type=checkbox> ซ้อนอยู่ข้างใน (custom wrapper ที่
+    ห่อ native input ไว้แต่ซ่อนด้วย CSS) (3) มี aria-checked บน element เอง (4) สุดท้ายเดาจาก
+    class ที่บ่งบอกสถานะ active/checked (บาง framework สลับแค่ class ผ่าน JS ล้วนๆ ไม่มี aria
+    เลย) — คืน False ถ้าเช็คอะไรไม่ได้เลย (ปลอดภัยกว่าเดาว่าติ๊กแล้วทั้งที่ไม่แน่ใจ)"""
     try:
-        selector = _sel(index)
+        return await target.locator(selector).evaluate(
+            """el => {
+                const readCheckbox = (node) => {
+                    if (!node) return null;
+                    if ('checked' in node && typeof node.checked === 'boolean') return node.checked;
+                    const ariaChecked = (node.getAttribute && node.getAttribute('aria-checked') || '').toLowerCase();
+                    if (ariaChecked === 'true') return true;
+                    if (ariaChecked === 'false') return false;
+                    return null;
+                };
+                let result = readCheckbox(el);
+                if (result === null) {
+                    const nestedInput = el.querySelector && el.querySelector('input[type="checkbox"], input[type="radio"]');
+                    result = readCheckbox(nestedInput);
+                }
+                if (result === null) {
+                    const cls = (el.className || '').toString().toLowerCase();
+                    result = cls.includes('checked') || cls.includes('--active') || cls.includes(' active');
+                }
+                return !!result;
+            }"""
+        )
+    except Exception:
+        return False
+
+
+async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
+    """ติ๊ก checkbox/radio ตาม index
+
+    W21 ("Custom UI Checkbox"): OrangeHRM และ SPA framework ทั่วไปมักซ่อน native
+    <input type="checkbox"> จริงด้วย CSS (display:none/opacity:0) แล้วแทนที่ด้วย span/div
+    ห่อหุ้มที่ styled เอง (เช่น .oxd-checkbox-input) — target.check() ของ Playwright ปฏิเสธ
+    ทันที (throw) ถ้า element ที่ selector ชี้ไปไม่ใช่ input/[role=checkbox] ที่ "visible" ตาม
+    นิยามของ Playwright เอง ไม่ว่าจะ retry กี่ครั้งก็ตาม (deterministic mismatch เหมือน W42 ใน
+    select_option ด้านบน ไม่ใช่ timing issue) — perception.py ตอนนี้ติด index ให้ wrapper
+    พวกนี้ได้แล้ว (ดู CHECKBOX_WRAPPER_SELECTOR) แต่ยังต้องมีทาง "คลิก" ที่ไม่ใช่ .check() ตรงๆ
+    รองรับด้วย จึงเพิ่ม fallback 2 ชั้นเรียงจากรุกน้อยไปมาก แล้ว verify สถานะจริงหลังคลิกทุกครั้ง
+    (ต่างจาก click()/fill() อื่นที่เชื่อว่า Playwright ไม่ throw = สำเร็จ เพราะ custom checkbox
+    "คลิกได้ไม่ error" ไม่ได้แปลว่า "ติ๊กแล้วจริง" เสมอไป)"""
+    selector = _sel(index)
+
+    # ทางหลัก: native check() ปกติ — เร็วและตรงกับ <input type=checkbox>/[role=checkbox]
+    # ทั่วไปส่วนใหญ่อยู่แล้ว ไม่ต้อง fallback เลยถ้าสำเร็จ
+    try:
         target = await resolve_frame(page, selector)
         await target.check(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
         return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ", locator_descriptor=descriptor)
+    except Exception:
+        pass
+
+    # Fallback 1: force click — ข้าม Playwright's actionability check (element visible ตาม
+    # นิยามของ Playwright) เหมือน hover(force=True) ด้านบน คลิกที่พิกัดกึ่งกลางของ element
+    # ตรงๆ ไม่ว่า Playwright จะมองว่า element นี้ "checkable" หรือไม่
+    try:
+        target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=timeout, force=True)
+        if await _is_effectively_checked(target, selector):
+            descriptor = await compute_locator_descriptor(target, selector)
+            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (force click)", locator_descriptor=descriptor)
+    except Exception:
+        pass
+
+    # Fallback 2: JS dispatch ตรงบน element ผ่าน el.click() — ข้าม actionability check และ
+    # การจำลอง mouse event ของ Playwright ทั้งหมด ใช้เป็นทางสุดท้ายสำหรับ wrapper ที่ force
+    # click ก็ยังคลิกไม่โดน (เช่น wrapper ที่มีขนาด 0x0 จริงๆ ตัวอย่างการมองเห็นมาจาก
+    # pseudo-element ล้วนๆ)
+    try:
+        target = await resolve_frame(page, selector)
+        await target.locator(selector).evaluate("el => el.click()")
+        if await _is_effectively_checked(target, selector):
+            descriptor = await compute_locator_descriptor(target, selector)
+            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (JS click)", locator_descriptor=descriptor)
+        return ActionResult(False, f"check({index})", "คลิกแล้วแต่ยืนยันสถานะ checked ไม่ได้")
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")
 

@@ -1,0 +1,197 @@
+W21
+task 1
+You are a Principal AI Agent Architect specializing in Web Automation and Table Operations.
+
+[PROBLEMS IDENTIFIED]
+1. Intent Confusion in Complex Prompts: When the user says "Go to Admin page and delete users with Role=ESS", the Agent confuses the target page ("Admin") with the filter parameter ("ESS"), resulting in filtering by Admin instead of ESS.
+2. Failure in Batch Operations: When ordered to "delete ALL" matching rows, the Agent only clicks the trash icon on the FIRST row, confirms deletion once, and mistakenly marks the task as completed while remaining rows are untouched.
+
+[TASK]
+Refactor the Agent's Intent Decomposition Engine and Table Execution Handler to properly process filter criteria and handle batch/bulk table actions.
+
+[REQUIREMENTS TO IMPLEMENT]
+
+1. STRICT DISAMBIGUATION (NAV LOCATION VS. FILTER CRITERIA):
+   - Update the Planner Prompt: Explicitly separate `Navigation Goal` from `Filter Parameters`.
+   - Rule: Mentioning a page name (e.g., "หน้า Admin", "หน้า Management") maps ONLY to top/side navigation. Field conditions (e.g., "Role=ESS", "Status=Enabled") MUST be mapped strictly to the search form inputs on that page.
+
+2. BATCH/BULK ACTION PROTOCOL (DELETE ALL HANDLING):
+   - When the user goal implies bulk operations (keywords: "ทั้งหมด", "ให้หมด", "delete all", "remove every"):
+     * PREFERRED APPROACH (Bulk Checkbox): Instruct the Agent to locate and click the "Select All" checkbox in the table header (e.g., `th input[type="checkbox"]` or `.oxd-table-header-cell--checkbox`), then click the global "Delete Selected" button at the top.
+     * FALLBACK APPROACH (Iteration Loop): If no "Select All" option exists, implement a `while` loop:
+       1. Check if matching rows exist in the DOM.
+       2. Click trash icon on row 1 -> Confirm Delete.
+       3. Wait for DOM/Table reload.
+       4. Repeat until 0 rows remain or table displays "No Records Found".
+
+3. POST-ACTION VERIFICATION:
+   - For deletion tasks, the Agent MUST NOT mark the task as "Done" until it verifies that the targeted rows are no longer present in the table or the table record count updates accordingly.
+
+Please provide the updated Python/Playwright/Planner prompt logic to implement these improvements.
+
+You are a Principal Automation & Browser Agent Engineer.
+
+[TASK / FEATURE ENHANCEMENT]
+Our Agent needs to support Bulk Update commands across multiple records/pages (e.g., "Change the Role of ALL users to Admin").
+
+[REQUIREMENTS TO IMPLEMENT]
+
+1. BULK EDIT & ROW-BY-ROW ITERATION LOOP:
+   - When receiving a bulk edit command (keywords: "เปลี่ยนทุก...", "edit all", "update every"):
+     * Read total record count (e.g., "19 Records Found").
+     * Create an Execution Loop that iterates through each row in the current table page.
+     * Click Edit Icon (pencil) on Row[i] -> Change Role dropdown to "Admin" -> Click Save -> Return to User List.
+     * Track processed record index (e.g., Processed 1/19, 2/19) to avoid editing the same row twice.
+
+2. PAGINATION HANDLING (MULTI-PAGE SUPPORT):
+   - After completing all rows on the current page:
+     * Check if the "Next Page" button (e.g., `.oxd-pagination-page-item--previous-next` or `>`) is enabled and visible.
+     * If Next Page exists, click it, wait for table reload, and repeat the editing loop for the new page.
+     * Terminate loop only when all pages are processed or total target count is reached.
+
+3. SMART OPTIMIZATION (FILTER FIRST):
+   - Instruct the Planner: Before performing a bulk edit to set Role="Admin", FIRST apply a table filter (e.g., Search for Role="ESS" or Role!="Admin").
+   - Reason: This filters out users who are ALREADY Admins, drastically reducing unnecessary edit steps and preventing redundant operations.
+
+Please update the Agent's Planner and Table Loop Executor code to support multi-row/multi-page bulk update operations.
+
+Task2
+You are an expert Frontend Developer.
+Task: Implement Input Command History Navigation (Up/Down Arrow Keys) for the Chat Input Component.
+
+======================================================================
+[REQUIREMENTS FOR INPUT HISTORY NAVIGATION]
+
+1. STATE MANAGEMENT:
+   - Maintain a `history` array state (stores all sent message strings).
+   - Maintain a `historyIndex` pointer state (defaults to `-1`, representing the active live input).
+   - Maintain a `tempInput` state (stashes the unsent draft text when user starts browsing history).
+
+2. KEYBOARD CONTROLS (ON KEY DOWN):
+   - `ArrowUp`: 
+     * Navigate backward through history (`historyIndex - 1`).
+     * If navigating from `historyIndex === -1`, stash the current input draft into `tempInput`.
+     * Set input value to `history[historyIndex]`.
+   - `ArrowDown`: 
+     * Navigate forward through history (`historyIndex + 1`).
+     * If returning to the bottom (`historyIndex === -1`), restore the stashed `tempInput`.
+   - `Enter`: 
+     * Push non-empty input into `history` array.
+     * Reset `historyIndex` back to `-1` and clear `tempInput`.
+
+3. INTEGRATION WITH QUICK ACTION SUGGESTIONS:
+   - Ensure Arrow Up/Down controls ONLY navigate history when the Quick Action Suggestion Dropdown is CLOSED/EMPTY.
+   - When Quick Action Dropdown is active, Arrow Up/Down must retain its menu selection functionality.
+
+Task3
+You are a Principal Automation & Browser Agent Engineer.
+
+[PROBLEM IDENTIFIED]
+Our Browser Agent fails to locate and click the "Select All" checkbox in data tables (specifically on OrangeHRM and modern SPA frameworks). This happens because native `<input type="checkbox">` elements are visually hidden (CSS `display: none` or `opacity: 0`) and replaced with custom styled span/div wrappers.
+
+[TASK]
+Refactor the Agent's "Checkbox Locator & Click Handler" module to support custom UI checkboxes and "Select All" table headers.
+
+[REQUIREMENTS TO IMPLEMENT]
+
+1. CUSTOM UI CHECKBOX SELECTORS (ORANGEHRM & GENERAL SPAs):
+   - Enhance the Element Finder to target custom checkbox wrappers rather than native input tags alone:
+     * OrangeHRM Header "Select All" Checkbox:
+       `th .oxd-checkbox-input`
+       `th .oxd-table-header-cell-checkbox`
+       `//th//span[contains(@class, 'oxd-checkbox-input')]`
+     * General SPA Fallback:
+       `th [role="checkbox"]`
+       `th label:has(input[type="checkbox"])`
+       `thead input[type="checkbox"]`
+
+2. FORCE / JAVASCRIPT CLICK FOR HIDDEN ELEMENTS:
+   - When attempting to click a checkbox:
+     * Primary Action: Click the custom wrapper class (e.g., `.oxd-checkbox-input`).
+     * Fallback Action: If Playwright/Selenium throws "element is not visible or intercepted", use Force Click (`click(force=True)`) or execute a JavaScript dispatch event directly on the underlying checkbox:
+       `element.evaluate(el => el.click())`
+
+3. STATE VERIFICATION (IS CHECKED?):
+   - After clicking "Select All", verify that the operation succeeded by checking:
+     * Is the header checkbox class updated? (e.g., contains `.oxd-checkbox-input--active` or `aria-checked="true"`).
+     * Are row checkboxes now checked?
+     * Is the bulk action bar / "Delete Selected" button now visible?
+
+Please update the Playwright / Selenium locator code in our codebase to implement these robust checkbox handling rules.
+
+
+Task4
+You are a Principal Automation & Browser Agent Engineer.
+
+[PROBLEM IDENTIFIED]
+In the OrangeHRM Recruitment module (Candidate Table), the Agent fails to locate action buttons:
+1. "View Details" (Eye Icon 👁️)
+2. "Download Resume" (Download Icon 📥)
+Reasons: These buttons contain no text nodes (only SVG/Font icons like `.bi-eye-fill`, `.bi-download`), and the Download button is conditionally rendered (only appears if the candidate uploaded a resume).
+
+[TASK]
+Refactor the Agent's "Table Action Button Resolver" to target Icon-based Action Buttons by Class, ARIA attributes, and Row Index.
+
+[REQUIREMENTS TO IMPLEMENT]
+
+1. ICON-BASED SELECTOR MAPPING (ORANGEHRM RECRUITMENT):
+   - Implement explicit selector rules for Recruitment action buttons mapped to row `i`:
+     * View Details (Eye Icon):
+       `tr:nth-child(i) button:has(.bi-eye-fill)`
+       `tr:nth-child(i) .bi-eye-fill`
+       `tr:nth-child(i) button i.oxd-icon.bi-eye-fill`
+     * Download Resume (Download Icon):
+       `tr:nth-child(i) button:has(.bi-download)`
+       `tr:nth-child(i) .bi-download`
+       `tr:nth-child(i) button i.oxd-icon.bi-download`
+
+2. CONDITIONAL EXISTENCE CHECK (DOWNLOAD BUTTON):
+   - Before attempting to click "Download Resume" on a specific row:
+     * Check if `tr:nth-child(i) .bi-download` exists in DOM.
+     * If NOT present on row `i` (because candidate has no resume file), DO NOT fail or retry endlessly.
+     * Prompt/Log: "Candidate in row X does not have an attached resume to download." and skip or proceed to next item cleanly.
+
+3. ROW-SPECIFIC ACTION TARGETING:
+   - Always bind action clicks to the exact target Row Index (`row_index` or `candidate_name`) to prevent clicking the Eye icon on the wrong row.
+   - Example Playwright logic:
+     `page.locator('div.oxd-table-card').nth(index).locator('.bi-eye-fill').click()`
+
+Please update the Playwright / Selenium locator code for table action buttons accordingly.
+
+Task5
+You are a Principal AI Agent Architect specializing in RAG, Site Map Manuals, and Deterministic Planning.
+
+[TASK / FEATURE ENHANCEMENT]
+We are implementing a "Self-Learned Site Manual Integration" into our Agent's Planner module. 
+When the user gives a command, the Agent must first check its pre-learned site structure/manual database.
+- If a matching manual entry exists: Use the manual's exact route and selectors to build a "Strict Guided Plan" and inject page hierarchy into the context.
+- If no manual entry exists: Fall back to the default LLM dynamic planner.
+
+[REQUIREMENTS TO IMPLEMENT]
+
+1. MANUAL LOOKUP & CONTEXT INJECTION (COMMAND / CONTEXT DISPLAY):
+   - Before plan generation, query the learned site structure store for matching intent/pages.
+   - If a manual entry is found, update the `/context` display to show the exact page execution sequence (Page Hierarchy / Navigation Flow).
+   - Format for `/context` output:
+     📍 **Learned Page Flow Sequence:**
+     `[Login Page] ➔ [Dashboard / Home] ➔ [User Profile Dropdown] ➔ [Change Password Page]`
+
+2. STRICT GUIDED PLANNER GENERATION:
+   - Modify the Planner prompt to enforce strict adherence to the retrieved manual:
+     * Step 1: Navigate to [Target Page URL / Route]
+     * Step 2: Locate [Target Element Name] using exact recorded selector/XPath (e.g., `.oxd-userdropdown-tab`)
+     * Step 3: Trigger Action (Click/Input/Select)
+     * Step 4: Verify expected DOM state
+   - Output clean step-by-step Thailand Planner text as requested:
+     `เข้าหน้าหลัก ➔ กดปุ่มโปรไฟล์/ตั้งค่า ➔ กดเปลี่ยนรหัส ➔ กรอกรหัสใหม่`
+
+3. FALLBACK MECHANISM (NO MANUAL FOUND):
+   - If `manual_data == None` or matching confidence is low:
+     * Proceed with the standard dynamic LLM Planner logic seamlessly.
+     * Do not fail or block execution; display `/context` as "No pre-learned manual found. Executing dynamic exploration."
+
+4. PLANNER SYSTEM PROMPT UPDATE:
+   Incorporate this rule in the System Prompt:
+   "When 'PRE_LEARNED_MANUAL' is present in the context, your generated plan MUST strictly align with the recorded DOM elements and navigation path in the manual. Do NOT hallucinate alternative selectors or deviate from the recorded sequence unless an error occurs."
+
+Please provide the updated Python/TypeScript code for the Planner, Context Manager, and Manual Retrieval logic.
