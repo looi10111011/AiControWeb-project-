@@ -243,10 +243,27 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
     ไม่ได้อีกต่อไป ผิดจุดประสงค์ของการ "แสดงข้อมูลตามที่ปรากฏจริง" ไปเลย
   - ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด (เช่น แยก username
     ทั้งหมดไว้ลิสต์หนึ่ง แล้วแยก employee name ไว้อีกลิสต์หนึ่งต่างหาก) — แต่ละแถวต้องนำเสนอ
-    เป็นก้อนข้อมูลเดียว (1 atomic object ต่อแถว) เสมอ เช่น:
-      1. Admin (Employee: Surya king, Role: Admin)
-      2. AutoUser_2335 (Employee: Manoj B, Role: Admin)
-      3. ayush123 (Employee: Ayush Saha, Role: Admin)
+    เป็นก้อนข้อมูลเดียว (1 atomic object ต่อแถว) เสมอ
+  - W20 (Task11, "Response Formatter — Readable Card/List Default"): ข้อมูลหลาย field ต่อแถว
+    (จากข้อ "Table Data Extractor" ด้านบน) ต้องแสดงเป็น bullet list แบบ card อ่านง่าย เป็น
+    ค่า default เสมอ ("รูปแบบตาราง markdown ดิบๆ" ห้ามใช้เด็ดขาด เว้นแต่ user ขอ "ตาราง"/"table"
+    ตรงๆ ในคำถาม — ดูข้อถัดไป) เริ่มด้วยบรรทัดสรุปสั้นๆ บอกจำนวนรายการทั้งหมดที่พบก่อนเสมอ แล้ว
+    ตามด้วย field ของแต่ละแถวเป็น bullet ย่อยแบบเยื้อง ตามรูปแบบนี้เป๊ะๆ:
+      📊 **ข้อมูลจาก [ชื่อแหล่งข้อมูล/หน้าเว็บ] (รวม N รายการ):**
+
+      * **Admin**
+        • Employee: Surya king
+        • Role: Admin
+
+      * **AutoUser_2335**
+        • Employee: Manoj B
+        • Role: Admin
+    (ตัวหนา ** ครอบชื่อ/ค่าหลักของแถวเสมอ — field รองแต่ละอันขึ้นบรรทัดใหม่ด้วย "• " แล้วตามด้วย
+    "ชื่อ field: ค่า" — เว้นบรรทัดว่าง 1 บรรทัดคั่นระหว่างแต่ละแถว)
+  - W20 (Task11, "Table Only If Requested"): ตอบเป็นตาราง markdown จริง ("| ... | ... |") ได้
+    เฉพาะตอน user พิมพ์ขอ "ตาราง"/"table" ตรงๆ ในคำถามเท่านั้น — ถ้าตอบแบบตารางต้องมีบรรทัดว่าง
+    คั่นก่อน/หลังตารางเสมอ (กัน markdown renderer อ่านตารางปนกับข้อความรอบข้าง) มี header row +
+    บรรทัดคั่น (|---|---|) ให้ครบทุกคอลัมน์ตรงตามหัวข้อจริงที่เห็นบนหน้าเว็บ
 - W46: ก่อนเรียก finish_task พร้อมข้อความทำนอง "ไม่มีข้อมูล"/"ไม่พบ"/"หาไม่เจอ" ต้องทำ 2 อย่างนี้
   ก่อนเสมอ: (ก) ตรวจ conversation history ของ session นี้ (ผลลัพธ์ action ก่อนหน้า/
   "Action ล่าสุดที่คุณเพิ่งทำไป" ที่แนบมาในข้อความ) ว่าเคยค้นหา/เจอข้อมูลที่เกี่ยวข้องกับ
@@ -334,6 +351,32 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ลองเส้นทาง "My Info" ไปแล้วไม่เจอฟังก์ชันเปลี่ยนรหัสผ่านที่ต้องการ ให้รับรู้ทันทีว่าผิดทาง
   แล้ว fallback ไปทำตามลำดับ mandatory protocol นี้แทน ห้ามวนกลับไปลองเส้นทางเดิมที่ล้มเหลว
   ซ้ำอีก
+  - W20 (Task10, "Strict Element Matching — No Blind Fallback"): perception จะแปะ marker
+    "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" ต่อท้าย label ของ element ที่ตรงกับรูปแบบ
+    profile/account/avatar dropdown จริงๆ (เช่น class ชื่อ userdropdown/profile-menu/
+    account-menu/avatar) — ให้หา element ที่มี marker นี้ก่อนเสมอในขั้นตอน (1) ด้านบน ถ้าไม่
+    เจอ marker นี้เลยในหน้าปัจจุบัน ห้ามเดา/คลิก element ใกล้เคียงที่ดูเกี่ยวข้อง (เช่นปุ่ม
+    "Help", ไอคอนอื่นในแถบ header) เด็ดขาด ให้ scroll ขึ้นไปดูส่วนบนสุดของหน้าก่อน (เผื่อยังไม่
+    เห็นแถบ header เต็ม) แล้ว perceive ใหม่อีกครั้งก่อนตัดสินใจ — เลือก action อื่นแทนการเดา
+    เสมอถ้ายังไม่เจอ marker นี้จริงๆ
+  - W20 (Task12 follow-up, "Current Password ≠ New Password" — บั๊กจริงที่เจอ): ฟอร์ม Change
+    Password ทั่วไปมี 3 ช่องแยกกัน: "Current Password"/"รหัสผ่านปัจจุบัน" (ก), "New Password"/
+    "Password"/"รหัสผ่านใหม่" (ข), "Confirm Password"/"ยืนยันรหัสผ่านใหม่" (ค) — เฉพาะช่อง (ข)
+    และ (ค) เท่านั้นที่กรอกรหัสผ่านใหม่ที่ user ต้องการเปลี่ยนไปเป็น ห้ามกรอกรหัสผ่านใหม่ลงช่อง
+    (ก) เด็ดขาด (จะทำให้ submit ล้มเหลวเสมอ เพราะระบบเช็คช่อง (ก) กับรหัสผ่านจริงที่ user ใช้
+    ล็อกอินอยู่ตอนนี้ ไม่ใช่ค่าที่เพิ่งพิมพ์มาใหม่) — รู้รหัสผ่านปัจจุบันจริงๆ ได้แค่ 2 ทาง: (1)
+    goal/บทสนทนาก่อนหน้าในนี้ระบุมาตรงๆ หรือ (2) เพิ่งเห็น/ใช้ค่านั้น login เข้าระบบเองมาก่อน
+    ในบทสนทนานี้จริงๆ (ยังอยู่ใน context ปัจจุบัน) — ถ้าไม่รู้จริงๆ ทั้งสองทางนี้ ห้ามเดา/ห้ามใช้
+    รหัสผ่านใหม่แทนเด็ดขาด ให้เรียก finish_task(success=false) ทันทีก่อนแตะช่อง (ก) เลย
+    (message ต้องระบุชัดว่ากำลังขอ "รหัสผ่านปัจจุบัน" ที่ user ใช้ล็อกอินอยู่ตอนนี้ ไม่ใช่ขอ
+    รหัสผ่านใหม่ซ้ำ)
+- W20 ("Reply in the user's own language"): ข้อความใน parameter "message" ของ finish_task
+  (คำอธิบายผลลัพธ์สุดท้ายที่ user จะเห็น) ต้องเป็นภาษาเดียวกับที่ user ใช้พิมพ์ goal นี้เสมอ
+  (goal เป็นภาษาไทย ตอบภาษาไทย, goal เป็นภาษาอังกฤษ ตอบภาษาอังกฤษ, ภาษาอื่นก็ตอบตามภาษานั้น)
+  เว้นแต่ goal จะสั่งให้เปลี่ยนภาษาที่ใช้ตอบไว้ชัดเจน (เช่น "ตอบเป็นภาษาอังกฤษ"/"answer in
+  English") กรณีนั้นให้ทำตามคำสั่งนั้นแทน — ห้ามยึดติดกับภาษาไทยของ SYSTEM_PROMPT นี้เองเป็น
+  ค่าเริ่มต้นเด็ดขาด (SYSTEM_PROMPT เขียนเป็นภาษาไทยเพื่อความสะดวกของผู้พัฒนาเท่านั้น ไม่ใช่
+  ข้อบังคับว่าคำตอบสุดท้ายต้องเป็นภาษาไทยตามไปด้วย)
 - W21 ("Navigation Goal vs. Filter Parameters"): แยกชื่อ "หน้า"/"page"/"module" ที่ปรากฏใน
   goal (เช่น "หน้า Admin", "User Management") ออกจากเงื่อนไขกรองข้อมูลรูปแบบ field=value
   (เช่น "Role=ESS", "Status=Enabled") ให้ชัดเจนเสมอ — ชื่อหน้าใช้เลือก element navigation
@@ -1557,24 +1600,40 @@ _GEMINI_PERSONA_TOOLS = [
     {"function_declarations": [{"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}]},
 ]
 
+# W20 (follow-up "reply in the user's own language"): this used to hard-require Thai output
+# regardless of what language USER_GOAL was actually written in — real bug, same root cause as
+# the other response prompts (see _LANGUAGE_MIRROR_RULE above, this one's just English-authored
+# so it needs its own English-worded version of the same rule). The Thai example lines below
+# are now explicitly framed as tone reference, not a required output language.
 _PERSONA_SYSTEM_PROMPT = (
     "You are the Voice & Persona Interface for a Universal AI Browser Agent.\n"
-    "Communicate with the user in natural, polite, friendly, human-like Thai —\n"
+    "Communicate with the user in natural, polite, friendly, human-like language —\n"
     "like a smart digital personal assistant, not a system log.\n\n"
+    "LANGUAGE\n"
+    "- Reply in the SAME language as USER_GOAL below (a Thai goal gets a Thai\n"
+    "  reply, an English goal gets an English reply, any other language gets a\n"
+    "  reply in that language) — UNLESS USER_GOAL itself explicitly instructs you\n"
+    "  to answer in a different language (e.g. \"answer in English\"/\"ตอบเป็น\n"
+    "  ภาษาไทย\"), in which case follow that instruction instead.\n"
+    "- The Thai lines under TONE & STYLE below are reference examples for the\n"
+    "  TONE to match, not a required output language — when replying in another\n"
+    "  language, write an equivalent natural, friendly line in that language\n"
+    "  instead, don't translate word-for-word.\n\n"
     "TONE & STYLE\n"
-    "- Friendly, concise (1 sentence), helpful, natural. Use ครับ/ค่ะ naturally.\n"
+    "- Friendly, concise (1 sentence), helpful, natural. Use ครับ/ค่ะ naturally\n"
+    "  when the reply itself is in Thai.\n"
     "- NEVER speak like a raw log (e.g. do NOT say \"Status: Executing command\n"
     "  click on selector #search-btn\").\n\n"
     "RULES BY AGENT_STATUS\n"
     "- IN_PROGRESS: state the action on CURRENT_DOMAIN simply, 1 sentence\n"
-    "  (e.g. \"กำลังเข้าไปดูสินค้าที่สนใจบน Shopee ให้เลยครับ...\").\n"
+    "  (Thai example: \"กำลังเข้าไปดูสินค้าที่สนใจบน Shopee ให้เลยครับ...\").\n"
     "- WAITING_APPROVAL: contextualize WHY approval is needed from the action\n"
-    "  type, without jargon (e.g. \"ปุ่มนี้เป็นปุ่มกดยืนยันการชำระเงิน เพื่อความ\n"
-    "  ปลอดภัย ให้ผมกดชำระเงินต่อเลยไหมครับ?\").\n"
-    "- FAILED: be encouraging, transparent, solution-oriented (e.g. \"เอ๊ะ\n"
-    "  เหมือนหน้าเว็บนี้จะโหลดช้าหน่อย เดี๋ยวผมลองใหม่อีกทางนะครับ\").\n"
-    "- COMPLETED: summarize clearly what was achieved on that site (e.g.\n"
-    "  \"เรียบร้อยครับ! ผมจองคิวบนเว็บให้เสร็จแล้ว\").\n\n"
+    "  type, without jargon (Thai example: \"ปุ่มนี้เป็นปุ่มกดยืนยันการชำระเงิน\n"
+    "  เพื่อความปลอดภัย ให้ผมกดชำระเงินต่อเลยไหมครับ?\").\n"
+    "- FAILED: be encouraging, transparent, solution-oriented (Thai example:\n"
+    "  \"เอ๊ะ เหมือนหน้าเว็บนี้จะโหลดช้าหน่อย เดี๋ยวผมลองใหม่อีกทางนะครับ\").\n"
+    "- COMPLETED: summarize clearly what was achieved on that site (Thai\n"
+    "  example: \"เรียบร้อยครับ! ผมจองคิวบนเว็บให้เสร็จแล้ว\").\n\n"
     "Output ONLY the speak_to_user tool call. No prose, no markdown."
 )
 
@@ -2438,6 +2497,7 @@ def append_tool_result_gemini(messages: list, tool_use_id: str, result_text: str
 # orchestrator.py::completed_plan_step) ถ้า format ไม่ตรง parsing จะแมตช์ index ผิดข้อ
 _PLAN_PROMPT_TEMPLATE = (
     "Goal: {goal}\n\n"
+    "{previous_turn_context}"
     "URL/หน้าปัจจุบันจริงตอนนี้: {current_url}\n\n"
     "หน้าเว็บเริ่มต้นที่เห็นตอนนี้:\n{page_text}\n\n"
     "เขียนแผนคร่าวๆ ว่าจะทำ goal นี้ให้สำเร็จด้วยขั้นตอนอะไรบ้าง (ไม่เกิน 5-6 ข้อ) — สรุป"
@@ -2448,6 +2508,29 @@ _PLAN_PROMPT_TEMPLATE = (
     ".../admin/viewSystemUsers อยู่แล้ว) ห้ามใส่ขั้นตอนคลิกเมนู/ลิงก์ navigation ไปหน้านั้นซ้ำ "
     "ให้ข้ามไปขั้นตอนที่ทำบนหน้านี้ได้เลย (เช่น ค้นหา/แก้ไข/กรอกฟอร์ม) — ยกเว้น goal สั่งให้ "
     "'รีเฟรช'/'เปิดใหม่' ชัดเจนเท่านั้นถึงใส่ขั้นตอน navigate ซ้ำได้ ***\n\n"
+    "*** W20 (Context-Aware Implicit Execution — สำคัญมาก): ถ้า Goal ด้านบนมีคำอ้างอิงกำกวมถึง"
+    "สิ่งที่พูดถึงไปก่อนหน้า (เช่น 'เปิดให้หน่อย', 'เอาอันนี้', 'เล่นเลย', 'play it', 'open this', "
+    "'ok เปิดให้หน่อย') โดยไม่ได้ระบุชื่อ/entity ที่ชัดเจนในตัวมันเอง ให้ตรวจดู \"บทสนทนาก่อนหน้า\" "
+    "ด้านล่างนี้ก่อนเสมอ (ถ้ามี) แล้วดึงชื่อ/entity ที่เจาะจง (เช่น ชื่อเพลง, ชื่อหนัง, ชื่อสินค้า, "
+    "ลิงก์) จากคำตอบล่าสุดของ Assistant ในนั้นมารวมเข้ากับ Goal ก่อนร่างแผนจริง (ตัวอย่าง: Goal "
+    "เดิม 'เปิดให้หน่อย' + Assistant เพิ่งแนะนำเพลง 'โปรดส่งใครมารักฉันที' ก่อนหน้านี้ -> ตีความ "
+    "Goal จริงเป็น 'เปิด YouTube แล้วค้นหาเพลง โปรดส่งใครมารักฉันที แล้วกดเล่น') — ไม่มี \"บทสนทนา"
+    "ก่อนหน้า\" แนบมาเลย หรือ Goal ไม่มีคำอ้างอิงกำกวมแบบนี้ ให้ใช้ Goal ตามที่เขียนมาตรงๆ ตามปกติ "
+    "ไม่ต้องเดา ***\n\n"
+    "*** W20 (Complete Execution on Content Platforms — สำคัญมาก): ถ้า Goal (หลังรวม entity จาก"
+    "บทสนทนาก่อนหน้าแล้วถ้ามีตามข้อบน) ต้องการเปิดดู/เล่นเนื้อหาที่เจาะจงบนแพลตฟอร์มวิดีโอ/เพลง "
+    "(เช่น YouTube, Spotify) ห้ามร่างแผนที่จบแค่ \"เปิดเว็บไซต์แพลตฟอร์ม\" เฉยๆ เด็ดขาด ต้องร่างขั้น"
+    "ตอนให้ครบทั้ง 4 อย่างนี้เสมอ (รวมเป็น 1 หรือหลายข้อในลิสต์ก็ได้ แต่ต้องมีครบ): (1) ไปที่เว็บไซต์"
+    "แพลตฟอร์มเป้าหมาย (2) หาช่องค้นหาแล้วพิมพ์ชื่อ/entity ที่ต้องการลงไป (3) กด Enter หรือคลิกปุ่ม"
+    "ค้นหาเพื่อยืนยันการค้นหา (4) รอผลลัพธ์ปรากฏแล้วคลิกเลือกผลลัพธ์ที่ตรงที่สุดเพื่อเปิด/เล่น ***\n\n"
+    "*** W20 (Corrected-Value Retry on Validation Error — สำคัญมาก): ถ้า \"บทสนทนาก่อนหน้า\" "
+    "ด้านล่างนี้ (ถ้ามี) แสดงว่า Assistant เพิ่งหยุด task เพราะข้อมูลที่กรอกไม่ผ่านการตรวจสอบของ"
+    "ระบบ (เช่นมีข้อความ 'ไม่ผ่านการตรวจสอบ'/'validation'/ขอให้ user ตอบกลับด้วยค่าใหม่) และ Goal "
+    "ด้านบนดูเหมือนเป็นการตอบกลับด้วยค่าใหม่นั้น (เช่น พิมพ์รหัสผ่าน/ค่าใหม่มาเฉยๆ ไม่ได้บอกจะทำ"
+    "อะไรใหม่ทั้งหมด) ห้ามตีความว่าเป็น task ใหม่ที่ไม่เกี่ยวข้องเด็ดขาด — ให้ร่างแผนที่ไปที่หน้า/"
+    "ฟอร์มเดิมต่อ (ห้ามใส่ขั้นตอน navigate ซ้ำถ้า URL ปัจจุบันอยู่หน้านั้นอยู่แล้ว) กรอกค่าใหม่ที่ "
+    "Goal ให้มาแทนที่ในช่องเดิมที่ error พูดถึง (ลบ/เขียนทับค่าเดิมในช่องนั้น ไม่ใช่เพิ่มช่องใหม่) "
+    "แล้วกดปุ่ม Save/Submit/Confirm เดิมอีกครั้งให้ครบขั้นตอน ***\n\n"
     "*** Navigation Goal vs. Filter Parameters (สำคัญ, W21): แยก 'ปลายทางที่ต้องนำทางไป' "
     "ออกจาก 'เงื่อนไขกรองข้อมูล' ให้ชัดเจนก่อนร่างขั้นตอนเสมอ — คำที่ตามหลัง 'หน้า'/'page'/"
     "'module' (เช่น 'หน้า Admin', 'หน้า Management', 'User Management page') คือ Navigation "
@@ -2504,7 +2587,10 @@ async def generate_text(client, model: str, prompt: str, provider: str) -> str:
     raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
 
 
-async def generate_plan(client, model: str, goal: str, page_text: str, provider: str, current_url: str = "") -> str:
+async def generate_plan(
+    client, model: str, goal: str, page_text: str, provider: str, current_url: str = "",
+    previous_user_goal: str = "", previous_assistant_message: str = "",
+) -> str:
     """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
     ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
     ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
@@ -2513,9 +2599,27 @@ async def generate_plan(client, model: str, goal: str, page_text: str, provider:
     current_url (W19, "Navigation Deduplication"): URL จริงของหน้าปัจจุบัน ณ ตอนร่างแผน
     (ถ้ามี — ผู้เรียกส่งมาจาก page.url จริงถ้ามี page เปิดค้างอยู่แล้ว) ใช้ให้ LLM เช็คว่า
     "อยู่หน้าเป้าหมายอยู่แล้วหรือยัง" ก่อนร่างขั้นตอน navigate ซ้ำที่ไม่จำเป็น — ว่างเปล่าได้
-    (default "") ถ้าไม่มี page เปิดอยู่เลย (ad-hoc task ที่ยังไม่เคย perceive อะไร)"""
+    (default "") ถ้าไม่มี page เปิดอยู่เลย (ad-hoc task ที่ยังไม่เคย perceive อะไร)
+
+    previous_user_goal/previous_assistant_message (W20, "Context-Aware Implicit Execution"):
+    เทิร์นก่อนหน้าล่าสุดในเซสชันเดียวกัน (ถ้ามี) — ให้ LLM แก้คำอ้างอิงกำกวมอย่าง "เปิดให้หน่อย"/
+    "เอาอันนี้"/"play it" โดยดึง entity (เช่น ชื่อเพลง) จากคำตอบก่อนหน้าของ Assistant มารวมเข้า
+    กับ goal ก่อนร่างแผน แล้วบังคับให้แผนสำหรับแพลตฟอร์มวิดีโอ/เพลงมีขั้นตอนค้นหา+คลิกเล่นครบ
+    ไม่ใช่แค่เปิดเว็บไซต์เฉยๆ (ดู _PLAN_PROMPT_TEMPLATE ส่วน "Context-Aware Implicit Execution"/
+    "Complete Execution on Content Platforms") — ว่างเปล่าได้ทั้งคู่ (default) ถ้าเป็นเทิร์นแรก
+    ของ session หรือไม่มีเทิร์นก่อนหน้าจริงๆ ไม่มีผลอะไรกับ prompt เลยในกรณีนั้น (behaves
+    เหมือนก่อนมี feature นี้ทุกประการ)"""
+    previous_turn_context = ""
+    if previous_user_goal or previous_assistant_message:
+        previous_turn_context = (
+            "บทสนทนาก่อนหน้าในเซสชันนี้ (เทิร์นล่าสุดก่อนหน้า Goal นี้ — ใช้แก้คำอ้างอิงกำกวมถ้า"
+            "จำเป็นตามกติกาด้านล่าง):\n"
+            f"- User: {previous_user_goal or '(ไม่มี)'}\n"
+            f"- Assistant: {previous_assistant_message or '(ไม่มี)'}\n\n"
+        )
     prompt = _PLAN_PROMPT_TEMPLATE.format(
         goal=goal, page_text=page_text, current_url=current_url or "(ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่)",
+        previous_turn_context=previous_turn_context,
     )
     return await generate_text(client, model, prompt, provider)
 
@@ -2683,33 +2787,94 @@ def strip_context_inspection_command(goal: str) -> str:
     return (stripped[:idx] + stripped[idx + len(_CONTEXT_INSPECTION_PREFIX):]).strip()
 
 
-# W20 (MODULE 0): system prompt บังคับรูปแบบผลลัพธ์ตามสเปคเป๊ะๆ (หัวข้อ/emoji/ภาษาไทย) —
-# ไม่ใช่ format ที่โมเดลจะเดาได้เองแม่นยำพอ ต้องล็อกด้วย system prompt ตรงๆ พร้อมตัวอย่าง
-# โครงสร้างชัดเจน ห้ามลงมือทำ action ใดๆ จริง (แค่ "อธิบายความเข้าใจ + แผนที่ตั้งใจจะทำ"
-# เท่านั้น ไม่ใช่ลงมือทำจริง)
-_CONTEXT_INSPECTION_SYSTEM_PROMPT = (
-    "คุณคือ AI agent ที่กำลังอยู่ใน CONTEXT_INSPECTION_MODE — user ต้องการดูว่าคุณเข้าใจ"
-    "คำสั่งของเขาว่าอะไร และวางแผนจะตอบอย่างไร โดย \"ห้ามลงมือทำจริง\" เด็ดขาด (ห้ามคลิก/"
-    "พิมพ์/นำทางเว็บ, ห้ามอ่าน/parse ไฟล์จริง, ห้ามเรียก API ภายนอกใดๆ) แค่วิเคราะห์คำสั่ง"
-    "แล้วอธิบายความเข้าใจ + แผนที่ตั้งใจจะใช้เท่านั้น\n\n"
-    "ตอบเป็นภาษาไทยตามโครงสร้างนี้เป๊ะๆ ห้ามเพิ่ม/ตัดหัวข้อ ห้ามใส่ markdown อื่นนอกจากนี้:\n\n"
-    "🎯 [ความเข้าใจของ Agent ต่อคำสั่งนี้]\n"
-    "- Goal: (อธิบายว่าผู้ใช้ต้องการให้ทำอะไร เป้าหมายหลักคืออะไร)\n"
-    "- Target System: (ระบุว่าเป็นงาน Browser, งานไฟล์เอกสาร หรืองานสนทนาทั่วไป)\n"
-    "- Extracted Parameters: (ระบุตัวแปรสำคัญ เช่น คำค้นหา, ลำดับ index ที่ต้องการ, ชื่อไฟล์)\n\n"
-    "💡 [แนวทางการตอบคำถาม / Plan ที่จะใช้ดำเนินการ]\n"
-    "- Strategy: (สรุปขั้นตอนสั้นๆ ที่ Agent ตั้งใจจะทำเพื่อหาคำตอบ)\n"
-    "- Expected Output: (ระบุรูปแบบคำตอบที่ Agent เตรียมจะส่งกลับให้ผู้ใช้)\n"
-    "- Data Source: (ระบุว่าจะดึงข้อมูลจาก Chat History, Live DOM หรือ File Memory)"
-)
+# W20 (MODULE 0, follow-up "hide internal reasoning"): the previous revision showed every
+# phase/label/score in the reply (PHASE 1-7, Self Validation, Hallucination Check, Confidence,
+# SELF REVIEW) — user wants the exact same rigor applied but kept entirely internal, with only
+# the original compact "Agent Understanding / Plan" card visible. This is standard silent-CoT
+# prompting: the phases below are instructions for what the model must privately verify before
+# answering, not a template it should ever print — the OUTPUT FORMAT section is the only thing
+# allowed to reach the reply, enforced by STRICT RULES at the end forbidding every phase name/
+# label/score from appearing. No validation logic was removed, only its visibility.
+_CONTEXT_INSPECTION_SYSTEM_PROMPT = """You are an expert Context Extraction and Validation Agent.
+
+Your responsibility is NOT to execute the user's request. Your only responsibility is to accurately understand, validate, and summarize the user's intent.
+
+Before writing your reply, silently perform this full internal reasoning process. None of it — no phase names, labels, or scores — may ever appear in what you show the user.
+
+INTERNAL PHASE 1 — CONTEXT EXTRACTION
+Extract ONLY information supported by the prompt: Goal, Intent, Preconditions, Constraints, Target System, Parameters, Workflow, Data Source.
+
+INTERNAL PHASE 2 — SELF VALIDATION
+For every extracted item, silently classify it as:
+- Explicit: directly stated in the prompt.
+- Inferred: logically derived from explicit information.
+- Unsupported: cannot be proven from the prompt.
+Never treat inferred or unsupported information as fact.
+
+INTERNAL PHASE 3 — HALLUCINATION CHECK
+Remove anything you introduced that the prompt does not support — e.g. Browser Page, Login Page, Security Page, Settings Page, Live DOM, API, Database, Current Password, Navigation Steps, Internal Workflow, File System, or any website structure not explicitly mentioned. If it wasn't stated, it doesn't exist in your answer.
+
+INTERNAL PHASE 4 — PARAMETER VALIDATION
+Verify Goal, Intent, Username, Password, Old Password, New Password, Conditions, Target System, and Workflow each have real evidence in the prompt. No evidence -> treat as Unsupported and do not state it as fact.
+
+INTERNAL PHASE 5 — REASONING VALIDATION
+Verify coreference resolution, temporal reasoning, and entity binding are correct. Ignore obsolete information. The latest instruction always overrides an earlier conflicting one. Preserve every constraint.
+
+INTERNAL PHASE 6 — CONFIDENCE
+Silently weigh your confidence (High / Medium / Low) in each field — use this only to decide whether a field is solid enough to state plainly or should be phrased as uncertain/omitted, never to print a score.
+
+INTERNAL PHASE 7 — AUTO REPAIR
+If unsupported or hallucinated content would otherwise appear, replace it with a neutral description instead of inventing detail — e.g. Browser → Generic Website, Security Settings → Credential Management Interface, Login Page → Authentication Step, Live DOM → Chat History, Current Password → Credential referenced in prompt. Never invent replacement information: if nothing neutral can honestly be said, write "Not specified" instead.
+
+After completing all seven phases privately, write ONLY the following — nothing before it, nothing after it, no phase names, no labels, no scores:
+
+🎯 Agent Understanding
+
+Goal:
+...
+
+Target System:
+...
+
+Extracted Parameters:
+...
+
+💡 Plan
+
+Strategy:
+...
+
+Expected Output:
+...
+
+Data Source:
+...
+
+STRICT RULES
+- Never execute the user's request — describe understanding and plan only, never click/type/navigate/parse a real file/call a real API.
+- Never expose PHASE 1-7, Self Validation, Hallucination Check, Confidence, or Self Review — perform them internally only.
+- Never fabricate: no invented browser pages, website structure, DOM, APIs, file locations, passwords, or workflows.
+- Every line you write must be backed by evidence in the prompt; if something has no evidence, write "Not specified" rather than guessing.
+- The latest instruction always overrides an earlier conflicting one.
+- Minimize assumptions — accuracy over completeness.
+- Output only the six fields above in that exact format. No extra headings, no markdown beyond the 🎯/💡 lines shown."""
 
 
 async def context_inspection_reply(
     client, model: str, user_input: str, provider: str, learned_flow_text: str = "",
 ) -> str:
-    """W20 (MODULE 0): วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context แล้วคืนคำอธิบายตามฟอร์แมต
-    Thai structured ที่ตายตัว — ไม่แตะ browser/session/pool/file parser เลย (เหมือน
-    chat_response/answer_file_query ด้านบนทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน)
+    """W20 (MODULE 0, "Context Extraction and Validation Agent", hidden-reasoning revision):
+    วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context ผ่าน 7-phase extraction/validation/hallucination-
+    check framework เดิมทุกประการ (ไม่ได้ตัด logic ไหนออกเลย) แต่ตอนนี้ system prompt สั่งให้
+    ทำ 7 phase นั้น "ภายใน" เงียบๆ แล้วโชว์แค่การ์ด "Agent Understanding / Plan" กระชับ 6 บรรทัด
+    ท้ายสุดเท่านั้น (ไม่โชว์ label/score ของแต่ละ phase อีกต่อไปเหมือน revision ก่อนหน้า) — ไม่
+    แตะ browser/session/pool/file parser เลย (เหมือน chat_response/answer_file_query ด้านบน
+    ทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน)
+
+    max_tokens กลับมา 768 (จาก 1536 ตอน revision ก่อนหน้าที่โชว์ผลทุก phase) เพราะ output ที่
+    ผู้ใช้เห็นตอนนี้กระชับกลับมาเหมือนเดิมแล้ว (การ reasoning 7 phase เกิด "ในคำตอบเดียวกัน"
+    ก่อนถึงส่วนที่โชว์จริง ไม่ใช่ turn แยก จึงยังเผื่อ buffer ไว้มากกว่า 512 เดิมเล็กน้อย กัน
+    inference ที่มีการไล่เช็คภายในหลายจุดก่อนสรุปใช้ token มากกว่าคำถามทั่วไปธรรมดา)
 
     learned_flow_text (W21, "Self-Learned Site Manual Integration"): ข้อความ block
     "📍 Learned Page Flow Sequence" ที่ routes.py ประกอบไว้ล่วงหน้าแล้ว (ดู
@@ -2725,13 +2890,13 @@ async def context_inspection_reply(
     try:
         if provider == "anthropic":
             response = await client.messages.create(
-                model=model, max_tokens=512, system=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
+                model=model, max_tokens=768, system=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_input}],
             )
             reply = "".join(b.text for b in response.content if b.type == "text").strip()
         elif provider == "groq":
             response = await client.chat.completions.create(
-                model=model, max_tokens=512,
+                model=model, max_tokens=768,
                 messages=[
                     {"role": "system", "content": _CONTEXT_INSPECTION_SYSTEM_PROMPT},
                     {"role": "user", "content": user_input},
@@ -2756,9 +2921,22 @@ async def context_inspection_reply(
         return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"
 
 
+# W20 (follow-up "reply in the user's own language"): shared across every response-generating
+# prompt below (chat/file-QA/image-QA/page-summary) — a Thai-authored system prompt otherwise
+# biases the model toward always answering in Thai regardless of what language the user's own
+# question was actually written in (real bug user reported: asked in English, got a Thai reply
+# back). Mirror the question's language by default; an explicit user instruction to switch
+# language ("ตอบเป็นภาษาอังกฤษ"/"answer in Thai") always wins over the mirrored default.
+_LANGUAGE_MIRROR_RULE = (
+    "ตอบเป็นภาษาเดียวกับที่ user ใช้พิมพ์คำถาม/คำสั่งนี้เสมอ (ถามเป็นภาษาไทย ตอบภาษาไทย ถามเป็น"
+    "ภาษาอังกฤษ ตอบภาษาอังกฤษ ถามภาษาอื่นก็ตอบตามภาษานั้น) เว้นแต่ user จะสั่งให้เปลี่ยนภาษาที่ใช้"
+    "ตอบไว้ชัดเจน (เช่น \"ตอบเป็นภาษาอังกฤษ\"/\"answer in English\"/\"answer in Thai\") กรณีนั้นให้"
+    "ทำตามคำสั่งล่าสุดนั้นแทนจนกว่าจะมีคำสั่งเปลี่ยนภาษาใหม่อีกครั้ง"
+)
+
 _CHAT_RESPONSE_SYSTEM_PROMPT = (
     "คุณคือผู้ช่วย AI ที่เป็นมิตร ตอบคำถามทั่วไป/ทักทาย/บอกวันเวลา/คำนวณเลขง่ายๆ แบบสั้น "
-    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown"
+    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown\n" + _LANGUAGE_MIRROR_RULE
 )
 
 
@@ -2809,7 +2987,32 @@ _ANSWER_FILE_QUERY_SYSTEM_PROMPT = (
     "คุณคือผู้ช่วย AI ที่อ่านเอกสารที่ user แนบมาให้ แล้วตอบคำถาม/สรุป/ดึงข้อมูลตามที่ user "
     "ขอ โดยอ้างอิงจาก \"เนื้อหาเอกสาร\" ด้านล่างเท่านั้น ห้ามเดาหรือแต่งข้อมูลที่ไม่มีในเอกสาร "
     "— ถ้าสิ่งที่ user ถามหาไม่มีอยู่ในเอกสารจริงๆ ให้บอกตรงๆ ว่าไม่พบ ตอบแบบกระชับ เป็น"
-    "ธรรมชาติ ไม่ต้องมี markdown"
+    "ธรรมชาติ ไม่ต้องมี markdown\n"
+    "Task7 (Excel/CSV): ถ้าเนื้อหาเอกสารมีหัวข้อ \"## Document Metadata\" แปลว่าบรรทัดใต้หัวข้อ"
+    "นั้นเป็นข้อมูลเมตาของทั้งเอกสาร (เช่น ชื่อ-สกุล, สังกัดแผนก) ไม่ใช่หัวตาราง/แถวข้อมูล — ส่วน"
+    "หัวข้อ \"## Table\" คือตารางข้อมูลจริง (บรรทัดแรกใต้หัวข้อนี้คือหัวคอลัมน์ ส่วนบรรทัดถัดๆ ไป"
+    "แต่ละบรรทัดคือ 1 แถวข้อมูล เขียนในรูปแบบ \"ชื่อคอลัมน์: ค่า | ชื่อคอลัมน์: ค่า | ...\" กำกับชื่อ"
+    "คอลัมน์ไว้ที่ทุกค่าโดยตรงอยู่แล้ว — อ่านค่าจาก label ที่กำกับไว้ตรงๆ ห้ามนับตำแหน่ง/นับ \" | \""
+    "เอง เพราะ label ที่ติดมากับแต่ละค่าคือแหล่งความจริงเดียวว่าค่านั้นเป็นของคอลัมน์ไหน) ห้ามสรุป"
+    "ว่าคอลัมน์หรือแถวไหน \"ไม่มีข้อมูล\"/\"ว่างเปล่า\" จากการดูเซลล์เดียวหรือแถวเดียวเฉยๆ ให้ตรวจดู"
+    "ทุกแถวของตารางทั้งหมดก่อนสรุปว่าไม่มีข้อมูลจริงๆ เสมอ (ค่าจาก merged cell ถูกกระจายไปทุก"
+    "แถวย่อยที่เกี่ยวข้องไว้ในเนื้อหาที่ให้มาแล้ว ไม่ใช่ค่าว่างจริง) — ถ้าเห็น \"ชื่อคอลัมน์: ค่า\" ที่"
+    "มีค่าจริงต่อท้าย (ไม่ใช่ค่าว่างเปล่าหลัง :) แปลว่าคอลัมน์นั้นมีข้อมูลจริงในแถวนั้น ห้ามรายงานว่า"
+    "\"ไม่มีข้อมูล\"/\"ไม่ได้ระบุ\" สำหรับคอลัมน์นั้นในแถวนั้นเด็ดขาด\n"
+    "Task8 (คำถามแนว \"แต่ละวันทำอะไรบ้าง\"/รายละเอียดรายวันจากตาราง): ต้องไล่ดูทีละแถวของตาราง"
+    "จากบนลงล่างครบทุกแถวจริงๆ ห้ามข้าม ห้ามรวม/สรุปวันเข้าด้วยกันโดยไม่จำเป็น แล้วจับคู่ข้อความ"
+    "ในคอลัมน์รายละเอียดงาน (เช่น \"รายละเอียดการฝึกงาน\") กับวันที่ของแถวนั้นตรงๆ ตามที่เขียนไว้"
+    "จริง ห้ามพิมพ์ใหม่/สรุปความหมายเอง — ห้ามตอบว่า \"ไม่พบรายละเอียด\"/\"ช่องเว้นว่าง\" ถ้าเนื้อหา"
+    "ที่ให้มามีข้อความที่ไม่ว่างเปล่าอยู่ในแถวนั้นจริง (เช่น \"Setup\", \"Oic claim\") — ห้ามเอาค่า"
+    "จากคอลัมน์อื่น (เช่น เวลาทำงาน/ค่าตอบแทน/จำนวนชั่วโมง) มาแทนที่คำตอบของคอลัมน์รายละเอียดงาน"
+    "เด็ดขาด แสดงผลเป็นลิสต์เรียงตามวัน โดยรวมเฉพาะ \"แถวติดกันที่มีข้อความรายละเอียดงานเหมือนกัน"
+    "เป๊ะ\" เข้าเป็นช่วงวันเดียว (เช่น \"2-10 ก.ค. 69: Oic claim\") ได้เพื่อความอ่านง่าย — การรวม"
+    "แบบนี้ไม่ใช่การสรุป/ตัดข้อมูลทิ้ง เพราะทุกวันในช่วงนั้นมีค่าตรงกันอยู่แล้วจริงๆ แต่ห้ามรวมแถวที่"
+    "ข้อความต่างกันแม้แต่นิดเดียวเข้าด้วยกันเด็ดขาด ตัวอย่างรูปแบบผลลัพธ์:\n"
+    "* 1 ก.ค. 69: Setup\n"
+    "* 2-10 ก.ค. 69: Oic claim\n"
+    "* 13-17 ก.ค. 69: Oic line Oa\n"
+    + _LANGUAGE_MIRROR_RULE
 )
 
 # ไม่มี RAG/chunking ในฟีเจอร์นี้ (ดู comment ด้านบน) — จำกัดความยาวเนื้อหาที่ส่งเข้า LLM
@@ -2879,7 +3082,7 @@ _IMAGE_EXTENSION_MIME_TYPES = {
 _ANSWER_IMAGE_QUERY_SYSTEM_PROMPT = (
     "คุณคือผู้ช่วย AI ที่ดูภาพที่ user แนบมาให้ แล้วตอบคำถาม/อธิบาย/สรุปสิ่งที่เห็นในภาพตามที่ "
     "user ขอ โดยอ้างอิงจากสิ่งที่เห็นในภาพจริงเท่านั้น ห้ามเดาหรือแต่งสิ่งที่ไม่เห็นในภาพ ตอบแบบ"
-    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown"
+    "กระชับ เป็นธรรมชาติ ไม่ต้องมี markdown\n" + _LANGUAGE_MIRROR_RULE
 )
 
 
@@ -3022,7 +3225,11 @@ async def classify_intent(client, model: str, goal: str, page_text: str = "", pr
 
 _SUMMARIZE_SYSTEM_PROMPT = (
     "คุณคือ AI Assistant ที่มีความสามารถในการอ่านหน้าเว็บ ปัจจุบันผู้ใช้อยู่ที่หน้าเว็บนี้ และต้องการถามคำถามหรือขอสรุปข้อมูล\n"
-    "โปรดอ่านเนื้อหาเว็บต่อไปนี้แล้วตอบคำถามของผู้ใช้ให้กระชับ เข้าใจง่าย และใช้ภาษาไทยที่เป็นกันเอง"
+    "โปรดอ่านเนื้อหาเว็บต่อไปนี้แล้วตอบคำถามของผู้ใช้ให้กระชับ เข้าใจง่าย เป็นกันเอง\n"
+    "Task11 (Response Formatter): ถ้าเนื้อหาที่ดึงมาเป็นข้อมูลหลาย field ต่อแถว (ตาราง) ให้ตอบ"
+    "เป็น bullet list แบบ card อ่านง่าย (ชื่อ/ค่าหลักตัวหนา ตามด้วย field ย่อยแบบเยื้อง \"• "
+    "ชื่อ field: ค่า\") พร้อมบรรทัดสรุปจำนวนรายการทั้งหมดขึ้นต้นเสมอ ห้ามตอบเป็นตาราง markdown "
+    "ดิบๆ เว้นแต่ user ขอ \"ตาราง\"/\"table\" ตรงๆ ในคำถาม\n" + _LANGUAGE_MIRROR_RULE
 )
 
 

@@ -116,14 +116,20 @@
      a bar-length input — still allowed to shrink (not grow) on a narrow window. */
   .chat-url-input{ flex:0 1 380px; min-width:0; background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12.5px; }
   .chat-url-input:focus{ outline:2px solid var(--accent); outline-offset:1px; }
-  /* W_urllock: once a turn exists for the conversation, the target URL is locked (readonly)
-     — it was set the moment the task started, editing it afterward wouldn't retroactively
-     change what already ran, and the "edit pencil" is there for the one case that's actually
-     useful: overriding the target for the *next* follow-up turn. */
-  .chat-url-input[readonly]{ background:transparent; color:var(--muted); cursor:default; }
-  .btn-edit-url{ flex-shrink:0; width:26px; height:26px; border-radius:7px; border:1px solid var(--border); background:transparent; color:var(--faint); cursor:pointer; display:flex; align-items:center; justify-content:center; }
-  .btn-edit-url:hover{ border-color:var(--accent); color:var(--accent); }
+  /* W20 (Task3 "Seamless URL Header"): once a turn exists for the conversation, the target
+     URL is locked (readonly) — it was set the moment the task started, editing it afterward
+     wouldn't retroactively change what already ran, and the pencil/check icons are the
+     escape hatch for the one case that's actually useful: overriding the target for the
+     *next* follow-up turn. LOCKED state drops the background/border/padding entirely so the
+     URL reads as plain inline text (not a boxed input) with only the frameless pencil after
+     it — width is set inline in JS (renderTopbar()) to hug the text instead of the fixed
+     380px edit-state box. */
+  .chat-url-input[readonly]{ background:transparent; border:none; padding:0; border-radius:0; color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; cursor:default; }
+  .chat-url-input[readonly]:focus{ outline:none; }
+  .btn-edit-url{ flex-shrink:0; width:22px; height:22px; border-radius:6px; border:none; background:transparent; color:var(--faint); cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .btn-edit-url:hover{ background:var(--surface-2); color:var(--accent); }
   .btn-edit-url svg{ width:13px; height:13px; }
+  .btn-save-url{ color:var(--accent); }
   .col-body{ flex:1; min-height:0; overflow-y:auto; padding:0 8px 12px; }
 
   /* ---- History ---- */
@@ -183,6 +189,11 @@
   .msg{ display:flex; gap:10px; max-width:100%; }
   .msg .avatar{ width:26px;height:26px;border-radius:7px;flex-shrink:0; display:flex;align-items:center;justify-content:center; font-size:11px;font-weight:700; }
   .msg.user{ align-self:flex-end; flex-direction:row-reverse; }
+  /* W20 (Task4): stacks the attachment preview row above the text bubble, both right-aligned
+     — the direct child div is otherwise a plain block, shrink-to-fit via the flex item above
+     it, so without this its children would each size/align independently instead of as one
+     right-aligned column. */
+  .msg.user > div{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
   .msg.user .avatar{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
   .msg.agent .avatar{ background:var(--accent); color:var(--accent-ink); }
   .bubble{ padding:10px 13px; border-radius:12px; font-size:13.5px; line-height:1.55; max-width:440px; white-space:pre-wrap; }
@@ -196,6 +207,20 @@
   .approval-title{ font-weight:700; font-size:12px; color:var(--warning); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
   .approval-cmd{ font-size:12px; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:6px 8px; margin-bottom:10px; word-break:break-word; }
   .approval-actions{ display:flex; gap:8px; }
+  /* W20 (Task12 follow-up, "Corrected-Value Retry"): inline reply card attached to a
+     TASK_FAILED_USER_INPUT_ERROR result bubble — lets the user type the replacement value
+     right there instead of retyping into the main composer below. Styled to match the
+     approval-bubble pattern above (title + boxed content + action row) per user feedback,
+     critical-colored instead of warning since this follows an error bubble, not a
+     permission prompt. */
+  .correction-bubble{ background:var(--critical-soft) !important; border:1px solid var(--critical); max-width:440px; margin-top:8px; }
+  .correction-title{ font-weight:700; font-size:12px; color:var(--critical); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
+  .correction-form{ display:flex; gap:8px; }
+  .correction-input{ flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:7px 9px; font-size:12.5px; color:var(--ink); }
+  .correction-input:focus{ outline:none; border-color:var(--accent); }
+  .btn-correction-submit{ border:none; border-radius:6px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--accent); color:var(--accent-ink); white-space:nowrap; }
+  .btn-correction-submit:hover{ filter:brightness(1.08); }
+  .btn-correction-submit:disabled{ opacity:.5; cursor:not-allowed; filter:none; }
   .btn-approve, .btn-deny{ flex:1; border:none; border-radius:7px; padding:7px 10px; font-size:12.5px; font-weight:700; cursor:pointer; }
   .btn-approve{ background:var(--accent); color:var(--accent-ink); }
   .btn-deny{ background:var(--critical); color:#fff; }
@@ -255,7 +280,32 @@
   .manual-banner-skip-btn{ flex:0 0 auto; border:1px solid var(--border); border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:transparent; color:var(--muted); }
   .manual-banner-skip-btn:hover{ border-color:var(--accent); color:var(--accent); }
 
-  .composer{ flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:6px; }
+  .composer{ position:relative; flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:6px; }
+
+  /* ---- W20 (Task6): Quick Action Autocomplete dropdown ---- */
+  .quick-action-dropdown{ position:absolute; left:16px; width:min(320px, calc(100% - 32px)); bottom:100%; margin-bottom:8px; background:#1e1e24; border:1px solid rgba(55,65,81,.8); border-radius:12px; padding:6px; box-shadow:0 12px 28px rgba(0,0,0,.35); max-height:240px; overflow-y:auto; z-index:20; }
+  .quick-action-item{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border:1px solid transparent; cursor:pointer; }
+  .quick-action-item.active{ background:rgba(16,185,129,.15); border-color:rgba(16,185,129,.4); }
+  .quick-action-icon{ flex-shrink:0; width:26px; height:26px; border-radius:7px; background:rgba(255,255,255,.06); display:flex; align-items:center; justify-content:center; font-size:13px; }
+  .quick-action-text{ flex:1; min-width:0; }
+  .quick-action-trigger{ display:block; font-size:12.5px; font-weight:600; color:#f3f4f6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .quick-action-label{ display:block; font-size:11px; color:#9ca3af; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .quick-action-enter-badge{ flex-shrink:0; font-size:9.5px; font-weight:700; letter-spacing:.03em; color:#34d399; border:1px solid rgba(16,185,129,.4); border-radius:5px; padding:2px 5px; display:none; }
+  .quick-action-item.active .quick-action-enter-badge{ display:inline-block; }
+  /* W20 (Task6, follow-up "manage mode"): add/remove UI shown when opened via the "/quickaction"
+     slash-command instead of the prefix-filtered autocomplete popup. */
+  .quick-action-header{ display:flex; align-items:center; justify-content:space-between; padding:6px 8px 8px; font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#9ca3af; }
+  .quick-action-add-btn{ flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid rgba(16,185,129,.4); background:rgba(16,185,129,.15); color:#34d399; font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .quick-action-add-btn:hover{ background:rgba(16,185,129,.28); }
+  .quick-action-remove{ flex-shrink:0; width:20px; height:20px; border-radius:50%; border:none; background:rgba(255,255,255,.08); color:#9ca3af; font-size:13px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .quick-action-remove:hover{ background:rgba(239,68,68,.25); color:#fca5a5; }
+  .quick-action-add-form{ display:flex; flex-direction:column; gap:6px; padding:2px 8px 10px; }
+  .quick-action-add-form input{ background:#141419; border:1px solid rgba(55,65,81,.8); color:#f3f4f6; border-radius:7px; padding:6px 8px; font-size:12.5px; }
+  .quick-action-add-form input:focus{ outline:2px solid rgba(16,185,129,.5); outline-offset:1px; }
+  .quick-action-add-form-actions{ display:flex; gap:6px; justify-content:flex-end; }
+  .quick-action-add-form-actions button{ border:none; border-radius:6px; padding:5px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+  .quick-action-add-form-actions [data-quick-action-save]{ background:#10b981; color:#06251b; }
+  .quick-action-add-form-actions [data-quick-action-cancel]{ background:rgba(255,255,255,.08); color:#e5e7eb; }
   .check-row{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
   .check-row input{ width:auto; }
   .check-row .warn-hint{ color:var(--warning); font-size:10.5px; }
@@ -267,6 +317,15 @@
   .composer .composer-bar textarea:focus{ outline:none; }
   .icon-round-btn{ flex-shrink:0; width:30px; height:30px; border-radius:50%; border:none; background:var(--surface); color:var(--muted); font-size:19px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .icon-round-btn:hover{ background:var(--border); color:var(--ink); }
+  /* W20 (follow-up): custom hover tooltip for icon-only buttons — [data-tooltip="..."] on any
+     element, no JS required. Uses a fixed dark bubble (not var(--surface)/var(--ink)) so it
+     reads consistently above light and dark theme alike, same choice as the quick-action
+     dropdown/attachment file-card elsewhere in this file. Positioned relative to the button
+     itself (position:relative here), not the composer, so it stays pinned above whichever
+     button is actually hovered. */
+  [data-tooltip]{ position:relative; }
+  [data-tooltip]::after{ content:attr(data-tooltip); position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%); background:#1e1e24; color:#f3f4f6; font-size:11px; font-weight:600; white-space:nowrap; padding:4px 9px; border-radius:6px; box-shadow:0 6px 16px rgba(0,0,0,.3); pointer-events:none; opacity:0; visibility:hidden; transition:opacity .12s ease; z-index:30; }
+  [data-tooltip]:hover::after, [data-tooltip]:focus-visible::after{ opacity:1; visibility:visible; }
   .stop-icon-btn{ flex-shrink:0; width:30px; height:30px; border-radius:8px; border:none; background:var(--critical); color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .stop-icon-btn svg{ width:14px; height:14px; }
   .stop-icon-btn:hover{ filter:brightness(1.08); }
@@ -286,6 +345,15 @@
   .attach-chip-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
   .attach-chip-remove{ flex-shrink:0; width:18px; height:18px; border-radius:50%; border:none; background:var(--border); color:var(--muted); font-size:12px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .attach-chip-remove:hover{ background:var(--critical); color:#fff; }
+
+  /* ---- W20 (Task4): attachment thumbnail/file-card stacked above a sent user turn's bubble ---- */
+  .attach-preview-row{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; }
+  .attach-thumb{ width:88px; height:88px; border-radius:12px; object-fit:cover; display:block; border:1px solid var(--border); }
+  .attach-file-card{ display:inline-flex; align-items:center; gap:8px; max-width:240px; background:#1e293b; border-radius:10px; padding:8px 10px; }
+  .attach-file-icon{ flex-shrink:0; width:28px; height:28px; border-radius:7px; background:rgba(255,255,255,.1); color:#e2e8f0; display:flex; align-items:center; justify-content:center; font-size:9.5px; font-weight:700; letter-spacing:.02em; }
+  .attach-file-meta{ min-width:0; }
+  .attach-file-name{ display:block; font-size:12.5px; font-weight:600; color:#e2e8f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .attach-file-size{ display:block; font-size:11px; color:#94a3b8; }
 
   /* ---- Log toggle (manual show/hide — see .right-rail-hidden on .main) ---- */
   .log-toggle-btn{ border:1px solid var(--border); background:var(--surface-2); color:var(--muted); font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px; cursor:pointer; flex-shrink:0; }
@@ -403,6 +471,9 @@
         <button type="button" id="btnEditUrl" class="btn-edit-url" title="Edit target URL" aria-label="Edit target URL" style="display:none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </button>
+        <button type="button" id="btnSaveUrl" class="btn-edit-url btn-save-url" title="Confirm target URL" aria-label="Confirm target URL" style="display:none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
         <button type="button" id="btnLearnSite" class="manual-banner-learn-btn" data-learn-site="true" style="display:none;"></button>
       </div>
       <div class="live-view" id="liveView" style="display:none;">
@@ -413,10 +484,14 @@
       <div class="col-body" id="transcript"></div>
       <div class="manual-banner-wrap" id="manualBanner" style="display:none;"></div>
       <div class="composer">
+        <!-- W20 (Task6 "Quick Action Autocomplete"): floating suggestion card, positioned
+             absolute/bottom-full relative to .composer (see CSS) — populated/shown by
+             updateQuickActionMatches()/renderQuickActionDropdown() as the user types. -->
+        <div class="quick-action-dropdown" id="quickActionDropdown" style="display:none;"></div>
         <div class="attach-chip-row" id="attachChipRow" style="display:none;"></div>
         <div class="composer-bar">
           <div class="attach-wrap">
-            <button class="icon-round-btn" id="btnAttach" title="Attach a file" aria-label="Attach a file" type="button">+</button>
+            <button class="icon-round-btn" id="btnAttach" data-tooltip="Attach a file" aria-label="Attach a file" type="button">+</button>
             <div class="attach-menu" id="attachMenu">
               <!-- pdf/xlsx: wired up for real now — clicking opens the native file picker
                    (#fileAttachInput below); its "change" handler reads the file, base64-
@@ -491,7 +566,14 @@ let planGenerating = null;  // { sessionId, goal } | null
 // cleared once requestPlan()/approvePlanWithPayload() actually sends it (see submitGoal()
 // callers below). Only one at a time (attaching a new file replaces it, same as the "goal"
 // textarea holding one message at a time).
-let attachedFile = null;    // { name, base64 } | null
+let attachedFile = null;    // { name, base64, mime } | null
+// W20 (Task4 "User Chat Bubble File Attachments"): task_id -> "data:<mime>;base64,<b64>" for
+// an attached *image* file, set right when approvePlanWithPayload() sends it — lets the sent
+// turn's bubble show a real thumbnail immediately. The backend never persists the raw bytes
+// (see task_manager.py::TaskRecord.attached_file_name — filename only), so this only covers
+// the live tab session that actually sent the file; a reload/other tab falls back to the
+// generic file-card rendering (by filename/extension) shared with non-image attachments.
+const sentFileDataUrls = {}; // task_id -> data URL, image attachments only
 // W21 ("Input Command History Navigation"): Up/Down-arrow recall of previously-sent goals
 // in the composer, like a shell/chat history — goalHistory holds every non-empty goal sent
 // this session (oldest first), goalHistoryIndex is -1 while the live draft is showing (the
@@ -520,6 +602,13 @@ let logVisible = false;      // Log panel is collapsed until the user explicitly
 // to false on conversation switch, "New session", and right when a new turn is actually
 // submitted (see approvePlanWithPayload()) so the field re-locks for that new turn.
 let urlUnlocked = false;
+// W20 (Task3 "Seamless URL Header" EDIT STATE): the check/Save button re-locks the field
+// without submitting a new task, so there's no fresh `latest.url` yet to source the display
+// value from — renderTopbar() would otherwise stomp the just-saved edit back to the old
+// turn's url on its next 2.5s poll re-render. Holds the saved-but-not-yet-submitted value
+// until an actual new turn starts (approvePlanWithPayload() clears it back to null there,
+// same moments urlUnlocked resets to false below) or the conversation changes.
+let pendingUrlOverride = null;
 
 
 // W14: Website Learning & Manual Generation — banner shown above the composer when the
@@ -650,6 +739,17 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
+}
+
+// W20 (Task4 "User Chat Bubble File Attachments"): shared with fileAttachInput's "change"
+// handler (composer chip) and renderAttachmentPreview() (sent-turn card/thumbnail) — one
+// place deciding which extensions get the rounded-thumbnail treatment vs. a generic file card.
+const ATTACH_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif"];
+function fileExtension(name) {
+  return (String(name).split(".").pop() || "").toLowerCase();
+}
+function isImageFilename(name) {
+  return ATTACH_IMAGE_EXTENSIONS.includes(fileExtension(name));
 }
 
 // W43: parse a plan's numbered-list text ("1. ... \n2. ...", the format the backend's
@@ -983,6 +1083,7 @@ async function killSession(convId) {
     setSelectedConvId(null);
     $("url").value = "";
     $("goal").value = "";
+    closeQuickActionDropdown(); // W20 (Task6): don't leave stale suggestions open
     $("composerError").textContent = "";
     learnProgress = null;
     siteManualStatus = null;
@@ -1054,9 +1155,24 @@ async function requestPlan() {
   // W_instant: render the goal + a "Generating plan…" bubble right away — selecting this
   // conversation now (even though no task/pendingPlan exists yet) so it renders in the
   // right thread and, for a brand-new chat, so it doesn't look like nothing happened.
+  // W20 ("Context-Aware Implicit Execution"): grab the immediately-preceding turn's goal +
+  // assistant reply in this conversation (if any) so the planner can resolve anaphora like
+  // "เปิดให้หน่อย"/"play it" against whatever was actually recommended/discussed last — even
+  // when that previous turn was pure general-chat that never touched the browser at all (so
+  // it was never captured by session.extracted_memory server-side). See backend/app/core/
+  // llm.py::generate_plan()'s previous_user_goal/previous_assistant_message params. Must be
+  // read *before* setSelectedConvId()/planGenerating below, which would otherwise make this
+  // turn itself look like the "latest" one.
+  const previousTurn = selectedConvId ? latestTaskInConversation(selectedConvId) : null;
+  const previousUserGoal = previousTurn ? previousTurn.goal : "";
+  const previousAssistantMessage = previousTurn
+    ? (liveChatReplies[previousTurn.task_id] || (previousTurn.result && previousTurn.result.message) || "")
+    : "";
+
   planGenerating = { sessionId, goal };
   setSelectedConvId(sessionId);
   $("goal").value = "";
+  closeQuickActionDropdown(); // W20 (Task6): don't leave stale suggestions open after sending
   renderHistory();
   renderSelected();
   try {
@@ -1067,6 +1183,8 @@ async function requestPlan() {
         url, goal, provider: requestParams.provider, session_id: sessionId,
         attached_file_name: currentAttachedFile ? currentAttachedFile.name : null,
         attached_file_content_base64: currentAttachedFile ? currentAttachedFile.base64 : null,
+        previous_user_goal: previousUserGoal || null,
+        previous_assistant_message: previousAssistantMessage || null,
       }),
     });
     if (!r.ok) {
@@ -1116,6 +1234,9 @@ async function approvePlanWithPayload(planPayload) {
   // will sync it to the real value once refreshTasks() picks up the new task below), even
   // if the pencil was used to override it for this submission.
   urlUnlocked = false;
+  // W20: the real task's own url will be `latest.url` from here on — drop any saved-but-
+  // unsubmitted override so renderTopbar() goes back to sourcing the display from it.
+  pendingUrlOverride = null;
   // W_procmem: only forward the structured fast-path fields (template_id/slot_values/
   // steps) if the plan text is still exactly what the server returned — if the user
   // hand-edited it, those steps no longer necessarily match what was reviewed/approved,
@@ -1155,6 +1276,11 @@ async function approvePlanWithPayload(planPayload) {
     }
     const created = await r.json();
     if (planDraft) runningPlans[created.task_id] = planDraft;
+    // W20 (Task4): stash a real thumbnail for this turn if an image was just attached — see
+    // sentFileDataUrls declaration for why this is a live-session-only fallback.
+    if (fileToSend && isImageFilename(fileToSend.name)) {
+      sentFileDataUrls[created.task_id] = `data:${fileToSend.mime || "image/*"};base64,${fileToSend.base64}`;
+    }
 
     if (!conversations[sessionId]) conversations[sessionId] = [];
     conversations[sessionId].push(created.task_id);
@@ -1481,6 +1607,7 @@ function renderHistory() {
         return;
       }
       urlUnlocked = false; // switching threads — don't carry an in-progress URL edit over
+      pendingUrlOverride = null; // W20: nor a saved-but-unsubmitted override — it belongs to the old thread
       setSelectedConvId(el.dataset.convId);
       const latest = latestTaskInConversation(selectedConvId);
       if (latest) {
@@ -1603,17 +1730,53 @@ function renderTopbar(convTasks) {
   // 2.5s task poll (see urlUnlocked declaration).
   const urlInput = $("url");
   const editBtn = $("btnEditUrl");
+  const saveBtn = $("btnSaveUrl");
   if (urlUnlocked) {
     urlInput.readOnly = false;
+    urlInput.style.width = ""; // back to the normal flex-box edit width
     editBtn.style.display = "none";
+    saveBtn.style.display = "";
   } else if (latest) {
-    urlInput.value = latest.url;
+    // W20: a saved-but-not-yet-submitted override (see pendingUrlOverride declaration) takes
+    // priority over the last real task's url — otherwise this same branch running again on
+    // the next poll/re-render would silently discard the save the user just confirmed.
+    urlInput.value = pendingUrlOverride !== null ? pendingUrlOverride : latest.url;
     urlInput.readOnly = true;
+    // W20 (Task3): size the locked/readonly field to the URL's own length ("ch" ~ 1 monospace
+    // character) instead of the fixed edit-state width, so it reads as inline text hugging
+    // the pencil right after it rather than a leftover empty input box.
+    urlInput.style.width = urlInput.value ? `${urlInput.value.length + 1}ch` : "1ch";
     editBtn.style.display = "";
+    saveBtn.style.display = "none";
   } else {
     urlInput.readOnly = false;
+    urlInput.style.width = "";
     editBtn.style.display = "none";
+    saveBtn.style.display = "none";
   }
+}
+
+// W20 (Task4 "User Chat Bubble File Attachments"): the thumbnail/file-card block rendered
+// above a sent user turn's text bubble, or "" if this turn had no attachment. Images get a
+// real rounded thumbnail only while sentFileDataUrls still has this task_id's data URL (the
+// live tab session that sent it — see its declaration); everything else, including images on
+// a reload/other tab, falls back to the same compact file card (icon badge + name).
+function renderAttachmentPreview(task) {
+  const name = task.attached_file_name;
+  if (!name) return "";
+  const dataUrl = sentFileDataUrls[task.task_id];
+  if (dataUrl && isImageFilename(name)) {
+    return `<div class="attach-preview-row"><img class="attach-thumb" src="${dataUrl}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}"></div>`;
+  }
+  const ext = fileExtension(name);
+  const badge = ext ? ext.slice(0, 4).toUpperCase() : "FILE";
+  return `
+    <div class="attach-preview-row">
+      <div class="attach-file-card" title="${escapeHtml(name)}">
+        <span class="attach-file-icon">${escapeHtml(badge)}</span>
+        <span class="attach-file-meta"><span class="attach-file-name">${escapeHtml(name)}</span></span>
+      </div>
+    </div>`;
 }
 
 // Renders one turn (a single task run) of the conversation — a user bubble with the
@@ -1623,6 +1786,7 @@ function renderTaskTurn(task) {
     <div class="msg user">
       <div class="avatar">You</div>
       <div>
+        ${renderAttachmentPreview(task)}
         <div class="bubble">${escapeHtml(task.goal)}</div>
       </div>
     </div>`;
@@ -1696,12 +1860,29 @@ function renderTaskTurn(task) {
       </div>`;
   } else if (task.result) {
     const r = task.result;
+    // W20 (Task12 follow-up, "Corrected-Value Retry"): backend hard-stopped because the
+    // page showed a form validation error and its final message already invites the user
+    // to reply with a replacement value (see orchestrator.py's validation-error hard-stop
+    // block) — render an inline text field + submit right on this bubble instead of making
+    // the user retype into the composer. Submitting it just re-runs the normal send flow
+    // (requestPlan()) with the typed value as the next turn's goal; the planner already
+    // knows to fill it into the same field via _PLAN_PROMPT_TEMPLATE's "Corrected-Value
+    // Retry on Validation Error" rule (llm.py), using this turn as previous_assistant_message.
+    const needsCorrection = !r.success && r.completion_verification === "TASK_FAILED_USER_INPUT_ERROR";
     html += `
       <div class="msg agent ${r.success ? "" : "error"}">
         <div class="avatar">${agentIcon}</div>
         <div>
           <div class="bubble">${escapeHtml(r.message || (r.success ? "Done." : "Did not finish successfully."))}</div>
           <div class="stat-line"><span>${r.steps} step${r.steps === 1 ? "" : "s"}</span>${r.tokens && r.tokens.total ? `<span>${r.tokens.total} tokens</span>` : ""}</div>
+          ${needsCorrection ? `
+          <div class="bubble correction-bubble">
+            <div class="correction-title">ต้องการค่าใหม่</div>
+            <div class="correction-form">
+              <input type="text" class="correction-input" id="correctionInput-${task.task_id}" placeholder="พิมพ์ค่าใหม่ที่ต้องการใช้แทน…">
+              <button class="btn-correction-submit" data-submit-correction="${task.task_id}">ส่ง</button>
+            </div>
+          </div>` : ""}
         </div>
       </div>`;
   }
@@ -1723,11 +1904,21 @@ function renderTaskTurn(task) {
 //     else touches this conversation until Approve/Cancel/Done, which call
 //     renderSelected() themselves) — replacing innerHTML here would tear down the live
 //     textarea and reset the cursor/selection mid-keystroke for no reason.
+//  3. W20 (Task12 follow-up, real bug): same problem for the correction-form input (see
+//     renderTaskTurn()) — the completed task it belongs to isn't "pending" or "generating"
+//     so neither guard above applied to it, meaning every 2.5s poll blew away and rebuilt
+//     the whole <input>, kicking focus out and discarding whatever had been typed so far
+//     (reported live: "click in, type, immediately bounced out, can't type at all"). Skip
+//     re-rendering entirely while a .correction-input currently has focus, same reasoning
+//     as the textarea guard above.
 function renderTranscript(convTasks) {
   const box = $("transcript");
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
   const generating = planGenerating && planGenerating.sessionId === selectedConvId ? planGenerating : null;
   if (pending && pending.editing && box.querySelector("#pendingPlanTextarea")) {
+    return;
+  }
+  if (document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("correction-input")) {
     return;
   }
   if (!convTasks.length && !pending && !generating) {
@@ -1900,6 +2091,17 @@ function renderSelected() {
 // of "screenshot" events doesn't have to re-render the whole chat log every time.
 function renderLiveView(latest) {
   const wrap = $("liveView");
+  // W20 (Task3 "Conditional Live Preview Rendering"): shouldShowPreview = Boolean(targetUrl)
+  // && isBrowserExecuting — a general-chat reply, file/image Q&A (pdf/xlsx), context-
+  // inspection (/context) or memory-buffer reply never opened a browser at all (see
+  // routes.py::_general_chat_result/_file_query_result/_context_inspection_result/
+  // "REPLY_FROM_MEMORY" — all emit an SSE "chat_reply" event and/or set no browser-driven
+  // result shape), so the box (and its "No live preview yet" placeholder) must stay
+  // completely unmounted for those turns instead of showing an empty box that will never
+  // receive a screenshot. isChatReply mirrors the same check renderTaskTurn()/statusMeta()
+  // already use elsewhere in this file for the identical signal.
+  const isChatReply = !!latest && ((latest.result && latest.result.status === "chat_reply") || !!liveChatReplies[latest.task_id]);
+  const hasTargetUrl = !!latest && !!(latest.url || "").trim();
   // W_live: a brand-new/"new session" conversation has no task yet at all (latest === null)
   // — don't reserve the box (and its placeholder text) for that state; only reveal it once
   // the first task has actually been submitted for this conversation, same moment the
@@ -1909,7 +2111,8 @@ function renderLiveView(latest) {
   // backend skips streaming screenshots entirely in that case (see orchestrator.py::
   // _emit_screenshot), so keeping the box around would just show a permanently-empty
   // placeholder. Hide it instead; the real window is the live view now.
-  if (!latest || latest.headless === false) {
+  const shouldShowPreview = hasTargetUrl && !isChatReply && latest.headless !== false;
+  if (!shouldShowPreview) {
     wrap.style.display = "none";
     $("liveViewDivider").style.display = "none";
     return;
@@ -2023,6 +2226,7 @@ $("btnNewSession").addEventListener("click", async () => {
   }
   if (pendingPlan && pendingPlan.sessionId === oldSessionId) pendingPlan = null;
   urlUnlocked = false;
+  pendingUrlOverride = null; // W20: starting fresh — no override to carry into the new session
   setSelectedConvId(null);
   renderHistory();
   renderSelected();
@@ -2040,6 +2244,17 @@ $("btnEditUrl").addEventListener("click", () => {
   const urlInput = $("url");
   urlInput.focus();
   urlInput.select();
+});
+// W20 (Task3 "Seamless URL Header" EDIT STATE): confirms the edited URL and transitions back
+// to LOCKED STATE — the field's value is already what requestPlan()/approvePlanWithPayload()
+// read for the next submission regardless of readonly, so this only needs to flip the lock
+// flag and re-render (no separate save API call needed). Stash the edited value into
+// pendingUrlOverride first so renderTopbar()'s locked branch keeps displaying it instead of
+// reverting to the previous turn's url on the next re-render/poll (see declaration above).
+$("btnSaveUrl").addEventListener("click", () => {
+  pendingUrlOverride = $("url").value;
+  urlUnlocked = false;
+  renderSelected();
 });
 $("themeToggle").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-theme]");
@@ -2061,12 +2276,24 @@ document.addEventListener("click", () => {
   $("settingsPanel").classList.remove("open");
   $("btnSettings").classList.remove("active");
   $("attachMenu").classList.remove("open");
+  // W20 (Task6, follow-up): clicking anywhere outside the quick-actions dropdown closes
+  // "manage mode" too — the dropdown's own click handler stopPropagation()s so this never
+  // fires for the click that opened/used it.
+  if (quickActionManageMode) closeQuickActionDropdown();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     $("settingsPanel").classList.remove("open");
     $("btnSettings").classList.remove("active");
     $("attachMenu").classList.remove("open");
+    if (quickActionManageMode) closeQuickActionDropdown();
+  }
+  // W20 (Task12 follow-up): Enter inside a correction-form input submits it, same as
+  // clicking its "ส่ง" button — id is "correctionInput-<task_id>" (see renderTaskTurn()).
+  if (e.key === "Enter" && !e.shiftKey && e.target.classList.contains("correction-input")) {
+    e.preventDefault();
+    const taskId = e.target.id.replace(/^correctionInput-/, "");
+    submitCorrectionValue(taskId);
   }
   // W_planenter: Enter confirms a pending plan (like clicking "Approve & Run") from
   // anywhere on the page — except while the plan-edit textarea is focused, where Enter
@@ -2110,6 +2337,217 @@ function renderAttachedFileChip() {
     </span>`;
 }
 
+// ---------------- W20 (Task6, follow-up "commands vs quick actions"): chat-input suggestion
+// dropdown — two DISTINCT lists share the same popup UI:
+//   - COMMANDS: fixed, built-in slash-directives (only ever triggered by typing "/" first).
+//     "/context " is a system MODE switch (see llm.py is_context_inspection_command()), not a
+//     canned phrase — it does NOT belong in the user-editable QUICK_ACTIONS list. "/quickaction"
+//     is a pure client-side UI command: confirming it opens the quick-action manager directly
+//     (see confirmQuickAction() below) instead of ever being sent as a message — this replaces
+//     the old dedicated "⚡ Manage quick actions" button, which is removed.
+//   - QUICK_ACTIONS: user-editable canned phrases, matched by typing anything NOT starting
+//     with "/" (unchanged behavior from the original Task6 spec otherwise).
+// ----------------------------------------------------------------------------------------
+const COMMANDS = [
+  { trigger: "/context ", label: "Inspect what the agent understood — no action taken", icon: "🧭" },
+  { trigger: "/quickaction", label: "Manage your quick actions (add/remove)", icon: "⚡" },
+];
+// The one COMMANDS entry that isn't "text to send" — confirming it opens manage mode instead
+// of filling the input (see confirmQuickAction()).
+const QUICKACTION_MANAGER_COMMAND = "/quickaction";
+
+// Predefined shortcut phrases for the chat input — trigger is the exact text typed to match
+// (and the text filled into the input on confirm), label is the human-readable description
+// shown alongside it, icon is a plain glyph (this app has no icon library, see the file-card
+// badges in renderAttachmentPreview() for the same approach).
+const QUICK_ACTIONS_DEFAULTS = [
+  { trigger: "เปลี่ยนรหัสผ่านของฉัน", label: "Change my account password", category: "account", icon: "🔒" },
+  { trigger: "เข้าสู่ระบบ", label: "Log in", category: "account", icon: "🔑" },
+  { trigger: "ค้นหา ", label: "Search for something on this page", category: "search", icon: "🔎" },
+  { trigger: "สรุปตารางในหน้านี้", label: "Summarize the table on this page", category: "data", icon: "📊" },
+];
+// W20 (Task6, follow-up "user-editable quick actions"): the working list starts from the
+// defaults above but is fully add/removable by the user (see the "/quickaction" command
+// above) and persisted client-side — there's no backend concept of quick actions at all, this
+// is purely a chat-input convenience, so localStorage (same pattern as the theme toggle) is
+// enough; no server round-trip needed.
+const QUICK_ACTIONS_STORAGE_KEY = "agentConsoleQuickActions";
+function loadQuickActions() {
+  try {
+    const raw = localStorage.getItem(QUICK_ACTIONS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const list = Array.isArray(parsed) ? parsed : QUICK_ACTIONS_DEFAULTS.slice();
+    // "/context" used to live in this list before it was reclassified as a command — drop it
+    // from anything already saved in a browser's localStorage from before that change so it
+    // doesn't linger as a stale duplicate of the COMMANDS entry above.
+    return list.filter((a) => a.trigger.trim() !== "/context");
+  } catch (e) {
+    return QUICK_ACTIONS_DEFAULTS.slice();
+  }
+}
+function saveQuickActions() {
+  try { localStorage.setItem(QUICK_ACTIONS_STORAGE_KEY, JSON.stringify(QUICK_ACTIONS)); } catch (e) {}
+}
+let QUICK_ACTIONS = loadQuickActions();
+let quickActionMatches = [];   // currently-matching COMMANDS or QUICK_ACTIONS entries, or []
+let quickActionActiveIndex = -1; // index into quickActionMatches of the highlighted item
+// W20 (follow-up): true while the dropdown is in "manage mode" (opened via the "/quickaction"
+// command) — shows the full QUICK_ACTIONS list (not just prefix matches) with add/remove
+// controls, instead of requiring the user to already be mid-typing something that matches an
+// existing trigger.
+let quickActionManageMode = false;
+let quickActionAddFormOpen = false; // the inline "new trigger/label" form, manage mode only
+
+// Re-filters against the current input value — called on every keystroke (see the "input"
+// listener on #goal below). Prefix match against the *trimmed* value, exactly as specced
+// (action.trigger.startsWith(inputValue.trim())) — case-sensitive, no fuzzy matching. An
+// empty/whitespace-only value never shows the dropdown (every trigger "starts with" an empty
+// string, which would otherwise pop the full list open on a blank input). Typing "/" first
+// switches the source list to COMMANDS instead of QUICK_ACTIONS (see block comment above).
+function updateQuickActionMatches() {
+  if (quickActionManageMode) return; // typing while browsing the full list doesn't re-filter it
+  const value = $("goal").value.trim();
+  if (!value) {
+    quickActionMatches = [];
+  } else {
+    const source = value.startsWith("/") ? COMMANDS : QUICK_ACTIONS;
+    quickActionMatches = source.filter((a) => a.trigger.startsWith(value));
+  }
+  quickActionActiveIndex = quickActionMatches.length ? 0 : -1;
+  renderQuickActionDropdown();
+}
+
+function closeQuickActionDropdown() {
+  quickActionMatches = [];
+  quickActionActiveIndex = -1;
+  quickActionManageMode = false;
+  quickActionAddFormOpen = false;
+  renderQuickActionDropdown();
+}
+
+function renderQuickActionDropdown() {
+  const box = $("quickActionDropdown");
+  const items = quickActionManageMode ? QUICK_ACTIONS : quickActionMatches;
+  if (!quickActionManageMode && !items.length) {
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+  box.style.display = "";
+  let html = "";
+  if (quickActionManageMode) {
+    html += `
+      <div class="quick-action-header">
+        <span>Quick actions</span>
+        <button type="button" class="quick-action-add-btn" data-quick-action-add title="Add a quick action" aria-label="Add a quick action">+</button>
+      </div>`;
+    if (quickActionAddFormOpen) {
+      html += `
+        <div class="quick-action-add-form">
+          <input type="text" id="qaNewTrigger" placeholder="Trigger phrase, e.g. /export ">
+          <input type="text" id="qaNewLabel" placeholder="Description (optional)">
+          <div class="quick-action-add-form-actions">
+            <button type="button" data-quick-action-cancel>Cancel</button>
+            <button type="button" data-quick-action-save>Save</button>
+          </div>
+        </div>`;
+    }
+  }
+  html += items.length
+    ? items.map((a, i) => `
+      <div class="quick-action-item${!quickActionManageMode && i === quickActionActiveIndex ? " active" : ""}" data-quick-action-index="${i}">
+        <span class="quick-action-icon">${escapeHtml(a.icon || "⚡")}</span>
+        <span class="quick-action-text">
+          <span class="quick-action-trigger">${escapeHtml(a.trigger)}</span>
+          <span class="quick-action-label">${escapeHtml(a.label || "")}</span>
+        </span>
+        ${quickActionManageMode
+          ? `<button type="button" class="quick-action-remove" data-quick-action-remove="${i}" title="Remove" aria-label="Remove quick action">&times;</button>`
+          : `<span class="quick-action-enter-badge">Enter</span>`}
+      </div>`).join("")
+    : (quickActionManageMode ? `<div class="empty-hint">No quick actions yet — add one above.</div>` : "");
+  box.innerHTML = html;
+}
+
+// Confirms `action` (Enter/Tab, a click/mousedown on the item in autocomplete mode, or a row
+// click in manage mode): fills the input with its trigger phrase and refocuses it — same
+// landing state no matter how it was confirmed. Exception: the "/quickaction" command is a UI
+// action, not text to send — it opens the quick-action manager directly instead.
+function confirmQuickAction(action) {
+  if (!action) return;
+  const input = $("goal");
+  if (action.trigger === QUICKACTION_MANAGER_COMMAND) {
+    input.value = "";
+    closeQuickActionDropdown();
+    quickActionManageMode = true;
+    quickActionAddFormOpen = false;
+    renderQuickActionDropdown();
+    return;
+  }
+  input.value = action.trigger;
+  closeQuickActionDropdown();
+  input.focus();
+}
+
+$("goal").addEventListener("input", updateQuickActionMatches);
+// Selecting via mouse in *autocomplete* mode: mousedown (not click) + preventDefault so the
+// textarea never actually blurs to the dropdown first — a plain click handler here would lose
+// focus/selection state on the input for a beat, which reads as a flicker in a fast typing/
+// selecting flow. Manage mode skips preventDefault entirely (return early) since its add-form
+// text inputs need normal click-to-focus behavior, and its own click handler below (not
+// mousedown) owns add/save/cancel/remove/select there instead.
+$("quickActionDropdown").addEventListener("mousedown", (e) => {
+  if (quickActionManageMode) return;
+  e.preventDefault();
+  const item = e.target.closest("[data-quick-action-index]");
+  if (item) confirmQuickAction(quickActionMatches[Number(item.dataset.quickActionIndex)]);
+});
+// Self-contained click handler for manage mode (add/save/cancel/remove/select) — stops
+// propagation so the document-level "close every open menu" listener further below (which
+// would otherwise immediately close this dropdown on the same click) never sees it.
+$("quickActionDropdown").addEventListener("click", (e) => {
+  if (!quickActionManageMode) return;
+  e.stopPropagation();
+  if (e.target.closest("[data-quick-action-add]")) {
+    quickActionAddFormOpen = true;
+    renderQuickActionDropdown();
+    const t = document.getElementById("qaNewTrigger");
+    if (t) t.focus();
+    return;
+  }
+  if (e.target.closest("[data-quick-action-cancel]")) {
+    quickActionAddFormOpen = false;
+    renderQuickActionDropdown();
+    return;
+  }
+  if (e.target.closest("[data-quick-action-save]")) {
+    const triggerEl = document.getElementById("qaNewTrigger");
+    const labelEl = document.getElementById("qaNewLabel");
+    // Strip only leading whitespace, not trailing — several of the defaults deliberately end
+    // in a space (e.g. "/context ", "ค้นหา ") so confirming them leaves the cursor ready to
+    // type the next word; a plain .trim() here would silently drop that same intentional
+    // trailing space off any custom trigger the user types.
+    const rawTrigger = triggerEl ? triggerEl.value.replace(/^\s+/, "") : "";
+    const trigger = rawTrigger.trimEnd() ? rawTrigger : ""; // still reject whitespace-only input
+    if (trigger) {
+      QUICK_ACTIONS.push({ trigger, label: labelEl ? labelEl.value.trim() : "", category: "custom", icon: "⚡" });
+      saveQuickActions();
+    }
+    quickActionAddFormOpen = false;
+    renderQuickActionDropdown();
+    return;
+  }
+  const removeBtn = e.target.closest("[data-quick-action-remove]");
+  if (removeBtn) {
+    QUICK_ACTIONS.splice(Number(removeBtn.dataset.quickActionRemove), 1);
+    saveQuickActions();
+    renderQuickActionDropdown();
+    return;
+  }
+  const item = e.target.closest("[data-quick-action-index]");
+  if (item) confirmQuickAction(QUICK_ACTIONS[Number(item.dataset.quickActionIndex)]);
+});
+
 $("fileAttachInput").addEventListener("change", () => {
   const file = $("fileAttachInput").files && $("fileAttachInput").files[0];
   $("attachMenu").classList.remove("open");
@@ -2127,7 +2565,9 @@ $("fileAttachInput").addEventListener("change", () => {
     // base64 payload (see routes.py::_file_query_result, which base64.b64decode()s it
     // directly), so strip everything up to and including the first comma.
     const base64 = String(reader.result).split(",")[1] || "";
-    attachedFile = { name: file.name, base64 };
+    // W20 (Task4): mime kept alongside (not just stripped away) so a sent image attachment
+    // can be shown back as a real thumbnail in its own chat bubble (see sentFileDataUrls).
+    attachedFile = { name: file.name, base64, mime: file.type };
     $("composerError").textContent = "";
     renderAttachedFileChip();
   };
@@ -2184,10 +2624,30 @@ document.addEventListener("click", (e) => {
     renderAttachedFileChip();
     return;
   }
+  const correctionBtn = e.target.closest("[data-submit-correction]");
+  if (correctionBtn) {
+    submitCorrectionValue(correctionBtn.dataset.submitCorrection);
+    return;
+  }
   const btn = e.target.closest("[data-approve]");
   if (!btn) return;
   respondApproval(btn.dataset.task, btn.dataset.request, btn.dataset.approve === "true");
 });
+
+// W20 (Task12 follow-up): reads the typed replacement value out of the correction-form
+// input attached to a failed task's bubble (see renderTaskTurn()) and sends it as the next
+// turn's goal — same requestPlan() path as typing into the main composer, so it goes through
+// the exact same session-continuity + previous-turn-context plumbing normal follow-ups do.
+function submitCorrectionValue(taskId) {
+  const input = document.getElementById(`correctionInput-${taskId}`);
+  const value = input ? input.value.trim() : "";
+  if (!value) {
+    if (input) input.focus();
+    return;
+  }
+  $("goal").value = value;
+  requestPlan();
+}
 document.addEventListener("input", (e) => {
   // Keep the pending plan's draft in sync on every keystroke so a periodic re-render
   // (e.g. the 2.5s task poll) reconstructs the textarea with what's actually been
@@ -2227,6 +2687,32 @@ function isQuickActionDropdownOpen() {
 }
 
 $("goal").addEventListener("keydown", (e) => {
+  // W20 (Task6 "Quick Action Autocomplete"): dropdown navigation/selection takes priority
+  // over the normal Enter-to-send/plan-confirm handling below whenever it's open.
+  if (quickActionMatches.length) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      quickActionActiveIndex = (quickActionActiveIndex + 1) % quickActionMatches.length;
+      renderQuickActionDropdown();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      quickActionActiveIndex = (quickActionActiveIndex - 1 + quickActionMatches.length) % quickActionMatches.length;
+      renderQuickActionDropdown();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      confirmQuickAction(quickActionMatches[quickActionActiveIndex]);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeQuickActionDropdown();
+      return;
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     // A pending plan already showing (awaiting Approve/Edit/Cancel) means Enter here

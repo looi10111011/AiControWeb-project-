@@ -70,6 +70,17 @@ class GeneratePlanRequest(BaseModel):
     # ปกติ) ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปตอบจากไฟล์ได้ทันที
     attached_file_name: Optional[str] = None
     attached_file_content_base64: Optional[str] = None
+    # W20 ("Context-Aware Implicit Execution"): the immediately-preceding turn's goal/reply in
+    # this same conversation (if any) — frontend reads this from its own client-side history
+    # right before submitting (see index.html::requestPlan()). Lets the planner resolve
+    # anaphora like "เปิดให้หน่อย"/"play it" against whatever was actually recommended/discussed
+    # last (e.g. a song name from a general-chat reply that never touched the browser, so it
+    # was never captured by session.extracted_memory) instead of drafting a plan that only
+    # navigates to a bare platform URL and stops. Both None (default) = first turn of a
+    # conversation, or no prior turn to resolve against — behaves exactly as before this field
+    # existed. See orchestrator.py::Orchestrator.generate_plan() / llm.py::generate_plan().
+    previous_user_goal: Optional[str] = None
+    previous_assistant_message: Optional[str] = None
 
 
 class GeneratePlanResponse(BaseModel):
@@ -142,6 +153,10 @@ class TaskStatusResponse(BaseModel):
     # ตัดสินใจว่าจะโชว์ live view (True) หรือซ่อนไปเลยเพราะ browser จริงเปิดโชว์อยู่แล้ว
     # (False) ดู index.html::renderLiveView()
     headless: bool = True
+    # W20 (Task4 "User Chat Bubble File Attachments"): mirror ของ TaskRecord.attached_file_name
+    # — ให้ frontend render attachment card/thumbnail เหนือ user bubble ของ turn นี้ได้ทั้งตอน
+    # live chat และตอนโหลด historical turns ใหม่ (GET /tasks) หลัง refresh หน้าเว็บ
+    attached_file_name: Optional[str] = None
 
 
 class PoolStatusResponse(BaseModel):

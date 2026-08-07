@@ -207,6 +207,97 @@ async def test_get_snapshot_does_not_duplicate_icon_container_wrapping_real_butt
     assert "Actions" not in [e["label"] for e in elements]
 
 
+# W20 (Task10, "Element Finder/Selector Resolver" — บั๊กจริงที่ user รายงาน): ไล่ debug ด้วย
+# การเปิดหน้าจริงของ opensource-demo.orangehrmlive.com พบว่าตัว profile-dropdown trigger จริง
+# คือ `<span class="oxd-userdropdown-tab">` ที่ไม่มีทั้ง role/tabindex/onclick (ไม่ตรง
+# selectors มาตรฐาน) และไม่มีทั้ง title/aria-label/data-test* (ไม่ตรง ICON_LABEL_SELECTOR ด้วย)
+# — element นี้ไม่เคยติด index เลยตั้งแต่ต้น ทำให้ agent ต้องเดา index อื่นที่ใกล้เคียงแทน (เช่น
+# ปุ่ม "Help") จำลอง markup จริงของ OrangeHRM ตรงๆ ด้านล่างนี้
+_HTML_ORANGEHRM_USERDROPDOWN = """
+<html><body>
+  <header>
+    <a href="/help" style="cursor:pointer">Help</a>
+    <span class="oxd-userdropdown-tab" style="cursor:pointer">
+      <img alt="profile picture" class="oxd-userdropdown-img" src="/photo.jpg">
+      <p class="oxd-userdropdown-name">labubu user</p>
+      <i class="oxd-icon bi-caret-down-fill oxd-userdropdown-icon"></i>
+    </span>
+  </header>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_finds_orangehrm_style_userdropdown_with_no_standard_attributes():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_ORANGEHRM_USERDROPDOWN)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    userdropdown_label = next((l for l in labels if "labubu user" in l), None)
+    assert userdropdown_label is not None, f"userdropdown span never got indexed at all — labels: {labels}"
+    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in userdropdown_label
+    # ปุ่ม "Help" ที่แท็กมาตรฐาน (<a>) ต้องยังติด index ปกติเหมือนเดิม แค่ไม่มี marker พิเศษ
+    help_label = next((l for l in labels if "Help" in l), None)
+    assert help_label is not None
+    assert "User Profile Menu" not in help_label
+    # child ข้างใน (<img>/<p>/<i>) ตรงกับ class pattern เดียวกันด้วยตัวเอง (ยืนยันจริงจาก DOM
+    # ของ opensource-demo.orangehrmlive.com) — ต้องไม่ได้ index แยกซ้ำอีก 3 อันสำหรับพื้นที่
+    # คลิกเดียวกัน มีแค่ span ตัวนอกสุดตัวเดียวเท่านั้นที่ได้ marker/index
+    assert len(elements) == 2  # แค่ "Help" กับ userdropdown span เท่านั้น
+    assert "User Profile Menu" not in help_label
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_profile_menu_class_without_pointer_cursor_not_marked():
+    """class ตรงกับ pattern แต่ไม่มี cursor:pointer (ไม่ใช่ element ที่กดได้จริง — เช่น
+    <div class="user-profile-container"> ที่แค่ห่อ layout เฉยๆ) ต้องไม่ถูกจับ/ไม่ติด index"""
+    html = """
+    <html><body>
+      <div class="user-profile-container">
+        <span>Just some layout text, not clickable</span>
+      </div>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements == []
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_profile_menu_element_with_title_not_duplicated():
+    """element ที่ตรงทั้ง class pattern (userdropdown) และมี title/aria-label อยู่แล้ว (ตรง
+    ICON_LABEL_SELECTOR ไปแล้วตั้งแต่ pass แรก) ต้องได้ index เดียว ไม่ใช่สองอันซ้ำกัน"""
+    html = """
+    <html><body>
+      <span class="user-dropdown-tab" title="Account menu" style="cursor:pointer">Somchai</span>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in elements[0]["label"]
+
+
 # <img title="..." style="cursor:pointer"> ที่ซ้อนอยู่ใน <a> ที่คลิกได้จริงอยู่แล้ว —
 # ต้องได้ index แค่ตัว <a> (จาก selectors มาตรฐาน) ไม่ใช่ img ข้างในด้วย (กันได้ index
 # ซ้ำสองอันสำหรับพื้นที่คลิกเดียวกัน เหมือนเคส container-wraps-button ด้านบน)

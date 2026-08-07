@@ -47,6 +47,13 @@ class TaskRecord:
     created_at: float = field(default_factory=time.time)
     result: Optional[dict] = None
     error: Optional[str] = None
+    # W20 (Task4 "User Chat Bubble File Attachments"): filename of the file the user attached
+    # to this turn's composer submission (pdf/xlsx/image, see routes.py::
+    # CreateTaskRequest.attached_file_name) — kept here (not the base64 content, which is only
+    # ever needed transiently for extraction/vision) purely so GET /tasks can echo it back and
+    # the frontend can re-render the attachment card/thumbnail for historical turns after a
+    # page reload, not just for the live SSE session that originally sent it.
+    attached_file_name: Optional[str] = None
     # W10[C]: asyncio.Task ที่กำลังรัน _run(record, coro) ของ task นี้อยู่ — เก็บไว้ให้
     # cancel() เรียก .cancel() ถูกตัวได้ตรงๆ จาก task_id (ตั้งค่าใน submit() ทันทีหลังสร้าง
     # ไม่มีทาง None ตอน task ยัง "running" อยู่จริง)
@@ -121,6 +128,7 @@ class TaskManager:
     def submit(
         self, task_id: str, url: str, goal: str, provider: Optional[str],
         coro: Coroutine[Any, Any, dict], headless: bool = True,
+        attached_file_name: Optional[str] = None,
     ) -> TaskRecord:
         """สร้าง TaskRecord สถานะ "running" ทันที (ด้วย task_id ที่ caller สร้างไว้ล่วงหน้า
         ผ่าน new_task_id() แล้ว) แล้วสั่งรัน coro (โดยทั่วไปคือ Orchestrator.run_task() ที่
@@ -129,10 +137,13 @@ class TaskManager:
 
         headless: ค่าที่ resolve แล้ว (ไม่ใช่ req.headless ดิบๆ ที่อาจเป็น None) ให้
         caller (routes.py) เป็นคนตัดสิน settings.browser_headless fallback เอง ก่อนส่งเข้า
-        มาตรงนี้"""
+        มาตรงนี้
+
+        attached_file_name (W20, Task4): ชื่อไฟล์ที่ user แนบมากับ turn นี้ (ถ้ามี) — เก็บไว้
+        เฉยๆ ให้ GET /tasks คืนกลับได้ ไม่มีผลอะไรกับการรัน coro เลย"""
         record = TaskRecord(
             task_id=task_id, url=url, goal=goal, provider=provider, status="running",
-            headless=headless,
+            headless=headless, attached_file_name=attached_file_name,
         )
         self._tasks[task_id] = record
         task = asyncio.create_task(self._run(record, coro))
