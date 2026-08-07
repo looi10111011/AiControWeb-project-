@@ -2673,17 +2673,18 @@ function pushGoalToHistory(goal) {
   goalHistoryTempInput = "";
 }
 
-// W21: guards ArrowUp/ArrowDown so a Quick Action Suggestion dropdown, if/when one is
-// wired into the composer, can claim those keys for its own menu navigation while it's
-// open instead of history recall — no such dropdown exists in this file yet (the only
-// autocomplete-like UI today is the native <datalist> on the Target URL field, which
-// doesn't use JS-driven arrow-key handling at all), so this currently always returns
-// false and history navigation is unconditionally active; wiring up that dropdown later
-// just means giving it an id of "quickActionDropdown" and toggling its "open" class, with
-// no changes needed here.
+// W21: guards ArrowUp/ArrowDown so the Quick Action Autocomplete dropdown (W20 Task6,
+// merged in above — see quickActionMatches/renderQuickActionDropdown()) keeps its own menu
+// navigation instead of history recall while it's open. In practice this is a defense-in-
+// depth backstop, not the primary gate: the dropdown's own keydown branch (right above, "W20
+// (Task6) ... dropdown navigation/selection takes priority") already `return`s on ArrowUp/
+// ArrowDown whenever quickActionMatches.length is truthy, so control never even reaches the
+// history-nav code below while the dropdown is open — this check exists in case that early-
+// return block is ever reordered or refactored, matching the same non-open-state check the
+// dropdown itself uses (there's no CSS "open" class — it's shown/hidden purely by whether
+// quickActionMatches has entries, see renderQuickActionDropdown()).
 function isQuickActionDropdownOpen() {
-  const dropdown = document.getElementById("quickActionDropdown");
-  return !!dropdown && dropdown.classList.contains("open");
+  return quickActionMatches.length > 0;
 }
 
 $("goal").addEventListener("keydown", (e) => {
