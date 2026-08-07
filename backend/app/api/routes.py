@@ -50,8 +50,11 @@ from backend.app.permission.rules import extract_domain, normalize_domain
 from backend.app.site_learning import crawl_site, describe_page, extract_page
 from backend.app.site_learning.learn_manager import LearnManager
 from backend.app.site_learning.storage import (
+    build_learned_page_flow_text,
+    build_strict_manual_context,
     credentials_exist,
     delete_credentials,
+    find_matching_page,
     load_credentials,
     load_knowledge_text,
     load_manual,
@@ -92,13 +95,51 @@ def _make_ask_user_func(task_manager: TaskManager, task_id: str, auto_approve: b
     return ask_user_func
 
 
+# W21 ("Self-Learned Site Manual Integration" ข้อ 3, Fallback Mechanism): ข้อความตายตัวตาม
+# สเปค (Task/W21.txt Task5) ให้ /context โชว์เวลาโดเมนนี้ไม่มี manual เลย/ไม่มีหน้าไหน match
+# goal เลย — บอก user ตรงๆ ว่าระบบจะ fallback ไป dynamic planner ตามปกติ ไม่ได้ค้าง/error
+_NO_LEARNED_MANUAL_TEXT = "No pre-learned manual found. Executing dynamic exploration."
+
+
+def _resolve_site_manual_context(domain: str, goal: str) -> str:
+    """W21 ("Self-Learned Site Manual Integration" ข้อ 1-3): จุดตัดสินใจเดียวที่ทั้ง
+    generate_plan endpoint (ร่างแผนคร่าวๆ) และ _run_with_resolved_browser (รัน task จริง
+    ทุก step) เรียกใช้ร่วมกัน แทนที่จะ hardcode load_knowledge_text() ตรงๆ แบบเดิมทั้งสองที่
+    — ถ้า manual ของโดเมนนี้มีหน้าที่ตรงกับ goal เจาะจง (find_matching_page คะแนน keyword
+    overlap สูงสุด > 0) ให้ใช้ build_strict_manual_context() แทน (scope แคบลงเหลือหน้าเดียว
+    พร้อม route/selector ที่บันทึกไว้จริง ขึ้นต้นด้วย marker "[PRE_LEARNED_MANUAL]" ที่
+    llm.py::SYSTEM_PROMPT ตรวจหาเพื่อบังคับให้ planner ยึดตามอย่างเคร่งครัด) — ไม่เจอหน้าที่
+    ตรงเลย (manual ไม่มี/ทุกหน้าคะแนน 0) fallback ไป load_knowledge_text() แบบเดิมเงียบๆ
+    (สรุปสั้นๆ ของทุกหน้า ใช้เป็นข้อมูลอ้างอิงกว้างๆ อย่างที่เคยทำมา) ไม่ throw/ไม่บล็อกอะไร"""
+    if manual_exists(domain):
+        manual = load_manual(domain)
+        matched_page = find_matching_page(manual, goal) if manual else None
+        if matched_page is not None:
+            return build_strict_manual_context(matched_page)
+    return load_knowledge_text(domain)
+
+
 async def _context_inspection_result(req, on_event, client, model: str, resolved_provider: str) -> dict:
     """W20 (MODULE 0 "Special Command Interceptor"): goal มีคำสั่ง "/context" ปน — ตอบด้วย
     คำอธิบายความเข้าใจ/แผนที่ตั้งใจจะทำ (ดู llm.context_inspection_reply()) โดยไม่ลงมือทำ
     จริงเลยไม่ว่ากรณีใด (ไม่แตะ browser/session/pool/file parser) เหมือน
-    _general_chat_result ทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน"""
+    _general_chat_result ทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน
+
+    W21 ("Self-Learned Site Manual Integration" ข้อ 1): ก่อนตอบ ลองหาว่า manual ที่เรียนรู้
+    ไว้ล่วงหน้าของโดเมนนี้มีหน้าที่ตรงกับคำสั่งจริงหรือไม่ — เจอ ก็แปะ "📍 Learned Page Flow
+    Sequence" ต่อท้ายคำตอบ ไม่เจอ (โดเมนนี้ไม่มี manual เลย/req.url ว่างเปล่า/ไม่มีหน้าไหน
+    match) ก็แปะข้อความ fallback ตายตัวแทน (ดู _NO_LEARNED_MANUAL_TEXT ด้านบน)"""
     real_goal = llm.strip_context_inspection_command(req.goal)
-    reply = await llm.context_inspection_reply(client, model, real_goal, resolved_provider)
+    domain = extract_domain(req.url) if req.url else ""
+    learned_flow_text = _NO_LEARNED_MANUAL_TEXT
+    if domain and manual_exists(domain):
+        manual = load_manual(domain)
+        matched_page = find_matching_page(manual, real_goal) if manual else None
+        if matched_page is not None:
+            learned_flow_text = build_learned_page_flow_text(matched_page)
+    reply = await llm.context_inspection_reply(
+        client, model, real_goal, resolved_provider, learned_flow_text=learned_flow_text,
+    )
     await on_event({"kind": "chat_reply", "message": reply})
     return _chat_shaped_result(reply)
 
@@ -345,7 +386,7 @@ async def _run_with_resolved_browser(
     wants_visible_browser = req.headless is False
     # W14: โหลดคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติครั้งเดียวตรงนี้ (ถ้ามี) แล้วส่งต่อเข้า
     # run_task() ทุก branch ด้านล่าง — ว่างเปล่าเงียบๆ ถ้าโดเมนนี้ยังไม่เคยถูกเรียนรู้
-    site_manual_context = load_knowledge_text(extract_domain(req.url))
+    site_manual_context = _resolve_site_manual_context(extract_domain(req.url), req.goal)
 
     # W12: session_id มา -> ผูก task นี้เข้ากับ session ที่มีชีวิตอยู่ข้ามหลาย request
     # (ดู core/session_registry.py) ครั้งแรกที่เจอ session_id นี้จะสร้าง page ใหม่ตาม
@@ -605,7 +646,7 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     if matched is not None:
         return GeneratePlanResponse(plan=matched["plan"], is_qa=False, source="plan_memory")
 
-    site_manual_context = load_knowledge_text(domain)
+    site_manual_context = _resolve_site_manual_context(domain, req.goal)
     try:
         res = await asyncio.wait_for(
             Orchestrator().generate_plan(

@@ -211,6 +211,53 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
+  // W21 ("Custom UI Checkbox"): OrangeHRM/SPA ทั่วไปมักซ่อน native <input type="checkbox">
+  // จริงด้วย CSS (display:none/opacity:0) แล้วแทนที่ด้วย span/div ห่อหุ้มที่ styled เอง (เช่น
+  // .oxd-checkbox-input ของ header "Select All") ไม่มี role="checkbox"/tabindex/onclick
+  // attribute ติดมาด้วยเสมอไป ทำให้ทั้ง selectors มาตรฐานด้านบน ([role=checkbox] ครอบคลุมแค่
+  // wrapper ที่ทำตาม ARIA จริงๆ) และ ICON_LABEL_SELECTOR ข้างบน (ต้องมี title/aria-label/
+  // data-test — wrapper พวกนี้มักไม่มีเลย) มองไม่เห็นเลย — เก็บ wrapper ที่ match class/
+  // โครงสร้างที่พบบ่อยของ custom checkbox โดยเฉพาะแยกต่างหาก คลุมทั้ง OrangeHRM
+  // (.oxd-checkbox-input, .oxd-table-header-cell-checkbox) และ SPA ทั่วไป (label ที่ห่อ
+  // input[type=checkbox] ไว้ข้างใน, thead/th ที่มี input[type=checkbox] ตรงๆ)
+  const CHECKBOX_WRAPPER_SELECTOR = [
+    '.oxd-checkbox-input', '.oxd-table-header-cell-checkbox',
+    '[class*="checkbox-input" i]', '[class*="checkbox-wrapper" i]',
+    'th label:has(input[type="checkbox"])', 'thead label:has(input[type="checkbox"])',
+    'label:has(input[type="checkbox"])',
+  ].join(',');
+  for (const cand of document.querySelectorAll(CHECKBOX_WRAPPER_SELECTOR)) {
+    if (cand.closest(selectors)) continue;
+    if (cand.querySelector(selectors)) continue;
+    nodes.push(cand);
+  }
+
+  // W21 ("Icon-based Action Button Resolver"): ปุ่ม action ในตาราง (View/Download/Edit/
+  // Delete ฯลฯ) ที่ implement ด้วย icon font/SVG ล้วนๆ ข้างใน <button> จริง (เช่น
+  // <button><i class="bi-eye-fill"></i></button> — OrangeHRM Recruitment candidate table)
+  // ตัว <button> เองตรงกับ selectors มาตรฐานด้านบนอยู่แล้วเลยได้ index เสมอ แต่ไม่มี text
+  // node/aria-label/title/data-test ให้ label เห็นความหมายเลย (LLM เห็นแค่ "[N] button"
+  // เดาไม่ออกว่าเป็นปุ่มอะไร) — เตรียม lookup ไว้ให้ label-building logic ด้านล่าง (getRegion
+  // ก่อนหน้านี้/semantic ถัดไป) ดึงความหมายจาก class ของ icon ลูกข้างในแทน ไม่ต้องเพิ่ม node
+  // ใหม่เข้า nodes เลย (ปุ่มแม่มี index อยู่แล้ว) แค่เสริม fallback label เท่านั้น
+  const ICON_CLASS_LABEL_RULES = [
+    [/\beye\b/i, 'View Details'],
+    [/\bdownload\b/i, 'Download Resume'],
+    [/\b(pencil|edit)\b/i, 'Edit'],
+    [/\b(trash|delete|remove)\b/i, 'Delete'],
+  ];
+  const getIconClassLabel = (el) => {
+    const iconEl = /^(i|svg)$/i.test(el.tagName)
+      ? el
+      : el.querySelector('i[class], svg[class], [class*="icon" i]');
+    if (!iconEl) return '';
+    const cls = iconEl.getAttribute('class') || '';
+    for (const [re, label] of ICON_CLASS_LABEL_RULES) {
+      if (re.test(cls)) return label;
+    }
+    return '';
+  };
+
   const out = [];
   let idx = startIndex;
 
@@ -242,8 +289,14 @@ _COLLECT_JS = r"""
     // selector ในลิสต์บนสุด) กัน hidden <input> ที่เป็น honeypot/CSRF token จริงๆ (ซ่อนถาวร
     // ไม่ได้รอ hover) ไม่ให้ agent เผลอไปกรอก
     const hiddenByOwnStyle = st.visibility === 'hidden' || st.opacity === '0';
+    // W21: custom checkbox wrapper (ดู CHECKBOX_WRAPPER_SELECTOR ด้านบน) บางเว็บวาดกล่อง
+    // checkbox ล้วนๆ ผ่าน CSS ::before/::after บน wrapper ที่ตัวเอง opacity:0/visibility:
+    // hidden (คล้าย hover-to-reveal button ข้างบน) — ให้ผ่อนปรนเงื่อนไข visible เหมือนปุ่ม/
+    // ลิงก์เช่นกัน กัน perception กรอง wrapper พวกนี้ทิ้งทั้งที่มองเห็น/คลิกได้จริงในเบราว์เซอร์
+    const isCheckboxWrapperCandidate = (el.className || '').toString().toLowerCase().includes('checkbox') ||
+      (el.tagName.toLowerCase() === 'label' && !!el.querySelector('input[type="checkbox"]'));
     const isClickableCandidate = ['a', 'button'].includes(el.tagName.toLowerCase()) ||
-      el.getAttribute('role') === 'button';
+      el.getAttribute('role') === 'button' || isCheckboxWrapperCandidate;
     const hoverRevealCandidate = hasSize && notDisplayNone && hiddenByOwnStyle && isClickableCandidate;
 
     const visible = hasSize && notDisplayNone && (!hiddenByOwnStyle || hoverRevealCandidate);
@@ -300,9 +353,17 @@ _COLLECT_JS = r"""
     const isFormFieldTag = tag === 'input' || tag === 'select' || tag === 'textarea' ||
       el.getAttribute('role') === 'combobox';
     const associatedLabel = isFormFieldTag ? getAssociatedLabelText(el) : '';
+    // W21 ("Icon-based Action Button Resolver"): checkbox wrapper (ดู CHECKBOX_WRAPPER_
+    // SELECTOR ด้านบน) แทบไม่มี aria-label/title/data-test เลย — ให้ "Select All"/"Select
+    // row" เป็น fallback เฉพาะทาง (แยกจาก header เพราะ th/thead คือ checkbox หัวตารางที่
+    // เลือกทุกแถวทีเดียว ต่างจาก checkbox รายแถวที่เลือกแค่แถวเดียว) ก่อนถึง getIconClassLabel
+    // (ปุ่ม view/download/edit/delete ที่เป็น icon font ล้วนๆ — ดู getIconClassLabel ด้านบน)
+    const checkboxWrapperLabel = isCheckboxWrapperCandidate
+      ? (el.closest('th, thead') ? 'Select All' : 'Select row')
+      : '';
     const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
                       humanize(dataTest) || el.getAttribute('name') ||
-                      humanize(el.id) || '';
+                      humanize(el.id) || checkboxWrapperLabel || getIconClassLabel(el) || '';
 
     // ปุ่มตะกร้าหลังใส่สินค้าแล้วมี badge span ลูก (เช่น "1") ทำให้ innerText
     // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้

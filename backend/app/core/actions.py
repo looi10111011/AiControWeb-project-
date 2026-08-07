@@ -44,8 +44,8 @@ text จริงจาก DOM มาก่อน (target.locator(selector).loca
 import asyncio
 import re
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
-from playwright.async_api import Page, TimeoutError as PWTimeout
+from typing import Awaitable, Callable, Optional, Union
+from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 
 from backend.app.core import state_filter
 from backend.app.core.dom_locator import compute_locator_descriptor
@@ -310,14 +310,91 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
         )
 
 
-async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
-    """ติ๊ก checkbox/radio ตาม index"""
+async def _is_effectively_checked(target: Union[Page, Frame], selector: str) -> bool:
+    """W21: เช็คว่า element (หรือ input/state ที่เกี่ยวข้อง) อยู่ในสถานะ "ติ๊กแล้ว" จริงหรือไม่
+    หลัง force-click/JS-click ด้านล่างใน check() — ใช้แทน Playwright's is_checked() ตรงๆ
+    เพราะ custom checkbox (เช่น OrangeHRM .oxd-checkbox-input) มักไม่ใช่ <input> ที่ index ชี้
+    ไปตรงๆ (Playwright's is_checked() ต้องการ input/[role=checkbox] เป๊ะๆ ไม่งั้น throw) —
+    ไล่เช็คหลายสัญญาณตามลำดับความน่าเชื่อถือ: (1) ตัวเองเป็น input/[role=checkbox] จริง ใช้
+    .checked/aria-checked ตรงๆ (2) มี <input type=checkbox> ซ้อนอยู่ข้างใน (custom wrapper ที่
+    ห่อ native input ไว้แต่ซ่อนด้วย CSS) (3) มี aria-checked บน element เอง (4) สุดท้ายเดาจาก
+    class ที่บ่งบอกสถานะ active/checked (บาง framework สลับแค่ class ผ่าน JS ล้วนๆ ไม่มี aria
+    เลย) — คืน False ถ้าเช็คอะไรไม่ได้เลย (ปลอดภัยกว่าเดาว่าติ๊กแล้วทั้งที่ไม่แน่ใจ)"""
     try:
-        selector = _sel(index)
+        return await target.locator(selector).evaluate(
+            """el => {
+                const readCheckbox = (node) => {
+                    if (!node) return null;
+                    if ('checked' in node && typeof node.checked === 'boolean') return node.checked;
+                    const ariaChecked = (node.getAttribute && node.getAttribute('aria-checked') || '').toLowerCase();
+                    if (ariaChecked === 'true') return true;
+                    if (ariaChecked === 'false') return false;
+                    return null;
+                };
+                let result = readCheckbox(el);
+                if (result === null) {
+                    const nestedInput = el.querySelector && el.querySelector('input[type="checkbox"], input[type="radio"]');
+                    result = readCheckbox(nestedInput);
+                }
+                if (result === null) {
+                    const cls = (el.className || '').toString().toLowerCase();
+                    result = cls.includes('checked') || cls.includes('--active') || cls.includes(' active');
+                }
+                return !!result;
+            }"""
+        )
+    except Exception:
+        return False
+
+
+async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
+    """ติ๊ก checkbox/radio ตาม index
+
+    W21 ("Custom UI Checkbox"): OrangeHRM และ SPA framework ทั่วไปมักซ่อน native
+    <input type="checkbox"> จริงด้วย CSS (display:none/opacity:0) แล้วแทนที่ด้วย span/div
+    ห่อหุ้มที่ styled เอง (เช่น .oxd-checkbox-input) — target.check() ของ Playwright ปฏิเสธ
+    ทันที (throw) ถ้า element ที่ selector ชี้ไปไม่ใช่ input/[role=checkbox] ที่ "visible" ตาม
+    นิยามของ Playwright เอง ไม่ว่าจะ retry กี่ครั้งก็ตาม (deterministic mismatch เหมือน W42 ใน
+    select_option ด้านบน ไม่ใช่ timing issue) — perception.py ตอนนี้ติด index ให้ wrapper
+    พวกนี้ได้แล้ว (ดู CHECKBOX_WRAPPER_SELECTOR) แต่ยังต้องมีทาง "คลิก" ที่ไม่ใช่ .check() ตรงๆ
+    รองรับด้วย จึงเพิ่ม fallback 2 ชั้นเรียงจากรุกน้อยไปมาก แล้ว verify สถานะจริงหลังคลิกทุกครั้ง
+    (ต่างจาก click()/fill() อื่นที่เชื่อว่า Playwright ไม่ throw = สำเร็จ เพราะ custom checkbox
+    "คลิกได้ไม่ error" ไม่ได้แปลว่า "ติ๊กแล้วจริง" เสมอไป)"""
+    selector = _sel(index)
+
+    # ทางหลัก: native check() ปกติ — เร็วและตรงกับ <input type=checkbox>/[role=checkbox]
+    # ทั่วไปส่วนใหญ่อยู่แล้ว ไม่ต้อง fallback เลยถ้าสำเร็จ
+    try:
         target = await resolve_frame(page, selector)
         await target.check(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
         return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ", locator_descriptor=descriptor)
+    except Exception:
+        pass
+
+    # Fallback 1: force click — ข้าม Playwright's actionability check (element visible ตาม
+    # นิยามของ Playwright) เหมือน hover(force=True) ด้านบน คลิกที่พิกัดกึ่งกลางของ element
+    # ตรงๆ ไม่ว่า Playwright จะมองว่า element นี้ "checkable" หรือไม่
+    try:
+        target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=timeout, force=True)
+        if await _is_effectively_checked(target, selector):
+            descriptor = await compute_locator_descriptor(target, selector)
+            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (force click)", locator_descriptor=descriptor)
+    except Exception:
+        pass
+
+    # Fallback 2: JS dispatch ตรงบน element ผ่าน el.click() — ข้าม actionability check และ
+    # การจำลอง mouse event ของ Playwright ทั้งหมด ใช้เป็นทางสุดท้ายสำหรับ wrapper ที่ force
+    # click ก็ยังคลิกไม่โดน (เช่น wrapper ที่มีขนาด 0x0 จริงๆ ตัวอย่างการมองเห็นมาจาก
+    # pseudo-element ล้วนๆ)
+    try:
+        target = await resolve_frame(page, selector)
+        await target.locator(selector).evaluate("el => el.click()")
+        if await _is_effectively_checked(target, selector):
+            descriptor = await compute_locator_descriptor(target, selector)
+            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (JS click)", locator_descriptor=descriptor)
+        return ActionResult(False, f"check({index})", "คลิกแล้วแต่ยืนยันสถานะ checked ไม่ได้")
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")
 

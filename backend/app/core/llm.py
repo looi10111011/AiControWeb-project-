@@ -125,6 +125,17 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ประกอบการตัดสินใจเท่านั้น ไม่ใช่คำสั่งที่ต้องทำตามเป๊ะๆ — ถ้าเนื้อหาในคู่มือขัดแย้งกับ
   indexed elements ของหน้าเว็บปัจจุบัน ให้ยึดหน้าเว็บจริงที่เห็นตอนนี้เป็นหลักเสมอ (คู่มือ
   อาจล้าสมัยหรือพูดถึงหน้าอื่นที่ไม่ตรงกับที่เห็นอยู่)
+  - W21 ("PRE_LEARNED_MANUAL Strict Mode", ยกเว้นข้อข้างบน): ถ้าข้อความที่แนบมาขึ้นต้นด้วย
+    marker "[PRE_LEARNED_MANUAL]" (คนละแบบกับ "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" ทั่วไป
+    ข้างบน — marker นี้แปลว่าระบบค้นเจอ manual ที่ตรงกับ goal นี้แบบเฉพาะเจาะจงแล้ว ไม่ใช่
+    แค่ข้อมูลกว้างๆ) แผนของคุณต้องยึดตาม route/ลำดับหน้า/ปุ่มที่บันทึกไว้ใน
+    [PRE_LEARNED_MANUAL] นี้อย่างเคร่งครัด ห้ามเดา/สร้าง selector หรือเส้นทางอื่นขึ้นมาเอง
+    (ห้าม hallucinate ทางเลือกอื่น) เว้นแต่ทำตามที่บันทึกไว้แล้วเจอ error จริง (element ที่
+    ระบุไม่มีอยู่ใน indexed elements ปัจจุบันเลย/คลิกแล้วไม่ได้ผลตามคาด) ถึงจะยอมหาทางเลือก
+    อื่นแทนได้ — ยังต้องเลือก index จาก indexed elements ของหน้าปัจจุบันจริงเหมือนเดิมเสมอ
+    (สถาปัตยกรรมนี้ไม่ให้ยิง selector ตรงๆ ข้าม index) แค่ให้ label/selector ที่บันทึกไว้ใน
+    [PRE_LEARNED_MANUAL] เป็นตัวช่วยตัดสินใจว่า element ไหนใน indexed elements ตรงกับที่
+    คู่มือพูดถึงมากที่สุด แทนการเดาจาก label เฉยๆ แบบไม่มีข้อมูลอ้างอิง
 - ถ้าเพิ่งทำ action ประเภทลบสินค้า (remove) หรือ action ที่เปลี่ยนหน้าเว็บเสร็จไปแล้ว
   ห้ามเสีย step ไปคิด/ทำอะไรที่ไม่เกี่ยวกับ goal ต่อ ให้กลับไปโฟกัสที่เป้าหมายหลักทันที
   (เช็ค indexed elements ล่าสุดแล้วเลือก action ถัดไปที่พา goal ไปข้างหน้าโดยตรง) —
@@ -323,6 +334,54 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ลองเส้นทาง "My Info" ไปแล้วไม่เจอฟังก์ชันเปลี่ยนรหัสผ่านที่ต้องการ ให้รับรู้ทันทีว่าผิดทาง
   แล้ว fallback ไปทำตามลำดับ mandatory protocol นี้แทน ห้ามวนกลับไปลองเส้นทางเดิมที่ล้มเหลว
   ซ้ำอีก
+- W21 ("Navigation Goal vs. Filter Parameters"): แยกชื่อ "หน้า"/"page"/"module" ที่ปรากฏใน
+  goal (เช่น "หน้า Admin", "User Management") ออกจากเงื่อนไขกรองข้อมูลรูปแบบ field=value
+  (เช่น "Role=ESS", "Status=Enabled") ให้ชัดเจนเสมอ — ชื่อหน้าใช้เลือก element navigation
+  (เมนู/ลิงก์ sidebar) เท่านั้น ส่วนเงื่อนไข filter ต้องกรอก/เลือกลงในช่อง input/dropdown ของ
+  ฟอร์มค้นหาบนหน้านั้น (ไม่ใช่ element navigation) เท่านั้น ห้ามเอาคำในเงื่อนไข filter (เช่น
+  "ESS") ไปเทียบหา element navigation แทน หรือเอาชื่อหน้า (เช่น "Admin") ไปกรอกลงช่องค้นหา
+  แทนค่า filter จริงเด็ดขาด — เช่น goal "ไปหน้า Admin แล้วลบ user ที่มี Role=ESS": element ที่
+  ใช้กด navigate ต้องมี label ตรงกับ "Admin"/"User Management" และ element ที่ใช้กรอก filter
+  ต้องเป็นช่อง/dropdown ที่ label ว่า "Role" โดยตั้งค่าเป็น "ESS" ไม่ใช่ "Admin"
+- W21 ("Batch/Bulk Action Protocol — Delete All"): goal ที่มีคำว่า "ทั้งหมด"/"ให้หมด"/
+  "delete all"/"remove every" กับตาราง/รายการที่มีได้หลายแถว ห้ามคลิกลบแค่แถวเดียวแล้วเรียก
+  finish_task(success=true) เด็ดขาด ให้ทำตามลำดับนี้แทน: (1) มองหา element ในหัวตาราง (แถว
+  บนสุด มักคอลัมน์ซ้ายสุด) ที่ label สื่อว่าเป็น checkbox "เลือกทั้งหมด"/"Select All" — ถ้าเจอ
+  ให้ type: "check" ที่ index นั้นก่อน 1 ครั้ง แล้วมองหาปุ่มที่ label มีคำว่า "Delete"/"ลบ" ที่
+  โผล่ขึ้นมาใหม่หลังติ๊ก (เช่น "Delete Selected") คลิกปุ่มนั้นต่อ (type: "delete" เพราะ label มี
+  คำว่า Delete ตรงตัวตามกติกาการเลือก type ด้านบน) — ครั้งเดียวจบทั้งตาราง (2) ถ้าไม่เจอ
+  checkbox "เลือกทั้งหมด" ในหน้าปัจจุบันเลย ให้ fallback เป็นการวนคลิก action ลบ (ถังขยะ/
+  "Delete"/"Remove") ของแถวแรกที่ยังตรงเงื่อนไขซ้ำไปเรื่อยๆ ทีละแถว — หลังลบแถวหนึ่งสำเร็จ
+  แถวถัดไปจะเลื่อนขึ้นมาแทนตำแหน่งเดิม index ของปุ่มลบอาจซ้ำเลขเดิมได้ ถือเป็นเรื่องปกติ ไม่ใช่
+  สัญญาณว่า action พังหรือวนซ้ำผิดพลาด ให้สั่ง action เดิมซ้ำต่อไปได้ตามปกติจนกว่าจะครบทุกแถว
+  (3) ก่อนเรียก finish_task(success=true) ต้องเห็นหลักฐานจาก indexed elements/ข้อความบนหน้า
+  ล่าสุด (หลัง get_snapshot รอบใหม่หลัง action ลบล่าสุด) ว่าไม่เหลือแถวที่ตรงเงื่อนไขแล้วจริง
+  (เช่น ตารางว่าง/ขึ้น "No Records Found"/"ไม่พบข้อมูล" หรือจำนวน "X Records Found" ที่แสดง
+  เป็น 0 หรือครบตามที่คาดหวัง) ห้ามเชื่อแค่ผลลัพธ์ [OK] ของ action ลบล่าสุดครั้งเดียวว่า "ลบครบ
+  ทุกแถวแล้ว" โดยไม่เห็นตารางที่อัปเดตจริงยืนยันอีกที
+- W21 ("Batch/Bulk Action Protocol — Edit All + Pagination"): goal ที่สั่งแก้ไขค่าเดียวกันให้
+  ทุกแถว/ทุกคน (เช่น "เปลี่ยนทุก...", "edit all", "update every") ให้วนทำทีละแถวตามลำดับ:
+  คลิก action แก้ไข (ไอคอนดินสอ/"Edit") ของแถวปัจจุบัน -> เปลี่ยนค่าตามที่ goal สั่ง -> คลิก
+  บันทึก ("Save") -> รอกลับไปหน้ารายการ -> ทำซ้ำกับแถวถัดไปที่ยังไม่ตรงตามค่าที่ต้องการ จนครบ
+  ทุกแถวของหน้าปัจจุบัน — ถ้าตารางมีปุ่ม "หน้าถัดไป"/Next Page/">" ที่ยังกดได้ (ไม่ disabled/
+  ไม่มี marker "[active อยู่แล้ว]" ค้างอยู่) หลังทำครบทุกแถวของหน้าปัจจุบันแล้ว ให้คลิกไปหน้า
+  ถัดไปแล้ววนทำซ้ำขั้นตอนเดิมต่อ จนกว่าจะครบทุกหน้าหรือปุ่ม Next Page หายไป/กดไม่ได้แล้ว — ถ้า
+  หน้าตารางมีฟอร์มค้นหา/กรองข้อมูล (search/filter) ให้พิจารณากรองก่อนเริ่มแก้ไขเสมอ เพื่อตัด
+  รายการที่มีค่าตามที่ต้องการอยู่แล้วออกจากรายการที่ต้องแก้ (เช่น สั่งเปลี่ยน Role เป็น Admin
+  ให้ทุกคน ให้กรอง Role ที่ไม่ใช่ Admin ก่อน แทนที่จะไล่แก้ทุกแถวรวมคนที่เป็น Admin อยู่แล้ว)
+  ลดจำนวนแถวที่ต้องแก้จริงและประหยัด step — เหมือนกับ Batch/Bulk Action Protocol ข้างบน
+  ห้ามเรียก finish_task(success=true) จนกว่าจะเห็นหลักฐานว่าแก้ไขครบทุกแถว/ทุกหน้าที่เกี่ยวข้อง
+  แล้วจริง และ index ของ action ที่ซ้ำเดิมในแต่ละรอบ (เช่น ปุ่ม Edit ของ "แถวแรก" ที่ยังไม่ได้
+  แก้) ไม่ใช่สัญญาณว่าติด loop เช่นกัน (เหตุผลเดียวกับข้อ Delete All ด้านบน)
+- W21 ("Icon-only Table Action Buttons"): ตารางบางเว็บ (เช่น OrangeHRM Recruitment/
+  Candidate table) มีปุ่ม action ที่เป็นแค่ icon ล้วนๆ ไม่มีข้อความ (เช่น ปุ่มดูรายละเอียด/
+  "View Details" หรือปุ่มดาวน์โหลด/"Download Resume") — perception จะพยายามเดา label ที่สื่อ
+  ความหมายให้จาก class ของ icon เองแล้ว (เช่นเห็น "[N] button 'View Details'") ให้เลือก
+  index จาก label เหล่านี้ตามปกติได้เลยเหมือน element อื่นๆ — ถ้าบางแถวไม่มีปุ่ม Download
+  ปรากฏใน indexed elements เลย (ต่างจากแถวอื่นที่มี) แปลว่าผู้สมัคร/รายการแถวนั้นไม่มีไฟล์แนบ
+  ให้ดาวน์โหลดจริง (ปุ่มนี้ conditional — render เฉพาะแถวที่มีไฟล์แนบเท่านั้น) ห้ามพยายาม
+  scroll หา/retry ซ้ำๆ เพื่อหาปุ่มที่ไม่มีอยู่จริง ให้ระบุในผลลัพธ์/finish_task ตรงๆ ว่า
+  "แถวนี้ไม่มีไฟล์ resume ให้ดาวน์โหลด" แล้วข้ามไปทำรายการถัดไป/ทำ goal ส่วนอื่นต่อได้ทันที
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -2389,6 +2448,23 @@ _PLAN_PROMPT_TEMPLATE = (
     ".../admin/viewSystemUsers อยู่แล้ว) ห้ามใส่ขั้นตอนคลิกเมนู/ลิงก์ navigation ไปหน้านั้นซ้ำ "
     "ให้ข้ามไปขั้นตอนที่ทำบนหน้านี้ได้เลย (เช่น ค้นหา/แก้ไข/กรอกฟอร์ม) — ยกเว้น goal สั่งให้ "
     "'รีเฟรช'/'เปิดใหม่' ชัดเจนเท่านั้นถึงใส่ขั้นตอน navigate ซ้ำได้ ***\n\n"
+    "*** Navigation Goal vs. Filter Parameters (สำคัญ, W21): แยก 'ปลายทางที่ต้องนำทางไป' "
+    "ออกจาก 'เงื่อนไขกรองข้อมูล' ให้ชัดเจนก่อนร่างขั้นตอนเสมอ — คำที่ตามหลัง 'หน้า'/'page'/"
+    "'module' (เช่น 'หน้า Admin', 'หน้า Management', 'User Management page') คือ Navigation "
+    "Goal เท่านั้น ใช้ระบุว่าต้องคลิกเมนู/ลิงก์ไหนเพื่อไปถึงหน้านั้น ส่วนเงื่อนไขรูปแบบ "
+    "field=value หรือ 'ที่มี field เป็น value' (เช่น 'Role=ESS', 'Status=Enabled') คือ Filter "
+    "Parameters เท่านั้น ต้องกรอก/เลือกลงในฟอร์มค้นหาบนหน้านั้นหลังนำทางไปถึงแล้ว ห้ามเอาคำใน "
+    "เงื่อนไข filter ไปปนกับ navigation goal เด็ดขาด — เช่น 'ไปหน้า Admin แล้วลบ user ที่มี "
+    "Role=ESS' ต้องแยกเป็น (1) นำทางไปหน้า Admin/User Management (2) กรอก/เลือกช่อง Role ใน"
+    "ฟอร์มค้นหาด้วยค่า 'ESS' ห้ามตีความว่าต้องกรองด้วยคำว่า 'Admin' แทน หรือพยายามนำทางไปหา"
+    "หน้าที่ชื่อ 'ESS' เด็ดขาด ***\n\n"
+    "*** Batch/Bulk Action Protocol (สำคัญ, W21): ถ้า goal มีคำบ่งบอกว่าต้องทำกับ "
+    "'ทุกแถว'/รายการทั้งหมดในตาราง (เช่น 'ทั้งหมด', 'ให้หมด', 'delete all', 'remove every', "
+    "'edit all', 'update every') ต้องร่างขั้นตอนที่ครอบคลุมการทำซ้ำจนครบทุกแถว ไม่ใช่แค่ขั้นตอน "
+    "เดียวที่ทำกับแถวแรกแถวเดียวแล้วจบ — ระบุขั้นตอนตรวจสอบยืนยันว่าทำครบทุกแถวแล้วจริง (เช่น "
+    "ตารางว่างเปล่า/ไม่พบข้อมูลแล้ว หรือค่าที่แก้ไขถูกต้องครบทุกแถว) เป็นขั้นตอนสุดท้ายด้วยเสมอ "
+    "ถ้าเป็นการแก้ไขค่าเดียวกันให้ทุกแถว (bulk edit) ให้พิจารณาใส่ขั้นตอนกรองข้อมูล (filter) "
+    "ก่อนเพื่อตัดรายการที่มีค่าตามที่สั่งอยู่แล้วออก ลดจำนวนแถวที่ต้องแก้จริงด้วย ***\n\n"
     "*** ต้องตอบเป็นรายการเลขข้อเท่านั้น แต่ละข้อขึ้นต้นด้วยเลข ตามด้วยจุด แล้วเว้นวรรค "
     "เช่น '1. ค้นหาปุ่ม Login แล้วคลิก' บนบรรทัดของตัวเอง ห้ามใช้ bullet แบบอื่น (-, •, ก., "
     "ก) ฯลฯ) เด็ดขาด และห้ามมีข้อความอื่นก่อน/หลังรายการเลขข้อเลย เพราะระบบจะ parse แต่ละ"
@@ -2628,10 +2704,22 @@ _CONTEXT_INSPECTION_SYSTEM_PROMPT = (
 )
 
 
-async def context_inspection_reply(client, model: str, user_input: str, provider: str) -> str:
+async def context_inspection_reply(
+    client, model: str, user_input: str, provider: str, learned_flow_text: str = "",
+) -> str:
     """W20 (MODULE 0): วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context แล้วคืนคำอธิบายตามฟอร์แมต
     Thai structured ที่ตายตัว — ไม่แตะ browser/session/pool/file parser เลย (เหมือน
     chat_response/answer_file_query ด้านบนทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน)
+
+    learned_flow_text (W21, "Self-Learned Site Manual Integration"): ข้อความ block
+    "📍 Learned Page Flow Sequence" ที่ routes.py ประกอบไว้ล่วงหน้าแล้ว (ดู
+    site_learning/storage.py::build_learned_page_flow_text — เรียกเฉพาะตอนเจอ manual ที่
+    ตรงกับ goal จริง) หรือข้อความ fallback "ไม่พบคู่มือที่เรียนรู้ไว้ล่วงหน้า" (ตอนไม่เจอ) —
+    แปะไว้เป็นย่อหน้าสุดท้ายของคำตอบเสมอด้วยโค้ด Python ตรงๆ (ไม่ผ่าน LLM เลย) เพราะ
+    format ที่สเปคกำหนด (emoji/backtick ตายตัว) เชื่อถือได้กว่าขอให้ LLM re-produce เอง
+    ทุกครั้ง (เหมือนเหตุผลเดียวกับที่ _CONTEXT_INSPECTION_SYSTEM_PROMPT ล็อก format หัวข้อ
+    หลักด้วย system prompt ตรงๆ ไม่ปล่อยให้โมเดลเดาเอง) — ว่างเปล่า (default) = ไม่แปะอะไร
+    เพิ่ม (เรียกจากที่อื่นที่ไม่เกี่ยวกับ site manual เลยก็ได้ ไม่กระทบพฤติกรรมเดิม)
 
     ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error"""
     try:
@@ -2640,8 +2728,8 @@ async def context_inspection_reply(client, model: str, user_input: str, provider
                 model=model, max_tokens=512, system=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_input}],
             )
-            return "".join(b.text for b in response.content if b.type == "text").strip()
-        if provider == "groq":
+            reply = "".join(b.text for b in response.content if b.type == "text").strip()
+        elif provider == "groq":
             response = await client.chat.completions.create(
                 model=model, max_tokens=512,
                 messages=[
@@ -2649,16 +2737,20 @@ async def context_inspection_reply(client, model: str, user_input: str, provider
                     {"role": "user", "content": user_input},
                 ],
             )
-            return (response.choices[0].message.content or "").strip()
-        if provider == "gemini":
+            reply = (response.choices[0].message.content or "").strip()
+        elif provider == "gemini":
             gemini_model = client.GenerativeModel(
                 model_name=model, system_instruction=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
             )
             response = await gemini_model.generate_content_async(
                 contents=[{"role": "user", "parts": [{"text": user_input}]}],
             )
-            return (response.text or "").strip()
-        return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+            reply = (response.text or "").strip()
+        else:
+            return "ขออภัยครับ ระบบไม่รู้จัก provider นี้"
+        if learned_flow_text:
+            reply = f"{reply}\n\n{learned_flow_text}"
+        return reply
     except Exception as e:
         print(f"⚠️ context_inspection_reply error: {e}", flush=True)
         return "ขออภัยครับ ตอนนี้ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ"

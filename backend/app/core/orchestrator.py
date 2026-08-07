@@ -29,7 +29,7 @@ from backend.app.core.actions import (
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
-from backend.app.permission.rules import extract_domain
+from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain
 from backend.app.rag import retriever
 
 # action ที่เปลี่ยนหน้า/DOM แบบมีนัยสำคัญ -> ต้องรอหน้านิ่งก่อน perceive รอบถัดไป
@@ -1101,6 +1101,10 @@ class Orchestrator:
         last_llm_call_at: Optional[float] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
+        # W21 ("Batch/Bulk Action Protocol"): ผลลัพธ์ (success/fail) ของ action ล่าสุดที่
+        # เพิ่ง execute() จริงไปเมื่อ step ก่อนหน้า — ใช้คู่กับ _BULK_SAFE_REPEAT_TYPES
+        # ด้านล่างตอนเช็ค consecutive_repeat_count (ดู docstring ตรงจุดเช็คด้านล่าง)
+        last_action_succeeded: Optional[bool] = None
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
         # W31: จำนวนครั้งที่บังคับทำ recovery action (go_back/scroll) แทน action ที่ agent
         # เพิ่งขอไปแล้ว เพราะตรวจพบว่ากำลังวนซ้ำ — ดู _force_loop_recovery()/
@@ -1591,7 +1595,24 @@ class Orchestrator:
                 # loop-detection: action เดิมเป๊ะๆ ติดกันกี่ครั้งแล้ว (นับรวมทั้ง success/fail
                 # เพราะแม้ execute() สำเร็จทุกครั้ง แต่ถ้า LLM สั่งซ้ำเดิมไม่เปลี่ยน ก็ไม่ใช่
                 # ความคืบหน้าจริงอยู่ดี)
-                if tool_input == last_action_cmd:
+                #
+                # W21 ("Batch/Bulk Action Protocol"): ข้อยกเว้นเดียว — action ประเภทที่ต้อง
+                # ขอยืนยันจาก human ทุกครั้งอยู่แล้ว (submit/delete/purchase/pay,
+                # DEFAULT_NEEDS_CONFIRMATION) ที่ "เดิมเป๊ะๆ" (dict เท่ากันทุก field รวม
+                # index) และครั้งก่อนหน้าสำเร็จจริง (last_action_succeeded) มักเกิดจาก
+                # bulk-delete fallback loop ที่ถูกต้อง ไม่ใช่ agent ค้างวน — เช่น "ลบ user
+                # ทั้งหมด" ต้องคลิกถังขยะ "แถวแรก" ซ้ำๆ แต่พอลบแถวแรกสำเร็จ แถวถัดไปเลื่อน
+                # ขึ้นมาแทนที่ตำแหน่งเดิมพอดี ได้ data-ai-index ตัวเดิมซ้ำทุกรอบ (perception.py
+                # คำนวณ index ใหม่จากลำดับ DOM ทุกครั้ง ไม่ใช่ identity ของ element เดิม) —
+                # เป็นความคืบหน้าจริง (แถวถูกลบไปแล้วจริงทุกรอบ) ต่างจาก loop ที่ guard นี้
+                # ตั้งใจจะจับ (agent ค้างซ้ำโดยไม่มีผลอะไรเปลี่ยนแปลงเลย) — ปลอดภัยเพราะ human
+                # ยังต้องกดอนุมัติทุกครั้งอยู่ดี (ask_user_func ใน execute()) ไม่มีทางวนไม่รู้จบ
+                # แบบไม่มีใครควบคุม ถ้าครั้งก่อนหน้า "fail" ซ้ำๆ (เช่น index ผิด/element หาไม่
+                # เจอ) ยังนับเป็น repeat ตามปกติเหมือนเดิมทุกประการ (ไม่เข้าเงื่อนไขยกเว้นนี้)
+                is_bulk_safe_repeat = (
+                    tool_input.get("type") in DEFAULT_NEEDS_CONFIRMATION and last_action_succeeded is True
+                )
+                if tool_input == last_action_cmd and not is_bulk_safe_repeat:
                     consecutive_repeat_count += 1
                 else:
                     last_action_cmd = tool_input
@@ -1761,6 +1782,9 @@ class Orchestrator:
                     manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
                     element_tag=action_tag, element_type=action_element_type,
                 )
+                # W21: เก็บผลลัพธ์ของ action นี้ไว้ให้ loop-guard ตอนต้น step ถัดไปเช็ค
+                # is_bulk_safe_repeat (ดู docstring ตรงจุดเช็คด้านบน)
+                last_action_succeeded = result.success
                 steps_taken += 1
                 # W10[D]: แนบ label ของ element เป้าหมาย (ชื่อปุ่ม/ช่องกรอกจริงบนหน้าเว็บ
                 # เช่น "Login", "Username" — มาจาก perception.py::get_snapshot() ตัวเดียว
