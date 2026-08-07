@@ -186,6 +186,80 @@ _VALIDATION_ERROR_SELECTOR_IN_FORM = ", ".join(
 _DOM_CHECK_TIMEOUT_MS = 3000
 
 
+# W22 ("DOM-Based Post-Action Verification Guardrail" — hallucinated false-completion บั๊ก
+# จริงที่ user รายงาน: agent ตอบ "No users with Role ESS found (or all have been deleted)"
+# ทั้งที่หน้าเว็บจริงยังโชว์ "(3) Records Found" พร้อมแถว ESS user เหลืออยู่ครบ 3 แถว — สาเหตุ
+# เดียวกับ validation-error guard ด้านบน: LLM สรุปจาก conversation history/ผลลัพธ์ action
+# ก่อนหน้า (ซึ่ง hallucinate ได้) แทนที่จะอ่านสถานะ DOM จริง ณ ตอนเรียก finish_task — ต่างจาก
+# guard เดิมตรงที่ guard เดิมมองหา "error message ที่ปรากฏ" (สัญญาณว่าฟอร์มยังไม่ผ่าน) ส่วน
+# ตัวนี้มองหา "record count ที่เหลืออยู่จริงในตาราง" (สัญญาณว่า deletion goal ยังไม่เสร็จ) —
+# เปิดใช้เฉพาะ deletion-intent goal เท่านั้น (ดู _is_deletion_intent_goal ด้านล่าง) ไม่ใช่ทุก
+# goal เพราะข้อความ "X Records Found" ไม่เกี่ยวข้องกับ goal อื่นเลย (เช่น login, navigation)
+# เช็คแล้วจะเป็นแค่ noise เปล่าๆ ไม่มีประโยชน์
+_MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES = 2
+
+_PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE = (
+    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบ DOM จริงของหน้าปัจจุบันแล้วพบว่า"
+    "ยังเหลือรายการที่ตรงเงื่อนไขอยู่ {count} รายการ (ข้อความจริงบนหน้าเว็บ: \"{text}\") ห้ามถือว่า"
+    "ลบครบแล้ว/ไม่พบรายการที่ตรงเงื่อนไข ทั้งที่ตารางยังโชว์จำนวนมากกว่า 0 อยู่จริง — ให้กลับไปทำ"
+    "ขั้นตอนลบ (คลิก checkbox เลือกทั้งหมด + Delete Selected หรือวนคลิกลบทีละแถว ตามที่ SYSTEM_"
+    "PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ จนกว่าจำนวนจะเหลือ 0/ขึ้น \"No Records Found\""
+    "จริงๆ ถึงจะเรียก finish_task(success=true) ได้"
+)
+
+# W22: คำที่บ่งบอกว่า goal นี้เป็นงานลบข้อมูล/รายการ — ครอบคลุมทั้งไทย/อังกฤษ (ไม่ผูกกับคำว่า
+# "ทั้งหมด"/"all" เหมือน keyword ของ Batch/Bulk Action Protocol ด้านบน เพราะแม้แต่การลบรายการ
+# เดียว/บางรายการ ก็เจอปัญหา false-completion แบบเดียวกันได้เหมือนกัน ไม่ใช่แค่ bulk delete)
+_DELETION_INTENT_KEYWORDS = ("ลบ", "delete", "remove", "ล้าง")
+
+
+def _is_deletion_intent_goal(goal: str) -> bool:
+    """W22: True ถ้า goal มีคำที่บ่งบอกว่าเป็นงานลบข้อมูล/รายการ — ใช้เป็นเงื่อนไขเปิดใช้
+    _scan_remaining_target_records() ก่อนยอมรับ finish_task(success=true) เท่านั้น (ดู
+    docstring ของ _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES ด้านบนว่าทำไมต้อง scope แคบ)"""
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _DELETION_INTENT_KEYWORDS)
+
+
+# W22 (ORANGEHRM SPECIFIC ตามสเปคที่ user ให้มา): ข้อความ "(N) Records Found"/"No Records
+# Found" ปรากฏแทบทุกหน้าที่มี list/filter ของ OrangeHRM (Admin > User Management, PIM >
+# Employee List, Recruitment > Candidates ฯลฯ) — .orangehrm-horizontal-padding span คือ
+# selector ที่ user ยืนยันมาจาก DOM จริง ใช้ :has-text() (Playwright selector engine เอง ไม่ใช่
+# CSS มาตรฐาน) เป็นชั้นสำรองกว้างๆ เผื่อ layout เปลี่ยนไปในเวอร์ชันอื่นของ OrangeHRM ที่ยังคง
+# ข้อความนี้ไว้แต่ขยับ element/class ไป — ตั้งใจไม่ทำให้ generic ข้ามเว็บเหมือน
+# _VALIDATION_ERROR_SELECTOR เพราะ "Records Found" ไม่ใช่ข้อความมาตรฐานที่เว็บอื่นใช้ร่วมกันเลย
+_RECORD_COUNT_SELECTOR = (
+    '.orangehrm-horizontal-padding span:has-text("Records Found"), '
+    'span:has-text("No Records Found")'
+)
+
+_RECORD_COUNT_RE = re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE)
+
+
+async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]]:
+    """W22: อ่านข้อความ "(N) Records Found"/"No Records Found" จาก DOM จริง ณ ตอนนี้ — คืน
+    (จำนวนที่เหลือจริง, ข้อความดิบที่เจอ) ถ้าเจอ element นี้จริง หรือ None ถ้าหน้าปัจจุบันไม่มี
+    element แบบนี้เลย (ไม่ใช่หน้าตารางแบบ OrangeHRM/เว็บนี้ไม่รองรับ UI แบบนี้ — ปล่อยผ่านเสมอ
+    ไม่ block เหมือนหลักการเดียวกับ _scan_validation_errors ด้านบน: เช็คไม่ได้ ดีกว่าบล็อก
+    finish_task ที่อาจถูกต้องอยู่แล้ว) "No Records Found" ตีความเป็น 0 เสมอ ไม่ throw ออกไปพัง
+    guard เด็ดขาด (เหมือน _scan_validation_errors — จับ Exception กว้างๆ คืน None แทน)"""
+    try:
+        locator = page.locator(_RECORD_COUNT_SELECTOR).first
+        if await locator.count() == 0:
+            return None
+        text = (await locator.inner_text(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    if "no records found" in text.lower():
+        return 0, text
+    match = _RECORD_COUNT_RE.search(text)
+    if match:
+        return int(match.group(1)), text
+    return None
+
+
 async def _scan_validation_errors(page: Page, within_form: bool = False) -> list[str]:
     """สแกนหา element ที่บ่งบอกว่ามี validation error ปรากฏอยู่จริงบนหน้าปัจจุบัน (มองเห็น
     ได้ + มีข้อความ) — เรียกก่อนยอมรับ finish_task(success=true) เท่านั้น (ไม่ใช่ทุก step
@@ -319,6 +393,24 @@ _MAX_CYCLE_WINDOW = _MAX_CYCLE_PERIOD * _MIN_CYCLE_REPEATS
 # guard อื่นๆ ในไฟล์นี้ กัน force ไม่รู้จบถ้า forcing เองก็ไม่ช่วยอะไร)
 _MAX_FORCED_LOOP_RECOVERIES = 2
 _LOOP_RECOVERY_ACTIONS: list[dict] = [{"type": "go_back"}, {"type": "scroll", "direction": "down"}]
+
+
+# W29 ("Loop-guard blind spot" — บั๊กจริงที่ user รายงาน: agent ติดลูปกดตัวเลือก dropdown
+# ซ้ำๆ ไม่หยุด (สลับ 2 index ไปมา) ทั้งที่ loop-guard คาบ 1/2-4 ด้านล่างควรจับได้): dict ของ
+# action (tool_input) มี key "completed_plan_step" ติดมาด้วย "เฉพาะครั้งแรก" ที่ action นั้น
+# ทำให้ step ของแผนเสร็จสมบูรณ์ (ดู llm.py SYSTEM_PROMPT "W_planbug" — ห้าม mark step เดิม
+# ซ้ำสองครั้ง) รอบถัดๆ ไปของ action ที่ "เหมือนเดิมเป๊ะ" ทุกอย่าง (type/index/ฯลฯ) จะไม่มี
+# key นี้อีกแล้ว — ถ้าเทียบ dict ทั้งก้อนตรงๆ (รวม completed_plan_step) รอบแรกกับรอบถัดไปจะ
+# "ไม่เท่ากัน" ทั้งที่จริงๆ คือ action เดิมเป๊ะที่ agent สั่งซ้ำ ทำให้ทั้ง guard คาบ 1
+# (consecutive_repeat_count) และคาบ 2-4 (_detect_repeating_cycle_period ด้านล่าง) มองไม่เห็น
+# การวนซ้ำเลย (เจอจริง: click(22) -> click(25) -> click(22) -> click(25) ซ้ำไม่รู้จบ เพราะ
+# click(22) รอบแรกมี completed_plan_step ติดมาด้วย รอบหลังๆ ไม่มี — equality เพี้ยนทุกรอบ) —
+# ตัด completed_plan_step ออกก่อนเทียบ/เก็บเข้า recent_actions เสมอ (ไม่กระทบการ dispatch
+# จริงเลย — จุดที่ยังใช้ tool_input ดิบเดิมเพื่อ execute()/บันทึก plan_step_done ไม่ได้ถูกแตะ)
+def _cmd_for_repeat_comparison(cmd: dict) -> dict:
+    if "completed_plan_step" not in cmd:
+        return cmd
+    return {k: v for k, v in cmd.items() if k != "completed_plan_step"}
 
 
 def _is_repeating_cycle(window: list[dict], period: int) -> bool:
@@ -1109,9 +1201,13 @@ class Orchestrator:
                 "ซ้ำมาก่อนหน้านี้จริงๆ"
             )
             messages = append_tool_result(messages, tool_use_id, forced_text)
-            last_action_cmd = forced_cmd
+            # W29: route ผ่าน _cmd_for_repeat_comparison() เหมือนจุดอื่นเพื่อความสอดคล้องกัน
+            # (forced_cmd ไม่มี completed_plan_step อยู่แล้วในทางปฏิบัติ — no-op จริงๆ แต่กัน
+            # ไว้เผื่อ _LOOP_RECOVERY_ACTIONS เปลี่ยนแปลงในอนาคต)
+            normalized_forced_cmd = _cmd_for_repeat_comparison(forced_cmd)
+            last_action_cmd = normalized_forced_cmd
             consecutive_repeat_count = 1
-            recent_actions.append(forced_cmd)
+            recent_actions.append(normalized_forced_cmd)
             if len(recent_actions) > _MAX_CYCLE_WINDOW:
                 recent_actions.pop(0)
             return True
@@ -1179,6 +1275,7 @@ class Orchestrator:
         premature_true_finish_count = 0
         premature_login_skip_count = 0
         premature_validation_error_count = 0
+        premature_deletion_incomplete_count = 0
         # Task4 (W19, ดู _scan_validation_errors ด้านบนสุดของไฟล์): ผลของการ verify ครั้ง
         # สุดท้ายก่อนจบ task — "OK" default เสมอ เปลี่ยนเป็น "EXECUTION_FAILED_NEEDS_REPAIR"
         # เฉพาะตอนที่ยอมรับ finish_task(success=true) ไปทั้งที่ retry ครบโควตาแล้วยังเจอ
@@ -1657,6 +1754,52 @@ class Orchestrator:
                         # ไว้ให้ผู้เรียกรู้ว่าน่าสงสัย แทนที่จะค้างไม่รู้จบ
                         completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
 
+                    # W22 ("DOM-Based Post-Action Verification Guardrail"): เช็คเฉพาะ
+                    # deletion-intent goal (ดู _is_deletion_intent_goal ด้านบนสุดของไฟล์) —
+                    # อ่านจำนวนแถวที่เหลืออยู่จริงจาก DOM (ไม่ใช่เชื่อคำอธิบายของ LLM) ก่อน
+                    # ยอมรับ finish_task(success=true) กันปัญหา hallucinated false-completion
+                    # ที่ user รายงานจริง (agent ตอบ "ไม่พบ/ลบครบแล้ว" ทั้งที่ตารางยังโชว์
+                    # "(3) Records Found")
+                    remaining_records: Optional[tuple[int, str]] = None
+                    if claimed_success and tool_use_id and _is_deletion_intent_goal(goal):
+                        remaining_records = await _scan_remaining_target_records(page)
+                    if (
+                        remaining_records is not None
+                        and remaining_records[0] > 0
+                        and premature_deletion_incomplete_count < _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES
+                    ):
+                        premature_deletion_incomplete_count += 1
+                        remaining_count, remaining_text = remaining_records
+                        if verbose:
+                            print(
+                                f"[finish_task(true) ยังลบไม่ครบ "
+                                f"{premature_deletion_incomplete_count}/"
+                                f"{_MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES}] {remaining_text}",
+                                flush=True,
+                            )
+                        nudge_text = _PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE.format(
+                            count=remaining_count, text=remaining_text,
+                        )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        continue
+                    if remaining_records is not None and remaining_records[0] > 0:
+                        # retry ครบโควตาแล้วยังลบไม่ครบจริง — ต่างจาก validation-error guard
+                        # ด้านบนที่ปล่อยผ่านตามคำยืนยันของโมเดล (error message ตีความได้
+                        # หลายแบบ) ตัวเลขแถวที่เหลือนับได้ตรงๆ ไม่มีทางตีความผิด ต้อง "บังคับ
+                        # ความจริง" ลง final result เสมอ (TRUTH-BASED RESPONSE GENERATION ตาม
+                        # ที่ user สั่ง) — เขียนทับทั้ง claimed_success และ message ของ LLM เอง
+                        # ไม่ปล่อยให้คำอธิบาย hallucinate ของ LLM หลุดออกไปถึง user เด็ดขาด
+                        completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+                        remaining_count, _ = remaining_records
+                        claimed_success = False
+                        tool_input["message"] = (
+                            f"พบผู้ใช้งาน/รายการที่ตรงเงื่อนไขเหลืออยู่ {remaining_count} รายการในระบบ "
+                            f"และยังไม่ได้ถูกลบออก (พยายามลบซ้ำแล้ว "
+                            f"{premature_deletion_incomplete_count} ครั้งแต่ยังไม่สำเร็จ) — โปรดลองสั่ง"
+                            f"ลบอีกครั้งหรือดำเนินการต่อด้วยตนเอง"
+                        )
+
                     success = claimed_success
                     final_message = tool_input.get("message", "")
                     if verbose:
@@ -1716,10 +1859,13 @@ class Orchestrator:
                 is_bulk_safe_repeat = (
                     tool_input.get("type") in DEFAULT_NEEDS_CONFIRMATION and last_action_succeeded is True
                 )
-                if tool_input == last_action_cmd and not is_bulk_safe_repeat:
+                # W29: เทียบด้วย _cmd_for_repeat_comparison() (ตัด completed_plan_step ทิ้ง
+                # ก่อน) ไม่ใช่ tool_input ดิบ — ดู docstring เหนือฟังก์ชันนั้นสำหรับเหตุผลเต็ม
+                normalized_tool_input = _cmd_for_repeat_comparison(tool_input)
+                if normalized_tool_input == last_action_cmd and not is_bulk_safe_repeat:
                     consecutive_repeat_count += 1
                 else:
-                    last_action_cmd = tool_input
+                    last_action_cmd = normalized_tool_input
                     consecutive_repeat_count = 1
 
                 if consecutive_repeat_count >= _MAX_CONSECUTIVE_IDENTICAL_ACTIONS:
@@ -1747,7 +1893,9 @@ class Orchestrator:
                 # ติดกัน" — เก็บ history แค่ _MAX_CYCLE_WINDOW ตัวล่าสุดพอ ไม่ต้องเก็บ
                 # ทั้ง task (ดู _detect_repeating_cycle_period()/_is_repeating_cycle()
                 # ด้านบนสุดของไฟล์)
-                recent_actions.append(tool_input)
+                # W29: เก็บ normalized_tool_input (ตัด completed_plan_step ทิ้งแล้ว) ไม่ใช่
+                # tool_input ดิบ — เหตุผลเดียวกับ guard คาบ 1 ด้านบน
+                recent_actions.append(normalized_tool_input)
                 if len(recent_actions) > _MAX_CYCLE_WINDOW:
                     recent_actions.pop(0)
 

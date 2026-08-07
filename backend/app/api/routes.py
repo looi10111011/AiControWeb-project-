@@ -808,41 +808,54 @@ async def list_tasks(request: Request) -> list[TaskStatusResponse]:
     ]
 
 
-@router.get("/tasks/{task_id}/stream")
-async def stream_task(task_id: str, request: Request) -> StreamingResponse:
-    """W10[B]: Server-Sent Events ของ task นี้ — step log สดๆ ระหว่างรัน +
-    approval_request (permission prompt / plan confirmation) + task_done ปิดท้าย
+async def _stream_task_events(record):
+    """W10[B]/W25/W26: async generator ของ SSE body สำหรับ GET /tasks/{id}/stream — แยก
+    ออกมาจาก stream_task() เป็นฟังก์ชันระดับโมดูล (แทนที่จะเป็น closure ซ้อนใน endpoint
+    เหมือนเดิม) เพื่อให้เทสต์เรียกตรงๆ ได้โดยไม่ต้องพึ่ง TestClient ที่ block รอจนกว่า
+    stream จะปิด (ใช้ยากมากสำหรับเทสต์ที่ต้องจำลองหลาย connection คาบเกี่ยวกัน)
 
-    ออกแบบไว้สำหรับ "ผู้ชมสดคนเดียวต่อ task" (แท็บที่ยิง POST /tasks สร้าง task นี้ขึ้นมา
-    เอง) ไม่ใช่ pub-sub หลายคน — ถ้า client มาเชื่อมต่อ *หลัง* task จบไปแล้ว จะไม่มี event
-    เก่าให้ replay (ไม่ได้เก็บ log buffer แยก) เลยส่ง task_done สังเคราะห์กลับทันทีจาก
-    record.status/result/error ที่ยังอยู่แทน เพื่อให้หน้าเว็บที่รีเฟรชทีหลังยังเห็นผลลัพธ์
-    สุดท้ายได้ (ไม่ hang รอ event ที่ไม่มีวันมาอีกแล้ว)
-    """
-    task_manager: TaskManager = request.app.state.task_manager
-    record = task_manager.get(task_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"ไม่พบ task_id: {task_id!r}")
+    ถ้า client มาเชื่อมต่อ *หลัง* task จบไปแล้ว จะไม่มี event เก่าให้ replay (ไม่ได้เก็บ
+    log buffer แยก) เลยส่ง task_done สังเคราะห์กลับทันทีจาก record.status/result/error
+    ที่ยังอยู่แทน เพื่อให้หน้าเว็บที่รีเฟรชทีหลังยังเห็นผลลัพธ์สุดท้ายได้ (ไม่ hang รอ
+    event ที่ไม่มีวันมาอีกแล้ว)
 
-    async def event_gen():
-        if record.status != "running":
-            done_event = {
-                "kind": "task_done", "status": record.status,
-                "result": record.result, "error": record.error,
-            }
-            yield f"data: {json.dumps(done_event)}\n\n"
-            return
+    W26 ("Broadcast live events to every subscribed tab" — บั๊กจริงที่ user รายงาน:
+    approval prompt/log ไม่ขึ้นสด ต้องกด F5, แม้หลัง W25 ก็ยังเจอ): frontend
+    (index.html::ensureConversationFor) ตั้งใจให้ "ทุกแท็บที่เปิดค้างไว้เห็น task จาก
+    แท็บอื่นด้วย" — GET /tasks คืน task ทั้งระบบ (ไม่กรองเฉพาะแท็บที่สร้าง) แล้ว
+    refreshTasks() เปิด SSE ให้ทุก task ที่ "running" โดยอัตโนมัติทุกแท็บ ทำให้หลายแท็บ
+    subscribe task เดียวกันพร้อมกันเป็นเรื่องปกติ ไม่ใช่ edge case หายาก — W25 เดิมแก้ด้วย
+    "connection ล่าสุดชนะเสมอ" (สมมติว่ามีผู้ชมสดแค่คนเดียวจริงๆ) กลับกลายเป็นทำให้แท็บที่
+    ผู้ใช้กำลังดูอยู่จริงถูกแท็บอื่น (ที่แค่ poll เจอ task นี้ผ่านๆ) แย่ง event ไปเงียบๆ แทน
+    (พิสูจน์แล้วจริงจากการทดสอบสด: เปิดแท็บใหม่สร้าง task ทดสอบ แล้ว SSE ของแท็บนั้นหยุดรับ
+    event หลังจากข้อความแรก เพราะแท็บอื่นที่เปิดค้างไว้แย่งไปแทน) — แก้ให้ถูกจริงๆ ด้วยการ
+    broadcast: ลงทะเบียน Queue ของตัวเองเข้า record.event_subscribers (ทุก push_event()/
+    request_approval()/task เสร็จ จะป้อนเข้าทุก Queue ในนี้พร้อมกัน — ดู
+    task_manager.py::_broadcast()) แล้วถอนตัวเองออกเสมอตอนจบ (finally — ครอบคลุมทั้ง
+    client ปิด connection เอง และ task จบแล้ว break ออกจาก loop ปกติ) กัน list โตค้างไม่รู้
+    จบถ้ามีแท็บมาๆ ไปๆ เยอะตลอดอายุ task"""
+    if record.status != "running":
+        done_event = {
+            "kind": "task_done", "status": record.status,
+            "result": record.result, "error": record.error,
+        }
+        yield f"data: {json.dumps(done_event)}\n\n"
+        return
+
+    my_queue: asyncio.Queue = asyncio.Queue()
+    record.event_subscribers.append(my_queue)
+    try:
         # W10[B]: replay เฉพาะ approval ที่เคย "ส่งออกไปแล้ว" อย่างน้อยหนึ่งครั้ง
-        # (delivered=True) — กรณี tab เดิมหลุดไปกลางคันระหว่างรอ permission prompt (event
-        # เดิมถูก consume ออกจาก events queue ไปแล้วครั้งเดียว ไม่งั้น connection ใหม่จะไม่
-        # รู้เลยว่ามีอะไรค้างรอ) ส่วนรายการที่ยังไม่เคยส่งเลย (เพิ่งถูกสร้างเกือบพร้อมกันกับ
-        # connection นี้) ปล่อยให้ไหลผ่าน queue drain ปกติด้านล่างแทน — ไม่งั้น connection
-        # เดียวกันนี้จะเห็น event ซ้ำสองครั้ง (ทั้งจาก replay และจาก queue)
+        # (delivered=True) — กรณี tab เดิมหลุดไปกลางคันระหว่างรอ permission prompt (แท็บ
+        # นี้เพิ่งสมัครเป็น subscriber ใหม่ ไม่เคยเห็น broadcast รอบก่อนๆ มาก่อนเลย ต้อง
+        # replay ให้เห็นว่ามีอะไรค้างรออยู่) ส่วนรายการที่ยังไม่เคยส่งเลย (เพิ่งถูกสร้าง
+        # เกือบพร้อมกันกับ connection นี้ ยังไม่ทัน broadcast รอบแรกด้วยซ้ำ) ปล่อยให้ไหล
+        # ผ่าน queue drain ปกติด้านล่างแทน ไม่งั้น connection นี้จะเห็น event ซ้ำสองครั้ง
         for request_id, info in list(record.pending.items()):
             if info["delivered"]:
                 yield f"data: {json.dumps({'kind': 'approval_request', 'request_id': request_id, 'cmd': info['cmd']})}\n\n"
         while True:
-            event = await record.events.get()
+            event = await my_queue.get()
             if event.get("kind") == "approval_request":
                 info = record.pending.get(event.get("request_id"))
                 if info is not None:
@@ -850,9 +863,27 @@ async def stream_task(task_id: str, request: Request) -> StreamingResponse:
             yield f"data: {json.dumps(event)}\n\n"
             if event.get("kind") == "task_done":
                 break
+    finally:
+        # W26: ถอนตัวเองออกจากรายชื่อ subscriber เสมอ ไม่ว่า loop จะจบแบบไหน (task_done
+        # ปกติ, หรือ client ปิด connection กลางคัน — ASGI server จะ cancel generator นี้
+        # ซึ่ง finally ยังทำงานตามปกติ) กัน _broadcast() ยังพยายามป้อน event เข้า Queue ที่
+        # ไม่มีใครอ่านอีกต่อไปแล้วสะสมไม่มีวันจบตลอดอายุ task ที่รันนาน
+        if my_queue in record.event_subscribers:
+            record.event_subscribers.remove(my_queue)
+
+
+@router.get("/tasks/{task_id}/stream")
+async def stream_task(task_id: str, request: Request) -> StreamingResponse:
+    """W10[B]: Server-Sent Events ของ task นี้ — step log สดๆ ระหว่างรัน +
+    approval_request (permission prompt / plan confirmation) + task_done ปิดท้าย — ดู
+    _stream_task_events() สำหรับ implementation จริง (ดึงเป็นฟังก์ชันแยกเพื่อให้เทสต์ตรงๆ ได้)"""
+    task_manager: TaskManager = request.app.state.task_manager
+    record = task_manager.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"ไม่พบ task_id: {task_id!r}")
 
     return StreamingResponse(
-        event_gen(),
+        _stream_task_events(record),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

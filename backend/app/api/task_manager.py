@@ -58,11 +58,19 @@ class TaskRecord:
     # cancel() เรียก .cancel() ถูกตัวได้ตรงๆ จาก task_id (ตั้งค่าใน submit() ทันทีหลังสร้าง
     # ไม่มีทาง None ตอน task ยัง "running" อยู่จริง)
     asyncio_task: Optional[asyncio.Task] = None
-    # W10[B]: event stream ของ task นี้ (step log + approval_request + task_done) —
-    # ผู้บริโภคเดียวที่คาดหวังไว้คือ SSE connection เดียวต่อ task (ไม่ใช่ pub-sub หลายคน
-    # ดู stream_task() ใน routes.py) ใช้ asyncio.Queue เพราะ get() บล็อกรอ item ใหม่ได้
-    # เอง ไม่ต้อง poll
-    events: asyncio.Queue = field(default_factory=asyncio.Queue)
+    # W26 ("Broadcast live events to every subscribed tab" — บั๊กจริงที่ user รายงาน:
+    # approval prompt/log ไม่ขึ้นสด ต้องกด F5): เดิม (W10[B]) เป็น asyncio.Queue เดียว
+    # ผูกกับ task ตลอดอายุ โดยตั้งใจไว้ว่า "ผู้ชมสดคนเดียวต่อ task ไม่ใช่ pub-sub" — แต่
+    # frontend (index.html::ensureConversationFor, W_multitab) ตั้งใจให้ "ทุกแท็บที่เปิด
+    # ค้างไว้เห็น task จากแท็บอื่นด้วย" (ฟีเจอร์จริง ไม่ใช่บั๊ก — GET /tasks คืน task ทั้ง
+    # ระบบ ไม่กรองเฉพาะแท็บที่สร้าง แล้ว refreshTasks() เปิด SSE ให้ทุก task ที่ "running"
+    # โดยอัตโนมัติ) ทำให้หลายแท็บ subscribe task เดียวกันพร้อมกันเป็นสถานการณ์ปกติ ไม่ใช่
+    # edge case หายากอย่างที่ comment เดิมสันนิษฐานไว้ — ต้อง broadcast event ให้ subscriber
+    # ทุกตัวจริงๆ (pub-sub) ไม่ใช่แค่ตัวเดียว — เปลี่ยนจาก Queue เดียวเป็น "รายชื่อผู้ฟัง"
+    # (แต่ละ SSE connection ที่เปิดอยู่จริงมี Queue ของตัวเอง สมัคร/ถอนตัวเองใน
+    # routes.py::_stream_task_events()) push_event()/request_approval()/_run() ด้านล่าง
+    # ป้อน event เดียวกันเข้าทุก Queue ในลิสต์นี้พร้อมกัน
+    event_subscribers: list = field(default_factory=list)
     # W10[B]: request_id -> {"future": Future[bool], "cmd": dict, "delivered": bool} ของ
     # approval ที่ยังรอ user ตอบอยู่ (ปกติมีแค่รายการเดียวพร้อมกัน เพราะ ask_user_func ถูก
     # await ทีละครั้งจาก loop เดียวใน run_task() แต่เก็บเป็น dict กัน race แปลกๆ ไว้เผื่อ
@@ -73,6 +81,18 @@ class TaskRecord:
     # ส่งเลย (False, เพิ่งถูกสร้างเกือบพร้อมกันกับตอน connection ใหม่เพิ่งต่อ) ปล่อยให้ไหล
     # ผ่าน queue drain ปกติด้านล่างแทน ไม่งั้น connection เดียวจะเห็น event ซ้ำสองครั้ง
     pending: dict = field(default_factory=dict)
+
+
+async def _broadcast(record: TaskRecord, event: dict) -> None:
+    """W26: ป้อน event เดียวกันเข้า Queue ของ subscriber (SSE connection ที่เปิดอยู่จริง)
+    ทุกตัว — ใช้แทนที่ record.events.put() เดิมทุกจุด (_run()/push_event()/
+    request_approval() ด้านล่าง) กัน subscriber ตัวใดตัวหนึ่งเห็น event ไม่ครบถ้วนถ้ามี
+    หลายแท็บเปิดดู task เดียวกันพร้อมกัน (ดู TaskRecord.event_subscribers ด้านบนสำหรับ
+    เหตุผลเต็ม) — list(record.event_subscribers) กัน RuntimeError "list changed size
+    during iteration" เผื่อ subscriber ใหม่ลงทะเบียนตัวเองแทรกเข้ามาระหว่าง broadcast
+    รอบนี้พอดี (ไม่จำเป็นต้องเห็น event รอบนี้ก็ได้ ปลอดภัยกว่าดักด้วย lock)"""
+    for queue in list(record.event_subscribers):
+        await queue.put(event)
 
 
 def _log_token_usage(record: TaskRecord) -> None:
@@ -179,7 +199,7 @@ class TaskManager:
             if not info["future"].done():
                 info["future"].set_result(False)
         # sentinel เดียวที่บอก SSE consumer ว่า stream จบแล้ว (ดู stream_task() ใน routes.py)
-        await record.events.put({
+        await _broadcast(record, {
             "kind": "task_done", "status": record.status,
             "result": record.result, "error": record.error,
         })
@@ -215,7 +235,7 @@ class TaskManager:
     async def push_event(self, task_id: str, event: dict) -> None:
         record = self._tasks.get(task_id)
         if record is not None:
-            await record.events.put(event)
+            await _broadcast(record, event)
 
     async def request_approval(self, task_id: str, cmd: dict, timeout: Optional[float] = None) -> bool:
         """เรียกจาก ask_user_func (routes.py) — push event "approval_request" เข้า
@@ -237,14 +257,14 @@ class TaskManager:
         request_id = str(uuid.uuid4())
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         record.pending[request_id] = {"future": future, "cmd": cmd, "delivered": False}
-        await record.events.put({"kind": "approval_request", "request_id": request_id, "cmd": cmd})
+        await _broadcast(record, {"kind": "approval_request", "request_id": request_id, "cmd": cmd})
         try:
             if timeout is None:
                 return await future
             try:
                 return await asyncio.wait_for(future, timeout=timeout)
             except asyncio.TimeoutError:
-                await record.events.put({
+                await _broadcast(record, {
                     "kind": "approval_timeout", "request_id": request_id, "cmd": cmd,
                 })
                 return False

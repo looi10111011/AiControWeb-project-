@@ -188,7 +188,14 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
     round-trip ไป Playwright เพิ่ม) กับปุ่มทั่วไปที่ไม่ต้อง hover เลยตั้งแต่แรก (ส่วนใหญ่
     ของ click ทั้งหมด) ผลของ hover() เองไม่ถูกนำมาตัดสิน success/fail ของรอบนั้น (แค่เป็น
     ขั้นเตรียมก่อนคลิก — hover ไม่เจอ/ล้มเหลวก็ปล่อยให้ click() ลองต่อแล้วรายงานผลจริงของ
-    click() เอง ไม่ใช่ของ hover())"""
+    click() เอง ไม่ใช่ของ hover())
+
+    W23 ("Confirmation Modal Handler"): จุดเดียวที่ click-family ทั้งหมด (plain "click" และ
+    "submit"/"delete"/"purchase"/"pay" ที่ execute() dispatch ผ่านฟังก์ชันนี้เหมือนกันทุก
+    ประการ — ดู execute() ด้านล่าง) วิ่งผ่านเสมอ เหมาะเป็นจุดเดียวที่จะเช็ค+resolve
+    confirmation modal ("Are you Sure?") ที่อาจเพิ่งเปิดขึ้นมาจาก click นี้ ก่อนคืนผลลัพธ์
+    กลับไปให้ LLM ตัดสินใจ action ถัดไป (ดู _detect_confirmation_modal()/
+    resolve_confirmation_modal() ด้านล่าง สำหรับเหตุผลเต็ม)"""
     result: ActionResult = None
     for attempt in range(1, _ACTION_RETRIES + 1):
         if attempt > 1:
@@ -199,10 +206,160 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
                 result = ActionResult(
                     True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
                 )
+            if await _detect_confirmation_modal(page):
+                modal_note = await resolve_confirmation_modal(page)
+                if modal_note:
+                    result = ActionResult(
+                        result.success, result.action, f"{result.message}{modal_note}",
+                        locator_descriptor=result.locator_descriptor,
+                    )
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
     return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+
+
+# W23 ("Confirmation Modal Handler" — บั๊กจริงที่ user รายงาน): agent คลิก "Delete Selected"/
+# "Remove" สำเร็จ เปิด confirmation modal ("Are you Sure?") ขึ้นมาจริง แต่แล้ว "ค้าง"/
+# "หยุดนิ่ง" อยู่ตรงนั้น ไม่กดปุ่มยืนยัน ("Yes, Delete") ในโมดัลต่อ — สาเหตุ: modal เป็น
+# element ใหม่ที่เพิ่ง render ขึ้นมาหลัง click แต่ agent loop ปกติต้องรอ LLM ตัดสินใจเรียก
+# action ถัดไปเองก่อนถึงจะเห็น/กด (เสีย round-trip เต็มๆ ต่อโมดัลหนึ่งอัน) ถ้า LLM ตีความ
+# index/label ผิด/ไม่รู้ว่าต้องกดต่อ จะค้างจริงๆ ตามที่ user รายงาน — แก้ด้วยการ resolve
+# modal นี้ "อัตโนมัติในระดับโค้ด" ทันทีหลัง click สำเร็จ ไม่ต้องรอ LLM ตัดสินใจเรียก action
+# แยกอีกรอบเลย (เหมือน pattern เดียวกับ auto-hover-on-retry ด้านบน — เติมเต็ม "สิ่งที่ควร
+# เกิดขึ้นจริง" ด้วยโค้ดกำหนดตายตัว แทนที่จะฝากความหวังไว้กับการตัดสินใจของ LLM ล้วนๆ)
+#
+# ไม่ต้องขอ human-in-the-loop ซ้ำอีกรอบสำหรับปุ่มยืนยันในโมดัลนี้ — human อนุมัติ action ที่
+# เปิดโมดัลนี้ไปแล้วครั้งเดียว (ผ่าน classify_action()/ask_user_func ปกติที่ execute() เช็คก่อน
+# dispatch action เดิมอยู่แล้ว ก่อนจะมาถึง _dispatch_click_with_retry() นี้เลยด้วยซ้ำ) ปุ่ม
+# ยืนยันในโมดัลเป็นแค่ UX ของเว็บที่ถาม "ซ้ำ" สำหรับ action เดียวกันที่อนุมัติไปแล้ว ไม่ใช่การ
+# ตัดสินใจใหม่ที่ต้องขออนุมัติเพิ่ม
+_DIALOG_CONTAINER_SELECTOR = '.oxd-dialog-container, [role="dialog"], .orangehrm-modal-header'
+
+# เรียงจากเจาะจงที่สุด (OrangeHRM "Yes, Delete" ปุ่มสีแดง) ไปหากว้างที่สุด (fallback ทั่วไป
+# สำหรับ dialog framework อื่นที่ไม่ใช่ OrangeHRM) — ลองทีละตัวจนกว่าจะเจอปุ่มที่ visible จริง
+_MODAL_CONFIRM_BUTTON_SELECTORS = [
+    "div.oxd-dialog-container-default button.oxd-button--label-danger",
+    ".oxd-button--label-danger",
+    'button:has-text("Yes, Delete")',
+    '[role="dialog"] button.oxd-button--secondary',
+    '[role="dialog"] button:has-text("Confirm")',
+]
+
+_MODAL_DETACH_TIMEOUT_MS = 5000
+
+# W24 ("Auto-Refresh & Re-attachment Guardrail" — บั๊กจริงที่ user รายงาน: ในงาน batch หลาย
+# รอบ (ลบ user หลายชุดติดกัน) โมดัลยืนยัน/ปุ่มของรอบที่ 2 เป็นต้นไป "ไม่ตอบสนอง" ทั้งที่รอบแรก
+# ทำงานปกติ — กด F5 มือแล้วหายเสมอ แปลว่า DOM node หลุด event binding หรือ UI desync กับ
+# state จริงหลัง AJAX table reload ของรอบก่อนหน้า ไม่ใช่ปัญหา selector ผิด/element หาไม่เจอ
+# (ถ้าเป็นแบบนั้น count()==0 จะกรองออกไปตั้งแต่ _find_visible_modal_confirm_button() แล้ว) —
+# คลิกซ้ำเฉยๆ ไม่ช่วยเพราะปัญหาไม่ใช่ timing แต่เป็น state desync ระดับหน้าเว็บ ต้องจำลอง
+# พฤติกรรม "กด F5" จริงๆ (page.reload()) ถึงจะ sync กลับมาได้ — retry ธรรมดาก่อน (เผื่อเป็น
+# แค่ animation/timing ปกติ) แล้วค่อย fallback ไป reload ถ้า retry ครบแล้วยังไม่หาย
+_MODAL_CONFIRM_CLICK_RETRIES = 3
+_MODAL_CONFIRM_RETRY_DELAY_SEC = 1.0
+_MODAL_RELOAD_TIMEOUT_MS = 15000
+
+
+async def _detect_confirmation_modal(page: Page) -> bool:
+    """W23: True ถ้ามี dialog/modal container ปรากฏอยู่จริงบนหน้าตอนนี้ (มองเห็นได้) — ไม่
+    throw ออกไปพัง (เหมือนหลักการเดียวกับ orchestrator.py::_scan_validation_errors: เช็ค
+    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)"""
+    return await _is_modal_still_open(page)
+
+
+async def _is_modal_still_open(page: Page) -> bool:
+    """W24: ใช้ตรรกะเดียวกับ _detect_confirmation_modal() ทุกประการ แยกฟังก์ชันเพราะ
+    resolve_confirmation_modal() ด้านล่างต้องเรียกซ้ำหลายจุด (เช็คตอนเข้า/เช็คซ้ำหลัง
+    detach-wait timeout) — ตั้งชื่อสื่อบริบทการใช้งานที่ต่างกันให้อ่านง่ายกว่าเรียก
+    _detect_confirmation_modal() ตรงๆ ซ้ำๆ"""
+    try:
+        locator = page.locator(_DIALOG_CONTAINER_SELECTOR).first
+        if await locator.count() == 0:
+            return False
+        return await locator.is_visible(timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    except Exception:
+        return False
+
+
+async def _find_visible_modal_confirm_button(page: Page):
+    """W23/W24: ไล่ตาม _MODAL_CONFIRM_BUTTON_SELECTORS ทีละตัว (เจาะจงที่สุดก่อน) คืน
+    (selector, locator) คู่แรกที่เจอ+visible จริง หรือ (None, None) ถ้าไม่เจอเลยสักตัว —
+    แยกออกมาจาก resolve_confirmation_modal() เพราะ W24 ต้อง "หาปุ่มครั้งเดียว แล้วคลิกซ้ำได้
+    หลายรอบ" (ปุ่มเดิมตัวเดียวกัน ไม่ใช่ query หา element ใหม่ทุกรอบ retry — การ query ใหม่ทุก
+    รอบเสี่ยงหยิบปุ่มที่ "หน้าตาเหมือนเดิมแต่จริงๆ คือ element คนละตัว" หลัง desync ได้เช่นกัน)"""
+    for selector in _MODAL_CONFIRM_BUTTON_SELECTORS:
+        try:
+            candidate = page.locator(selector).first
+            if await candidate.count() == 0:
+                continue
+            if not await candidate.is_visible(timeout=_ELEMENT_ACTION_TIMEOUT_MS):
+                continue
+            return selector, candidate
+        except Exception:
+            continue
+    return None, None
+
+
+async def resolve_confirmation_modal(page: Page) -> Optional[str]:
+    """W23/W24: หาปุ่มยืนยันของ confirmation modal (_find_visible_modal_confirm_button())
+    แล้วคลิกด้วย force=True (ข้าม actionability check ของ Playwright — modal บางตัว animate
+    เข้ามาทำให้ element "ยังไม่ visible ตามนิยามของ Playwright" ชั่วขณะแม้จะมองเห็นได้จริงบนจอ
+    แล้วก็ตาม) — ลองคลิก+รอ detach สูงสุด _MODAL_CONFIRM_CLICK_RETRIES ครั้ง ห่างกันครั้งละ
+    _MODAL_CONFIRM_RETRY_DELAY_SEC วินาที (เผื่อเป็นแค่ animation/timing ปกติ) ถ้าครบโควตา
+    แล้วโมดัลยังไม่ปิดจริง (ปุ่ม "ไม่ตอบสนอง" ตามที่ user รายงาน — ไม่ใช่ timing ธรรมดาแล้ว
+    แต่เป็น UI state desync หลัง AJAX reload ของรอบก่อนหน้า) ให้ page.reload() จำลอง "กด F5"
+    จริง แล้วรอ networkidle ก่อน return
+
+    คืนข้อความสรุปสั้นๆ ให้ต่อท้าย message ของ action หลักที่ trigger โมดัลนี้ (เช่น
+    "delete(3)") ให้ LLM/log เห็นว่าเกิดอะไรขึ้นเพิ่มเติมหลัง action นั้นแบบโปร่งใส (รวมถึงกรณี
+    reload — ข้อความจะบอก LLM ให้รู้ว่าต้อง navigate/กรองข้อมูลใหม่เองต่อ เพราะ reload ล้าง
+    client-side state เช่นคำค้นหาที่กรองไว้ทิ้งไปด้วย) — None ถ้าไม่เจอปุ่มยืนยันเลยสักตัวตั้งแต่
+    แรก (ปล่อยผ่านเงียบๆ ให้ LLM ตัดสินใจเองต่อในรอบถัดไปตามปกติ ไม่ throw/ไม่ทำให้ action หลัก
+    ที่เพิ่ง success กลายเป็น fail ไปด้วยเพราะเหตุนี้)"""
+    clicked_selector, candidate = await _find_visible_modal_confirm_button(page)
+    if clicked_selector is None:
+        return None
+
+    for attempt in range(1, _MODAL_CONFIRM_CLICK_RETRIES + 1):
+        try:
+            await candidate.click(force=True, timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+        except Exception:
+            pass  # ปุ่ม "ไม่ตอบสนอง" ก็เข้าเงื่อนไขนี้ได้เหมือนกัน — ยัง retry ต่อได้ ไม่ throw ทันที
+
+        try:
+            await page.wait_for_selector(
+                _DIALOG_CONTAINER_SELECTOR, state="detached", timeout=_MODAL_DETACH_TIMEOUT_MS,
+            )
+            await wait_stable(page)
+            retry_note = "" if attempt == 1 else f" (ลองครั้งที่ {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
+            return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector}){retry_note}]"
+        except Exception:
+            # detach-wait timeout: อาจเป็นเพราะโมดัลปิดจริงแล้วแค่ไม่ detach ออกจาก DOM (บาง
+            # framework ซ่อนด้วย CSS อย่างเดียว ไม่ลบ element) หรืออาจเป็นเพราะยังเปิดค้างอยู่
+            # จริงๆ (ปุ่มไม่ตอบสนอง) — เช็คแยกให้ชัดก่อนตัดสินใจ retry/reload ต่อ ไม่เดาว่า
+            # timeout = ปิดสำเร็จเหมือนพฤติกรรมเดิม (W23) อีกต่อไป
+            if not await _is_modal_still_open(page):
+                await wait_stable(page)
+                return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector})]"
+            if attempt < _MODAL_CONFIRM_CLICK_RETRIES:
+                await asyncio.sleep(_MODAL_CONFIRM_RETRY_DELAY_SEC)
+
+    # W24: ครบโควตา retry แล้วโมดัลยังเปิดค้างอยู่จริง — ปุ่มยืนยัน "ไม่ตอบสนอง" จริงๆ ตามที่
+    # user รายงาน จำลองพฤติกรรม "กด F5" ด้วย page.reload() แทน ไม่ throw ออกไปแม้ reload เอง
+    # จะ fail (เช่น network เพี้ยนชั่วคราว) — ปลอดภัยกว่าเสมอที่จะแจ้ง LLM ให้รู้สถานการณ์ต่อ
+    # ดีกว่าทำให้ action หลักที่เพิ่ง success (คลิก "Delete Selected") กลายเป็น fail ไปด้วย
+    try:
+        await page.reload(timeout=_MODAL_RELOAD_TIMEOUT_MS)
+        await page.wait_for_load_state("networkidle", timeout=_MODAL_RELOAD_TIMEOUT_MS)
+    except Exception:
+        pass
+    return (
+        f" [ปุ่มยืนยัน confirmation modal ไม่ตอบสนองหลังลองแล้ว {_MODAL_CONFIRM_CLICK_RETRIES} "
+        f"ครั้ง — ระบบ reload หน้าเว็บอัตโนมัติเพื่อ sync สถานะใหม่ (เหมือนกด F5) ต้องตรวจสอบ "
+        f"indexed elements ล่าสุดหลังจากนี้แล้ว navigate/กรองข้อมูลใหม่ตามที่ goal ต้องการก่อน"
+        f"ทำงานต่อ เพราะ reload ล้าง state เดิม (เช่นคำค้นหาที่กรองไว้) ทิ้งไปแล้ว]"
+    )
 
 
 # W50: keyboard-based interaction สำหรับ custom dropdown/menu widget (MUI/Ant Design/
