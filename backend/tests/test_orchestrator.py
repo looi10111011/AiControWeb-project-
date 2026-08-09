@@ -14,10 +14,12 @@ from backend.app.core.orchestrator import (
     _KEEP_RECENT_STEPS,
     _LONG_TERM_MEMORY_CHUNKS_PER_STEP,
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
+    _MAX_PREMATURE_ALL_FAILED_RETRIES,
     _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
     _MAX_PREMATURE_TRUE_FINISH_RETRIES,
     _MAX_PREMATURE_VALIDATION_ERROR_RETRIES,
+    _PREMATURE_ALL_FAILED_NUDGE,
     _PREMATURE_FALSE_FINISH_NUDGE,
     _PREMATURE_TRUE_FINISH_NUDGE,
     _QA_ANSWER_FORMAT_GUIDANCE,
@@ -64,12 +66,43 @@ _GOTO_OK = ActionResult(True, "goto", "ไปที่ url")
 _WAIT_OK = ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
 
 
-# pacing delay ท้ายทุก step (_STEP_PACING_DELAY_SECONDS) กันไม่ให้ test suite ช้าจริง —
+# pacing delay ท้ายทุก step (settings.step_pacing_delay_seconds) กันไม่ให้ test suite ช้าจริง —
 # เหมือน test_actions.py ที่ mock asyncio.sleep กัน _ACTION_RETRY_DELAY_SEC ค้าง
 @pytest.fixture(autouse=True)
 def _no_real_sleep():
     with patch("backend.app.core.orchestrator.asyncio.sleep", AsyncMock()) as mock_sleep:
         yield mock_sleep
+
+
+@pytest.mark.asyncio
+async def test_run_task_step_pacing_delay_reads_from_settings(monkeypatch, _no_real_sleep):
+    """Speed 2.4: pacing delay ต้องอ่านจาก settings.step_pacing_delay_seconds (ปรับได้จาก
+    .env) ไม่ใช่ hardcode module constant ตายตัวเหมือนเดิมอีกต่อไป"""
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "step_pacing_delay_seconds", 0.05)
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.long_term_memory.recall", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://example.com", "goal", max_steps=10, provider="anthropic")
+
+    # elapsed ระหว่าง step แทบเป็นศูนย์ (ทุกอย่าง mock ให้จบทันที) — remaining ที่ส่งเข้า
+    # sleep() ต้องใกล้เคียงค่าที่ตั้งไว้ (0.05) ไม่ใช่ค่า hardcode เดิม (3)
+    _no_real_sleep.assert_awaited_once()
+    remaining_arg = _no_real_sleep.await_args.args[0]
+    assert 0 < remaining_arg <= 0.05
 
 
 # _login_form_needs_password() เรียก page.locator() จริง (sync ใน Playwright จริง)
@@ -1251,6 +1284,109 @@ async def test_run_task_does_not_nudge_finish_task_true_when_steps_already_taken
     assert mock_next_action.await_count == 2
 
 
+# --- ACC-3 (accuracy audit follow-up): finish_task(success=true) hard guard when every
+# mutating action attempted in the task has failed (steps_taken > 0, so the zero-steps
+# guard above doesn't already catch it, and no validation-error text on the page either) ---
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_finish_task_true_when_every_mutating_action_failed():
+    """click ล้มเหลวทุกครั้ง (steps_taken > 0 แต่ไม่มี mutating action ไหนสำเร็จเลย) แล้ว
+    เรียก finish_task(success=true) — ต้องถูกปฏิเสธและเตือนก่อน ไม่ใช่ยอมรับทันที"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    failed_click = ActionResult(False, "click", "หา element ไม่เจอ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "สำเร็จแล้ว"}, "tool_t1", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ยืนยันสำเร็จจริง"}, "tool_t2", ["m2"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ยืนยันสำเร็จจริงอีกครั้ง"}, "tool_t3", ["m3"], llm.TokenUsage()),
+    ]
+    append_tool_result_mock = MagicMock(side_effect=lambda m, tid, r: m + [r])
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=failed_click)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", append_tool_result_mock), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is True
+    assert result["message"] == "ยืนยันสำเร็จจริงอีกครั้ง"
+    # 1 click (fail) + 2 finish_task ที่ถูกเตือน (nudge) + 1 finish_task ที่ยอมรับจริง
+    assert mock_next_action.await_count == 1 + _MAX_PREMATURE_ALL_FAILED_RETRIES + 1
+    append_tool_result_mock.assert_any_call(["m1"], "tool_t1", _PREMATURE_ALL_FAILED_NUDGE)
+    append_tool_result_mock.assert_any_call(["m2"], "tool_t2", _PREMATURE_ALL_FAILED_NUDGE)
+
+
+@pytest.mark.asyncio
+async def test_run_task_accepts_finish_task_true_after_max_all_failed_retries():
+    """โมเดลยืนยัน finish_task(true) ซ้ำหลังโดนเตือนแล้วเกิน
+    _MAX_PREMATURE_ALL_FAILED_RETRIES — ต้องยอมรับจริง ไม่บังคับลองต่อไม่มีที่สิ้นสุด
+    (escape valve เดียวกับ guard อื่นในไฟล์นี้)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    failed_click = ActionResult(False, "click", "หา element ไม่เจอ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+    ] + [
+        ("finish_task", {"success": True, "message": "ยืนยันสำเร็จจริงแน่นอน"}, f"tool_t{i}", [], llm.TokenUsage())
+        for i in range(_MAX_PREMATURE_ALL_FAILED_RETRIES + 1)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=failed_click)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is True
+    assert result["message"] == "ยืนยันสำเร็จจริงแน่นอน"
+    # 1 click (fail) + (_MAX_PREMATURE_ALL_FAILED_RETRIES + 1) finish_task calls
+    assert mock_next_action.await_count == 1 + _MAX_PREMATURE_ALL_FAILED_RETRIES + 1
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_reject_finish_task_true_when_one_mutating_action_succeeded():
+    """sanity: บาง action fail แต่มีอย่างน้อย 1 อันสำเร็จจริง — guard ใหม่ต้องไม่ยิงเลย
+    (แค่บาง action fail ไม่ได้แปลว่า task ล้มเหลว — retry ปกติของแต่ละ action เองจัดการอยู่
+    แล้ว ดู actions.py::_dispatch_with_retry)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    results = [ActionResult(False, "click", "fail"), ActionResult(True, "click", "สำเร็จ")]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "tool_t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=results)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)
+         ) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is True
+    assert mock_next_action.await_count == 3  # ไม่มี retry แถมจาก guard ใหม่
+
+
 @pytest.mark.asyncio
 async def test_run_task_result_includes_final_page_state():
     """W5[A] verify: result ต้องมี key "final_page_state" เป็น page_text ของ
@@ -2160,6 +2296,7 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Go'"))), \
+         patch("backend.app.core.orchestrator._embedding_function", return_value=[[0.1, 0.2]]), \
          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=["chunk1", "chunk2", "chunk3"]) as mock_retrieve, \
          patch(
              "backend.app.core.orchestrator.llm.next_action",
@@ -2167,7 +2304,11 @@ async def test_run_task_calls_retrieve_with_goal_page_text_and_k_then_passes_res
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
-    mock_retrieve.assert_called_once_with(query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP)
+    # Speed 2.2: orchestrator embed step_embed_input ครั้งเดียว (mock ไว้ด้านบนคืน
+    # [[0.1, 0.2]] เสมอ) แล้วส่ง query_embedding=[0.1, 0.2] เข้า retrieve() ด้วย
+    mock_retrieve.assert_called_once_with(
+        query="some goal", page_state="[0] button 'Go'", k=_RAG_CHUNKS_PER_STEP, query_embedding=[0.1, 0.2],
+    )
     # W14/W30/W32/W43: args ท้ายสุดตามลำดับคือ manual_context, memory_context,
     # long_term_context, vision_context, site_manual_context, current_url,
     # action_history_context, plan_context (ใหม่) — manual_context เลยอยู่ args[-8]
@@ -2439,6 +2580,7 @@ async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "[0] button 'Apply Code'"))), \
+         patch("backend.app.core.orchestrator._embedding_function", return_value=[[0.1, 0.2]]), \
          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
          patch(
              "backend.app.core.orchestrator.long_term_memory.recall",
@@ -2450,9 +2592,11 @@ async def test_run_task_calls_long_term_memory_recall_with_goal_page_text_and_k_
          ) as mock_next_action:
         await Orchestrator().run_task("https://example.com", "some goal", provider="anthropic")
 
+    # Speed 2.2: query_embedding=[0.1, 0.2] มาจาก _embedding_function mock ด้านบน (embed
+    # ครั้งเดียวใช้ร่วมกับ retriever.retrieve())
     mock_recall.assert_called_once_with(
         query="some goal", page_state="[0] button 'Apply Code'", k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
-        session_id="",
+        session_id="", query_embedding=[0.1, 0.2],
     )
     # W14/W30/W32/W43: long_term_context อยู่ args[-6]
     long_term_context = mock_next_action.await_args.args[-6]

@@ -257,7 +257,7 @@ from playwright.async_api import Browser, Frame, Page
 from backend.app.config import settings
 from backend.app.core import llm
 from backend.app.core.orchestrator import Orchestrator
-from backend.app.permission.rules import extract_domain
+from backend.app.permission.rules import extract_domain, install_ssrf_guard
 from backend.app.site_learning.auto_login import attempt_login, find_login_fields, verify_login_success
 from backend.app.site_learning.extractor import extract_page
 from backend.app.site_learning.safety import (
@@ -685,6 +685,7 @@ async def crawl_site(
     effective_max_pages = max_pages or settings.site_learning_max_pages
 
     context = await browser.new_context()
+    await install_ssrf_guard(context)
     page = await context.new_page()
     pages: list[PageInfo] = []
     # W24: เก็บ error ที่เกิดจริง (goto/click ที่ retry ครบแล้วยังล้ม, login ที่ดูเหมือน

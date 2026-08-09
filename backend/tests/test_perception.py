@@ -1358,3 +1358,125 @@ async def test_get_snapshot_does_not_mark_inactive_nav_link():
         await browser.close()
 
     assert "[active อยู่แล้ว]" not in elements[0]["label"]
+
+
+# --- Perception fix (radio buttons) — บั๊กจริงที่ user รายงาน: agent มองไม่เห็นตัวเลือก
+# Gender Male/Female บน OrangeHRM "My Info > Personal Details" — ยืนยันจาก DOM จริงว่า
+# OrangeHRM ซ่อน native <input type="radio"> ด้วย opacity:0 แล้ววาดวงกลมที่มองเห็นแทนด้วย
+# <span class="oxd-radio-input"> เป็นพี่น้องของ input ภายใน <label> เดียวกัน (เหมือน custom
+# checkbox ทุกประการ แค่คนละ widget) — จำลอง DOM แบบเดียวกันตรงๆ ด้วย inline style เพราะ
+# page.set_content() ไม่โหลด stylesheet จริงของเว็บ
+
+_HTML_WITH_CUSTOM_RADIO = """
+<html><body>
+  <form>
+    <label>
+      <input type="radio" name="gender" value="1" style="opacity:0;">
+      <span class="oxd-radio-input oxd-radio-input--active" style="display:inline-block;width:18px;height:18px;"></span>
+      Male
+    </label>
+    <label>
+      <input type="radio" name="gender" value="2" style="opacity:0;">
+      <span class="oxd-radio-input oxd-radio-input--active" style="display:inline-block;width:18px;height:18px;"></span>
+      Female
+    </label>
+  </form>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_sees_custom_radio_buttons_hidden_by_opacity():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_WITH_CUSTOM_RADIO)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Male" in labels
+    assert "Female" in labels
+    assert "Male" in text_repr
+    assert "Female" in text_repr
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_still_sees_plain_unstyled_radio_buttons():
+    """sanity: radio ธรรมดาที่ไม่ได้ซ่อนด้วย CSS เลย (ไม่มี custom wrapper) ต้องยังทำงาน
+    เหมือนเดิมทุกประการ — fix นี้ไม่ควรกระทบเคสง่ายๆ ที่ทำงานถูกอยู่แล้ว"""
+    html = """
+    <html><body>
+      <label><input type="radio" name="plan" value="a"> Basic</label>
+      <label><input type="radio" name="plan" value="b"> Premium</label>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Basic" in labels
+    assert "Premium" in labels
+
+
+# --- ACC-2 (accuracy audit follow-up) — บั๊กที่พบจาก security/accuracy audit: element ที่
+# disabled ถูกกรองทิ้งจาก snapshot ไปเลยเดิม (LLM ไม่มีทางรู้ว่ามันมีอยู่ ไม่ใช่แค่กดไม่ได้)
+# — ตอนนี้ยังติด index ปกติ แต่แปะ marker "[disabled]" แทน
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_still_includes_disabled_button_with_marker():
+    html = '<html><body><button id="submit-btn" disabled>Submit</button></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert elements[0]["label"] == "Submit [disabled]"
+    assert "[disabled]" in text_repr
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_mark_enabled_button_as_disabled():
+    html = '<html><body><button id="submit-btn">Submit</button></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert elements[0]["label"] == "Submit"
+    assert "[disabled]" not in elements[0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_disabled_input_field_too():
+    html = '<html><body><input type="text" placeholder="Zip Code" disabled></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert "[disabled]" in elements[0]["label"]
+    assert "Zip Code" in elements[0]["label"]

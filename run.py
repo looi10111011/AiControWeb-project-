@@ -767,11 +767,13 @@ def run_vision_fallback_demo():
     from backend.app.core.actions import execute
     from backend.app.core import llm
     from backend.app.config import settings
+    from backend.app.permission.rules import install_ssrf_guard
 
     async def _run():
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
+            await install_ssrf_guard(page)
             await page.goto("https://www.saucedemo.com/")
             await page.fill("#user-name", "standard_user")
             await page.fill("#password", "secret_sauce")

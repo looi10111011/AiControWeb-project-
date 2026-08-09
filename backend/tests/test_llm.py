@@ -41,6 +41,16 @@ def _fake_bad_request(code: str) -> GroqBadRequestError:
     )
 
 
+def _last_user_text(kwargs):
+    """W_cache2 (SPD-1): next_action() ห่อ content ของ user message สุดท้ายเป็น content
+    block list พร้อม cache_control แทน plain string เฉยๆ — ดึง text ดิบออกมาเทียบใน test
+    เหมือนเดิม"""
+    content = kwargs["messages"][-1]["content"]
+    if isinstance(content, str):
+        return content
+    return content[0]["text"]
+
+
 def _fake_anthropic_tool_use_block(name, input_dict, block_id="tu_1"):
     block = MagicMock()
     block.type = "tool_use"
@@ -216,6 +226,55 @@ async def test_next_action_sends_cache_control_on_system_and_tools():
 
 
 @pytest.mark.asyncio
+async def test_next_action_sends_cache_control_on_last_conversation_message():
+    """SPD-1: breakpoint ที่สอง (แยกจาก system+tools) ต้องอยู่บน user message ล่าสุดที่ส่ง
+    ไปจริงในแต่ละ request — แต่ messages ที่ return กลับมาให้ loop เก็บต่อ (ใช้สร้าง
+    request ของรอบถัดไป) ต้องยังเป็น plain string เหมือนเดิม ไม่ค้าง cache_control สะสม
+    (ไม่งั้นเกิน 4 breakpoints ที่ Anthropic อนุญาตต่อ request หลังผ่านไปหลาย step)"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "click", "index": 1})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    _, _, _, messages, _ = await llm.next_action(client, "model", "goal", "page", [])
+
+    _, kwargs = client.messages.create.call_args
+    sent_last = kwargs["messages"][-1]["content"]
+    assert isinstance(sent_last, list)
+    assert sent_last[-1]["cache_control"] == {"type": "ephemeral"}
+    assert sent_last[0]["type"] == "text"
+
+    # messages ที่เก็บไว้ต่อ (ไม่ใช่ตัวที่ส่งจริง) ต้องยังเป็น string เดิม ไม่มี cache_control ปน
+    assert isinstance(messages[0]["content"], str)
+
+
+@pytest.mark.asyncio
+async def test_next_action_second_call_only_marks_its_own_last_message():
+    """SPD-1: เรียก next_action() 2 รอบติดกัน (จำลอง step ถัดไปของ loop เดียวกัน) —
+    request ของรอบที่ 2 ต้องมี cache_control อยู่แค่บน user message ล่าสุดของรอบนั้นเท่านั้น
+    ไม่ใช่ค้างอยู่บน message เก่าจากรอบแรกด้วย (กัน breakpoint สะสมเกิน 4 อันที่ Anthropic
+    อนุญาตต่อ request เมื่อ task มีหลาย step)"""
+    block = _fake_anthropic_tool_use_block("browser_action", {"type": "click", "index": 1})
+    response = _fake_anthropic_response([block])
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+
+    _, _, tool_use_id, messages, _ = await llm.next_action(client, "model", "goal", "page 1", [])
+    messages = llm.append_tool_result(messages, tool_use_id, "[OK] click")
+    await llm.next_action(client, "model", "goal", "page 2", messages)
+
+    _, kwargs = client.messages.create.call_args
+    sent_messages = kwargs["messages"]
+    cache_marked = [
+        m for m in sent_messages
+        if isinstance(m.get("content"), list)
+        and any(isinstance(b, dict) and "cache_control" in b for b in m["content"])
+    ]
+    assert len(cache_marked) == 1
+    assert cache_marked[0] is sent_messages[-1]
+
+
+@pytest.mark.asyncio
 async def test_next_action_extracts_cache_read_and_creation_tokens():
     block = _fake_anthropic_tool_use_block("finish_task", {"success": True, "message": "done"})
     response = _fake_anthropic_response(
@@ -256,7 +315,7 @@ async def test_next_action_passes_manual_context_into_prompt():
     await llm.next_action(client, "model", "goal", "page", [], manual_context="- chunk one")
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "chunk one" in user_content
     assert "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" in user_content
 
@@ -272,7 +331,7 @@ async def test_next_action_default_manual_context_omits_section():
     await llm.next_action(client, "model", "goal", "page", [])
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "คู่มือ" not in user_content
 
 
@@ -289,7 +348,7 @@ async def test_next_action_passes_memory_context_into_prompt():
     )
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "[FAIL] boom" in user_content
     assert "Action ที่เคยลองแล้วล้มเหลว" in user_content
 
@@ -305,7 +364,7 @@ async def test_next_action_default_memory_context_omits_section():
     await llm.next_action(client, "model", "goal", "page", [])
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "ทำซ้ำ" not in user_content
 
 
@@ -321,7 +380,7 @@ async def test_next_action_passes_plan_context_into_prompt():
     await llm.next_action(client, "model", "goal", "page", [], plan_context="1. ทำ X\n2. ทำ Y")
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "1. ทำ X" in user_content
     assert "แพลนปัจจุบัน" in user_content
 
@@ -338,7 +397,7 @@ async def test_next_action_default_plan_context_omits_section():
     await llm.next_action(client, "model", "goal", "page", [])
 
     _, kwargs = client.messages.create.call_args
-    user_content = kwargs["messages"][-1]["content"]
+    user_content = _last_user_text(kwargs)
     assert "แพลนปัจจุบัน" not in user_content
 
 
@@ -1254,6 +1313,24 @@ def test_format_candidates_for_planner_reduces_steps_to_action_sequence():
 
 def test_format_candidates_for_planner_handles_empty_list():
     assert llm._format_candidates_for_planner([]) == "(no candidates)"
+
+
+def test_format_candidates_for_planner_includes_track_record():
+    """ACC-1 (accuracy audit follow-up): success_count/failure_count ต้องโผล่ในสรุปที่ส่ง
+    ให้ Planner เห็นด้วย — เดิมถูกตัดออกไปเหมือน locator ทั้งที่เป็นสัญญาณคนละแบบกัน (ดู
+    _format_candidates_for_planner() docstring)"""
+    candidates = [{**_CANDIDATES[0], "success_count": 3, "failure_count": 1}]
+    text = llm._format_candidates_for_planner(candidates)
+    assert '"success_count": 3' in text
+    assert '"failure_count": 1' in text
+
+
+def test_format_candidates_for_planner_defaults_track_record_to_zero_when_missing():
+    """sanity: candidate ที่ไม่มี field นี้เลย (เช่นจาก caller เก่าที่ยังไม่รู้จัก field
+    นี้) ต้องไม่ throw — default เป็น 0 เงียบๆ"""
+    text = llm._format_candidates_for_planner(_CANDIDATES)
+    assert '"success_count": 0' in text
+    assert '"failure_count": 0' in text
 
 
 # --- W_procmem: llm.plan_with_procedural_memory()'s has_auto_login note ---

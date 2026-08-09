@@ -1,0 +1,141 @@
+# แผนแก้ไข: ความเร็ว Agent + ช่องโหว่ความปลอดภัย
+
+## หมายเหตุก่อนเริ่มงาน (สำหรับ session ที่จะมาลงมือทำจริง — อาจเป็นคนละ session กับที่เขียนแผนนี้)
+
+ระหว่างแก้แต่ละข้อด้านล่าง ให้ "clean code ไปด้วยในไฟล์ที่แตะอยู่แล้ว" ตามที่คุยตกลงกันไว้:
+- ตัด dead code / ตัวแปรที่ไม่ใช้ / logic ซ้ำซ้อนที่เจอระหว่างทางในไฟล์ที่กำลังแก้อยู่แล้วได้เลย
+- **ห้ามลบ comment ที่อธิบาย "ทำไม"** (เหตุผล/ประวัติ/บั๊กเดิมที่เคยแก้ — ส่วนใหญ่มีคำอ้างอิง W1-W50) เพราะเป็น institutional memory ที่กันไม่ให้ทำบั๊กเดิมกลับมาซ้ำ (ดูตัวอย่างจริงในข้อ 1.3 ด้านล่าง — heuristic นั้นเคยถูกใส่มาแก้ false-positive bug 2 เคสจริง)
+- ลบได้เฉพาะ comment ที่อธิบาย "อะไร" ซึ่งซ้ำกับสิ่งที่โค้ดสื่ออยู่แล้วตรงๆ (ชื่อฟังก์ชัน/ตัวแปรอ่านออกอยู่แล้ว)
+- **ไม่ทำ** cleanup แบบไล่สำรวจทั้ง codebase แยกเป็นงานต่างหาก — scope แค่ไฟล์ที่แผนนี้ต้องแก้อยู่แล้วเท่านั้น (กันกิน token เกินความจำเป็นและกันความเสี่ยง regression ของส่วนที่ไม่เกี่ยว)
+
+## Context
+
+จากการตรวจสอบ codebase (backend/app/ ~34K บรรทัด) พบจุด optimize ความเร็วของ agent loop และช่องโหว่ความปลอดภัยหลายจุด ยืนยันโค้ดจริงแล้วทุกจุดผ่าน 2 รอบ (audit เบื้องต้น + verify ละเอียดพร้อม line number) เป้าหมายคือแก้ตามลำดับความสำคัญโดยไม่ทำให้พฤติกรรมเดิมที่ถูกต้องอยู่แล้วพัง (โดยเฉพาะ heuristic ที่แก้ false-positive bug เดิมมาก่อน — ต้องรักษาไว้)
+
+จัดกลุ่มเป็น **Security (แก้ก่อน)** แล้วตามด้วย **Speed** เพราะช่องโหว่ auth เป็น Critical และกระทบทุกอย่างที่เหลือ (ถ้า auth ไม่มี, permission layer อื่นๆ ก็ไม่มีความหมาย)
+
+---
+
+## ส่วนที่ 1: Security
+
+### 1.1 [Critical] เพิ่ม API authentication + ห้าม auto_approve จาก client ที่ไม่ผ่าน auth
+
+**ปัญหา:** `backend/app/main.py` ไม่มี auth middleware เลย, mount router แบบเปิดหมด + `api_host="0.0.0.0"` ([config.py:31](backend/app/config.py:31)) ใครก็ยิง `POST /tasks {"auto_approve": true}` ได้ แล้ว `_make_ask_user_func()` ([routes.py:70-95](backend/app/api/routes.py:70)) จะ auto-approve action ทุกตัวรวมถึง purchase/pay โดยไม่มี human เห็นเลย
+
+**แก้:**
+- เพิ่ม `api_key: Optional[str] = None` ใน `config.py` (อ่านจาก env `.env`, ถ้าไม่ตั้งค่า = auth ปิด สำหรับ local dev)
+- สร้าง FastAPI dependency `verify_api_key()` ใน `routes.py` เช็ค header `X-API-Key` เทียบกับ `settings.api_key`; ใช้ `Depends()` ผูกกับทุก route ใน `api_router` (ยกเว้น `GET /tasks/{id}/stream` ต้องรับ query param แทนเพราะ SSE ผ่าน `EventSource` ตั้ง header เองไม่ได้ — ใช้ `?api_key=` แทน)
+- เปลี่ยน `api_host` default เป็น `"127.0.0.1"` ใน `config.py:31`
+- อัปเดต `frontend/index.html` ให้แนบ `X-API-Key` header ทุก fetch call (เก็บ key ไว้ใน localStorage ใส่ผ่าน prompt ตอนโหลดหน้าแรก ถ้ายังไม่มี)
+- อัปเดต test suite (`backend/tests/`) ให้ inject header/override dependency ตอนเทส
+
+**ผลกระทบที่ต้องระวัง:** ทุก test ที่ยิง `TestClient` ตรงๆ ต้องผ่าน header ใหม่ — ต้อง override dependency เป็น no-op ใน test fixture แทนที่จะแก้ทุก test call
+
+---
+
+### 1.2 [High] Block internal/private-network `goto` (กัน SSRF)
+
+**ปัญหา:** [rules.py:20-31](backend/app/permission/rules.py:20) `ALLOWED_DOMAINS` ว่างเปล่า = อนุญาตทุก domain ที่ไม่ได้ blocklist, `BLOCKED_DOMAINS` มีแค่ 2 ตัวอย่าง (`malicious.com`, `phishing.net`) ไม่มีการกัน private/internal IP เลย — หน้าเว็บที่ฝัง prompt injection สั่ง `goto` ไป `169.254.169.254` (cloud metadata) หรือ `192.168.x.x` จะผ่านได้ทันที ไม่มี human เห็น (goto ไม่อยู่ใน `DEFAULT_NEEDS_CONFIRMATION`)
+
+**แก้:**
+- เพิ่มฟังก์ชัน `is_private_or_internal(domain: str) -> bool` ใน `rules.py` (ข้าง `extract_domain`/`normalize_domain` ที่มีอยู่แล้ว): resolve hostname ผ่าน `socket.gethostbyname` แล้วเช็คด้วย `ipaddress` module ว่าอยู่ใน private/loopback/link-local range (`10/8`, `172.16/12`, `192.168/16`, `127/8`, `169.254/16`, `::1`, `fc00::/7`) หรือ hostname เป็น `localhost`
+- ใน `classify_action()` goto branch ([rules.py:209-226](backend/app/permission/rules.py:209)): เช็ค `is_private_or_internal()` **ก่อน** เช็ค `BLOCKED_DOMAINS`/`ALLOWED_DOMAINS` เสมอ ถ้าตรง → return `ActionRisk.BLOCKED` แบบ hard-block ไม่ขึ้นกับ config ผู้ใช้ (defense-in-depth)
+- เพิ่ม `allow_internal_navigation: bool = False` ใน `config.py` สำหรับ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ (ต้องเปิดเองชัดเจน)
+
+**ทำไมไม่ทำให้ทุก `goto` ต้อง confirm:** จะทำให้ user โดน prompt รัวๆ ทุก step ที่มี navigation ปกติ (เสีย UX ตามที่ agent สำรวจไว้) — scope การแก้แค่ SSRF-specific (internal IP) พอสำหรับความเสี่ยงจริงที่พบ
+
+---
+
+### 1.3 [High] จำกัด SAFE-downgrade heuristic ไม่ให้ครอบคลุม delete/purchase/pay
+
+**ปัญหา:** [rules.py:180-207](backend/app/permission/rules.py:180) — action type `submit/delete/purchase/pay` ถ้า label ไม่ตรง risky keyword จะถูก downgrade เป็น SAFE ได้ถ้า element เป็น `<a>` tag หรือ `<input>` ที่ไม่ใช่ type เสี่ยง — หน้าเว็บสามารถทำปุ่ม "ลบ"/"สั่งซื้อ" ให้เป็น `<a>` ที่ label เป็นคำทั่วไป (เช่น "Continue") แล้วเลี่ยง confirmation ได้ทั้งที่ comment ในโค้ดเองรู้เคสนี้อยู่แล้ว (บรรทัด 61-66)
+
+**สำคัญ — ห้ามลบ heuristic นี้ทิ้งทั้งหมด:** มันถูกใส่มาแก้ false-positive จริง 2 เคส (บันทึกไว้ใน comment W_search/W_search follow-up): (1) LLM จัดว่าเป็น `submit` ทั้งที่เป็นแค่ปุ่มค้นหา/กรอง/ดูเนื้อหา (2) การ์ดผลการค้นหาเป็น `<a>` tag ที่ label เป็น free-text ไม่ตรง keyword ไหนเลย
+
+**แก้ (แบบ scope แคบ ไม่กระทบ 2 เคสเดิม):**
+- แก้เงื่อนไขให้ `<a>`/plain-`<input>` downgrade ใช้ได้เฉพาะเมื่อ `action_type == "submit"` เท่านั้น
+- สำหรับ `action_type in {"delete", "purchase", "pay"}`: ถ้าไม่ตรง `_label_looks_risky()` และไม่ตรง `_label_looks_safe()` → fallthrough ไป `NEEDS_CONFIRMATION` เสมอ ไม่ให้ tag/structure ช่วย downgrade
+- เก็บลำดับ priority เดิมไว้ (`_manual_requires_confirmation` > `_label_looks_risky` > `_label_looks_safe` ก่อนเสมอ) — แก้แค่ fallback สุดท้ายสำหรับ 3 action type นี้
+
+---
+
+### 1.4 [High] เข้ารหัส credentials ที่เก็บบนดิสก์
+
+**ปัญหา:** [storage.py:139-150](backend/app/site_learning/storage.py:139) `save_credentials()`/`load_credentials()` เขียน `{"username","password"}` เป็น plain JSON ที่ `data/site_manuals/{domain}/credentials.json` — ไม่มี encryption library ใน `requirements.txt` เลย, ไม่มี secret key field ใน `config.py`
+
+**แก้:**
+- เพิ่ม dependency `cryptography` ใน `requirements.txt`
+- สร้าง key แบบ local-machine: ถ้าไม่มีไฟล์ `data/.credential_key` ให้ generate `Fernet.generate_key()` เขียนลงไฟล์นั้น (เพิ่มเข้า `.gitignore`) แล้วใช้ key นี้เข้ารหัส/ถอดรหัส — ไม่ต้องให้ user ตั้ง env var เพิ่มเอง
+- `save_credentials()`: เข้ารหัส `password` (และ `username` ด้วยเพื่อความสม่ำเสมอ) ด้วย `Fernet` ก่อนเขียน JSON ใส่ marker `{"encrypted": true, "username": "...", "password": "..."}`
+- `load_credentials()`: เช็ค marker `encrypted` — ถ้า `true` ให้ decrypt ก่อนคืนค่า, ถ้าไม่มี marker (ไฟล์เก่า plaintext) ให้อ่านตรงๆ แบบเดิมเพื่อ backward-compat แล้ว **re-save แบบเข้ารหัสทันที** (migration แบบเนียนไม่ต้องให้ user ทำอะไร)
+
+**ผลกระทบ:** ไฟล์ `credentials.json` เก่าที่มีอยู่แล้วจะถูก migrate อัตโนมัติตอน load ครั้งแรกหลังแก้ ไม่ต้องมี manual migration script
+
+---
+
+### 1.5 [Low] ปิด/ป้องกัน `/config/check` และเพิ่ม rate limit เบื้องต้น
+
+**แก้:**
+- ผูก `verify_api_key()` (จากข้อ 1.1) เข้ากับ `/config/check` ด้วย (ปัจจุบันไม่มี auth เลย)
+- เพิ่ม `slowapi` เป็น dependency, ใส่ limiter แบบ per-IP บน `POST /tasks` และ `POST /api/site-manual/learn` เท่านั้น (endpoint ที่เปิด browser จริง/เปลือง resource) — **ไม่แตะ** SSE stream endpoint หรือ endpoint polling ปกติ กัน task รันอยู่โดนตัดกลางคัน
+
+---
+
+## ส่วนที่ 2: Speed
+
+### 2.1 [High] ลด DOM snapshot ซ้ำตอนเริ่ม task
+
+**ปัญหา:** [orchestrator.py:1410](backend/app/core/orchestrator.py:1410) snapshot สำหรับ classify_intent แล้ว loop หลัก snapshot ซ้ำอีกครั้งที่ [orchestrator.py:1560](backend/app/core/orchestrator.py:1560) ยืนยันแล้วว่าไม่มีอะไรเปลี่ยนหน้าเว็บระหว่างสองจุดนี้ **ในเส้นทางปกติ** (ไม่มี `confirm_plan`) — auto-login ([orchestrator.py:789-836](backend/app/core/orchestrator.py:789)) รันเสร็จและ `wait_stable()` แล้วตั้งแต่ก่อนบรรทัด 1410 จึงไม่กระทบเรื่อง UI ต่างกันหลัง login ตามที่คุยกัน
+
+**ระวัง (path ที่ห้ามใช้ snapshot cache):** เส้นทาง `confirm_plan=True` ([orchestrator.py:1518-1557](backend/app/core/orchestrator.py:1518)) มี `_confirm_plan()` ที่รอ user ตอบแบบไม่จำกัดเวลา + ถ้าเปิด `defer_visible_window` จะปิด browser เดิมแล้วเปิดใหม่ทั้งหมด — สอง path นี้ page state เปลี่ยนแน่นอน ต้อง snapshot ใหม่เสมอ
+
+**แก้:**
+- เก็บผลลัพธ์จาก [orchestrator.py:1410](backend/app/core/orchestrator.py:1410) ไว้ในตัวแปร (เช่น `cached_elements, cached_page_text`)
+- ก่อนเข้า loop ที่บรรทัด 1559: ถ้าเดินผ่าน path `approved_plan`/ไม่มี plan เลย (ไม่แตะ page) → ใช้ค่า cache แทนการเรียก `get_snapshot()` รอบแรกของ loop
+- ถ้าเดินผ่าน path `confirm_plan` → invalidate cache แล้วบังคับ snapshot ใหม่หลัง `_confirm_plan()` return (โดยเฉพาะกรณี `defer_visible_window` ที่ browser ถูก relaunch)
+
+---
+
+### 2.2 [High] Parallelize RAG + long-term memory retrieval, embed ครั้งเดียว
+
+**ปัญหา:** [orchestrator.py:1580-1590](backend/app/core/orchestrator.py:1580) เรียก `retriever.retrieve()` แล้วค่อยเรียก `long_term_memory.recall()` ทีละตัว (sequential `await`) ทั้งที่ไม่พึ่งกัน และ [retriever.py:26](backend/app/rag/retriever.py:26) กับ [long_term_memory.py:84](backend/app/core/long_term_memory.py:84) สร้าง `embed_input` string เหมือนกันเป๊ะ แล้ว query ChromaDB ด้วย `query_texts=` แยกกัน → embed model รันซ้ำ 2 รอบต่อ step ทั้งที่ใช้ embedding function เดียวกัน (`_embedding_function` singleton ใน [chroma_client.py:19](backend/app/rag/chroma_client.py:19))
+
+**แก้:**
+- ใน `orchestrator.py`: คำนวณ `embed_input` ครั้งเดียว, เรียก `_embedding_function([embed_input])` (ผ่าน `asyncio.to_thread`) ครั้งเดียวได้ embedding vector
+- แก้ `retriever.retrieve()` และ `long_term_memory.recall()` ให้รับ embedding ที่คำนวณไว้แล้วเป็น optional param แล้ว query ด้วย `query_embeddings=[...]` แทน `query_texts=[...]` เมื่อมีค่าส่งมา (คง backward-compat เดิมไว้ถ้าไม่ส่ง เผื่อที่อื่นเรียกใช้ตรงๆ)
+- เรียกสอง query (`collection.query()` ของ retriever และของ long_term_memory) ผ่าน `asyncio.gather()` แทนการ await ทีละตัว — **ต้องคง early-return guard เดิมของ `recall()`** (`if not session_id: return []`, [long_term_memory.py:79-80](backend/app/core/long_term_memory.py:79)) และคง try/except แยกอิสระของแต่ละฟังก์ชัน (ห้าม throw ตามสัญญาเดิม — ถ้าตัวหนึ่ง fail อีกตัวต้องยัง return ปกติ)
+- **ไม่แตะ** `_client_lock` ใน `chroma_client.py` ที่มีอยู่แล้ว (กัน race ตอน init ครั้งแรกจากหลาย thread) — การ gather ยังปลอดภัยเพราะ lock นี้ยังทำงานอยู่
+
+---
+
+### 2.3 [Medium] เปิด prompt caching ให้ middleware evaluator (เมื่อเปิดใช้)
+
+**ปัญหา:** `enable_middleware_evaluator`/`enable_semantic_redundancy_check` default `False` ([config.py:176,187](backend/app/config.py:176)) แต่ถ้ามีคนเปิดใช้ [llm.py:1553](backend/app/core/llm.py:1553) ส่ง `_MIDDLEWARE_SYSTEM_PROMPT` เป็น string ตรงๆ ไม่มี `cache_control` ต่างจาก path หลักที่ wrap เป็น `_SYSTEM_BLOCKS` พร้อม `cache_control: ephemeral` ([llm.py:2182](backend/app/core/llm.py:2182))
+
+**แก้:**
+- สร้าง `_MIDDLEWARE_SYSTEM_BLOCKS = [{"type": "text", "text": _MIDDLEWARE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]` ตาม pattern เดิม แล้วใช้แทนที่ `system=_MIDDLEWARE_SYSTEM_PROMPT` ใน anthropic branch ([llm.py:1549-1557](backend/app/core/llm.py:1549)) เท่านั้น (groq/gemini branch ไม่มี caching mechanism แบบนี้ ข้ามไป)
+- เทสหลังแก้: เปิด `enable_middleware_evaluator=True` ชั่วคราว รัน task 2-3 step เช็ค `usage.cache_read_input_tokens` ใน response โต จริงจาก step ที่ 2 เป็นต้นไป
+
+---
+
+### 2.4 [Low] เปิดให้ config `_STEP_PACING_DELAY_SECONDS`
+
+หมายเหตุ: ตรวจโค้ดแล้วพบว่า**ไม่ใช่ flat delay** อย่างที่คิดตอนแรก — [orchestrator.py:715](backend/app/core/orchestrator.py:715) มี elapsed-time accounting อยู่แล้ว (แก้ไปแล้วใน W41 ตาม comment ในโค้ด) จุดเดียวที่เหลือคือค่า `3` วินาที hardcode เป็น module constant ไม่ได้อยู่ใน `Settings` — ย้ายเป็น `step_pacing_delay_seconds: float = 3.0` ใน `config.py` เพื่อให้ปรับได้ตาม provider/tier โดยไม่ต้องแก้โค้ด (priority ต่ำ ไม่ใช่บั๊ก แค่ความสะดวก)
+
+---
+
+## ลำดับการทำ (แนะนำ)
+
+1. **1.1** (API auth) — ทำก่อนเพราะเป็น Critical และเป็นฐานให้ข้ออื่น
+2. **1.2, 1.3, 1.4** (SSRF block, downgrade fix, credential encryption) — ทำคู่ขนานกันได้ ไม่พึ่งกัน
+3. **2.1, 2.2** (snapshot dedupe, parallel RAG+memory) — impact สูงสุดฝั่ง speed
+4. **1.5, 2.3, 2.4** — priority ต่ำ ทำทีหลังหรือข้ามได้ถ้าเวลาจำกัด
+
+## Verification
+
+- รัน `backend/tests/` ทั้งชุดหลังแก้แต่ละข้อ (baseline ปัจจุบันคือผ่าน 970-979 เคส เหลือ fail 9-10 เคสที่ยิง API จริงด้วย key ใช้ไม่ได้ในเครื่อง dev — ต้อง fail count เท่าเดิม ไม่เพิ่ม)
+- ข้อ 1.1: เทสว่า request ไม่มี/ผิด `X-API-Key` โดน 401, request ถูกต้องผ่านปกติ, SSE stream ทำงานผ่าน query param
+- ข้อ 1.2: เทส `classify_action({"type":"goto","url":"http://169.254.169.254/"})` ต้องได้ `BLOCKED`
+- ข้อ 1.3: เทส `classify_action` สำหรับ `<a>` tag ที่ label ทั่วไป + action_type=`delete`/`purchase` ต้องได้ `NEEDS_CONFIRMATION` (ไม่ใช่ SAFE เหมือนเดิม) และเทสเดิม 2 เคส (search/filter submit false-positive, search-result-card anchor) ต้องยังผ่าน SAFE เหมือนเดิม
+- ข้อ 1.4: เทส save→load credentials ได้ค่าตรงกัน + เทส migration จากไฟล์ plaintext เก่า (mock ไฟล์เก่าไว้ก่อน)
+- ข้อ 2.1/2.2: รัน task จริงผ่าน Browser tool บน saucedemo.com หรือเว็บทดสอบเดิมที่ใช้ในโปรเจกต์ เทียบ step count/เวลารวมก่อน-หลัง ยืนยันผลลัพธ์ task เหมือนเดิม (ไม่มี regression พฤติกรรม)

@@ -23,6 +23,14 @@ groq==1.5.0   # ทางเลือกไว้ทดสอบ agent loop ต�
 # RAG / Vector DB
 chromadb==1.5.9
 
+# Security 1.4: เข้ารหัส credentials.json ที่เก็บบนดิสก์ (ดู site_learning/storage.py::
+# save_credentials/load_credentials) — Fernet (symmetric, authenticated encryption)
+cryptography==50.0.0
+
+# Security 1.5: rate limit per-IP บน endpoint ที่เปิด browser จริง/เปลือง resource
+# (POST /tasks, POST /api/site-manual/learn — ดู main.py)
+slowapi==0.1.10
+
 # Doc ingestion (manual PDF/DOCX/TXT)
 pypdf==5.0.1
 python-docx==1.1.2

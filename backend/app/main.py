@@ -2,8 +2,10 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 # แก้ปัญหา UnicodeEncodeError เวลา print ข้อความไทย/emoji (orchestrator.py, llm.py, ฯลฯ
 # มี print() debug log หลายจุดที่ไม่ได้ gate ด้วย verbose) บน Windows console (cp1252/
@@ -22,7 +24,9 @@ sys.stderr.reconfigure(encoding="utf-8")
 # — ตั้ง policy ในไฟล์นี้จึงสายเกินไปเสมอ ไม่มีผลอะไรกับ loop ที่สร้างไปแล้ว ต้องแก้ที่
 # run.py (ไม่ยิง --reload) แทน ไม่ใช่ที่นี่
 
+from backend.app.api.routes import limiter as api_limiter
 from backend.app.api.routes import router as api_router
+from backend.app.api.routes import verify_api_key
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
 from backend.app.core.browser_pool import BrowserPool
@@ -64,6 +68,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Browser Agent", lifespan=lifespan)
+# Security 1.5: ผูก limiter เข้ากับ app.state (จุดที่ @limiter.limit() ใน routes.py คาดหวังไว้)
+# — เฉพาะ endpoint ที่แปะ decorator เองเท่านั้นที่โดนจำกัด (POST /tasks, POST
+# /api/site-manual/learn) ไม่กระทบ endpoint อื่นเลย
+app.state.limiter = api_limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(api_router)
 
 
@@ -72,7 +81,7 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/config/check")
+@app.get("/config/check", dependencies=[Depends(verify_api_key)])
 async def config_check():
     return {
         "primary_llm_provider": settings.primary_llm_provider,

@@ -30,8 +30,9 @@ from backend.app.core.actions import (
 from backend.app.core.memory import ShortTermMemory
 from backend.app.core.perception import get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
-from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain
+from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain, install_ssrf_guard
 from backend.app.rag import retriever
+from backend.app.rag.chroma_client import _embedding_function
 
 # action ที่เปลี่ยนหน้า/DOM แบบมีนัยสำคัญ -> ต้องรอหน้านิ่งก่อน perceive รอบถัดไป
 # W50: press_key เพิ่มเข้ามา — กด Enter บน custom dropdown อาจ submit form/navigate ได้
@@ -122,6 +123,39 @@ _PREMATURE_TRUE_FINISH_NUDGE = (
     "มีหลักฐานชัดเจนจริงๆ ว่า goal สำเร็จแล้ว ถ้าใช่จริง เรียก finish_task(success=true) "
     "อีกครั้งได้เลย ถ้าไม่แน่ใจ ให้ลองทำ action ที่เกี่ยวข้องกับ goal ก่อน"
 )
+
+# ACC-3 (accuracy audit follow-up): symmetric กับ guard ด้านบน (steps_taken==0) และ
+# validation-error guard ด้านล่าง แต่เช็คสัญญาณอีกแบบที่ทั้งคู่จับไม่ได้ — โมเดลอาจลอง
+# action จริงหลาย step (steps_taken > 0 ผ่าน guard แรกไปแล้ว) แต่ action ที่ "มีผลจริงต่อ
+# หน้าเว็บ" (fill/click/select/...) ล้มเหลวทุกครั้งเลยสักครั้งเดียว (เช่น index ผิด/element
+# หาไม่เจอซ้ำๆ) แล้วยังเรียก finish_task(success=true) — ไม่มี validation error ให้
+# _scan_validation_errors() จับด้วย (เพราะ action ไม่เคยสำเร็จจนถึงจะ trigger validation
+# ได้ด้วยซ้ำ) ต้องเช็คจาก ShortTermMemory ตรงๆ ว่ามี mutating action ไหนสำเร็จอย่างน้อย 1
+# ครั้งไหมตลอดทั้ง task — ไม่นับ read_page_data/wait/hover/scroll (ไม่ใช่ "ความคืบหน้า"
+# ต่อ goal โดยตรง แค่สำรวจ/รอ/เลื่อนจอเฉยๆ) เป็น escape valve เดียวกับ guard อื่นในไฟล์นี้
+# (ปล่อยผ่านตามที่โมเดลยืนยันถ้า retry ครบโควตาแล้วยังไม่เปลี่ยนใจ ไม่ block เด็ดขาด)
+_MAX_PREMATURE_ALL_FAILED_RETRIES = 2
+# หมายเหตุ: ห้ามใส่ "goto"/"go_back"/"switch_tab" — แค่เปลี่ยนหน้า/สลับ tab ไม่นับเป็น
+# "ทำอะไรสำเร็จต่อ goal" แถม goto แรกสุด (ไปที่ url ตั้งต้นก่อนเข้า loop) ถูก record เป็น
+# success=True เสมอทุก task อยู่แล้ว ถ้านับรวมด้วย guard นี้จะไม่มีวันยิงเลยในทางปฏิบัติ
+_MUTATING_ACTION_TYPES = {
+    "click", "fill", "select", "check", "press_key",
+    "submit", "delete", "purchase", "pay",
+}
+_PREMATURE_ALL_FAILED_NUDGE = (
+    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบแล้วพบว่า action ที่มีผลจริง"
+    "ต่อหน้าเว็บ (fill/click/select/...) ที่ลองมาทั้งหมดใน task นี้ล้มเหลวทุกครั้ง ไม่มีสักครั้ง"
+    "ที่สำเร็จเลย — ไม่น่าจะเป็นไปได้ที่ goal จะสำเร็จจริงทั้งที่ยังไม่เคยทำ action ได้สำเร็จแม้แต่"
+    "ครั้งเดียว ให้ตรวจสอบ index/element ที่เลือกอีกครั้ง (อาจ index ผิด/element หาไม่เจอ) แล้วลอง"
+    "ทางอื่น ถ้าลองจริงๆ แล้วสำเร็จ ค่อยเรียก finish_task(success=true) อีกครั้ง"
+)
+
+
+def _has_any_successful_mutating_action(history: list[dict]) -> bool:
+    return any(
+        (h.get("cmd") or {}).get("type") in _MUTATING_ACTION_TYPES and h.get("success") is True
+        for h in history
+    )
 
 # Task4 ("Task Completion Verifier", W19): symmetric กับ guard ด้านบนแต่เช็คคนละสัญญาณ —
 # guard ด้านบนเช็คแค่ "steps_taken==0" (ไม่มีหลักฐานว่าทำอะไรเลย) ตัวนี้เช็ค "หน้าเว็บ
@@ -707,12 +741,14 @@ async def _login_form_needs_password(page: Page) -> bool:
 # นั้นจะกินเวลาไปแล้วเท่าไหร่ก็ตามจาก execute()/wait_stable()/get_snapshot()/retrieve() ฯลฯ)
 # บวกเพิ่มเข้าไปอีกทุกครั้งแบบ "ไม่หักลบ" เวลาที่ผ่านไปแล้วเลย — เปลี่ยนมาวัด wall-clock
 # จริงตั้งแต่ next_action() ครั้งก่อนจบ แล้ว sleep แค่ส่วนที่ยังขาดให้ครบ
-# _STEP_PACING_DELAY_SECONDS เท่านั้น (ดู last_llm_call_at ใน run_task()) — ยังการันตี
-# ระยะห่างขั้นต่ำเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก rate-limit เลย) แค่ไม่เสียเวลาเปล่า
-# ซ้ำกับงานที่ทำไปแล้วจริงระหว่าง step นั้น — ผลคือ step สุดท้ายก่อนจะรู้ว่า LLM ตัดสินใจ
-# เรียก finish_task (ซึ่งงานจริงของ step ก่อนหน้ามักกินเวลาไปเกิน 3 วินาทีอยู่แล้วจาก
-# wait_stable()/network) มักไม่ต้องรอเพิ่มเลยหรือรอสั้นลงมาก
-_STEP_PACING_DELAY_SECONDS = 3
+# settings.step_pacing_delay_seconds เท่านั้น (ดู last_llm_call_at ใน run_task()) — ยัง
+# การันตีระยะห่างขั้นต่ำเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก rate-limit เลย) แค่ไม่เสีย
+# เวลาเปล่าซ้ำกับงานที่ทำไปแล้วจริงระหว่าง step นั้น — ผลคือ step สุดท้ายก่อนจะรู้ว่า LLM
+# ตัดสินใจเรียก finish_task (ซึ่งงานจริงของ step ก่อนหน้ามักกินเวลาไปเกิน 3 วินาทีอยู่แล้ว
+# จาก wait_stable()/network) มักไม่ต้องรอเพิ่มเลยหรือรอสั้นลงมาก
+#
+# Speed 2.4: ย้ายจาก module constant (hardcode 3 เสมอ) เข้า Settings เพื่อปรับได้ตาม
+# provider/tier โดยไม่ต้องแก้โค้ด (ดู config.py::step_pacing_delay_seconds)
 
 # W41: user รายงานว่า agent ใช้เวลานานเกินไปกว่าจะ "แจ้งสถานะเสร็จสิ้น" หลัง action
 # สุดท้ายเสร็จจริงแล้ว — สาเหตุหนึ่งที่แก้ได้ตรงๆ ไม่มี trade-off เลย: long_term_memory.
@@ -1246,6 +1282,7 @@ class Orchestrator:
             # ห้าม browser.new_context() เด็ดขาด — ต้องใช้ context จริงที่มี cookie/login
             # ของ user อยู่แล้ว (contexts[0]) ไม่ใช่ context ว่างเปล่าใหม่
             context = browser.contexts[0]
+            await install_ssrf_guard(context)
             resolved_tab_reuse_policy = tab_reuse_policy or settings.user_browser_tab_reuse_policy
             page, opened_new_tab = await resolve_target_page(
                 context, url, ask_user_func, resolved_tab_reuse_policy,
@@ -1261,8 +1298,10 @@ class Orchestrator:
                 playwright, headless=(True if defer_visible_window else is_headless), channel=browser_channel,
             )
             page = await browser.new_page()
+            await install_ssrf_guard(page)
         else:
             context = await browser.new_context()
+            await install_ssrf_guard(context)
             page = await context.new_page()
         page.on("dialog", _make_dialog_handler(self.memory, verbose))
 
@@ -1273,6 +1312,7 @@ class Orchestrator:
         total_usage = llm.TokenUsage()
         premature_false_finish_count = 0
         premature_true_finish_count = 0
+        premature_all_failed_count = 0
         premature_login_skip_count = 0
         premature_validation_error_count = 0
         premature_deletion_incomplete_count = 0
@@ -1297,8 +1337,8 @@ class Orchestrator:
         effective_goal = goal
         # W41: wall-clock เวลาที่ next_action() ครั้งก่อนหน้า "จบ" (คืนค่ามาแล้ว) — None
         # ตอนยังไม่เคยเรียกเลย (ครั้งแรกไม่ต้องรอ pacing delay อะไรทั้งนั้น) ใช้คำนวณว่ายัง
-        # ต้องหน่วงอีกแค่ไหนให้ครบ _STEP_PACING_DELAY_SECONDS ก่อนเรียกครั้งถัดไป (ดู
-        # docstring ของ _STEP_PACING_DELAY_SECONDS ด้านบนสุดของไฟล์)
+        # ต้องหน่วงอีกแค่ไหนให้ครบ settings.step_pacing_delay_seconds ก่อนเรียกครั้งถัดไป
+        # (ดู comment เต็มด้านบนสุดของไฟล์ + config.py::step_pacing_delay_seconds)
         last_llm_call_at: Optional[float] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
@@ -1408,6 +1448,13 @@ class Orchestrator:
 
             # Intent Classification: ตรวจจับ Intent ของผู้ใช้ก่อนเริ่ม Planner Loop
             initial_elements, initial_page_text = await get_snapshot(page)
+            # Speed 2.1: ในเส้นทางปกติ (ไม่มี confirm_plan) ไม่มีอะไรเปลี่ยนหน้าเว็บระหว่าง
+            # snapshot นี้กับ snapshot แรกของ loop หลักด้านล่าง (auto-login + wait_stable()
+            # รันเสร็จไปแล้วตั้งแต่ก่อนบรรทัดนี้) — เก็บไว้ใช้ซ้ำแทนที่จะ get_snapshot() อีก
+            # รอบซ้ำซ้อนตอนเข้า loop ครั้งแรก invalidate (set เป็น None) เฉพาะ path
+            # confirm_plan ด้านล่างที่ page state เปลี่ยนแน่นอน (รอ user ตอบไม่จำกัดเวลา +
+            # อาจ relaunch browser ใหม่ทั้งหมดถ้า defer_visible_window)
+            cached_elements, cached_page_text = initial_elements, initial_page_text
             user_intent = await llm.classify_intent(client, model, goal, page_text=initial_page_text, provider=resolved_provider)
             if user_intent == "qa_summary":
                 if verbose:
@@ -1516,6 +1563,10 @@ class Orchestrator:
                 plan_text = approved_plan
                 effective_goal = f"{goal}\n\nFollow this confirmed plan:\n{plan_text}"
             elif confirm_plan:
+                # Speed 2.1: page state เปลี่ยนแน่นอนหลังจากนี้ (รอ user ตอบ confirm ไม่
+                # จำกัดเวลา + อาจ relaunch browser ทั้งหมดถ้า defer_visible_window ด้านล่าง)
+                # — invalidate cache บังคับให้ loop หลัก get_snapshot() ใหม่เสมอ
+                cached_elements = cached_page_text = None
                 _, plan_page_text = await get_snapshot(page)
                 plan_text = await llm.generate_plan(client, model, goal, plan_page_text, resolved_provider)
                 if verbose:
@@ -1552,12 +1603,20 @@ class Orchestrator:
                     await browser.close()
                     browser = await _launch_chromium(playwright, headless=False, channel=browser_channel)
                     page = await browser.new_page()
+                    await install_ssrf_guard(page)
                     page.on("dialog", _make_dialog_handler(self.memory, verbose))
                     await goto(page, url)
                     await wait_stable(page)
 
             for _ in range(max_steps):
-                elements, page_text = await get_snapshot(page)
+                # Speed 2.1: รอบแรกของ loop (steps_taken ยังเป็น 0) ใช้ snapshot ที่ cache
+                # ไว้ตอน intent classification แทน get_snapshot() ซ้ำ ถ้ายังไม่ถูก invalidate
+                # (ดู comment ตอนตั้งค่า cached_elements/cached_page_text ด้านบน) — รอบถัดๆ
+                # ไปยังคง get_snapshot() ใหม่ทุกครั้งเหมือนเดิมทุกประการ
+                if steps_taken == 0 and cached_elements is not None:
+                    elements, page_text = cached_elements, cached_page_text
+                else:
+                    elements, page_text = await get_snapshot(page)
                 await _emit_screenshot(steps_taken)
                 # W5[A] verify: เก็บ page_text ล่าสุดไว้เป็นหลักฐานจริงจาก DOM ตอนจบ
                 # task (ทุก path — finish_task/loop-detected/หมด max_steps) แนบไปกับ
@@ -1566,10 +1625,22 @@ class Orchestrator:
                 final_page_text = page_text
 
                 # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step ที่หน้าเปลี่ยน
-                # จริง (retrieve() ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error) — ใช้
-                # to_thread เพราะเป็นงาน sync (local embedding inference + ChromaDB query)
-                # ไม่งั้นจะบล็อก event loop ตัวเดียวกับที่ Playwright ใช้อยู่ (เหมือน
+                # จริง (retrieve()/recall() ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error)
+                # — ใช้ to_thread เพราะเป็นงาน sync (local embedding inference + ChromaDB
+                # query) ไม่งั้นจะบล็อก event loop ตัวเดียวกับที่ Playwright ใช้อยู่ (เหมือน
                 # _confirm_plan() ที่ wrap input() ด้วย to_thread ด้วยเหตุผลเดียวกัน)
+                #
+                # Speed 2.2: retriever.retrieve()/long_term_memory.recall() คำนวณ
+                # embed_input จาก (goal, page_text) แบบเดียวกันเป๊ะ แล้ว query ด้วย
+                # embedding function เดียวกัน (_embedding_function singleton ใน
+                # chroma_client.py) แยกกันคนละ collection — เดิม embed ซ้ำ 2 รอบทั้งที่ผล
+                # embedding เหมือนกัน (sequential await ด้วย) เปลี่ยนเป็น embed ครั้งเดียว
+                # แล้วส่ง vector สำเร็จรูปเข้าทั้งคู่ (query_embedding=) + ยิง query ของทั้ง
+                # สอง collection พร้อมกันผ่าน asyncio.gather() แทน await ทีละตัว — ไม่แตะ
+                # _client_lock ที่มีอยู่แล้วใน chroma_client.py (กัน race ตอน init ครั้งแรก
+                # จากหลาย thread) การ gather ยังปลอดภัยเพราะ lock นั้นยังทำงานอยู่เหมือนเดิม
+                # embed ล้มเหลว (model โหลดไม่ผ่าน ฯลฯ) fallback เป็น query_embedding=None
+                # ให้ retrieve()/recall() embed เองจาก query_texts ตามเดิมทุกประการ (ไม่ throw)
                 #
                 # W22: ถ้า page_text เหมือน step ก่อนหน้าเป๊ะ (เช่น action ก่อนหน้า fail/ไม่
                 # navigate ไปไหน) ข้าม retrieval ทั้งคู่ไปเลย ใช้ marker สั้นๆ แทนก้อนข้อความ
@@ -1577,16 +1648,26 @@ class Orchestrator:
                 # last_page_text_for_context ด้านบนสุดของ run_task())
                 page_changed_for_context = page_text != last_page_text_for_context
                 if page_changed_for_context:
-                    manual_chunks = await asyncio.to_thread(
-                        retriever.retrieve, query=goal, page_state=page_text, k=_RAG_CHUNKS_PER_STEP
+                    step_embed_input = f"{goal}\n\nCurrent page:\n{page_text}"
+                    try:
+                        step_embedding = (
+                            await asyncio.to_thread(_embedding_function, [step_embed_input])
+                        )[0]
+                    except Exception:
+                        step_embedding = None
+
+                    manual_chunks, long_term_chunks = await asyncio.gather(
+                        asyncio.to_thread(
+                            retriever.retrieve, query=goal, page_state=page_text,
+                            k=_RAG_CHUNKS_PER_STEP, query_embedding=step_embedding,
+                        ),
+                        asyncio.to_thread(
+                            long_term_memory.recall,
+                            query=goal, page_state=page_text, k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
+                            session_id=session_id or "", query_embedding=step_embedding,
+                        ),
                     )
                     manual_context = "\n".join(f"- {chunk}" for chunk in manual_chunks)
-
-                    long_term_chunks = await asyncio.to_thread(
-                        long_term_memory.recall,
-                        query=goal, page_state=page_text, k=_LONG_TERM_MEMORY_CHUNKS_PER_STEP,
-                        session_id=session_id or "",
-                    )
                     long_term_context = "\n".join(f"- {chunk}" for chunk in long_term_chunks)
 
                     last_page_text_for_context = page_text
@@ -1635,7 +1716,7 @@ class Orchestrator:
                 # ดู pending_vision_context ด้านบนสุดของ run_task())
                 vision_context, pending_vision_context = pending_vision_context, ""
 
-                # W41: หน่วงเฉพาะส่วนที่ยังขาดให้ครบ _STEP_PACING_DELAY_SECONDS นับจากที่
+                # W41: หน่วงเฉพาะส่วนที่ยังขาดให้ครบ settings.step_pacing_delay_seconds นับจากที่
                 # next_action() ครั้งก่อนจบ (ไม่ใช่ sleep เต็มจำนวนทุกครั้งแบบเดิม) — งาน
                 # จริงที่ทำไปแล้วตั้งแต่ครั้งก่อน (execute()/wait_stable()/get_snapshot()/
                 # retrieve()/recall() ด้านบน) นับรวมเข้าไปในระยะห่างนี้ด้วย ระยะห่างขั้นต่ำ
@@ -1643,7 +1724,7 @@ class Orchestrator:
                 # rate-limit) แค่ไม่ sleep ซ้ำกับเวลาที่ผ่านไปแล้วจริง
                 if last_llm_call_at is not None:
                     elapsed = time.monotonic() - last_llm_call_at
-                    remaining = _STEP_PACING_DELAY_SECONDS - elapsed
+                    remaining = settings.step_pacing_delay_seconds - elapsed
                     if remaining > 0:
                         await asyncio.sleep(remaining)
 
@@ -1722,6 +1803,33 @@ class Orchestrator:
                             f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(true) โดยยังไม่ทำ action ใดๆ เลย "
                             f"ต้องมีหลักฐานชัดเจนจาก indexed elements ปัจจุบันว่าเป้าหมาย '{goal}' สำเร็จแล้ว "
                             f"จริงๆ ก่อนยืนยันอีกครั้ง",
+                        ))
+                        continue
+
+                    # ACC-3 (accuracy audit follow-up): symmetric กับ guard ด้านบน (steps_taken
+                    # ==0) แต่เช็ค steps_taken > 0 แทน — โมเดลลอง action จริงมาแล้วหลาย step
+                    # (ผ่าน guard แรกไปแล้ว) แต่ถ้าไม่มี mutating action ไหนสำเร็จเลยสักครั้ง
+                    # ตลอดทั้ง task ก็ยังน่าสงสัยเหมือนกัน (ดู _has_any_successful_mutating_
+                    # action() ด้านบนสุดของไฟล์สำหรับเหตุผลเต็ม)
+                    if (
+                        claimed_success
+                        and tool_use_id
+                        and steps_taken > 0
+                        and not _has_any_successful_mutating_action(self.memory.all())
+                        and premature_all_failed_count < _MAX_PREMATURE_ALL_FAILED_RETRIES
+                    ):
+                        premature_all_failed_count += 1
+                        if verbose:
+                            print(
+                                f"[finish_task(true) ไม่มี mutating action ไหนสำเร็จเลย "
+                                f"{premature_all_failed_count}/{_MAX_PREMATURE_ALL_FAILED_RETRIES}] "
+                                f"message={tool_input.get('message', '')}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _PREMATURE_ALL_FAILED_NUDGE)
+                        messages.append(_build_nudge_message(
+                            resolved_provider,
+                            f"⚠️ [ระบบคำสั่งสำคัญ]: {_PREMATURE_ALL_FAILED_NUDGE}",
                         ))
                         continue
 
@@ -2434,6 +2542,7 @@ class Orchestrator:
         context = None
         if page is None:
             context = await browser.new_context()
+            await install_ssrf_guard(context)
             page = await context.new_page()
             owns_context = True
 

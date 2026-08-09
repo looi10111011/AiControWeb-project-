@@ -12,6 +12,9 @@
 secrets.json
 config.local.py
 credentials*.json
+# Security 1.4: local Fernet key ที่เข้ารหัส/ถอดรหัส credentials.json (ดู
+# site_learning/storage.py) — generate อัตโนมัติต่อเครื่อง ห้ามขึ้น repo เด็ดขาด
+data/.credential_key
 
 # ---- Python ----
 __pycache__/

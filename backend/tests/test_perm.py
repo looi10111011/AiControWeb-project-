@@ -1,9 +1,16 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from playwright.async_api import async_playwright
 
 from backend.app.core.actions import execute
-from backend.app.permission.rules import ALLOWED_DOMAINS, ActionRisk, classify_action
+from backend.app.permission.rules import (
+    ALLOWED_DOMAINS,
+    ActionRisk,
+    classify_action,
+    install_ssrf_guard,
+    is_private_or_internal,
+)
 
 # adapted จาก PR "permission-ab" (origin/permission-ab) — ไฟล์เดิมเป็น manual script
 # (print + if __name__ == "__main__") ไม่ใช่ pytest test จริง เขียนใหม่เป็น
@@ -359,3 +366,272 @@ async def test_execute_forwards_allowed_domains_to_classify_action():
     )
     assert result.success is False
     assert "บล็อก" in result.message
+
+
+# --- Security 1.2 (SSRF): is_private_or_internal() + goto ไปยัง private/internal IP ---
+
+
+def test_is_private_or_internal_true_for_cloud_metadata_ip():
+    assert is_private_or_internal("169.254.169.254") is True
+
+
+def test_is_private_or_internal_true_for_rfc1918_ranges():
+    assert is_private_or_internal("10.0.0.5") is True
+    assert is_private_or_internal("172.16.0.5") is True
+    assert is_private_or_internal("192.168.1.1") is True
+
+
+def test_is_private_or_internal_true_for_loopback():
+    assert is_private_or_internal("127.0.0.1") is True
+    assert is_private_or_internal("localhost") is True
+    assert is_private_or_internal("::1") is True
+
+
+def test_is_private_or_internal_false_for_public_ip():
+    assert is_private_or_internal("8.8.8.8") is False
+
+
+def test_is_private_or_internal_false_for_public_domain():
+    assert is_private_or_internal("example.com") is False
+
+
+def test_is_private_or_internal_false_for_unresolvable_hostname():
+    assert is_private_or_internal("this-domain-does-not-exist-xyz123.invalid") is False
+
+
+def test_classify_action_blocks_goto_to_cloud_metadata_ip():
+    cmd = {"type": "goto", "url": "http://169.254.169.254/"}
+    assert classify_action(cmd) == ActionRisk.BLOCKED
+
+
+def test_classify_action_blocks_goto_to_private_lan_ip():
+    cmd = {"type": "goto", "url": "http://192.168.1.1/admin"}
+    assert classify_action(cmd) == ActionRisk.BLOCKED
+
+
+def test_classify_action_blocks_goto_to_localhost():
+    cmd = {"type": "goto", "url": "http://localhost:8000/"}
+    assert classify_action(cmd) == ActionRisk.BLOCKED
+
+
+def test_classify_action_ssrf_block_wins_even_when_domain_in_allowed_domains():
+    """defense-in-depth: SSRF block ต้องเช็คก่อน ALLOWED_DOMAINS เสมอ — แม้ caller จะ
+    allowlist โดเมนนี้ไว้ (ไม่มีทาง allowlist internal IP ได้จริง)"""
+    cmd = {"type": "goto", "url": "http://169.254.169.254/"}
+    assert classify_action(cmd, allowed_domains={"169.254.169.254"}) == ActionRisk.BLOCKED
+
+
+def test_classify_action_allows_internal_navigation_when_setting_enabled(monkeypatch):
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "allow_internal_navigation", True)
+    cmd = {"type": "goto", "url": "http://localhost:8000/"}
+    assert classify_action(cmd) == ActionRisk.SAFE
+
+
+def test_classify_action_goto_public_domain_still_safe():
+    """sanity: goto ไปโดเมนสาธารณะปกติต้องไม่ถูกกระทบจากการเพิ่ม SSRF check เลย"""
+    cmd = {"type": "goto", "url": "https://example.com/"}
+    assert classify_action(cmd) == ActionRisk.SAFE
+
+
+# --- Security 1.3: SAFE-downgrade heuristic (tag/structure-based) จำกัดเฉพาะ
+# action_type=="submit" เท่านั้น — delete/purchase/pay ต้อง fallthrough ไป
+# NEEDS_CONFIRMATION เสมอถ้าไม่ match risky/safe label แม้จะเป็น <a>/plain <input> ก็ตาม
+# (เดิม heuristic นี้ครอบคลุมทั้ง 4 action type ทำให้หน้าเว็บทำปุ่ม "ลบ"/"สั่งซื้อ" เป็น <a>
+# label ทั่วไปหลบ confirmation ได้ — บั๊กจริงที่พบ)
+
+
+def test_classify_action_needs_confirmation_for_delete_type_anchor_with_arbitrary_label():
+    cmd = {"type": "delete", "index": 1}
+    assert classify_action(cmd, label="Continue", element_tag="a") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_needs_confirmation_for_purchase_type_anchor_with_arbitrary_label():
+    cmd = {"type": "purchase", "index": 1}
+    assert classify_action(cmd, label="Continue", element_tag="a") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_needs_confirmation_for_pay_type_anchor_with_arbitrary_label():
+    cmd = {"type": "pay", "index": 1}
+    assert classify_action(cmd, label="Continue", element_tag="a") == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_needs_confirmation_for_delete_type_plain_input_with_arbitrary_label():
+    cmd = {"type": "delete", "index": 1}
+    assert classify_action(
+        cmd, label="xyz", element_tag="input", element_type="text",
+    ) == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_needs_confirmation_for_purchase_type_plain_input_with_arbitrary_label():
+    cmd = {"type": "purchase", "index": 1}
+    assert classify_action(
+        cmd, label="xyz", element_tag="input", element_type="text",
+    ) == ActionRisk.NEEDS_CONFIRMATION
+
+
+def test_classify_action_delete_type_still_safe_when_label_matches_safe_keyword():
+    """sanity: delete type ที่ label match SAFE_ACTION_LABEL_KEYWORDS จริงๆ (ไม่ใช่ tag
+    downgrade) ยังต้องเป็น SAFE เหมือนเดิม — ไม่ถูกกระทบจากการจำกัด scope นี้เลย"""
+    cmd = {"type": "delete", "index": 1}
+    assert classify_action(cmd, label="View details") == ActionRisk.SAFE
+
+
+def test_classify_action_submit_type_anchor_downgrade_still_works_after_narrowing():
+    """sanity: 2 เคส false-positive เดิม (W_search follow-up) เกิดกับ action_type=="submit"
+    เท่านั้น — ต้องยังทำงานเหมือนเดิมทุกประการหลังจำกัด scope การ downgrade"""
+    cmd = {"type": "submit", "index": 12}
+    label = "เพลงรัก - Three Man Down |Official MV|"
+    assert classify_action(cmd, label=label, element_tag="a") == ActionRisk.SAFE
+
+
+# --- Security follow-up: install_ssrf_guard()/_ssrf_route_handler() — SSRF check ที่ชั้น
+# เครือข่ายจริง แก้ 2 ช่องโหว่ที่ classify_action() (เช็คแค่ action_type=="goto") ปิดไม่ถึง:
+# (1) agent คลิกลิงก์ไป internal IP แทนที่จะ goto ตรงๆ (2) goto ไปโดเมนสาธารณะที่ redirect
+# ไปยัง internal IP (open redirect/DNS rebinding) — ดู module comment เต็มใน rules.py
+
+
+def _make_mock_route(url: str, is_navigation: bool):
+    request = MagicMock()
+    request.url = url
+    request.is_navigation_request = MagicMock(return_value=is_navigation)
+    route = MagicMock()
+    route.request = request
+    route.abort = AsyncMock()
+    route.continue_ = AsyncMock()
+    return route
+
+
+@pytest.mark.asyncio
+async def test_ssrf_route_handler_aborts_navigation_to_private_ip():
+    from backend.app.permission.rules import _ssrf_route_handler
+
+    route = _make_mock_route("http://169.254.169.254/latest/meta-data/", is_navigation=True)
+    await _ssrf_route_handler(route)
+    route.abort.assert_awaited_once()
+    route.continue_.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ssrf_route_handler_allows_navigation_to_public_domain():
+    from backend.app.permission.rules import _ssrf_route_handler
+
+    route = _make_mock_route("https://example.com/", is_navigation=True)
+    await _ssrf_route_handler(route)
+    route.continue_.assert_awaited_once()
+    route.abort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ssrf_route_handler_skips_check_for_non_navigation_subresource():
+    """W: จำกัดเช็คแค่ is_navigation_request() เท่านั้น (ดู module comment ใน rules.py
+    เรื่อง trade-off performance) — subresource (css/js/image/xhr) แม้ไป private IP ก็
+    ปล่อยผ่านไม่เช็คเลย ไม่เสียเวลา resolve DNS เพิ่มทุก request ย่อยของทุกหน้า"""
+    from backend.app.permission.rules import _ssrf_route_handler
+
+    route = _make_mock_route("http://169.254.169.254/evil.js", is_navigation=False)
+    await _ssrf_route_handler(route)
+    route.continue_.assert_awaited_once()
+    route.abort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ssrf_route_handler_respects_allow_internal_navigation_setting(monkeypatch):
+    from backend.app.config import settings
+    from backend.app.permission.rules import _ssrf_route_handler
+
+    monkeypatch.setattr(settings, "allow_internal_navigation", True)
+    route = _make_mock_route("http://169.254.169.254/", is_navigation=True)
+    await _ssrf_route_handler(route)
+    route.continue_.assert_awaited_once()
+    route.abort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_install_ssrf_guard_blocks_real_goto_to_internal_ip():
+    """integration เต็มสาย: install_ssrf_guard() บน Page จริง + page.goto() จริงไป
+    127.0.0.1 (private ตามจริง — ไม่ต้อง mock is_private_or_internal เลย) ต้องถูก block
+    จริง (route.abort() ทำให้ Playwright โยน error แทนที่จะโหลดหน้าสำเร็จ)"""
+    import http.server
+    import threading
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await install_ssrf_guard(page)
+            with pytest.raises(Exception):
+                await page.goto(f"http://127.0.0.1:{port}/", timeout=5000)
+            await browser.close()
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_install_ssrf_guard_allows_goto_when_internal_navigation_enabled(monkeypatch):
+    """sanity: settings.allow_internal_navigation=True (dev ที่ตั้งใจทดสอบเว็บ local) ต้อง
+    ไม่บล็อก goto ไปยัง 127.0.0.1 เหมือนเดิม — guard เป็น escape hatch จริง ไม่ใช่ hard-block
+    ตายตัวที่ปิดไม่ได้เลย"""
+    import http.server
+    import threading
+
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "allow_internal_navigation", True)
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            await install_ssrf_guard(page)
+            resp = await page.goto(f"http://127.0.0.1:{port}/", timeout=5000)
+            assert resp is not None and resp.ok
+            await browser.close()
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_install_ssrf_guard_blocks_click_driven_navigation_to_internal_ip(tmp_path):
+    """Security SEC-1: SSRF ผ่านการ "คลิก" ลิงก์ (ไม่ใช่ goto ตรงๆ) ต้องถูก block เหมือนกัน
+    — จำลองหน้าเว็บที่มีลิงก์ไป internal target (ทั้งคู่อยู่บน 127.0.0.1 เดียวกัน ดังนั้น
+    "คลิกลิงก์" นี้คือ navigation ไปยัง private IP จริง เหมือนกรณี prompt injection ที่ฝัง
+    <a href="http://169.254.169.254/..."> หลอกให้ agent คลิก)"""
+    import functools
+    import http.server
+    import threading
+
+    index_path = tmp_path / "index.html"
+    index_path.write_text('<html><body><a id="go" href="/target.html">click</a></body></html>', encoding="utf-8")
+    (tmp_path / "target.html").write_text("<html><body>should never load</body></html>", encoding="utf-8")
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            # โหลดหน้าแรกได้ตามปกติก่อน (allow_internal_navigation ชั่วคราวแค่ตอน goto นี้
+            # ไม่งั้นแม้แต่หน้า index เองก็โหลดไม่ได้เพราะอยู่บน 127.0.0.1 เหมือนกัน) —
+            # จำลองสถานการณ์จริงที่ agent อยู่บนหน้าเว็บสาธารณะที่ถูกฝัง prompt injection
+            # แล้วโดนหลอกให้คลิกลิงก์ไป private IP โดยไม่ได้ตั้งใจ goto ไปเองตรงๆ
+            await page.goto(f"http://127.0.0.1:{port}/index.html", timeout=5000)
+            await install_ssrf_guard(page)
+            await page.click("#go")
+            await page.wait_for_timeout(300)
+            assert "should never load" not in await page.content()
+            await browser.close()
+    finally:
+        httpd.shutdown()

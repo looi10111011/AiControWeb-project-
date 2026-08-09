@@ -154,6 +154,50 @@ def test_find_candidate_templates_parses_stringified_json_fields():
         assert candidates[0]["distance"] == 0.3
 
 
+def test_find_candidate_templates_includes_success_and_failure_counts():
+    """ACC-1 (accuracy audit follow-up): candidate dict ต้องมี success_count/
+    failure_count จริง (เดิมไม่มีเลย ทำให้ llm.plan_with_procedural_memory() ไม่มีทาง
+    เห็น track record ของ template — ดู llm.py::_format_candidates_for_planner)"""
+    with patch("backend.app.core.procedural_memory.get_procedural_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.query.return_value = {
+            "ids": [["doc-1"]],
+            "metadatas": [[{
+                "template_id": "t1", "intent_key": "k1", "version": 2,
+                "goal_pattern": "Log in", "url_pattern": "https://example.com/login",
+                "steps_json": '[{"action": "click"}]', "slots_json": "[]",
+                "success_count": 4, "failure_count": 1,
+            }]],
+            "distances": [[0.3]],
+        }
+
+        candidates = find_candidate_templates("example.com", "please log me in")
+
+        assert candidates[0]["success_count"] == 4
+        assert candidates[0]["failure_count"] == 1
+
+
+def test_find_candidate_templates_defaults_track_record_to_zero_when_absent():
+    """sanity: metadata เก่าที่บันทึกไว้ก่อนมี field นี้ (ไม่มี success_count/
+    failure_count เลย) ต้องไม่ throw — default เป็น 0 เงียบๆ"""
+    with patch("backend.app.core.procedural_memory.get_procedural_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.query.return_value = {
+            "ids": [["doc-1"]],
+            "metadatas": [[{
+                "template_id": "t1", "intent_key": "k1", "version": 1,
+                "goal_pattern": "Log in", "url_pattern": "https://example.com/login",
+                "steps_json": "[]", "slots_json": "[]",
+            }]],
+            "distances": [[0.3]],
+        }
+
+        candidates = find_candidate_templates("example.com", "please log me in")
+
+        assert candidates[0]["success_count"] == 0
+        assert candidates[0]["failure_count"] == 0
+
+
 def test_find_candidate_templates_returns_empty_list_when_no_documents():
     with patch("backend.app.core.procedural_memory.get_procedural_memory_collection") as mock_get:
         mock_get.return_value.query.return_value = {"ids": [[]], "metadatas": [[]], "distances": [[]]}

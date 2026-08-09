@@ -29,6 +29,7 @@ document ที่คืนมาเป็นของ session นี้เท�
 """
 
 import uuid
+from typing import Optional
 
 from backend.app.rag.chroma_client import get_long_term_collection
 
@@ -69,13 +70,20 @@ def record_task(
         print(f"⚠️ Long-term Memory Record Error: {e}")
 
 
-def recall(query: str, page_state: str = "", k: int = 3, session_id: str = "") -> list[str]:
+def recall(
+    query: str, page_state: str = "", k: int = 3, session_id: str = "",
+    query_embedding: Optional[list[float]] = None,
+) -> list[str]:
     """ดึง document ของ task run ก่อนหน้าที่เกี่ยวข้องกับ goal+page ปัจจุบัน "ภายใน
     session เดียวกันเท่านั้น" (session_id ว่างเปล่า = ไม่มี session context ให้ scope
     ปลอดภัยได้ คืน [] ทันทีโดยไม่ query เลย — ดู module docstring) กรองด้วย
     where={"session_id": ...} ที่ ChromaDB ตรงๆ ก่อน semantic search เสมอ ไม่ใช่กรอง
     ทีหลังในโค้ด (รูปแบบเดียวกับ retriever.retrieve() ทุกประการนอกจากนี้ — รวม page_state
-    เข้า query ก่อน embed, คืน [] เสมอถ้า error/ไม่มีอะไรตรง ไม่ throw)"""
+    เข้า query ก่อน embed, คืน [] เสมอถ้า error/ไม่มีอะไรตรง ไม่ throw)
+
+    query_embedding (Optional[list[float]]): Speed 2.2 — เหมือน retriever.retrieve() ทุก
+    ประการ (ดู docstring ที่นั่น) — orchestrator.py คำนวณ embed_input ครั้งเดียวต่อ step
+    ใช้ร่วมกับ retriever.retrieve() แทนที่จะ embed ซ้ำ 2 รอบด้วย embed_input เดียวกันเป๊ะ"""
     if not session_id:
         return []
     try:
@@ -83,9 +91,14 @@ def recall(query: str, page_state: str = "", k: int = 3, session_id: str = "") -
 
         embed_input = f"{query}\n\nCurrent page:\n{page_state}" if page_state else query
 
-        results = collection.query(
-            query_texts=[embed_input], n_results=k, where={"session_id": session_id},
-        )
+        if query_embedding is not None:
+            results = collection.query(
+                query_embeddings=[query_embedding], n_results=k, where={"session_id": session_id},
+            )
+        else:
+            results = collection.query(
+                query_texts=[embed_input], n_results=k, where={"session_id": session_id},
+            )
 
         documents = results.get("documents", [])
         if documents and len(documents) > 0:

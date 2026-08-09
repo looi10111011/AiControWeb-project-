@@ -19,12 +19,24 @@ from backend.app.site_learning.crawler import (
     crawl_site,
     describe_site,
 )
+from backend.app.config import settings
 from backend.app.site_learning.schema import ButtonInfo, PageInfo, UIPatternInfo
 
 # เทสต์กลุ่มนี้ยิงจริงผ่าน chromium จริง (ไม่ mock Playwright) ต่อ local HTTP server ที่
 # serve fixture HTML จริง — mock page.goto()/nav ทั้งเชนยากกว่าและพิสูจน์ BFS/dedup/
 # same-origin filtering ได้แม่นยำน้อยกว่าการรันจริง ส่วน LLM (describe_page) mock ไว้
 # เสมอ (ไม่ยิง API จริง ไม่ใช่สิ่งที่เทสต์กลุ่มนี้อยากพิสูจน์)
+
+
+@pytest.fixture(autouse=True)
+def _allow_local_fixture_server_navigation(monkeypatch):
+    """Security (SSRF follow-up): crawl_site() ตอนนี้ install_ssrf_guard() ที่ context
+    (ดู crawler.py) ซึ่ง hard-block navigation ไปยัง private/internal IP โดย default —
+    fixture server ของเทสต์กลุ่มนี้ทั้งหมด bind กับ 127.0.0.1 (private ตามจริง ไม่ใช่ mock)
+    เป็น "เว็บเป้าหมาย" ของ crawl_site() ในทุกเทสต์ ต้องเปิด allow_internal_navigation
+    เฉพาะในบริบทเทสต์นี้เท่านั้น (เหมือนที่ dev ตั้งใจทดสอบเว็บ local จริงๆ ต้องเปิดเอง) ไม่
+    กระทบพฤติกรรม production เลย"""
+    monkeypatch.setattr(settings, "allow_internal_navigation", True)
 
 _FIXTURE_PAGES = {
     "index.html": """

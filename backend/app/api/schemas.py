@@ -2,6 +2,19 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+# Security (follow-up to SEC audit): attached_file_content_base64 ไม่เคยมี size limit เลย
+# ตั้งแต่ต้น — เสี่ยง memory-exhaustion/zip-bomb ผ่าน .xlsx/.docx (ทั้งคู่เป็น zip ข้างใน
+# decompress เต็มก้อนโดย openpyxl/python-docx ไม่มี guard เรื่องขนาดหลัง decompress เลย) —
+# จำกัดที่ "ขนาดไฟล์ก่อนเข้ารหัส" (decoded) ไว้ที่ 10MB ซึ่งใหญ่พอสำหรับเอกสาร/ตารางที่คนแนบ
+# จริงในแชท (เนื้อหาสุดท้ายก็ต้องยัดใส่ LLM prompt อยู่ดี ไม่มีประโยชน์ให้ใหญ่กว่านี้มาก) —
+# scope แค่จำกัดขนาด input ที่ endpoint boundary เท่านั้น ไม่ได้แก้ zip-bomb แบบเต็มรูปแบบ
+# (เช่น จำกัด decompression ratio ข้างใน openpyxl/python-docx เอง) เพราะต้องแก้ library
+# ที่ใช้อยู่เพิ่มอีกชั้น แลกกับความเสี่ยงที่ลดลงมากแล้วจากการจำกัดขนาด input (zip bomb ใน
+# ไฟล์ 10MB ยังขยายได้มาก แต่ไม่ใช่ "unlimited" เหมือนเดิม) — คำนวณจากขนาด base64 string
+# (ใหญ่กว่าขนาดไฟล์จริง ~4/3 เท่าจาก base64 encoding overhead)
+_MAX_ATTACHED_FILE_DECODED_BYTES = 10 * 1024 * 1024  # 10MB
+_MAX_ATTACHED_FILE_BASE64_CHARS = (_MAX_ATTACHED_FILE_DECODED_BYTES * 4 // 3) + 4  # + padding เผื่อ
+
 
 class CreateTaskRequest(BaseModel):
     url: str
@@ -43,6 +56,12 @@ class CreateTaskRequest(BaseModel):
     # page ตัวเดิมกลับมาทันที ไม่เปิดใหม่ — ปิด session ด้วย POST /sessions/{id}/close
     # เท่านั้น (ปุ่ม "New Session" บน Test Console)
     session_id: Optional[str] = None
+    # Security (SEC-4 follow-up): secret ที่ frontend generate คู่กับ session_id เอง (ดู
+    # core/session_registry.py::BrowserSession.owner_token) — ต้องแนบมาด้วยทุกครั้งที่
+    # session_id นี้เคยมีอยู่แล้ว ไม่งั้นถือว่าไม่ใช่เจ้าของ (SessionOwnershipError -> 403)
+    # ไม่ส่งมา (None) ตอน session_id ยังไม่เคยมีอยู่จริง = สร้างใหม่โดยไม่มี token ป้องกันเลย
+    # (เข้ากันได้กับ caller เดิมที่ยังไม่รู้จัก field นี้ เช่น CLI/test)
+    session_owner_token: Optional[str] = None
     # pdf/xlsx: user แนบไฟล์ PDF/XLSX ผ่าน composer โดยตรง (ต่างจาก site-manual/RAG
     # upload) — ทั้งคู่ None (default) = พฤติกรรมเดิมทุกประการ ส่งมาทั้งคู่ =
     # routes.py::_run_with_resolved_browser ตอบจากเนื้อหาไฟล์ตรงๆ ไม่แตะ browser/session/
@@ -50,7 +69,9 @@ class CreateTaskRequest(BaseModel):
     # multipart เพราะทั้งระบบนี้เป็น JSON body ล้วนๆ อยู่แล้ว ดู core/rag/ingestion.py::
     # load_manual_bytes สำหรับตัว decode/extract จริง)
     attached_file_name: Optional[str] = None
-    attached_file_content_base64: Optional[str] = None
+    attached_file_content_base64: Optional[str] = Field(
+        default=None, max_length=_MAX_ATTACHED_FILE_BASE64_CHARS,
+    )
 
 
 class GeneratePlanRequest(BaseModel):
@@ -65,11 +86,19 @@ class GeneratePlanRequest(BaseModel):
     # แค่ lookup เฉยๆ (session_registry.get(), ไม่ใช่ get_or_create()) ไม่มีทางสร้าง
     # session/เปิด browser ใหม่จาก endpoint นี้เด็ดขาด ไม่ว่า session_id จะมีอยู่จริงไหม
     session_id: Optional[str] = None
+    # Security (SEC-4 follow-up): secret ที่ frontend generate คู่กับ session_id เอง (ดู
+    # core/session_registry.py::BrowserSession.owner_token) — ต้องแนบมาด้วยทุกครั้งที่
+    # session_id นี้เคยมีอยู่แล้ว ไม่งั้นถือว่าไม่ใช่เจ้าของ (SessionOwnershipError -> 403)
+    # ไม่ส่งมา (None) ตอน session_id ยังไม่เคยมีอยู่จริง = สร้างใหม่โดยไม่มี token ป้องกันเลย
+    # (เข้ากันได้กับ caller เดิมที่ยังไม่รู้จัก field นี้ เช่น CLI/test)
+    session_owner_token: Optional[str] = None
     # pdf/xlsx: mirror ของ CreateTaskRequest ด้านบน — มีค่า = routes.py::generate_plan
     # คืน is_qa=True ทันที (ข้าม classify_intent()/LLM call ไปเลย เหมือน qa_summary intent
     # ปกติ) ให้ frontend ข้ามหน้าต่างอนุมัติ PLAN ไปตอบจากไฟล์ได้ทันที
     attached_file_name: Optional[str] = None
-    attached_file_content_base64: Optional[str] = None
+    attached_file_content_base64: Optional[str] = Field(
+        default=None, max_length=_MAX_ATTACHED_FILE_BASE64_CHARS,
+    )
     # W20 ("Context-Aware Implicit Execution"): the immediately-preceding turn's goal/reply in
     # this same conversation (if any) — frontend reads this from its own client-side history
     # right before submitting (see index.html::requestPlan()). Lets the planner resolve
@@ -119,6 +148,12 @@ class ExecutePlanRequest(BaseModel):
     use_user_browser: bool = False
     tab_reuse_policy: Optional[str] = None
     session_id: Optional[str] = None
+    # Security (SEC-4 follow-up): secret ที่ frontend generate คู่กับ session_id เอง (ดู
+    # core/session_registry.py::BrowserSession.owner_token) — ต้องแนบมาด้วยทุกครั้งที่
+    # session_id นี้เคยมีอยู่แล้ว ไม่งั้นถือว่าไม่ใช่เจ้าของ (SessionOwnershipError -> 403)
+    # ไม่ส่งมา (None) ตอน session_id ยังไม่เคยมีอยู่จริง = สร้างใหม่โดยไม่มี token ป้องกันเลย
+    # (เข้ากันได้กับ caller เดิมที่ยังไม่รู้จัก field นี้ เช่น CLI/test)
+    session_owner_token: Optional[str] = None
     # W_procmem: mirror ของ GeneratePlanResponse ด้านบน — frontend ส่งต่อค่าที่ได้จาก
     # POST /api/generate_plan กลับมาตรงๆ ที่นี่ ถ้า execution_mode == "fastpath" และ
     # template_id/steps มีค่าจริงทั้งคู่ routes.py::execute_plan() จะวิ่งผ่าน
@@ -132,7 +167,9 @@ class ExecutePlanRequest(BaseModel):
     execution_mode: Optional[str] = None
     # pdf/xlsx: mirror ของ CreateTaskRequest — ดู comment ที่นั่นสำหรับรายละเอียดเต็ม
     attached_file_name: Optional[str] = None
-    attached_file_content_base64: Optional[str] = None
+    attached_file_content_base64: Optional[str] = Field(
+        default=None, max_length=_MAX_ATTACHED_FILE_BASE64_CHARS,
+    )
 
 
 class TaskCreatedResponse(BaseModel):

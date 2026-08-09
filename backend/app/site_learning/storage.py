@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from backend.app.config import settings
 from backend.app.site_learning.schema import PageInfo, SiteManual
 
@@ -140,19 +142,53 @@ def _credentials_path(domain: str) -> Path:
     return _domain_dir(domain) / "credentials.json"
 
 
+def _credential_key_path() -> Path:
+    # Security 1.4: key ต่อเครื่อง เก็บที่ระดับ "data/" เดียว (parent ของ site_manuals_dir)
+    # ไม่ใช่ต่อโดเมน — credentials.json ของทุกโดเมนใช้ key เดียวกัน
+    return Path(settings.site_manuals_dir).parent / ".credential_key"
+
+
+def _get_fernet() -> Fernet:
+    """Security 1.4: เข้ารหัส/ถอดรหัส credentials.json ด้วย key แบบ local-machine — generate
+    ครั้งแรกที่ต้องใช้แล้วเก็บไว้ที่ data/.credential_key (gitignored) ไม่ต้องให้ user ตั้ง
+    env var เพิ่มเอง ไฟล์นี้เป็น secret ต่อเครื่อง — ย้ายเครื่อง/ลบไฟล์นี้ทิ้งแล้ว
+    credentials.json เก่าที่เข้ารหัสไว้แล้วจะถอดรหัสไม่ได้อีก (ต้องกรอก credential ใหม่)"""
+    path = _credential_key_path()
+    if path.exists():
+        key = path.read_bytes()
+    else:
+        key = Fernet.generate_key()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(key)
+    return Fernet(key)
+
+
 def save_credentials(domain: str, username: str, password: str) -> None:
     """W17: เก็บ username/password สำหรับโดเมนนี้ไว้ให้ orchestrator ดึงไปใช้ auto-login
     ตอนรัน task จริง (ดู core/orchestrator.py::_maybe_auto_login, site_learning/
     auto_login.py) — เขียนคนละไฟล์ (credentials.json) แยกจาก latest.json ของ manual โดย
     เจตนา ไม่ปนกับ manual ที่ save_manual() เขียนทับ (กันหลุดปนไปด้วยความไม่ตั้งใจถ้ามีคน
-    แก้ save_manual()/schema ในอนาคต) — ไฟล์นี้เขียนทับ
-    ตัวเดิมเสมอ ไม่มีประวัติเวอร์ชัน"""
-    _write_json(_credentials_path(domain), {"username": username, "password": password})
+    แก้ save_manual()/schema ในอนาคต) — ไฟล์นี้เขียนทับตัวเดิมเสมอ ไม่มีประวัติเวอร์ชัน
+
+    Security 1.4: username/password เข้ารหัสด้วย Fernet ก่อนเขียนลงดิสก์เสมอ (marker
+    "encrypted": true ให้ load_credentials() แยกจากไฟล์เก่าที่ยังเป็น plaintext ได้)"""
+    fernet = _get_fernet()
+    encrypted = {
+        "encrypted": True,
+        "username": fernet.encrypt(username.encode("utf-8")).decode("ascii"),
+        "password": fernet.encrypt(password.encode("utf-8")).decode("ascii"),
+    }
+    _write_json(_credentials_path(domain), encrypted)
 
 
 def load_credentials(domain: str) -> Optional[dict]:
     """คืน {"username":..., "password":...} หรือ None ถ้ายังไม่เคยเก็บไว้/อ่านไม่ได้ (ไม่
-    throw — โดเมนที่ไม่มี credential เก็บไว้เป็นเรื่องปกติ ไม่ใช่ error)"""
+    throw — โดเมนที่ไม่มี credential เก็บไว้เป็นเรื่องปกติ ไม่ใช่ error)
+
+    Security 1.4: ไฟล์ที่มี marker "encrypted": true ถอดรหัสก่อนคืนค่า — ไฟล์เก่าที่ยังเป็น
+    plaintext (ไม่มี marker นี้เลย จาก storage.py เวอร์ชันก่อนหน้า) อ่านตรงๆ แบบเดิมเพื่อ
+    backward-compat แล้ว re-save แบบเข้ารหัสทันที (migration แบบเนียน ไม่ต้องมี script
+    แยกต่างหาก ไม่ต้องให้ user ทำอะไรเอง)"""
     path = _credentials_path(domain)
     if not path.exists():
         return None
@@ -163,6 +199,20 @@ def load_credentials(domain: str) -> Optional[dict]:
     username = data.get("username")
     password = data.get("password")
     if not username or not password:
+        return None
+    if not data.get("encrypted"):
+        # legacy plaintext — migrate เงียบๆ (ไม่ throw ถ้า migrate ไม่สำเร็จ เพราะยังคืนค่า
+        # ที่อ่านได้แล้วอยู่ดี ไม่ควรทำให้ caller เห็น error จากการ migrate ที่ไม่ใช่ requirement)
+        try:
+            save_credentials(domain, username, password)
+        except OSError:
+            pass
+        return {"username": username, "password": password}
+    try:
+        fernet = _get_fernet()
+        username = fernet.decrypt(username.encode("ascii")).decode("utf-8")
+        password = fernet.decrypt(password.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
         return None
     return {"username": username, "password": password}
 

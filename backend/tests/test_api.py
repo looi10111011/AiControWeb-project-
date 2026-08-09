@@ -96,6 +96,14 @@ def _isolated_chroma(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(_isolated_chroma):
+    # Security 1.5: TestClient ยิงทุก request ด้วย "testclient" identity เดียวกันหมด (ไม่มี
+    # IP จริงให้ get_remote_address แยก) — ถ้าไม่ reset limiter ระหว่างเทสต์ นับรวมข้ามเทสต์
+    # ทั้งไฟล์จนชน rate limit ของ POST /tasks/POST /api/site-manual/learn (10-5 ต่อนาที)
+    # กลางทาง ทำให้เทสต์ทีหลังได้ 429 ทั้งที่ไม่เกี่ยวกับสิ่งที่กำลังเทสต์เลย (ดู
+    # routes.py::limiter) — reset ก่อนทุกเทสต์ให้เริ่มนับใหม่เสมอ เหมือนเป็นคนละ client จริง
+    from backend.app.api.routes import limiter as api_limiter
+
+    api_limiter.reset()
     with patch("backend.app.main.BrowserPool", _FakeBrowserPool):
         with TestClient(app) as c:
             yield c
@@ -1001,6 +1009,113 @@ def test_close_session_then_reusing_id_creates_new_page(client):
 def test_close_unknown_session_returns_404(client):
     resp = client.post("/sessions/does-not-exist/close")
     assert resp.status_code == 404
+
+
+# --- Security (SEC-4 follow-up): session_owner_token — session_id เดิมเป็นแค่ string ที่
+# ใครก็ตามที่มี X-API-Key เดียวกันแนบเข้าไปใช้ต่อได้เลย ไม่มีการเช็คความเป็นเจ้าของ (ดู
+# core/session_registry.py::BrowserSession.owner_token) — เทสต์กลุ่มนี้ยิงผ่าน endpoint
+# จริงทั้งหมด (ไม่ใช่ unit test ของ SessionRegistry เอง — ดู test_session_registry.py)
+
+
+def test_close_session_with_wrong_owner_token_returns_403(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+        resp = client.post(
+            "/tasks",
+            json={
+                "url": "https://example.com", "goal": "เปิดเว็บ",
+                "session_id": "sess-owned", "session_owner_token": "correct-secret",
+            },
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    close_resp = client.post("/sessions/sess-owned/close?session_owner_token=wrong-secret")
+    assert close_resp.status_code == 403
+
+
+def test_close_session_with_correct_owner_token_succeeds(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+        resp = client.post(
+            "/tasks",
+            json={
+                "url": "https://example.com", "goal": "เปิดเว็บ",
+                "session_id": "sess-owned-2", "session_owner_token": "correct-secret",
+            },
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    close_resp = client.post("/sessions/sess-owned-2/close?session_owner_token=correct-secret")
+    assert close_resp.status_code == 200
+
+
+def test_close_session_without_owner_token_still_works_when_none_was_ever_set(client):
+    """sanity: caller เดิมที่ไม่รู้จัก field นี้เลย (ไม่เคยส่ง session_owner_token ตั้งแต่
+    สร้าง session) ยังปิด session ได้ปกติทุกประการ — backward-compat"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+        resp = client.post(
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-no-token"},
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+    close_resp = client.post("/sessions/sess-no-token/close")
+    assert close_resp.status_code == 200
+
+
+def test_create_task_with_mismatched_session_owner_token_fails_the_task(client):
+    """create_task() รัน session resolution ข้างในตัว background task (ไม่ใช่ synchronous
+    endpoint handler) — ownership mismatch เลยปรากฏเป็น task status="error" แทนที่จะเป็น
+    403 ตรงๆ (ดู routes.py::_run_with_resolved_browser) แต่ยังคง block การเข้าถึงจริง
+    (ไม่มีทาง run_task() ถูกเรียกด้วย browser/page ของ session คนอื่นเลย)"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_run_task = AsyncMock(return_value=_FAKE_RESULT)
+        MockOrchestrator.return_value.run_task = mock_run_task
+
+        first = client.post(
+            "/tasks",
+            json={
+                "url": "https://example.com", "goal": "เปิดเว็บ",
+                "session_id": "sess-hijack-attempt", "session_owner_token": "owner-secret",
+            },
+        )
+        _poll_until(client, first.json()["task_id"])
+
+        second = client.post(
+            "/tasks",
+            json={
+                "url": "https://example.com", "goal": "แอบใช้ต่อ",
+                "session_id": "sess-hijack-attempt", "session_owner_token": "attacker-guess",
+            },
+        )
+        final = _poll_until(client, second.json()["task_id"])
+
+    assert final["status"] == "error"
+    assert "owner_token" in final["error"]
+    # run_task() ต้องถูกเรียกแค่รอบเดียว (ของ request แรกที่เป็นเจ้าของจริง) ไม่ใช่ 2 รอบ
+    mock_run_task.assert_awaited_once()
+
+
+def test_generate_plan_with_wrong_session_owner_token_returns_403(client):
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
+        resp = client.post(
+            "/tasks",
+            json={
+                "url": "https://example.com", "goal": "เปิดเว็บ",
+                "session_id": "sess-plan-owned", "session_owner_token": "correct-secret",
+            },
+        )
+        _poll_until(client, resp.json()["task_id"])
+
+        plan_resp = client.post(
+            "/api/generate_plan",
+            json={
+                "url": "https://example.com", "goal": "ทำต่อ",
+                "session_id": "sess-plan-owned", "session_owner_token": "wrong-secret",
+            },
+        )
+    assert plan_resp.status_code == 403
 
 
 def test_list_sessions_reflects_open_sessions(client):
