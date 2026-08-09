@@ -534,6 +534,46 @@
 const $ = (id) => document.getElementById(id);
 const API = "";
 
+// Security 1.1: ทุก request เข้า backend ต้องแนบ X-API-Key (ดู api/routes.py::verify_api_key)
+// — ถ้า backend ไม่ได้ตั้ง settings.api_key ไว้ (local dev เฉยๆ) header/query param ที่ส่ง
+// เกินไปไม่มีผลอะไร (verify_api_key คืนผ่านทันทีถ้า settings.api_key ว่างเปล่า) เก็บ key ไว้ใน
+// localStorage ถามครั้งแรกที่โหลดหน้าเว็บถ้ายังไม่มี (เว้นว่างได้ถ้า backend ไม่ได้เปิด auth)
+const API_KEY_STORAGE_KEY = "agentConsoleApiKey";
+function getApiKey() {
+  let key = localStorage.getItem(API_KEY_STORAGE_KEY);
+  if (key === null) {
+    key = window.prompt("Backend API key (leave blank if the server doesn't require one):") || "";
+    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  }
+  return key;
+}
+function apiFetch(url, options = {}) {
+  const key = getApiKey();
+  if (!key) return fetch(url, options);
+  const headers = new Headers(options.headers || {});
+  headers.set("X-API-Key", key);
+  return fetch(url, { ...options, headers });
+}
+// Security (SEC-5 follow-up): GET .../stream ใช้ EventSource ซึ่งตั้ง custom header เองไม่ได้
+// — เดิมแนบ raw API key เป็น query param ตรงๆ (เสี่ยงหลุดผ่าน access log/proxy/browser
+// history เพราะเป็น secret เดียวกับที่ใช้ทุก request ตลอดไป) เปลี่ยนเป็นขอ "ticket" อายุสั้น
+// (60 วินาที) จาก POST /auth/stream-ticket ก่อนเสมอ (ผ่าน apiFetch — ยังใช้ X-API-Key header
+// จริงตอนขอ ticket) แล้วแนบ ticket นั้นแทน — ต้อง await เพราะเป็น network call จริง (ต่างจาก
+// เดิมที่ sync ล้วนๆ) ผู้เรียกทุกจุดต้องเป็น async function ด้วย
+async function apiStreamUrl(url) {
+  const key = getApiKey();
+  if (!key) return url;
+  const resp = await apiFetch(API + "/auth/stream-ticket", { method: "POST" });
+  const sep = url.includes("?") ? "&" : "?";
+  if (!resp.ok) {
+    // ขอ ticket ไม่สำเร็จ (เช่น key ผิด) — ปล่อยให้ EventSource ต่อแล้วโดน 401 จริงจาก
+    // verify_api_key() แทนที่จะ throw ที่นี่เงียบๆ ให้ error message เดิมที่ user คุ้นเคย
+    return url;
+  }
+  const { ticket } = await resp.json();
+  return `${url}${sep}ticket=${encodeURIComponent(ticket)}`;
+}
+
 let tasks = [];          // last known snapshot from GET /tasks
 let selectedConvId = null; // conversation currently shown in Chat/Log, or null = "new session"
 const liveSteps = {};        // task_id -> [{step, cmd, result, success}, ...] from SSE, real-time
@@ -878,7 +918,7 @@ function truncate(s, n) {
 
 async function checkHealth() {
   try {
-    const r = await fetch(API + "/health");
+    const r = await apiFetch(API + "/health");
     $("healthDot").classList.toggle("up", r.ok);
   } catch (e) {
     $("healthDot").classList.remove("up");
@@ -887,7 +927,7 @@ async function checkHealth() {
 
 async function refreshPool() {
   try {
-    const r = await fetch(API + "/pool/status");
+    const r = await apiFetch(API + "/pool/status");
     if (!r.ok) return;
     const s = await r.json();
     $("poolText").textContent = `pool ${s.in_use}/${s.size}`;
@@ -897,7 +937,7 @@ async function refreshPool() {
 // 🔥 แก้ไข: refreshTasks() — ใช้ deletedTaskIds Set ที่ sync กับ deletedConvs แล้ว
 async function refreshTasks() {
   try {
-    const r = await fetch(API + "/tasks");
+    const r = await apiFetch(API + "/tasks");
     if (!r.ok) return;
     tasks = await r.json();
     tasks.sort((a, b) => b.created_at - a.created_at);
@@ -927,19 +967,30 @@ async function refreshTasks() {
 
 // ---------------- Real-time stream (SSE) + human-in-the-loop ----------------
 
+// Security (SEC-5 follow-up): apiStreamUrl() ตอนนี้ async (ต้องขอ ticket จาก backend ก่อน
+// เปิด EventSource ได้ — ดู apiStreamUrl() ด้านบนสุดของไฟล์) — pendingStreamOpens กัน
+// openStream() ตัวเดียวกันถูกเรียกซ้ำระหว่างที่ ticket request แรกยังไม่เสร็จ (เช่น
+// refreshTasks() polling เจอ task "running" เดิมซ้ำก่อนที่ EventSource แรกจะทันถูกสร้าง)
+const pendingStreamOpens = new Set();
+
 function openStream(taskId) {
-  if (liveConnections[taskId]) return;
-  const es = new EventSource(`${API}/tasks/${taskId}/stream`);
-  liveConnections[taskId] = es;
-  es.onmessage = (ev) => {
-    let event;
-    try { event = JSON.parse(ev.data); } catch (e) { return; }
-    handleStreamEvent(taskId, event);
-  };
-  es.onerror = () => {
-    es.close();
-    delete liveConnections[taskId];
-  };
+  if (liveConnections[taskId] || pendingStreamOpens.has(taskId)) return;
+  pendingStreamOpens.add(taskId);
+  apiStreamUrl(`${API}/tasks/${taskId}/stream`).then((streamUrl) => {
+    pendingStreamOpens.delete(taskId);
+    if (liveConnections[taskId]) return; // closeStream() แซงมาก่อนระหว่างรอ ticket
+    const es = new EventSource(streamUrl);
+    liveConnections[taskId] = es;
+    es.onmessage = (ev) => {
+      let event;
+      try { event = JSON.parse(ev.data); } catch (e) { return; }
+      handleStreamEvent(taskId, event);
+    };
+    es.onerror = () => {
+      es.close();
+      delete liveConnections[taskId];
+    };
+  });
 }
 
 function closeStream(taskId) {
@@ -997,7 +1048,7 @@ async function respondApproval(taskId, requestId, approved) {
   renderHistory();
   if (selectedConvId && conversationIdForTask(taskId) === selectedConvId) renderSelected();
   try {
-    await fetch(`${API}/tasks/${taskId}/respond`, {
+    await apiFetch(`${API}/tasks/${taskId}/respond`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request_id: requestId, approved }),
@@ -1008,7 +1059,7 @@ async function respondApproval(taskId, requestId, approved) {
 async function stopTask(taskId) {
   $("btnStop").disabled = true;
   try {
-    await fetch(`${API}/tasks/${taskId}/stop`, { method: "POST" });
+    await apiFetch(`${API}/tasks/${taskId}/stop`, { method: "POST" });
   } catch (e) {
   } finally {
     $("btnStop").disabled = false;
@@ -1028,7 +1079,7 @@ async function killSession(convId) {
   const latest = latestTaskInConversation(convId);
   if (latest && latest.status === "running") {
     try {
-      await fetch(`${API}/tasks/${latest.task_id}/stop`, { method: "POST" });
+      await apiFetch(`${API}/tasks/${latest.task_id}/stop`, { method: "POST" });
     } catch (e) {
       console.warn("Failed to stop task:", e);
     }
@@ -1036,7 +1087,9 @@ async function killSession(convId) {
 
   // 2. พยายามปิด session ที่ backend (ถ้ามี endpoint)
   try {
-    await fetch(`${API}/sessions/${convId}/close`, { method: "POST" });
+    const ownerToken = getOrCreateSessionOwnerToken(convId);
+    await apiFetch(`${API}/sessions/${convId}/close?session_owner_token=${encodeURIComponent(ownerToken)}`, { method: "POST" });
+    forgetSessionOwnerToken(convId);
   } catch (e) {
     console.warn("Backend session close failed:", e);
   }
@@ -1176,11 +1229,12 @@ async function requestPlan() {
   renderHistory();
   renderSelected();
   try {
-    const r = await fetch(API + "/api/generate_plan", {
+    const r = await apiFetch(API + "/api/generate_plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url, goal, provider: requestParams.provider, session_id: sessionId,
+        session_owner_token: getOrCreateSessionOwnerToken(sessionId),
         attached_file_name: currentAttachedFile ? currentAttachedFile.name : null,
         attached_file_content_base64: currentAttachedFile ? currentAttachedFile.base64 : null,
         previous_user_goal: previousUserGoal || null,
@@ -1250,6 +1304,7 @@ async function approvePlanWithPayload(planPayload) {
     goal,
     plan: planDraft,
     session_id: sessionId,
+    session_owner_token: getOrCreateSessionOwnerToken(sessionId),
     max_steps: requestParams.max_steps,
     provider: requestParams.provider,
     headless: requestParams.headless,
@@ -1264,7 +1319,7 @@ async function approvePlanWithPayload(planPayload) {
     attached_file_content_base64: fileToSend ? fileToSend.base64 : null,
   };
   try {
-    const r = await fetch(API + "/api/execute_plan", {
+    const r = await apiFetch(API + "/api/execute_plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -1316,6 +1371,31 @@ function newSessionId() {
   return "sess-" + Date.now() + "-" + Math.random().toString(36).slice(2);
 }
 
+// Security (SEC-4 follow-up): session_id เดิมเป็นแค่ string ที่ใครก็ตามที่มี X-API-Key
+// เดียวกันแนบเข้าไปใช้ต่อได้เลย ไม่มีการเช็คความเป็นเจ้าของ (รวมถึง session ที่ผูกกับ
+// Chrome จริงของ user ผ่าน CDP) — generate secret คู่กับ session_id ตั้งแต่สร้างครั้งแรก
+// (เอนโทรปีเดียวกับ session_id เอง) เก็บไว้ใน localStorage แล้วแนบไปทุกครั้งที่ใช้
+// session_id นี้ต่อ (ดู backend/app/core/session_registry.py::BrowserSession.owner_token)
+// — backend เช็คว่าตรงกันก่อนให้ใช้ session เดิมต่อเสมอ ไม่ตรง = 403/task error
+const SESSION_OWNER_TOKENS_KEY = "agentConsoleSessionOwnerTokens";
+function _loadSessionOwnerTokens() {
+  try { return JSON.parse(localStorage.getItem(SESSION_OWNER_TOKENS_KEY) || "{}"); } catch (e) { return {}; }
+}
+function getOrCreateSessionOwnerToken(sessionId) {
+  const tokens = _loadSessionOwnerTokens();
+  if (tokens[sessionId]) return tokens[sessionId];
+  const token = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2));
+  tokens[sessionId] = token;
+  try { localStorage.setItem(SESSION_OWNER_TOKENS_KEY, JSON.stringify(tokens)); } catch (e) {}
+  return token;
+}
+function forgetSessionOwnerToken(sessionId) {
+  const tokens = _loadSessionOwnerTokens();
+  if (!(sessionId in tokens)) return;
+  delete tokens[sessionId];
+  try { localStorage.setItem(SESSION_OWNER_TOKENS_KEY, JSON.stringify(tokens)); } catch (e) {}
+}
+
 // ---------------- W14: Website Learning & Manual Generation ----------------
 
 function scheduleManualStatusCheck() {
@@ -1334,7 +1414,7 @@ async function checkSiteManualStatus() {
     return;
   }
   try {
-    const r = await fetch(`${API}/api/site-manual/status?url=${encodeURIComponent(url)}`);
+    const r = await apiFetch(`${API}/api/site-manual/status?url=${encodeURIComponent(url)}`);
     siteManualStatus = r.ok ? await r.json() : null;
   } catch (e) {
     siteManualStatus = null;
@@ -1450,7 +1530,7 @@ async function startLearningSite() {
   };
   renderManualBanner();
   try {
-    const r = await fetch(`${API}/api/site-manual/learn`, {
+    const r = await apiFetch(`${API}/api/site-manual/learn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, provider: $("provider").value || null }),
@@ -1469,8 +1549,8 @@ async function startLearningSite() {
   }
 }
 
-function openLearnStream(learnId) {
-  const es = new EventSource(`${API}/api/site-manual/learn/${learnId}/stream`);
+async function openLearnStream(learnId) {
+  const es = new EventSource(await apiStreamUrl(`${API}/api/site-manual/learn/${learnId}/stream`));
   es.onmessage = (ev) => {
     let event;
     try { event = JSON.parse(ev.data); } catch (e) { return; }
@@ -1545,7 +1625,7 @@ async function respondLearnCredentials(username, password) {
   learnProgress.credentialsRequest = null;
   renderManualBanner();
   try {
-    await fetch(`${API}/api/site-manual/learn/${learnProgress.learnId}/credentials`, {
+    await apiFetch(`${API}/api/site-manual/learn/${learnProgress.learnId}/credentials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request_id: requestId, username, password }),
@@ -2231,7 +2311,11 @@ $("btnNewSession").addEventListener("click", async () => {
   renderHistory();
   renderSelected();
   if (oldSessionId) {
-    try { await fetch(`${API}/sessions/${oldSessionId}/close`, { method: "POST" }); } catch (e) {}
+    try {
+      const ownerToken = getOrCreateSessionOwnerToken(oldSessionId);
+      await apiFetch(`${API}/sessions/${oldSessionId}/close?session_owner_token=${encodeURIComponent(ownerToken)}`, { method: "POST" });
+      forgetSessionOwnerToken(oldSessionId);
+    } catch (e) {}
   }
 });
 $("btnToggleLog").addEventListener("click", () => {

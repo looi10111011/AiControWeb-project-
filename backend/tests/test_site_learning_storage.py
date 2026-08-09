@@ -136,6 +136,60 @@ def test_save_and_load_credentials_round_trips():
     assert creds == {"username": "alice", "password": "s3cr3t"}
 
 
+# --- Security 1.4: credentials.json เข้ารหัสบนดิสก์ (Fernet) + migration จากไฟล์เก่า ---
+
+
+def test_saved_credentials_file_is_encrypted_on_disk():
+    """ไฟล์ credentials.json บนดิสก์จริงต้องไม่มี username/password เป็น plaintext เลย —
+    เข้ารหัสก่อนเขียนเสมอ (ดู storage.py::save_credentials)"""
+    import json as _json
+
+    storage.save_credentials("example.com", "alice", "s3cr3t-password")
+
+    raw = open(os.path.join(settings.site_manuals_dir, "example.com", "credentials.json"), encoding="utf-8").read()
+    assert "s3cr3t-password" not in raw
+    assert "alice" not in raw
+    data = _json.loads(raw)
+    assert data["encrypted"] is True
+
+
+def test_load_credentials_migrates_legacy_plaintext_file_transparently(tmp_path):
+    """ไฟล์เก่าที่ยังเป็น plaintext (จาก storage.py เวอร์ชันก่อนหน้า Security 1.4 — ไม่มี
+    marker "encrypted" เลย) ต้องยังอ่านได้ปกติ (backward-compat) แล้วถูก re-save เป็นแบบ
+    เข้ารหัสทันทีเงียบๆ โดยไม่ต้องมี migration script แยก"""
+    import json as _json
+
+    domain_dir = os.path.join(settings.site_manuals_dir, "legacy.com")
+    os.makedirs(domain_dir, exist_ok=True)
+    with open(os.path.join(domain_dir, "credentials.json"), "w", encoding="utf-8") as f:
+        _json.dump({"username": "legacy-user", "password": "legacy-pass"}, f)
+
+    creds = storage.load_credentials("legacy.com")
+    assert creds == {"username": "legacy-user", "password": "legacy-pass"}
+
+    # ไฟล์บนดิสก์ต้องถูกเขียนทับเป็นแบบเข้ารหัสแล้วหลัง load ครั้งแรก
+    raw = open(os.path.join(domain_dir, "credentials.json"), encoding="utf-8").read()
+    assert "legacy-pass" not in raw
+    migrated = _json.loads(raw)
+    assert migrated["encrypted"] is True
+
+    # โหลดซ้ำรอบสอง (จากไฟล์ที่ migrate แล้ว) ต้องยังได้ค่าเดิมกลับมาถูกต้อง
+    assert storage.load_credentials("legacy.com") == {"username": "legacy-user", "password": "legacy-pass"}
+
+
+def test_load_credentials_returns_none_for_tampered_ciphertext():
+    """ไฟล์ที่มี marker encrypted แต่ ciphertext ถูกแก้ไข/เสียหาย (เช่น key เปลี่ยน/ไฟล์เสีย)
+    ต้องคืน None แทนที่จะ throw ออกไปทำให้ caller พัง"""
+    import json as _json
+
+    domain_dir = os.path.join(settings.site_manuals_dir, "tampered.com")
+    os.makedirs(domain_dir, exist_ok=True)
+    with open(os.path.join(domain_dir, "credentials.json"), "w", encoding="utf-8") as f:
+        _json.dump({"encrypted": True, "username": "not-a-valid-fernet-token", "password": "also-not-valid"}, f)
+
+    assert storage.load_credentials("tampered.com") is None
+
+
 def test_save_credentials_writes_a_separate_file_from_the_manual():
     """credentials.json ต้องไม่ปนกับ latest.json ของ manual — เก็บคนละไฟล์เจตนา กัน
     credential หลุดปนเข้าไปใน manual โดยไม่ตั้งใจ"""

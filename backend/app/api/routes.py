@@ -14,12 +14,17 @@ request_approval/resolve_approval (ดู task_manager.py)
 import asyncio
 import base64
 import json
+import secrets
+import time
+import warnings
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from playwright.async_api import async_playwright
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from backend.app.rag.ingestion import load_manual_bytes
 from backend.app.api.schemas import (
@@ -46,7 +51,8 @@ from backend.app.config import settings
 from backend.app.core import llm, plan_memory, procedural_memory
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.perception import get_snapshot
-from backend.app.permission.rules import extract_domain, normalize_domain
+from backend.app.core.session_registry import SessionOwnershipError
+from backend.app.permission.rules import extract_domain, install_ssrf_guard, normalize_domain
 from backend.app.site_learning import crawl_site, describe_page, extract_page
 from backend.app.site_learning.learn_manager import LearnManager
 from backend.app.site_learning.storage import (
@@ -64,7 +70,82 @@ from backend.app.site_learning.storage import (
     update_single_page,
 )
 
-router = APIRouter()
+
+# Security 1.5: rate limit per-IP บน endpoint ที่เปิด browser จริง/เปลือง resource เท่านั้น
+# (POST /tasks, POST /api/site-manual/learn — ผูก @limiter.limit() แยกทีละ endpoint ด้านล่าง
+# ไม่ใช่ระดับ router เหมือน verify_api_key เพราะไม่ต้องการจำกัด SSE stream/endpoint polling
+# ปกติที่ไม่เปลือง resource) — app.state.limiter ผูกใน main.py
+#
+# config_filename="" กัน slowapi พยายามอ่าน ".env" ของโปรเจกต์เอง (Limiter default
+# auto-detect ไฟล์นี้ผ่าน starlette.config.Config ซึ่งเปิดไฟล์แบบไม่ระบุ encoding —
+# .env มี comment ภาษาไทย/em dash เป็น UTF-8 อ่านด้วย cp1252 default ของ Windows ไม่ได้
+# พังตอน import ทันที) เราไม่ได้ใช้ env var มา override ค่า limiter อยู่แล้ว จึงปิดเส้นทาง
+# นี้ไปเลย ("" ไม่ใช่ None ทำให้ Config เข้า branch os.path.isfile() แล้วแค่ warn เงียบๆ) —
+# กด UserWarning "Config file '' not found." ทิ้งไปด้วย (คาดไว้แล้ว ไม่ใช่ปัญหาจริง)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+    limiter = Limiter(key_func=get_remote_address, config_filename="")
+
+
+# Security (SEC-5 follow-up): SSE endpoint (GET .../stream) ใช้ EventSource ของ browser ซึ่ง
+# ตั้ง custom header เองไม่ได้ — เดิมรับ raw settings.api_key ผ่าน query param ตรงๆ
+# ("?api_key=...") ซึ่งเป็น long-lived secret เดียวกับที่ใช้ทุก request ทำให้มีโอกาสหลุดผ่าน
+# access log/proxy/browser history ได้ง่ายกว่า header มาก — เปลี่ยนเป็น "ticket" อายุสั้น
+# (ขอผ่าน POST /auth/stream-ticket ที่ยังต้องใช้ X-API-Key จริงผ่าน header ปกติก่อนถึงจะออก
+# ticket ให้) แลกกับ api_key จริงแทน ถ้า ticket หลุดไปกับ log จริงๆ ก็ใช้ได้แค่ไม่กี่วินาที
+# ไม่ใช่ตลอดไปเหมือน raw key เดิม
+_STREAM_TICKET_TTL_SECONDS = 60.0
+_stream_tickets: dict[str, float] = {}  # ticket -> expires_at (unix time)
+
+
+def _issue_stream_ticket() -> str:
+    ticket = secrets.token_urlsafe(32)
+    _stream_tickets[ticket] = time.time() + _STREAM_TICKET_TTL_SECONDS
+    return ticket
+
+
+def _stream_ticket_is_valid(ticket: str) -> bool:
+    # เก็บกวาด ticket ที่หมดอายุไปเรื่อยๆ ตอนเช็ค (ไม่ต้องมี background job แยก — จำนวน
+    # ticket ที่ค้างในหน่วยความจำถูก bound ไว้เองโดยธรรมชาติ เพราะแต่ละ SSE connection ขอ
+    # ครั้งเดียวแล้วใช้ทันทีภายใน TTL สั้นๆ)
+    now = time.time()
+    for expired in [t for t, exp in _stream_tickets.items() if exp < now]:
+        _stream_tickets.pop(expired, None)
+    expires_at = _stream_tickets.get(ticket)
+    return expires_at is not None and expires_at >= now
+
+
+async def verify_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    ticket: Optional[str] = Query(default=None),
+) -> None:
+    """Security 1.1: ทุก route ใน api_router ต้องผ่านนี้ก่อนเสมอ (ผูกไว้ที่ระดับ router
+    ด้านล่าง ไม่ต้องแปะ Depends() แยกทีละ endpoint) — settings.api_key ไม่ตั้งค่า (None,
+    default) = auth ปิดสำหรับ local dev เท่านั้น รับได้ทั้ง header "X-API-Key" (fetch ปกติ)
+    และ query param "?ticket=" (SSE endpoint ที่ EventSource ของ browser ตั้ง header เอง
+    ไม่ได้ — ดู GET /tasks/{id}/stream, GET /api/site-manual/learn/{id}/stream, และ
+    _issue_stream_ticket() ด้านบนสำหรับที่มาของ ticket)"""
+    if not settings.api_key:
+        return
+    if x_api_key == settings.api_key:
+        return
+    if ticket and _stream_ticket_is_valid(ticket):
+        return
+    raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key")
+
+
+router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+
+@router.post("/auth/stream-ticket")
+async def create_stream_ticket() -> dict:
+    """Security (SEC-5 follow-up): ออก ticket อายุสั้น (60 วินาที, ใช้ได้หลายครั้งภายใน
+    TTL — ไม่ single-use เพราะ EventSource ของ browser auto-reconnect เองได้ถ้า network
+    สะดุด ต้องให้ ticket เดิมยังใช้ต่อได้จนกว่าจะหมดอายุจริง) แลกกับ X-API-Key จริง (ผ่าน
+    verify_api_key() ที่ router ผูกไว้แล้วตั้งแต่ endpoint นี้เอง) — frontend เรียก endpoint
+    นี้ก่อนเปิด EventSource ทุกครั้ง แล้วใช้ ticket แทน raw api_key ใน query string"""
+    ticket = _issue_stream_ticket()
+    return {"ticket": ticket, "expires_in": _STREAM_TICKET_TTL_SECONDS}
 
 
 def _make_ask_user_func(task_manager: TaskManager, task_id: str, auto_approve: bool):
@@ -402,6 +483,7 @@ async def _run_with_resolved_browser(
             pool=pool,
             tab_reuse_policy=req.tab_reuse_policy,
             ask_user_func=ask_user_func,
+            owner_token=req.session_owner_token,
         )
 
         # W19-6 ("Master Controller" MODULE 3, "Ordinal Selection"/multi-turn strategy):
@@ -520,6 +602,7 @@ async def _run_with_resolved_browser(
 
 
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
+@limiter.limit("10/minute")
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
@@ -547,6 +630,7 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
 
 
 @router.post("/api/generate_plan", response_model=GeneratePlanResponse)
+@limiter.limit("20/minute")
 async def generate_plan(req: GeneratePlanRequest, request: Request) -> GeneratePlanResponse:
     """W13: เฟสวางแผนแยกต่างหาก — synchronous ตรงๆ (ไม่ผ่าน TaskManager/SSE เพราะเป็น
     แค่ LLM call เดียว ไม่ใช่ agent loop หลายนาทีเหมือน execute_plan) ไม่เปิด/connect
@@ -614,7 +698,10 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     page = None
     if req.session_id:
         session_registry = request.app.state.session_registry
-        session = session_registry.get(req.session_id)
+        try:
+            session = session_registry.get(req.session_id, owner_token=req.session_owner_token)
+        except SessionOwnershipError:
+            raise HTTPException(status_code=403, detail="session_id นี้ไม่ใช่ของ owner_token ที่ส่งมา")
         if session is not None and session_registry.is_healthy(session):
             page = session.page
 
@@ -741,7 +828,7 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
                 session = await session_registry.get_or_create(
                     req.session_id, use_user_browser=False, headless=req.headless,
                     target_url=req.url, pool=pool, tab_reuse_policy=req.tab_reuse_policy,
-                    ask_user_func=ask_user_func,
+                    ask_user_func=ask_user_func, owner_token=req.session_owner_token,
                 )
                 return await orchestrator.run_fastpath(
                     url=req.url, goal=req.goal, template_id=req.template_id, steps=req.steps,
@@ -927,18 +1014,28 @@ async def pool_status(request: Request) -> PoolStatusResponse:
 
 
 @router.post("/sessions/{session_id}/close")
-async def close_session(session_id: str, request: Request) -> dict:
+async def close_session(
+    session_id: str, request: Request, session_owner_token: Optional[str] = None,
+) -> dict:
     """W12: ปุ่ม "New Session" บน Test Console ยิงมาที่นี่ก่อนเริ่มบทสนทนาใหม่ — ปิด
     page/context/browser ที่ session นี้ถืออยู่ (ดู core/session_registry.py::
     SessionRegistry.close() สำหรับรายละเอียดตาม mode) คืน 404 ถ้าไม่พบ session_id นี้
     (ปิดไปแล้ว/ไม่เคยมีอยู่จริง) — ไม่กระทบ task ที่กำลังรันอยู่บน session นี้เลยถ้ามี
     (เป็นหน้าที่ของ frontend ที่จะเช็คก่อนว่าไม่มี task รันค้างอยู่ก่อนเรียก endpoint นี้)
 
+    Security (SEC-4 follow-up): session_owner_token เป็น query param (endpoint นี้ไม่มี
+    body เดิมอยู่แล้ว — ตามแบบเดียวกับ ?api_key= ของ SSE endpoint) ไม่ตรงกับของ session
+    นี้ -> 403 แทนที่จะปิดให้เงียบๆ (ปิด session เป็น action ทำลายล้าง ไม่ควรให้ใครก็ได้ที่
+    รู้แค่ session_id ปิดของคนอื่นทิ้งได้)
+
     pdf/xlsx: เคลียร์ app.state.file_chat_memory ของ session_id นี้ด้วยเสมอ (ถ้ามี) —
     session ที่เป็น file-chat ล้วนๆ (ไม่เคยแนบ url/เปิด browser เลย) ไม่มีอยู่ใน
     session_registry เลย ไม่งั้นปุ่ม "New Session" จะโดน 404 ทั้งที่จริงมี state ให้เคลียร์"""
     session_registry = request.app.state.session_registry
-    closed = await session_registry.close(session_id)
+    try:
+        closed = await session_registry.close(session_id, owner_token=session_owner_token)
+    except SessionOwnershipError:
+        raise HTTPException(status_code=403, detail="session_id นี้ไม่ใช่ของ owner_token ที่ส่งมา")
     file_chat_memory: dict = request.app.state.file_chat_memory
     had_file_memory = file_chat_memory.pop(session_id, None) is not None
     if not closed and not had_file_memory:
@@ -976,6 +1073,7 @@ async def site_manual_status(url: str) -> SiteManualStatusResponse:
 
 
 @router.post("/api/site-manual/learn", response_model=LearnCreatedResponse, status_code=202)
+@limiter.limit("5/minute")
 async def learn_site(req: LearnSiteRequest, request: Request) -> LearnCreatedResponse:
     """เริ่ม crawl เว็บไซต์ที่ req.url — submit แบบเดียวกับ POST /tasks (202 + learn_id
     ทันที ไม่รอ crawl จบ เพราะเดินหลายหน้าอาจใช้เวลาเป็นนาที)
@@ -1127,6 +1225,7 @@ async def relearn_page(domain: str, req: RelearnPageRequest, request: Request) -
 
     async with pool.acquire() as browser:
         context = await browser.new_context()
+        await install_ssrf_guard(context)
         page = await context.new_page()
         try:
             await page.goto(req.url, timeout=15000)

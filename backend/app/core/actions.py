@@ -50,7 +50,7 @@ from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 from backend.app.core import state_filter
 from backend.app.core.dom_locator import compute_locator_descriptor
 from backend.app.core.perception import count_elements, extract_table_data, resolve_frame
-from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action
+from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action, install_ssrf_guard
 
 # ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
 # เช่น API server (W10) จะ inject callback ที่ส่ง event ไป UI แล้วรอ user กดยืนยันจริง
@@ -817,6 +817,7 @@ async def demo():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)
         page = await browser.new_page()
+        await install_ssrf_guard(page)
         await page.goto("https://www.saucedemo.com/")
 
         # ทุก step: perceive -> execute -> log ผล (นี่คือตัวอย่างย่อของ W4)

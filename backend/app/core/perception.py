@@ -46,6 +46,7 @@ from typing import Optional, Union
 from playwright.async_api import async_playwright, Frame, Page
 
 from backend.app.config import settings
+from backend.app.permission.rules import install_ssrf_guard
 
 
 # --- JS ที่ inject เข้าไปเก็บ element โต้ตอบได้ที่มองเห็นบนหน้าจอ ---
@@ -222,6 +223,19 @@ _COLLECT_JS = r"""
   // class-name pattern ที่เว็บ dashboard/SPA สมัยใหม่มักใช้ตั้งชื่อ (userdropdown, profile-menu,
   // account-menu, avatar) + cursor:pointer เป็นชั้นสำรองที่ 2 ต่อจาก ICON_LABEL_SELECTOR
   const PROFILE_MENU_CLASS_RE = /user-?dropdown|profile-?menu|account-?menu|avatar/i;
+  // SPD-2 (speed audit): `document.querySelectorAll('[class]')` ด้านล่างเดิมกวาดทุก element
+  // ที่มี class attribute ในหน้า (แทบทุก element บนเว็บ SPA จริง — หลักพันตัวได้ง่ายๆ) แล้ว
+  // เรียก window.getComputedStyle() ต่อทุกตัวที่ regex match — ตัว querySelectorAll('[class]')
+  // เองก็ต้องสร้าง NodeList ขนาดใหญ่ทุก step ของ loop อยู่แล้วโดยไม่จำเป็น ทั้งที่ 4 คำที่
+  // PROFILE_MENU_CLASS_RE ต้องมีอย่างน้อย 1 คำ (dropdown/profile/account/avatar/menu) เป็น
+  // substring เสมอ — ใช้ attribute substring selector (`*=`, native ในเบราว์เซอร์ ไม่ต้อง
+  // JS iterate เอง) กรอง candidate ให้แคบลงก่อนตั้งแต่ระดับ selector เลย แล้วค่อยเช็ค regex
+  // เป๊ะๆ ซ้ำในลูปเหมือนเดิม (ผลลัพธ์เป๊ะเท่าเดิมทุกประการ เพราะทุก alternative ใน regex มี
+  // substring พวกนี้อย่างน้อย 1 ตัวเสมอ แค่ query เร็วขึ้นเพราะ candidate set เล็กลงมาก)
+  const PROFILE_MENU_CANDIDATE_SELECTOR = [
+    '[class*="dropdown" i]', '[class*="profile" i]', '[class*="account" i]',
+    '[class*="avatar" i]', '[class*="menu" i]',
+  ].join(',');
   // W20 (Task10, ต่อ): DOM จริงของ OrangeHRM ยืนยันว่า class pattern นี้ไม่ได้ตรงแค่ตัว
   // container เดียว — child ข้างใน (<img class="oxd-userdropdown-img">, <p class="oxd-
   // userdropdown-name">, <i class="...oxd-userdropdown-icon">) ก็ตรง regex เดียวกันด้วยตัวเอง
@@ -244,7 +258,7 @@ _COLLECT_JS = r"""
     return false;
   };
   const profileMenuNodes = new Set();
-  for (const cand of document.querySelectorAll('[class]')) {
+  for (const cand of document.querySelectorAll(PROFILE_MENU_CANDIDATE_SELECTOR)) {
     const classStr = typeof cand.className === 'string' ? cand.className : '';
     if (!PROFILE_MENU_CLASS_RE.test(classStr)) continue;
     if (window.getComputedStyle(cand).cursor !== 'pointer') continue;
@@ -281,6 +295,25 @@ _COLLECT_JS = r"""
     'label:has(input[type="checkbox"])',
   ].join(',');
   for (const cand of document.querySelectorAll(CHECKBOX_WRAPPER_SELECTOR)) {
+    if (cand.closest(selectors)) continue;
+    if (cand.querySelector(selectors)) continue;
+    nodes.push(cand);
+  }
+
+  // Perception fix (radio buttons — บั๊กจริงที่ user รายงาน: agent มองไม่เห็นตัวเลือก Gender
+  // Male/Female บน OrangeHRM "My Info > Personal Details") — เจอสาเหตุตรงๆ จากการตรวจ DOM
+  // จริง: OrangeHRM (เหมือนกับ custom checkbox ด้านบนเป๊ะ) ซ่อน native
+  // <input type="radio"> จริงด้วย opacity:0 แล้ววาดวงกลมที่มองเห็นแทนด้วย
+  // <span class="oxd-radio-input">...</span> เป็น "พี่น้อง" (sibling) ของ input ภายใน
+  // <label> เดียวกัน (<label><input type=radio><span class="oxd-radio-input">...</span>
+  // Male</label>) — input ที่ opacity:0 โดน visibility check ด้านล่างกรองทิ้งไป (เหมือนที่
+  // ตั้งใจกรอง honeypot/hidden field อื่นๆ) และไม่มี selector ไหนจับ span ตัวที่มองเห็น/
+  // คลิกได้จริงเลย ทำให้ตัวเลือก radio ทั้งหมดไม่เคยติด index ตั้งแต่ต้น (ไม่ใช่แค่ label
+  // ไม่ดีเหมือนเคส icon-only อื่น — ไม่มี element ไหนแทนตัวเลือกนี้ใน snapshot เลยสักตัว)
+  const RADIO_WRAPPER_SELECTOR = [
+    '.oxd-radio-input', '[class*="radio-input" i]', '[class*="radio-wrapper" i]',
+  ].join(',');
+  for (const cand of document.querySelectorAll(RADIO_WRAPPER_SELECTOR)) {
     if (cand.closest(selectors)) continue;
     if (cand.querySelector(selectors)) continue;
     nodes.push(cand);
@@ -349,13 +382,24 @@ _COLLECT_JS = r"""
     // ลิงก์เช่นกัน กัน perception กรอง wrapper พวกนี้ทิ้งทั้งที่มองเห็น/คลิกได้จริงในเบราว์เซอร์
     const isCheckboxWrapperCandidate = (el.className || '').toString().toLowerCase().includes('checkbox') ||
       (el.tagName.toLowerCase() === 'label' && !!el.querySelector('input[type="checkbox"]'));
+    // Perception fix (radio buttons): เหมือน isCheckboxWrapperCandidate ข้างบนเป๊ะ แค่คนละ
+    // widget — เผื่อเว็บอื่นวาด radio wrapper ด้วย opacity:0/visibility:hidden เหมือนที่
+    // checkbox wrapper บางเว็บทำ (ในเคสจริงของ OrangeHRM เองตัว span.oxd-radio-input
+    // มองเห็นปกติอยู่แล้ว ไม่ได้ต้องพึ่ง exemption นี้ — กันไว้เผื่อเว็บอื่น)
+    const isRadioWrapperCandidate = (el.className || '').toString().toLowerCase().includes('radio');
     const isClickableCandidate = ['a', 'button'].includes(el.tagName.toLowerCase()) ||
-      el.getAttribute('role') === 'button' || isCheckboxWrapperCandidate;
+      el.getAttribute('role') === 'button' || isCheckboxWrapperCandidate || isRadioWrapperCandidate;
     const hoverRevealCandidate = hasSize && notDisplayNone && hiddenByOwnStyle && isClickableCandidate;
 
     const visible = hasSize && notDisplayNone && (!hiddenByOwnStyle || hoverRevealCandidate);
     if (!visible) continue;
-    if (el.disabled) continue;
+    // ACC-2 (accuracy audit follow-up): เดิม element ที่ disabled ถูกกรองทิ้งไปเลย ทำให้
+    // LLM ไม่มีทางรู้ว่าปุ่ม/ช่องกรอกนี้ "มีอยู่แต่กดไม่ได้ตอนนี้" (เช่น ปุ่ม Submit ที่รอ
+    // required field ให้ครบก่อน) เห็นแค่ว่าไม่มีตัวเลือกนี้ในหน้าเลย อาจไปเดากด element
+    // ใกล้เคียงผิดตัวแทน หรือสรุปผิดว่าไม่มีทางทำ action นี้ได้เลยทั้งที่จริงๆ มีแค่ต้องทำ
+    // อย่างอื่นให้ครบก่อน — ยังคงติด index ให้ปกติ แต่แปะ marker "[disabled]" ในป้ายแทน
+    // (ดู marker pattern อื่นในไฟล์นี้ เช่น [active อยู่แล้ว]/[ถูกบังอยู่])
+    const isDisabled = !!el.disabled;
 
     // W9[A]: เช็คว่า element นี้ถูก popup/modal/overlay อื่นบังอยู่จริงไหม —
     // getBoundingClientRect()/CSS visibility ข้างบนเช็คแค่ว่า element เอง "มองเห็นได้"
@@ -415,9 +459,20 @@ _COLLECT_JS = r"""
     const checkboxWrapperLabel = isCheckboxWrapperCandidate
       ? (el.closest('th, thead') ? 'Select All' : 'Select row')
       : '';
+    // Perception fix (radio buttons): ต่างจาก checkbox wrapper ข้างบน — radio wrapper
+    // (span.oxd-radio-input) เอง innerText ว่างเปล่าเสมอ (แค่วงกลม CSS ล้วนๆ ไม่มีตัวอักษร)
+    // แต่ข้อความที่บอกว่าตัวเลือกนี้คืออะไร ("Male"/"Female") เป็น text node พี่น้อง
+    // (sibling) ของมันอยู่ใน <label> เดียวกัน (<label><input><span>...</span>Male</label>)
+    // — ดึงจาก closest('label').innerText ซึ่งรวม text ของ sibling ทั้งหมดใน label นั้นมา
+    // ด้วยเสมอ (ต่างจาก getAssociatedLabelText() ด้านบนที่ใช้กับ form field tag เท่านั้น —
+    // span ไม่ใช่ form field tag เลยไม่เข้า path นั้น)
+    const radioWrapperLabel = isRadioWrapperCandidate
+      ? ((el.closest('label') && (el.closest('label').innerText || '').trim()) || '')
+      : '';
     const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
                       humanize(dataTest) || el.getAttribute('name') ||
-                      humanize(el.id) || checkboxWrapperLabel || getIconClassLabel(el) || '';
+                      humanize(el.id) || checkboxWrapperLabel || radioWrapperLabel ||
+                      getIconClassLabel(el) || '';
 
     // ปุ่มตะกร้าหลังใส่สินค้าแล้วมี badge span ลูก (เช่น "1") ทำให้ innerText
     // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้
@@ -443,10 +498,17 @@ _COLLECT_JS = r"""
       // แล้ว เช่น select ที่เลือกตัวเลือกไว้แล้ว/ช่องค้นหาที่พิมพ์คำไปแล้ว) กับ
       // "placeholder ทั่วไป" (แพ้ label จริงเสมอถ้ามี — "Employee Name" สื่อความหมายกว่า
       // "Type for hints..." เยอะ)
+      //
+      // Perception fix (radio buttons, ต่อ): ข้อยกเว้นสำหรับ type="radio"/"checkbox"
+      // โดยเฉพาะ — value ของ toggle input พวกนี้เป็นแค่ internal identifier ฝั่ง server
+      // (เช่น "1"/"2" ของ Gender) ไม่ใช่ข้อความที่ตั้งใจให้มนุษย์อ่าน ต่างจาก text/search
+      // input ที่ value คือ "สิ่งที่พิมพ์ไปจริง" ซึ่งสื่อความหมายเสมอ — ให้ associatedLabel
+      // ("Male"/"Female" จาก <label> ที่ห่อ) ชนะ value ก่อน แล้วค่อย fallback ไป value ถ้า
+      // ไม่มี label จริงๆ (ดีกว่าไม่มี label อะไรเลย)
+      const isToggleInputType = type === 'radio' || type === 'checkbox';
       label = (
         trimmedText ||
-        el.value ||
-        associatedLabel ||
+        (isToggleInputType ? (associatedLabel || el.value) : (el.value || associatedLabel)) ||
         el.getAttribute('placeholder') ||
         semantic ||
         ''
@@ -468,6 +530,12 @@ _COLLECT_JS = r"""
     // เงื่อนไขทั้งคู่พร้อมกัน (เคสหายากแต่ไม่ผิดอะไร)
     if (hoverRevealCandidate) {
       label = label ? `${label} [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]` : '[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]';
+    }
+    // ACC-2: คนละเงื่อนไขกับ marker อื่นข้างบนทั้งหมด (obscured/hoverReveal คือเรื่อง
+    // "มองเห็นไหม", นี่คือ "กดได้ไหม" — element ที่มองเห็นชัดเจนแต่ disabled ก็ต้องแปะ
+    // marker นี้ได้ปกติ) แปะซ้อนกับ marker อื่นได้ถ้าเข้าเงื่อนไขพร้อมกัน
+    if (isDisabled) {
+      label = label ? `${label} [disabled]` : '[disabled]';
     }
 
     // W50 (viewport-aware sorting): เช็คว่า element นี้อยู่ในกรอบจอที่มองเห็นตอนนี้ไหม
@@ -846,6 +914,7 @@ async def demo():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=False)  # เห็นหน้าจอตอน dev
         page = await browser.new_page()
+        await install_ssrf_guard(page)
         await page.goto("https://www.saucedemo.com/")
 
         # 1) Perceive — ดูว่า agent "เห็น" อะไรบ้าง

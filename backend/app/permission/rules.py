@@ -7,8 +7,13 @@ Adapted from PR "permission-ab" (origin/permission-ab): เดิม classify_ac
 (เช่น goto) ขึ้นกับ parameter อื่นด้วย ไม่ใช่แค่ type (เช่น goto ไป domain ที่ถูกบล็อก)
 """
 
+import asyncio
+import ipaddress
+import socket
 import urllib.parse
 from enum import Enum
+
+from backend.app.config import settings
 
 
 class ActionRisk(str, Enum):
@@ -140,6 +145,35 @@ def extract_domain(url: str) -> str:
         return ""
 
 
+def is_private_or_internal(domain: str) -> bool:
+    """Security 1.2 (SSRF): domain นี้ resolve เป็น private/loopback/link-local IP ไหม (เช่น
+    cloud metadata endpoint 169.254.169.254, LAN ภายใน 192.168.x.x, localhost) — หน้าเว็บที่
+    ฝัง prompt injection สั่ง goto ไป resource ภายในเครือข่ายของเครื่องที่ agent รันอยู่ต้อง
+    ถูกกันตรงนี้เสมอ เพราะ goto ไม่อยู่ใน DEFAULT_NEEDS_CONFIRMATION (ไม่มี human เห็นเลย)
+
+    resolve ไม่ได้ (DNS ผิดพลาด/hostname ไม่มีจริง) ถือว่าไม่ใช่ internal (ให้ goto ที่แท้จริง
+    ไป fail เองทีหลังตอนพยายามเชื่อมต่อจริง ไม่ใช่หน้าที่ของ permission layer ที่จะเดา)"""
+    hostname = (domain or "").strip()
+    if not hostname:
+        return False
+    try:
+        # ลองแปลงเป็น IP ตรงๆ ก่อนตัด port เสมอ — IPv6 literal (เช่น "::1") มี ":" อยู่แล้ว
+        # เป็นปกติ ตัดมั่วๆ จะพังทันที
+        ip = ipaddress.ip_address(hostname)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        pass
+    if hostname.count(":") == 1:  # "host:port" ธรรมดา (ไม่ใช่ IPv6 ที่มี ":" หลายตัว)
+        hostname = hostname.split(":")[0]
+    if hostname == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+    except (socket.gaierror, ValueError, OSError):
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
 def classify_action(
     cmd: dict, label: str = "", manual_guidance: str = "", allowed_domains: "set[str] | None" = None,
     element_tag: str = "", element_type: str = "",
@@ -192,23 +226,38 @@ def classify_action(
         # SAFE_ACTION_LABEL_KEYWORDS ด้านบน)
         if _label_looks_safe(label):
             return ActionRisk.SAFE
-        # W_search follow-up: label เป็นเนื้อหาอิสระ (เช่น ชื่อวิดีโอ/บทความ) ไม่ match
-        # คำปลอดภัยหรือคำเสี่ยงเลย — เช็ค tag เป็นสัญญาณสุดท้าย: <a> ธรรมดาแทบไม่มีทางเป็น
-        # การ submit/ลบ/สั่งซื้อ/จ่ายเงินจริง (ดู ANCHOR_TAG ด้านบน)
-        if (element_tag or "").lower() == ANCHOR_TAG:
-            return ActionRisk.SAFE
-        # W_search follow-up 2: เช่นเดียวกัน — label อาจกลายเป็น "ค่าที่พิมพ์ไปแล้ว" ใน
-        # ช่องกรอกข้อความ/ค้นหา (เช่น คำค้นหาดิบๆ) หลัง fill สำเร็จ ไม่ match ทั้งสองฝั่ง
-        # เหมือนกัน — <input> ที่ไม่ใช่ type เสี่ยง (submit/image/password) ก็แทบไม่มีทาง
-        # เป็นการ submit/ลบ/สั่งซื้อ/จ่ายเงินได้เองเช่นกัน (ดู SAFE_INPUT_TAG/
-        # RISKY_INPUT_TYPES ด้านบน)
-        if (element_tag or "").lower() == SAFE_INPUT_TAG and (element_type or "").lower() not in RISKY_INPUT_TYPES:
-            return ActionRisk.SAFE
+        # Security 1.3: tag/structure-based downgrade ด้านล่าง (W_search follow-up/-2) ใช้
+        # ได้เฉพาะ action_type=="submit" เท่านั้น — เดิมครอบคลุม delete/purchase/pay ด้วย
+        # ทำให้หน้าเว็บทำปุ่ม "ลบ"/"สั่งซื้อ" เป็น <a> ที่ label เป็นคำทั่วไปหลบ confirmation
+        # ได้ (บั๊กจริงที่พบ) — 2 เคส false-positive ที่ heuristic นี้เคยแก้ (ปุ่มค้นหา/กรอง
+        # ถูกจัด submit ผิด, การ์ดผลค้นหาเป็น <a> label อิสระ) เกิดกับ action_type=="submit"
+        # เท่านั้นอยู่แล้วในทางปฏิบัติ จึงยังทำงานถูกต้องเหมือนเดิมทุกประการหลังจำกัด scope นี้
+        if action_type == "submit":
+            # W_search follow-up: label เป็นเนื้อหาอิสระ (เช่น ชื่อวิดีโอ/บทความ) ไม่ match
+            # คำปลอดภัยหรือคำเสี่ยงเลย — เช็ค tag เป็นสัญญาณสุดท้าย: <a> ธรรมดาแทบไม่มีทางเป็น
+            # การ submit/ลบ/สั่งซื้อ/จ่ายเงินจริง (ดู ANCHOR_TAG ด้านบน)
+            if (element_tag or "").lower() == ANCHOR_TAG:
+                return ActionRisk.SAFE
+            # W_search follow-up 2: เช่นเดียวกัน — label อาจกลายเป็น "ค่าที่พิมพ์ไปแล้ว" ใน
+            # ช่องกรอกข้อความ/ค้นหา (เช่น คำค้นหาดิบๆ) หลัง fill สำเร็จ ไม่ match ทั้งสองฝั่ง
+            # เหมือนกัน — <input> ที่ไม่ใช่ type เสี่ยง (submit/image/password) ก็แทบไม่มีทาง
+            # เป็นการ submit/ลบ/สั่งซื้อ/จ่ายเงินได้เองเช่นกัน (ดู SAFE_INPUT_TAG/
+            # RISKY_INPUT_TYPES ด้านบน)
+            if (element_tag or "").lower() == SAFE_INPUT_TAG and (element_type or "").lower() not in RISKY_INPUT_TYPES:
+                return ActionRisk.SAFE
+        # delete/purchase/pay ที่ไม่ match risky/safe label เลย (หรือ submit ที่ไม่ match
+        # tag ปลอดภัยด้านบน) fallthrough ไป NEEDS_CONFIRMATION เสมอ — ปลอดภัยไว้ก่อน
         return ActionRisk.NEEDS_CONFIRMATION
 
     if action_type == "goto":
         url = cmd.get("url", "")
         domain = extract_domain(url)
+
+        # Security 1.2 (SSRF): เช็คก่อน BLOCKED_DOMAINS/ALLOWED_DOMAINS เสมอ เป็น hard block
+        # ไม่ขึ้นกับ config ผู้ใช้เลย (defense-in-depth) — settings.allow_internal_navigation
+        # เปิดได้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น
+        if not settings.allow_internal_navigation and is_private_or_internal(domain):
+            return ActionRisk.BLOCKED
 
         if domain in BLOCKED_DOMAINS:
             return ActionRisk.BLOCKED
@@ -229,3 +278,71 @@ def classify_action(
         return ActionRisk.NEEDS_CONFIRMATION
 
     return ActionRisk.SAFE
+
+
+# Security (follow-up to 1.2): classify_action() ด้านบนเช็ค SSRF ได้แค่ตอน action_type
+# == "goto" เท่านั้น — ไม่ครอบคลุม 2 ช่องทางที่ยังหลุดผ่านได้จริง:
+#   (1) agent "คลิก" <a href="http://169.254.169.254/..."> แทนที่จะ goto ตรงๆ (คลิกไม่เคย
+#       ผ่าน branch goto ของ classify_action() เลย — ถ้าหน้าเว็บที่โดน prompt injection
+#       ทำลิงก์แบบนี้แล้วหลอกให้ LLM คลิก จะไม่มีการเช็คอะไรทั้งนั้น)
+#   (2) goto ไป domain สาธารณะที่ผ่าน check แล้ว แต่ 302 redirect ไปยัง internal IP
+#       (open redirect) หรือ DNS rebinding (resolve ตอน classify ได้ IP หนึ่ง ตอน Playwright
+#       ต่อจริงได้อีก IP หนึ่ง — TOCTOU เพราะ resolve คนละครั้งกัน คนละเวลา)
+# แก้ที่ "ชั้นเครือข่ายจริง" แทนที่จะพึ่ง classify_action() (ที่เช็คแค่ "เจตนา" ของ LLM ก่อน
+# dispatch) — ใช้ Playwright route interception ดักทุก navigation request จริงที่ browser
+# กำลังจะยิงออกไป (ครอบคลุมทั้ง goto/click-navigation/redirect แต่ละ hop เพราะ Chromium ยิง
+# navigation request แยกต่างหากทุก hop ของ redirect เอง — ปิดทั้ง 2 ช่องโหว่ข้างต้นพร้อมกัน
+# ในจุดเดียว) — ตั้งใจกรองเฉพาะ is_navigation_request() (goto/click ที่นำไปสู่หน้าใหม่/
+# redirect ระหว่างนั้น) ไม่ครอบคลุม subresource ธรรมดา (css/js/image/xhr) เพื่อไม่ให้เสีย
+# performance เช็ค DNS ทุก request ย่อยของทุกหน้า (ตั้งใจ trade-off scope แคบกว่า SSRF แบบ
+# เต็มรูปแบบ แลกกับไม่กระทบความเร็วที่เพิ่งทำไปในงาน Speed — ความเสี่ยงจริงที่พบคือ
+# navigation ไปหน้า/endpoint ภายใน ไม่ใช่การอ่าน response body ของ subresource)
+async def install_ssrf_guard(target) -> None:
+    """เรียกครั้งเดียวทันทีหลังสร้าง Page หรือ BrowserContext ทุกจุดในระบบที่ agent อาจ
+    navigate ได้ (orchestrator.py, session_registry.py, actions.py, crawler.py,
+    routes.py, user_browser.py) — target รับได้ทั้ง Page และ BrowserContext (ทั้งคู่มี
+    .route() method หน้าตาเหมือนกัน, BrowserContext.route() ครอบคลุมทุก page ที่เกิดจาก
+    context นั้นอัตโนมัติ) ห้าม throw ออกไปเด็ดขาด (route() ของ Playwright เองแทบไม่ throw
+    อยู่แล้วนอกจาก target ปิดไปแล้ว — ปล่อยผ่านเงียบๆ ถ้าเกิดขึ้นจริง ดีกว่าทำให้ page
+    creation ทั้งก้อนพังเพราะ guard เสริมตัวนี้)"""
+    try:
+        await target.route("**/*", _ssrf_route_handler)
+    except Exception:
+        pass
+
+
+# is_private_or_internal() เรียก socket.gethostbyname() ซึ่งไม่มี timeout ในตัวเองเลย
+# (พึ่ง OS resolver default ซึ่งอาจช้ามากสำหรับโดเมนที่ resolve ไม่ได้/เครือข่ายที่ถูกจำกัด)
+# — _ssrf_route_handler() เรียกทุก navigation request จริง (ไม่ใช่แค่ตอน goto เหมือน
+# classify_action()) จึงต้องกัน DNS ช้าครั้งเดียวไม่ให้ทำให้ navigation ทั้งหน้าค้างไปด้วย —
+# timeout สั้นๆ พอสำหรับ DNS lookup ปกติ (มักเสร็จใน <100ms) แต่ไม่ปล่อยให้ค้างเป็นวินาทีถ้า
+# resolver ช้าจริง — timeout = ปล่อยผ่าน (fail open) เหมือน resolve ไม่ได้ปกติ
+_SSRF_DNS_TIMEOUT_SECONDS = 2.0
+
+
+async def _ssrf_route_handler(route) -> None:
+    request = route.request
+    # เช็คเฉพาะ navigation request (ดู comment ด้านบน) — subresource ปกติปล่อยผ่านทันที
+    # ไม่เสียเวลา resolve DNS เพิ่ม
+    if not request.is_navigation_request():
+        await route.continue_()
+        return
+    try:
+        hostname = urllib.parse.urlparse(request.url).hostname or ""
+        # is_private_or_internal() มี socket.gethostbyname() ข้างใน (blocking call) —
+        # ต้อง to_thread กันบล็อก event loop เดียวกับที่ Playwright ใช้อยู่ (เหมือน
+        # เหตุผลเดียวกับ retriever.retrieve()/long_term_memory.recall() ที่ wrap ด้วย
+        # to_thread ใน orchestrator.py) + wait_for กัน DNS ช้าไม่รู้จบ (ดู
+        # _SSRF_DNS_TIMEOUT_SECONDS ด้านบน)
+        blocked = not settings.allow_internal_navigation and await asyncio.wait_for(
+            asyncio.to_thread(is_private_or_internal, hostname),
+            timeout=_SSRF_DNS_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # resolve ไม่ได้/timeout/URL ผิดรูปแบบ — ปล่อยผ่าน ให้ Playwright เองไป fail ตามปกติ
+        # ตอน connect จริง (เหมือน is_private_or_internal() เองที่ resolve ไม่ได้ = ไม่ block)
+        blocked = False
+    if blocked:
+        await route.abort()
+    else:
+        await route.continue_()

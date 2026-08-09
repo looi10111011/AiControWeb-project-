@@ -3189,6 +3189,143 @@
            (multi-tab live update), W28 (dropdown selection), W29 (loop
            recovery)
 
+  [x] W61  Task/optimize.txt: 5 Security + 4 Speed items — เสร็จแล้ว
+           (2026-08-09)
+
+           (1) Security — API auth (X-API-Key header ผ่าน APIRouter
+           dependency เดียวคุมทุก route ใน routes.py + config.py:
+           api_key/api_host, ป้องกัน /config/check ใน main.py ด้วย), SSRF
+           block ตอน goto (permission/rules.py: is_private_or_internal()
+           เช็ค IP/hostname ก่อน navigate — ยังไม่ครอบ click-navigation/
+           redirect ตอนนี้ ดู W62[SEC-1/2] ที่แก้ต่อ), แคบ SAFE-downgrade
+           heuristic ให้เหลือเฉพาะ delete/purchase/pay ไม่ให้หลุดผ่าน
+           NEEDS_CONFIRMATION, เข้ารหัส credential ที่เก็บบน disk ด้วย
+           Fernet (cryptography), rate limit (slowapi) บน POST /tasks และ
+           learn endpoint
+
+           (2) Speed — dedupe DOM snapshot ตอนเริ่ม task (ไม่เรียก
+           get_snapshot() ซ้ำถ้า state ไม่เปลี่ยน), parallelize
+           retriever.retrieve() + long_term_memory.recall() ด้วย
+           asyncio.gather() (คำนวณ embedding ร่วมกันครั้งเดียวแทนแยก 2
+           รอบ), เปิด Anthropic prompt caching (cache_control) ให้ตัว
+           middleware evaluator (_MIDDLEWARE_SYSTEM_PROMPT) ด้วยเหมือน
+           SYSTEM_PROMPT หลัก, ย้าย step pacing delay เป็นค่า config
+           (settings.step_pacing_delay_seconds) แทน hardcode
+
+           เจอบั๊กจริงระหว่างทำ: slowapi UnicodeDecodeError ตอนอ่าน .env
+           (แก้ด้วย config_filename="" ส่งเข้า Limiter() + suppress
+           warning), rate limiter test pollution จาก TestClient แชร์
+           identity "testclient" ข้ามเทสต์ (แก้ด้วย api_limiter.reset() ใน
+           client fixture ของ test_api.py)
+
+           รันเต็มชุด backend/tests/ ทุกครั้งหลังแก้แต่ละข้อ: fail count
+           คงเดิมไม่เพิ่ม (baseline เดิมมาจาก Anthropic API key จริงที่ใช้
+           ไม่ได้ในเครื่อง dev นี้)
+
+  [x] W62  Audit รอบสอง (user ขอ "หาช่องโหว่อื่นๆ พร้อมกับหาสิ่งที่จะ
+           upgrade ให้ agent ทำงานได้เร็วและแม่นยำขึ้น" แล้วสั่ง "แก้ทั้งหมด
+           ได้เลย") + บั๊ก Gender radio button ที่ user รายงานพร้อมภาพหน้าจอ
+           — เสร็จแล้ว (2026-08-09)
+
+           บั๊ก radio button — OrangeHRM (เหมือน custom checkbox ของ W21)
+           ซ่อน native <input type="radio"> ด้วย opacity:0 แล้ววาดวงกลมแทน
+           ด้วย <span class="oxd-radio-input"> เป็น sibling — เพิ่ม
+           RADIO_WRAPPER_SELECTOR/isRadioWrapperCandidate ใน perception.py
+           คู่กับของ checkbox เดิม + แก้บั๊กที่เจอระหว่างทำ: label priority
+           ของ radio/checkbox ผิดมานาน (el.value ชนะ associatedLabel ทำให้
+           เห็นแค่ "a"/"b" แทน "Male"/"Female" แม้เป็น native input ธรรมดา
+           ไม่ใช่ custom wrapper) — แก้ด้วย isToggleInputType ให้ preferred
+           associatedLabel ก่อนเฉพาะ radio/checkbox (input ประเภทอื่นยังใช้
+           el.value ก่อนเหมือนเดิม) ยืนยันจริงบน
+           opensource-demo.orangehrmlive.com แล้วว่าเห็น "Male"/"Female"
+
+           SEC-1/2 (SSRF ต่อจาก W61) — W61 บล็อกแค่ตอน goto() เริ่ม task
+           เท่านั้น ยังหลุดได้ผ่าน click ที่ trigger navigation (link บนหน้า
+           เว็บ) และผ่าน HTTP redirect/DNS rebinding (โดเมนแรก resolve เป็น
+           public แต่ redirect ปลายทางจริงเป็น IP ภายใน) — แก้ที่ระดับ
+           เครือข่ายแทนระดับ action เดียว: permission/rules.py เพิ่ม
+           install_ssrf_guard()/_ssrf_route_handler() ผูกกับ
+           page.route("**/*", ...) เช็คทุก navigation request จริง (ไม่ใช่
+           แค่ตอนสั่ง goto()) พร้อม timeout 2s กัน DNS lookup ค้าง — เสียบเข้า
+           ทุกจุดที่สร้าง page/context จริง (orchestrator.py 4 จุด,
+           actions.py, site_learning/crawler.py, routes.py:relearn_page,
+           run.py)
+
+           SEC-3 — จำกัดขนาดไฟล์แนบ (attached_file_content_base64 ผ่าน
+           Pydantic Field max_length ใน schemas.py) + เพิ่ม rate limit ให้
+           generate_plan() ที่ไม่มีมาก่อน
+
+           SEC-4 — session_id เดิมเป็น shared namespace ไม่มีเจ้าของ ใครก็
+           แย่ง/ปิด session คนอื่นได้ถ้าเดา id ถูก — เพิ่ม owner_token
+           (client-generated, สุ่มด้วย secrets.token_urlsafe) ผูกกับทุก
+           session ใน session_registry.py (SessionOwnershipError ถ้าไม่ตรง)
+           + ต้องแก้ _recover() ให้ preserve owner_token เดิมข้ามการ
+           rebuild session อัตโนมัติด้วย ไม่งั้น token ฝั่ง client จะใช้ไม่
+           ได้ทันทีหลัง auto-recovery
+
+           SEC-5 — API key เดิมหลุดไปอยู่ใน SSE query string (โผล่ใน
+           access log) — เปลี่ยนเป็น short-lived ticket (60s TTL) ผ่าน POST
+           /auth/stream-ticket แทน ฝั่ง frontend (index.html) เรียกขอ
+           ticket ก่อนเปิด EventSource ทุกครั้ง
+
+           ACC-1 — procedural memory planner ไม่เคยเห็น success_count/
+           failure_count ของ template เลย (แค่ pattern match เจอก็เสนอ reuse
+           เท่ากันหมด) — เพิ่ม field เข้า find_candidate_templates()
+           (procedural_memory.py, root cause จริงอยู่ตรงนี้ ไม่ใช่แค่ตัว
+           formatter) + _format_candidates_for_planner()/
+           _PROCEDURAL_PLANNER_SYSTEM_PROMPT ใน llm.py ให้ planner ถ่วง
+           น้ำหนักความมั่นใจตามสถิติจริง
+
+           ACC-2 — element ที่ disabled ถูก skip ออกจาก snapshot เงียบๆ
+           ทั้งก้อน ทำให้ LLM ไม่รู้ด้วยซ้ำว่ามี element นั้นอยู่ (แยกไม่ออก
+           ระหว่าง "ยังไม่ทำขั้นตอนก่อนหน้าให้ครบ" กับ "element ไม่มีอยู่
+           จริง") — perception.py เอา guard `if (el.disabled) continue`
+           ออก แปะ marker "[disabled]" ต่อท้าย label แทน (ตาม convention
+           เดียวกับ "[active อยู่แล้ว]"/"[ถูกบังอยู่]") + เพิ่มกติกาใน
+           SYSTEM_PROMPT ห้ามเลือก element ที่มี marker นี้
+
+           ACC-3 — finish_task(success=true) ไม่มี hard guard เมื่อ
+           mutating action ทุกตัวที่ลองมาล้มเหลวหมดทั้ง task (ต่างจาก guard
+           เดิมที่เช็คแค่ steps_taken==0) — เพิ่ม
+           _has_any_successful_mutating_action() +
+           _MUTATING_ACTION_TYPES/_MAX_PREMATURE_ALL_FAILED_RETRIES/
+           _PREMATURE_ALL_FAILED_NUDGE ใน orchestrator.py เจอบั๊กจริงตอน
+           เขียนเทสต์: ใส่ "goto" ไว้ใน _MUTATING_ACTION_TYPES ทำให้ guard
+           ไม่มีวันยิงเลยในทางปฏิบัติ เพราะ goto แรกสุด (ไปหน้าเริ่ม task
+           ก่อนเข้า loop) ถูก record เป็น success=True เสมอทุก task อยู่แล้ว
+           — แก้โดยตัด goto/go_back/switch_tab ออกจาก set (นับเฉพาะ action
+           ที่มีผลจริงต่อหน้าเว็บ: click/fill/select/check/press_key/
+           submit/delete/purchase/pay) + แก้เทสต์เดิมที่ผิดตามไปด้วย (นับ
+           จำนวนรอบ nudge ไม่ครบตาม _MAX_PREMATURE_ALL_FAILED_RETRIES จริง)
+
+           SPD-1 — Anthropic prompt caching เดิมมี breakpoint แค่ system+
+           tools (นิ่งทุก step) ไม่มี breakpoint ให้ conversation history ที่
+           โตขึ้นเรื่อยๆ เลย — เพิ่ม breakpoint ที่สองบน user message ล่าสุด
+           ใน next_action() (llm.py) เฉพาะตอนส่ง request จริง
+           (request_messages) ไม่แก้ messages ตัวจริงที่ return กลับไปให้
+           loop เก็บต่อ กัน cache_control ค้างสะสมเกิน 4 breakpoints ที่
+           Anthropic อนุญาตต่อ request หลังผ่านไปหลาย step
+
+           SPD-2 — get_snapshot() มี document.querySelectorAll('[class]')
+           กวาดทั้งหน้า (แทบทุก element ที่มี class) เพื่อหา profile-menu/
+           avatar dropdown ทุก step ของ loop — แคบ selector ลงด้วย
+           attribute substring (`[class*="dropdown" i]` ฯลฯ, native ใน
+           เบราว์เซอร์ ไม่ต้อง JS iterate เอง) ก่อนเช็ค regex ซ้ำเป๊ะๆ
+           เหมือนเดิม (ผลลัพธ์เท่าเดิมทุกประการ เพราะทุก alternative ใน
+           PROFILE_MENU_CLASS_RE มี substring พวกนี้อย่างน้อย 1 ตัวเสมอ)
+
+           SPD-3 — สำรวจว่ามี caching lever ให้ Gemini/Groq เหมือน Anthropic
+           ไหม สรุปว่าไม่คุ้มทำ: SYSTEM_PROMPT ~30k ตัวอักษร (~10k token) ยัง
+           ต่ำกว่า minimum ของ Gemini CachedContent API หลายรุ่น (มัก
+           32k+) แถมต้องจัดการ resource lifecycle เอง (create/TTL/delete)
+           ส่วน Groq ไม่มี cache API ให้เรียกเลย — ระบบ context compaction
+           เดิม (W22, ทุก 6 step) ที่มีอยู่แล้วครอบคลุมส่วนนี้ในทางปฏิบัติอยู่
+           แล้ว ปิดจ็อบแบบไม่แก้โค้ด (ยืนยันกับ user แล้ว)
+
+           รันเต็มชุด backend/tests/ ทุกครั้งหลังแก้แต่ละข้อ: 995 ผ่าน, 8
+           fail เดิมที่ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง
+           dev นี้ (ไม่มี regression ใหม่จากงานชุดนี้)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

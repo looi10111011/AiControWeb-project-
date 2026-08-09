@@ -212,6 +212,14 @@ def find_candidate_templates(domain: str, goal: str, k: Optional[int] = None) ->
                 "steps": steps,
                 "slots": slots,
                 "distance": distance,
+                # ACC-1 (accuracy audit follow-up): track record จริงของ template นี้ (ดู
+                # record_template_outcome() ด้านล่าง) — เดิม dict นี้ไม่มี field พวกนี้เลย
+                # ทำให้ llm.plan_with_procedural_memory() (ผู้เรียกฟังก์ชันนี้) ไม่มีทาง
+                # แยกแยะ template ที่เพิ่งถูกบันทึกครั้งเดียว (success_count=1, ยังไม่เคย
+                # ถูก verify ซ้ำ) ออกจาก template ที่ reuse สำเร็จมาแล้วหลายครั้งจริง —
+                # ประเมิน confidence จากแค่ semantic/pattern match ล้วนๆ เหมือนกันหมด
+                "success_count": meta.get("success_count", 0),
+                "failure_count": meta.get("failure_count", 0),
             })
         return candidates
     except Exception as e:

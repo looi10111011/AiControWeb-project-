@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,7 +30,18 @@ class Settings(BaseSettings):
 
     browser_headless: bool = True
 
-    api_host: str = "0.0.0.0"
+    # Security: ทุก route ใน api_router (ดู api/routes.py::verify_api_key) ต้องแนบค่านี้ผ่าน
+    # header "X-API-Key" (หรือ query param "?api_key=" สำหรับ SSE stream ที่ EventSource ตั้ง
+    # header เองไม่ได้) มิฉะนั้นได้ 401 — ไม่ตั้งค่าใน .env (None, default) = auth ปิดทั้งหมด
+    # สำหรับ local dev เท่านั้น (ต้องตั้งค่านี้จริงก่อน deploy ที่เข้าถึงได้จากนอกเครื่อง)
+    api_key: Optional[str] = None
+
+    # Security 1.2 (SSRF): permission/rules.py::classify_action() hard-blocks goto ไปยัง
+    # private/internal IP (cloud metadata, LAN ภายใน ฯลฯ) เสมอไม่ว่า config อื่นจะว่าไง —
+    # เปิดตัวนี้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น (default ปิด ปลอดภัยสุด)
+    allow_internal_navigation: bool = False
+
+    api_host: str = "127.0.0.1"
     api_port: int = 8000
     # W10[A]: จำนวน browser instance ที่ BrowserPool เปิดค้างไว้ตอน API server startup
     # (ดู core/browser_pool.py) — task ที่เกินโควตานี้พร้อมกันจะรอคิวจนกว่าจะมีตัวว่าง
@@ -193,6 +206,13 @@ class Settings(BaseSettings):
     # ความถี่ต่ำสุด/คุ้มค่าที่สุด) ไม่ได้เรียกทุก browser action step — ปิดไว้ default เหมือน
     # โมดูล LLM ตัวอื่นในกลุ่มนี้ จนกว่าจะ validate โทน/คุณภาพข้อความก่อน
     enable_persona_voice: bool = False
+
+    # W41 (ดู core/orchestrator.py::_STEP_PACING_DELAY_SECONDS สำหรับเหตุผลเต็มของ pacing
+    # นี้เอง): ระยะห่างต่ำสุด (วินาที) ที่ต้องการระหว่างการเรียก next_action() (LLM) 2 ครั้ง
+    # ติดกัน กันยิง LLM API ถี่เกิน free-tier quota ต่อนาที (RPM) — ย้ายจาก module constant
+    # เดิม (hardcode 3 เสมอ) มาเป็น setting เพื่อให้ปรับได้ตาม provider/tier ที่ใช้จริงโดย
+    # ไม่ต้องแก้โค้ด (เช่น tier ที่จ่ายเงินแล้วมี RPM สูงกว่า free-tier มาก ปรับให้ต่ำลงได้)
+    step_pacing_delay_seconds: float = 3.0
 
 
 settings = Settings()

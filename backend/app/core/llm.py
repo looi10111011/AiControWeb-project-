@@ -346,6 +346,12 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   ประการ) ทำให้เสีย step ไปเปล่าๆ รอหน้าเปลี่ยนที่จะไม่มีวันเกิดขึ้น ให้ข้ามไปทำ action ถัดไป
   ที่เกี่ยวกับ goal บนหน้าปัจจุบันได้เลย (element นี้ "อยู่แล้ว" ตามที่ต้องการ ไม่ต้องกดซ้ำ) —
   ยกเว้น goal สั่งให้ "รีเฟรช"/"เปิดใหม่" ชัดเจนเท่านั้นถึงคลิกซ้ำได้
+- ACC-2 (accuracy audit follow-up): element ที่มี marker "[disabled]" ต่อท้าย label กดไม่ได้
+  จริงตอนนี้ (ปุ่ม/ช่องกรอกถูก disable ไว้จริงในหน้าเว็บ — มักเป็นเพราะ field อื่นที่จำเป็น
+  ยังกรอกไม่ครบ/ไม่ถูกเงื่อนไข) ห้ามเลือก action ที่ index นี้เด็ดขาด (จะ fail/ไม่มีผลอะไร
+  เลยแน่ๆ) — element นี้ "มีอยู่จริง" ไม่ใช่ไม่มีตัวเลือกนี้ให้ใช้เลย ให้มองหาว่าต้องทำอะไรอื่น
+  ให้ครบก่อน (เช่น กรอก field ที่ยังว่างอยู่) แล้ว element นี้น่าจะ enable เองในรอบถัดไป —
+  อย่าไปเดากด element อื่นที่ label ใกล้เคียงแทนโดยไม่ตรวจสอบก่อนว่าใช่ตัวที่ต้องการจริงไหม
 - W20 ("No Redundant Search Submission"): ตอนส่งคำค้นหา/คำกรองที่พิมพ์ไว้ในช่อง ให้เลือก
   วิธีเดียวเท่านั้นระหว่าง (ก) type: "press_key" key: "Enter" ที่ index ของช่อง input นั้น
   หรือ (ข) type: "click" ที่ปุ่ม "Search"/"ค้นหา" — ห้ามทำทั้งสองอย่างติดกันสำหรับคำค้นหา
@@ -993,6 +999,20 @@ _PROCEDURAL_PLANNER_SYSTEM_PROMPT = (
     "- Match on task class + URL pattern + form fields, NOT surface wording.\n"
     "- NEVER invent slot values. Use only data present in NEW_TASK.\n"
     "- If your best confidence would be < 0.6, choose \"plan_fresh\" instead.\n"
+    "- Each candidate carries success_count/failure_count (how many real fast-path runs\n"
+    "  it has actually completed) — weight this into your confidence, don't score purely\n"
+    "  on semantic/pattern match:\n"
+    "  * success_count == 0 (freshly captured, never replayed): this template is\n"
+    "    UNVERIFIED. Even a strong pattern match should not alone justify \"reuse\" at\n"
+    "    high confidence — prefer \"adapt\" or a lower confidence near the 0.6 floor\n"
+    "    unless the match is exceptionally exact (identical goal_pattern and URL).\n"
+    "  * success_count >= 2 and failure_count == 0: a proven template. A reasonable\n"
+    "    pattern match here can justify \"reuse\" at higher confidence than an unverified\n"
+    "    one would get for the same match quality.\n"
+    "  * failure_count > 0: treat as a warning regardless of success_count — the page\n"
+    "    may have changed since capture. Lower your confidence accordingly, and lean\n"
+    "    toward \"adapt\" or \"plan_fresh\" if failure_count is close to or exceeds\n"
+    "    success_count.\n"
     "- Output ONLY valid JSON via the plan_decision tool call. No prose."
 )
 
@@ -1008,7 +1028,12 @@ def _format_candidates_for_planner(candidates: list[dict]) -> str:
     แค่ต้อง "ตัดสินใจ" ว่า candidate ไหนตรงกับ task class เท่านั้น — steps เต็มๆ พร้อม
     locator จริง ผู้เรียก (routes.py) ค่อยไปดึงจาก candidates list เดิม (ที่
     find_candidate_templates() คืนมาให้ตั้งแต่แรก) มาประกอบเป็น template สุดท้ายเอง
-    หลัง Planner ตัดสินใจแล้ว ไม่ต้องให้ LLM คัดลอก locator กลับมาเองให้เสี่ยงพิมพ์ผิด"""
+    หลัง Planner ตัดสินใจแล้ว ไม่ต้องให้ LLM คัดลอก locator กลับมาเองให้เสี่ยงพิมพ์ผิด
+
+    ACC-1 (accuracy audit follow-up): เพิ่ม success_count/failure_count เข้าไปในสรุปด้วย
+    (ก่อนหน้านี้ตัดออกไปเหมือน locator ทั้งที่เป็นสัญญาณคนละแบบกัน — locator ไม่จำเป็นต้อง
+    ให้ LLM เห็นเพราะไม่ได้ช่วยตัดสินใจ ส่วน track record ควรมีผลต่อ confidence โดยตรง) —
+    ดู _PROCEDURAL_PLANNER_SYSTEM_PROMPT RULES ข้อใหม่สำหรับวิธีที่ Planner ควรใช้ค่านี้"""
     lines = []
     for c in candidates:
         step_sequence = "/".join(str(s.get("action", "")) for s in c.get("steps", []))
@@ -1019,6 +1044,8 @@ def _format_candidates_for_planner(candidates: list[dict]) -> str:
             "url_pattern": c.get("url_pattern", ""),
             "slots": slot_names,
             "step_sequence": step_sequence,
+            "success_count": c.get("success_count", 0),
+            "failure_count": c.get("failure_count", 0),
         }, ensure_ascii=False))
     return "\n".join(lines) if lines else "(no candidates)"
 
@@ -1515,6 +1542,15 @@ _MIDDLEWARE_SYSTEM_PROMPT = (
     "Output ONLY the middleware_evaluate tool call. No prose."
 )
 
+# Speed 2.3: เหมือน _SYSTEM_BLOCKS ด้านล่าง (ดู comment ตรงนั้นสำหรับเหตุผลเต็ม) — system
+# prompt นี้เหมือนกันทุก step ของ loop เดียวกัน (evaluate_safety_and_performance เรียก 1
+# ครั้งต่อ step เฉพาะตอน settings.enable_middleware_evaluator เปิด) จึง cache ได้ประโยชน์
+# เหมือนกัน ใช้แค่ branch anthropic เท่านั้น (groq/gemini ไม่มี cache_control mechanism
+# แบบนี้ — ดู module comment บนสุดของไฟล์)
+_MIDDLEWARE_SYSTEM_BLOCKS = [
+    {"type": "text", "text": _MIDDLEWARE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+]
+
 _MIDDLEWARE_SAFE_DEFAULT: dict[str, Any] = {
     "redundancy_evaluation": {"is_redundant": False, "redundancy_reason": ""},
     "permission_evaluation": {
@@ -1550,7 +1586,7 @@ async def evaluate_safety_and_performance(
             response = await client.messages.create(
                 model=model,
                 max_tokens=512,
-                system=_MIDDLEWARE_SYSTEM_PROMPT,
+                system=_MIDDLEWARE_SYSTEM_BLOCKS,
                 tools=[MIDDLEWARE_EVALUATOR_TOOL],
                 tool_choice={"type": "tool", "name": "middleware_evaluate"},
                 messages=[{"role": "user", "content": prompt}],
@@ -2253,13 +2289,27 @@ async def next_action(
         }
     ]
 
+    # W_cache2 (SPD-1): breakpoint ที่สอง (breakpoint แรกคือ system+tools ด้านบน) —
+    # cache ทับ conversation history ทั้งก้อนที่โตขึ้นทุก step ของ loop เดียวกันด้วย ไม่ใช่
+    # แค่ system+tools ที่นิ่งอยู่แล้ว มาร์คแค่ตอนส่ง request (request_messages) เท่านั้น
+    # ห้ามมาร์คลงใน messages ตัวจริงที่ return กลับไปให้ loop ต่อ ไม่งั้น cache_control
+    # จะค้างสะสมทุก step จนเกิน 4 breakpoints ที่ Anthropic อนุญาตต่อ request
+    request_messages = messages[:-1] + [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": messages[-1]["content"], "cache_control": {"type": "ephemeral"}}
+            ],
+        }
+    ]
+
     response = await client.messages.create(
         model=model,
         max_tokens=1024,
         system=_SYSTEM_BLOCKS,
         tools=[BROWSER_ACTION_TOOL, FINISH_TASK_TOOL],
         tool_choice={"type": "any"},
-        messages=messages,
+        messages=request_messages,
     )
     usage = TokenUsage(
         input_tokens=response.usage.input_tokens,

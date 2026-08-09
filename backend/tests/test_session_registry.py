@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app.core.session_registry import BrowserSession, SessionRegistry
+from backend.app.core.session_registry import BrowserSession, SessionOwnershipError, SessionRegistry
 
 
 def _fake_pool():
@@ -440,3 +440,188 @@ async def test_close_all_closes_every_session():
     assert registry.get("b") is None
     sessions["a"].context.close.assert_awaited_once()
     sessions["b"].browser.close.assert_awaited_once()
+
+
+# --- Security (SEC-4 follow-up): BrowserSession.owner_token — session_id เดิมเป็นแค่
+# string ที่ใครก็ตามที่มี X-API-Key เดียวกันแนบเข้ามาใช้ต่อได้เลย ไม่มีการเช็คความเป็น
+# เจ้าของ — owner_token เป็น secret แยกต่างหากที่ต้องแนบมาตรงกันเสมอถึงจะ "ใช้ต่อ" session
+# เดิมได้ (ดู session_registry.py::BrowserSession.owner_token, get_or_create()/get()/close())
+
+
+@pytest.mark.asyncio
+async def test_new_session_uses_client_supplied_owner_token():
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    session = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="client-secret-123",
+    )
+    assert session.owner_token == "client-secret-123"
+
+
+@pytest.mark.asyncio
+async def test_new_session_without_owner_token_gets_a_random_one():
+    """caller ภายในที่ไม่ต้องพึ่งกลไกนี้ (CLI/test) ไม่ส่ง owner_token มาเลย — ยังต้องได้
+    token แบบสุ่มกลับมาเสมอ (ไม่ใช่ค่าว่าง/None) เผื่ออนาคตมีคนมาเช็คจริง"""
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    session = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None,
+    )
+    assert session.owner_token
+    assert len(session.owner_token) > 16
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reuses_session_when_owner_token_matches():
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    first = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    second = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    assert second is first
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_rejects_mismatched_owner_token():
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    with pytest.raises(SessionOwnershipError):
+        await registry.get_or_create(
+            "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+            pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="wrong-token",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_allows_reuse_without_owner_token_check_when_not_provided():
+    """sanity: owner_token=None (ไม่ส่งมาเลย) = ข้ามการเช็คไปเฉยๆ (backward-compat กับ
+    caller ที่ยังไม่รู้จัก field นี้ เช่น run.py demo/CLI) ไม่ throw"""
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    first = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    second = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None,
+    )
+    assert second is first
+
+
+def test_get_with_matching_owner_token_returns_session():
+    session = BrowserSession(
+        "sess-1", "pool", AsyncMock(), AsyncMock(), AsyncMock(), None,
+        pool=_fake_pool(), owner_token="secret-abc",
+    )
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+    assert registry.get("sess-1", owner_token="secret-abc") is session
+
+
+def test_get_with_wrong_owner_token_raises():
+    session = BrowserSession(
+        "sess-1", "pool", AsyncMock(), AsyncMock(), AsyncMock(), None,
+        pool=_fake_pool(), owner_token="secret-abc",
+    )
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+    with pytest.raises(SessionOwnershipError):
+        registry.get("sess-1", owner_token="wrong-token")
+
+
+def test_get_without_owner_token_skips_check():
+    """sanity: ไม่ส่ง owner_token เลย (None) = พฤติกรรมเดิมทุกประการ ไม่ throw"""
+    session = BrowserSession(
+        "sess-1", "pool", AsyncMock(), AsyncMock(), AsyncMock(), None,
+        pool=_fake_pool(), owner_token="secret-abc",
+    )
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+    assert registry.get("sess-1") is session
+
+
+def test_get_unknown_session_id_returns_none_even_with_owner_token():
+    registry = SessionRegistry()
+    assert registry.get("does-not-exist", owner_token="anything") is None
+
+
+@pytest.mark.asyncio
+async def test_close_with_wrong_owner_token_raises_and_does_not_close():
+    session = BrowserSession(
+        "sess-1", "owns", AsyncMock(), None, AsyncMock(), AsyncMock(), owner_token="secret-abc",
+    )
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+
+    with pytest.raises(SessionOwnershipError):
+        await registry.close("sess-1", owner_token="wrong-token")
+
+    # session ต้องยังอยู่ใน registry เหมือนเดิม ไม่ถูกปิด/pop ออกไปเลย
+    assert registry.get("sess-1", owner_token="secret-abc") is session
+    session.browser.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_with_matching_owner_token_succeeds():
+    session = BrowserSession(
+        "sess-1", "owns", AsyncMock(), None, AsyncMock(), AsyncMock(), owner_token="secret-abc",
+    )
+    registry = SessionRegistry()
+    registry._sessions["sess-1"] = session
+
+    closed = await registry.close("sess-1", owner_token="secret-abc")
+
+    assert closed is True
+    assert registry.get("sess-1") is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_preserves_original_owner_token():
+    """Security (SEC-4 follow-up): กู้คืน session ที่ browser หลุดการเชื่อมต่อ (rebuild
+    ทั้งชุดผ่าน _create()) ต้องคง owner_token เดิมไว้ ไม่สุ่มใหม่ — ไม่งั้น client ที่ถือ
+    token เดิมอยู่จะใช้ session_id เดิมต่อไม่ได้อีกเลยหลัง recovery แบบไม่ทันตั้งตัว"""
+    pool = _fake_pool()
+    dead_browser = pool.acquire_one.return_value
+    dead_browser.is_connected = MagicMock(return_value=False)
+    dead_page = AsyncMock()
+    dead_page.is_closed = MagicMock(return_value=False)
+    dead_context = AsyncMock()
+    dead_context.new_page = AsyncMock(return_value=dead_page)
+    dead_browser.new_context = AsyncMock(return_value=dead_context)
+
+    fresh_browser = AsyncMock()
+    fresh_browser.is_connected = MagicMock(return_value=True)
+    fresh_page = AsyncMock()
+    fresh_page.is_closed = MagicMock(return_value=False)
+    fresh_context = AsyncMock()
+    fresh_context.new_page = AsyncMock(return_value=fresh_page)
+    fresh_browser.new_context = AsyncMock(return_value=fresh_context)
+    pool.acquire_one = AsyncMock(side_effect=[dead_browser, fresh_browser])
+
+    registry = SessionRegistry()
+    first = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    original_token = first.owner_token
+    assert original_token == "secret-abc"
+
+    second = await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+
+    assert second.browser is fresh_browser  # ยืนยันว่า recovery ผ่าน _create() จริง
+    assert second.owner_token == original_token
