@@ -232,12 +232,14 @@ _DOM_CHECK_TIMEOUT_MS = 3000
 # เช็คแล้วจะเป็นแค่ noise เปล่าๆ ไม่มีประโยชน์
 _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES = 2
 
+# W64[7.1]: ต่อท้าย {action_hint} ด้วยคำแนะนำที่ต่างกันตามว่า goal เป็นงานลบหรือแก้ไข (ดู
+# _premature_mutation_action_hint() ด้านล่าง) — เดิม (W22) hardcode คำแนะนำ "กลับไปทำขั้นตอน
+# ลบ" ตรงๆ ในนี้ ผิดถ้าใช้กับ edit-all-intent goal (ไม่มีอะไรให้ "ลบ")
 _PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE = (
     "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบ DOM จริงของหน้าปัจจุบันแล้วพบว่า"
     "ยังเหลือรายการที่ตรงเงื่อนไขอยู่ {count} รายการ (ข้อความจริงบนหน้าเว็บ: \"{text}\") ห้ามถือว่า"
-    "ลบครบแล้ว/ไม่พบรายการที่ตรงเงื่อนไข ทั้งที่ตารางยังโชว์จำนวนมากกว่า 0 อยู่จริง — ให้กลับไปทำ"
-    "ขั้นตอนลบ (คลิก checkbox เลือกทั้งหมด + Delete Selected หรือวนคลิกลบทีละแถว ตามที่ SYSTEM_"
-    "PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ จนกว่าจำนวนจะเหลือ 0/ขึ้น \"No Records Found\""
+    "ทำครบแล้ว/ไม่พบรายการที่ตรงเงื่อนไข ทั้งที่ตารางยังโชว์จำนวนมากกว่า 0 อยู่จริง — {action_hint}"
+    "จนกว่าจำนวนจะเหลือ 0/ขึ้น \"No Records Found\""
     "จริงๆ ถึงจะเรียก finish_task(success=true) ได้"
 )
 
@@ -255,6 +257,128 @@ def _is_deletion_intent_goal(goal: str) -> bool:
     return any(kw in lower for kw in _DELETION_INTENT_KEYWORDS)
 
 
+# W64[7.1] ("Filter Order & False Completion" — ticket Issue 7.1, บั๊กจริง: goal สั่งเปลี่ยน
+# Role ของ user ที่ Role=ESS ทั้งหมดเป็น Admin — agent เห็น 1 แถว ESS เหลืออยู่จริงในตารางที่
+# กรองแล้ว แต่ไม่กด Edit ให้ครบ ดันเรียก finish_task(success=true) เลย): ใช้ keyword ตาม
+# W21 "Batch/Bulk Action Protocol — Edit All" ใน llm.py SYSTEM_PROMPT เดียวกัน — สาเหตุ
+# false-completion เหมือน deletion เป๊ะ (LLM สรุปจากประวัติ conversation แทนอ่านสถานะ DOM
+# จริง) เพราะสัญญาณ "งานเสร็จ" ของทั้งสองแบบเหมือนกันทุกประการในทางปฏิบัติ: filter ตาม
+# เงื่อนไข target (เช่น Role=ESS) แล้วนับแถวที่ตรงเงื่อนไขในตารางที่กรองแล้ว ต้องเหลือ 0 ถึงจะ
+# ถือว่าเสร็จ — ต่างแค่ action ที่ต้องทำกับแต่ละแถว (ลบ vs แก้ไขค่า) ไม่ใช่เงื่อนไขความสำเร็จ
+#
+# W68 (บั๊กจริงที่ user รายงาน: goal พิมพ์ว่า "...เปลี่ยน Role ของทุกคนในผลการค้นหาให้เป็น
+# Admin..." — agent ตอบ "ไม่พบผู้ใช้ Role ESS (0 รายการ)" ทั้งที่ตารางจริงโชว์ "(16) Records
+# Found" พร้อมแถว ESS อยู่จริง): keyword เดิมด้านบนต้องเจอ "เปลี่ยนทุก"/"แก้ทุก" ติดกันเป๊ะ
+# เท่านั้น แต่คำพูดธรรมชาติจริงมักแยกคำ "เปลี่ยน...ทุกคน..." ห่างกันด้วยคำอื่น (เช่น "Role
+# ของ") ทำให้ exact-phrase match พลาด — _is_edit_all_intent_goal() คืน False ทั้งที่ goal
+# เป็น edit-all จริง เลยไม่เปิด _scan_remaining_target_records() guard ปล่อยให้คำตอบ
+# hallucinate ของ LLM หลุดผ่านไปโดยไม่มีการตรวจ DOM จริงเลย — เปลี่ยนจาก exact-phrase
+# matching เป็น "มี mutation verb + มี bulk marker อยู่ที่ไหนก็ได้ใน goal" แทน (ไม่ต้องติดกัน)
+# ยัง cover keyword ชุดเดิมทั้งหมดได้อยู่ (เป็น superset) — ความเสี่ยง false-positive ต่ำ
+# เพราะ guard ที่เปิดใช้ (_scan_remaining_target_records) เอง fail-safe อยู่แล้ว (ไม่เจอ
+# element "(N) Records Found" บนหน้า = ปล่อยผ่านเงียบๆ ไม่ block อะไรเลย)
+_EDIT_ALL_MUTATION_VERBS = ("เปลี่ยน", "แก้ไข", "แก้", "ปรับ", "update", "change", "edit", "set")
+# "ทุก" คำเดียวพอ (ครอบคลุม "ทุกคน"/"ทุกราย"/"ทุกแถว"/"ทุกรายการ"/"เปลี่ยนทุก" ที่เป็น substring
+# ของมันอยู่แล้วทั้งหมด — ไม่ต้องแจกแจงแยกทีละคำ) บวก "ทั้งหมด"/"ให้หมด" ที่ไม่มีคำว่า "ทุก" ปน
+_EDIT_ALL_BULK_MARKERS = ("ทุก", "ทั้งหมด", "ให้หมด", "all", "every", "each")
+
+
+def _is_edit_all_intent_goal(goal: str) -> bool:
+    """W64[7.1]/W68: True ถ้า goal มีทั้งคำกริยาบ่งบอกการแก้ไข/เปลี่ยนค่า (_EDIT_ALL_
+    MUTATION_VERBS) และคำบ่งบอกขอบเขต "ทุกแถว/ทั้งหมด" (_EDIT_ALL_BULK_MARKERS) อยู่ในข้อความ
+    เดียวกัน ไม่จำเป็นต้องติดกันเป็นวลีเดียว (แก้บั๊ก W68 ที่คำพูดธรรมชาติมักแยกคำสองกลุ่มนี้
+    ด้วยคำอื่นคั่นกลาง เช่น "เปลี่ยน Role ของทุกคน") — ใช้ร่วมกับ _is_deletion_intent_goal()
+    เป็นเงื่อนไข OR เปิดใช้ _scan_remaining_target_records() ก่อนยอมรับ
+    finish_task(success=true) (ดู docstring ของ _is_deletion_intent_goal ด้านบนสำหรับที่มา
+    ของกลไกเดิม)"""
+    lower = (goal or "").lower()
+    has_verb = any(v in lower for v in _EDIT_ALL_MUTATION_VERBS)
+    has_bulk_marker = any(m in lower for m in _EDIT_ALL_BULK_MARKERS)
+    return has_verb and has_bulk_marker
+
+
+_DELETE_MUTATION_ACTION_HINT = (
+    "ให้กลับไปทำขั้นตอนลบ (คลิก checkbox เลือกทั้งหมด + Delete Selected หรือวนคลิกลบทีละแถว "
+    "ตามที่ SYSTEM_PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ "
+)
+_EDIT_ALL_MUTATION_ACTION_HINT = (
+    "ให้กลับไปทำขั้นตอนแก้ไข (คลิกไอคอนแก้ไข/Edit ของแถวที่ยังเหลืออยู่ เปลี่ยนค่าตามที่ goal "
+    "ต้องการ แล้วกด Save ตามที่ SYSTEM_PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ "
+)
+
+
+def _premature_mutation_action_hint(goal: str) -> str:
+    """W64[7.1]: เลือกคำแนะนำที่ต่อท้าย _PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE ตาม
+    intent จริงของ goal — deletion เป็น default (เข้ากันได้กับพฤติกรรมเดิมของ W22 เป๊ะถ้า
+    goal เข้าเงื่อนไข deletion-intent ด้วย แม้จะเข้าเงื่อนไข edit-all-intent พร้อมกันก็ตาม
+    เพราะ keyword สองชุดแทบไม่ overlap กันในทางปฏิบัติ)"""
+    if _is_deletion_intent_goal(goal):
+        return _DELETE_MUTATION_ACTION_HINT
+    return _EDIT_ALL_MUTATION_ACTION_HINT
+
+
+# W64[7.1] ("Filter Order & False Completion" — ticket Issue 7.1, บั๊กจริง: agent เลือก
+# Role=ESS ใน filter dropdown แล้วคลิกปุ่มแก้ไข (Edit) บนตารางทันที "ก่อน" คลิก Search เลย —
+# แถวที่กด Edit จึงเป็นแถวเก่าจากตารางที่ยังไม่กรอง ไม่ใช่แถวที่ตรงเงื่อนไข ESS จริง): เดิมมีแค่
+# คำแนะนำใน SYSTEM_PROMPT (W20 "No Redundant Search Submission", W63[3.1]) ให้ agent "ควร"
+# กด Search ก่อน แต่ไม่มีอะไรบังคับจริงถ้าโมเดลเผลอข้ามไป — เพิ่ม hard guard ระดับโค้ด บล็อก
+# การคลิกปุ่ม action ของแถวตาราง (Edit/View/Delete ฯลฯ — label ที่ ICON_CLASS_LABEL_RULES ใน
+# perception.py W21 เดา/แปะให้แล้ว) ถ้า "1 step ก่อนหน้าทันที" คือ fill/select ที่สำเร็จ (บ่ง
+# บอกว่าเพิ่งแก้ filter/dropdown แต่ยังไม่ได้กด Search ยืนยันเลย)
+#
+# ทำไม scope แคบแค่ "1 step ก่อนหน้าทันที" เท่านั้น (ไม่ใช่ "ตั้งแต่ fill ล่าสุดจนกว่าจะกด
+# Search ไม่ว่าจะผ่านไปกี่ step"): กันไม่ให้ block ผิดกรณีที่ agent fill/select field ที่ไม่ใช่
+# filter จริง (เช่น กรอกฟอร์ม Edit ที่เปิดอยู่แล้ว) แล้วบังเอิญ action ถัดไปห่างออกไปหลาย step
+# เป็นปุ่ม Edit ของแถวอื่นที่ไม่เกี่ยวข้องกันเลย — window แคบสุดเท่าที่จำเป็นสำหรับ pattern
+# ที่ user รายงานจริง (fill/select ตามด้วยคลิก row-action ทันที ไม่มี action คั่นกลาง) ลด
+# false-positive ได้มากสุดโดยยังจับบั๊กจริงได้ครบ
+_ROW_ACTION_LABEL_RE = re.compile(r"\b(edit|view details|delete|download|pencil)\b", re.IGNORECASE)
+
+# W64[7.1]: ใช้เช็คว่า click ที่เพิ่งสำเร็จคือการกด Search จริงหรือไม่ (ถ้าใช่ ล้าง
+# filter_dirty_since_search ทันที) — ครอบคลุมทั้งไทย/อังกฤษเหมือน keyword set อื่นในไฟล์นี้
+_SEARCH_LABEL_RE = re.compile(r"\bsearch\b|ค้นหา", re.IGNORECASE)
+
+_PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE = (
+    "Action นี้ถูกปฏิเสธ — คุณเพิ่งกรอก/เลือกค่าใน field '{prev_label}' ไปเมื่อ step ที่แล้ว "
+    "แต่ยังไม่ได้กดปุ่ม Search/ค้นหา (หรือกด Enter) เพื่อยืนยัน filter นี้เลย ตารางที่เห็นอยู่"
+    "ตอนนี้ยังเป็นผลลัพธ์เก่าก่อนหน้า filter ใหม่ ไม่ใช่ผลลัพธ์ที่กรองแล้วจริง — ห้ามคลิกปุ่ม "
+    "'{label}' (row action) บนแถวนี้เด็ดขาดตอนนี้ ให้กดปุ่ม Search/ค้นหา ก่อน แล้วตรวจสอบ"
+    "indexed elements รอบใหม่ว่าตารางกรองตามเงื่อนไขที่ต้องการจริงแล้ว ก่อนค่อยเลือก action "
+    "กับแถวในตาราง"
+)
+
+
+# W63[7.2]: ต่างจาก guard อื่นในไฟล์นี้ (เปิดใช้ตาม intent keyword ของ goal) guard นี้เปิดใช้
+# ตามการมี tool_input["verify_text"] มาจาก LLM เอง (ดู llm.py::_FINISH_TASK_PARAMS) แทน — LLM
+# เป็นคนตัดสินใจว่า goal นี้ "ควร" ยืนยันด้วยข้อความในตารางไหม ไม่ต้องเดา intent จาก keyword
+# เอง (ยืดหยุ่นกว่า เพราะครอบคลุมทั้งงานสร้าง/แก้ไข/บันทึกที่คาดว่าจะโผล่ในตาราง ไม่ใช่แค่
+# "สร้าง" เพียงอย่างเดียว)
+_MAX_PREMATURE_TABLE_VERIFY_RETRIES = 2
+
+_PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE = (
+    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบ DOM จริงของตารางผลลัพธ์บนหน้า"
+    "ปัจจุบันแล้วไม่พบข้อความ \"{text}\" (ที่ระบุใน verify_text) อยู่จริงเลยสักแถว ห้ามถือว่า"
+    "รายการนี้ถูกสร้าง/บันทึกสำเร็จทั้งที่ตารางยังไม่แสดงรายการนี้จริง — ตรวจสอบว่า submit ผ่าน"
+    "จริงไหม (มี validation error ค้างอยู่ไหม), navigate กลับไปหน้ารายการที่ถูกต้องแล้วหรือยัง "
+    "หรือต้องรีเฟรช/ค้นหาใหม่ก่อนเห็นรายการนี้ในตาราง ก่อนจะเรียก finish_task(success=true) อีกครั้ง"
+)
+
+# W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2, บั๊กจริง: agent บันทึกพนักงาน
+# ใหม่สำเร็จจริง (มี toast ยืนยัน) แต่ค้นหาเพื่อ verify แล้วไม่เจอเพราะยังไม่รอ AJAX table
+# reload ให้เสร็จ — "ตื่นตระหนก" กด Reset แล้วกรอกฟอร์ม Add Employee ใหม่ทั้งหมดซ้ำอีกรอบ จน
+# เกิด error ข้อมูลซ้ำ): ต่อท้าย nudge เดิมเฉพาะตอนที่ task นี้เคยมี action ที่ toast ยืนยัน
+# สำเร็จแล้วจริง (ดู any_toast_confirmed_this_task) — ห้ามตีความ "หาไม่เจอในตาราง" เป็น
+# "ยังไม่ได้บันทึก" แล้วย้อนกลับไปกรอกฟอร์มใหม่เด็ดขาด เพราะมีหลักฐาน toast ยืนยันสำเร็จจริง
+# อยู่แล้ว การหาไม่เจอครั้งนี้น่าจะเป็นปัญหาการค้นหา/filter/pagination มากกว่า
+_TOAST_CONFIRMED_NO_RECREATE_SUFFIX = (
+    " *** สำคัญ: ก่อนหน้านี้ใน task เดียวกันนี้เคยมี action ที่ตรวจพบ toast/ข้อความยืนยัน"
+    "บันทึกสำเร็จแล้วจริง (ดู step ก่อนหน้าในประวัติ) — ข้อมูลถูกบันทึกไปแล้วจริงๆ การหาไม่เจอ"
+    "ในตารางตอนนี้ไม่ใช่หลักฐานว่ายังไม่ได้บันทึก ห้ามกดปุ่ม Reset/ปุ่มล้างฟอร์มแล้วกรอกฟอร์ม"
+    "สร้างรายการใหม่ซ้ำอีกครั้งเด็ดขาด (จะทำให้เกิดรายการซ้ำ/error ข้อมูลซ้ำ) — ให้ลองรอสักครู่"
+    "แล้ว re-query ตาราง (เช่นกด Search/ค้นหาซ้ำ) อีกครั้งเท่านั้น ***"
+)
+
+
 # W22 (ORANGEHRM SPECIFIC ตามสเปคที่ user ให้มา): ข้อความ "(N) Records Found"/"No Records
 # Found" ปรากฏแทบทุกหน้าที่มี list/filter ของ OrangeHRM (Admin > User Management, PIM >
 # Employee List, Recruitment > Candidates ฯลฯ) — .orangehrm-horizontal-padding span คือ
@@ -269,8 +393,23 @@ _RECORD_COUNT_SELECTOR = (
 
 _RECORD_COUNT_RE = re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE)
 
+# W68b (บั๊กจริงที่ user รายงานซ้ำหลัง W68: goal "เปลี่ยน Role ของทุกคนที่ไม่ใช่ Admin เป็น
+# Admin" — agent ยัง claim "ผลการค้นหาแสดง 0 รายการ" ทั้งที่ตารางจริงโชว์ "(16) Records Found"
+# แม้ W68 จะเปิด _is_edit_all_intent_goal() ให้ตรงแล้วก็ตาม): สาเหตุที่สอง ต่างจาก W68 —
+# _scan_remaining_target_records() เดิมอ่าน DOM แค่ครั้งเดียวทันทีตอน finish_task ถูกเรียก
+# ถ้าจังหวะนั้นตรงกับช่วง AJAX ของปุ่ม Search ยังไม่ update DOM เสร็จ (wait_stable() ก่อนหน้า
+# ใช้ networkidle timeout 4s แต่ไม่รับประกัน 100% ว่า DOM re-render เสร็จภายในนั้นเสมอ) จะอ่าน
+# ได้ "(0)"/"No Records Found" ของสถานะเก่า/ชั่วคราว — อันตรายเฉพาะเคส "0" เท่านั้น (แปลว่า
+# ปล่อยผ่านให้ finish_task(success=true) ทันทีไม่มี retry เลย) ต่างจากเคส ">0" ที่อ่านผิดแค่
+# เสีย nudge retry เปล่าๆ ไม่อันตราย (ดู caller) — เพิ่ม double-check เฉพาะตอนอ่านได้ "0"
+# เท่านั้น: รอสั้นๆ แล้วอ่านซ้ำอีกรอบ ถ้ารอบสองเจอ >0 (มาสาย/ยืนยันว่าเพิ่ง update จริง) ให้เชื่อ
+# รอบสองแทน (สดกว่า น่าเชื่อถือกว่า) — ไม่กระทบ latency ปกติเลยเพราะ retry นี้เกิดเฉพาะตอนได้
+# ผล "0" เท่านั้น (เคสที่กำลังจะยอมรับ finish_task อยู่แล้ว เสีย delay สั้นๆ ครั้งเดียวคุ้มกว่า
+# false-completion)
+_ZERO_RECORD_RECHECK_DELAY_SECONDS = 0.8
 
-async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]]:
+
+async def _scan_remaining_target_records_once(page: Page) -> Optional[tuple[int, str]]:
     """W22: อ่านข้อความ "(N) Records Found"/"No Records Found" จาก DOM จริง ณ ตอนนี้ — คืน
     (จำนวนที่เหลือจริง, ข้อความดิบที่เจอ) ถ้าเจอ element นี้จริง หรือ None ถ้าหน้าปัจจุบันไม่มี
     element แบบนี้เลย (ไม่ใช่หน้าตารางแบบ OrangeHRM/เว็บนี้ไม่รองรับ UI แบบนี้ — ปล่อยผ่านเสมอ
@@ -292,6 +431,47 @@ async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]
     if match:
         return int(match.group(1)), text
     return None
+
+
+async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]]:
+    """W68b: เหมือน _scan_remaining_target_records_once() ทุกประการ แต่ double-check เฉพาะ
+    ตอนอ่านได้ผล "0 รายการเหลือ" เท่านั้น (ดู docstring ของ _ZERO_RECORD_RECHECK_DELAY_SECONDS
+    ด้านบนสำหรับเหตุผลเต็ม) — ผล None/>0 คืนค่าทันทีไม่หน่วงเพิ่ม"""
+    result = await _scan_remaining_target_records_once(page)
+    if result is not None and result[0] == 0:
+        await asyncio.sleep(_ZERO_RECORD_RECHECK_DELAY_SECONDS)
+        recheck = await _scan_remaining_target_records_once(page)
+        if recheck is not None and recheck[0] > 0:
+            return recheck
+    return result
+
+
+# W63[7.2] ("Strict Table Assertion & Truth Reporting" — ticket Issue 7.2): เรียงจากเจาะจง
+# ที่สุด (OrangeHRM .oxd-table-body) ไปกว้างสุด (<table><tbody>/ARIA rowgroup/class ที่มีคำว่า
+# table+body มาตรฐานที่ CSS framework ทั่วไปใช้ร่วมกัน — Material/Bootstrap/Ant Design ฯลฯ)
+# ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว ต่างจาก _RECORD_COUNT_SELECTOR ด้านบนที่ข้อความ
+# "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย แต่ <tbody>/[role=rowgroup] เป็น
+# มาตรฐาน HTML/ARIA ตรงๆ
+_TABLE_BODY_SELECTOR = (
+    '.oxd-table-body, table tbody, tbody, [role="rowgroup"], '
+    '[class*="table-body" i], [class*="tablebody" i]'
+)
+
+
+async def _scan_created_item_in_table(page: Page, verify_text: str) -> bool:
+    """W63[7.2]: True ถ้าเจอ verify_text (substring, case-insensitive) อยู่จริงใน table body
+    ของหน้าปัจจุบัน หรือถ้าหน้านี้ไม่มี table body ให้เช็คเลย (ปล่อยผ่านเสมอ — เช็คไม่ได้ ดีกว่า
+    บล็อก finish_task ที่อาจถูกต้องอยู่แล้ว หลักการเดียวกับ guard อื่นในไฟล์นี้) — False เฉพาะ
+    ตอนมี table body จริงแต่เนื้อหาไม่มี verify_text อยู่เลย (รวมถึงตารางว่างเปล่า/"No Records
+    Found" — ถือเป็นหลักฐานว่ายังไม่พบรายการนี้จริงเหมือนกัน ไม่ใช่แค่ "เช็คไม่ได้")"""
+    try:
+        locator = page.locator(_TABLE_BODY_SELECTOR).first
+        if await locator.count() == 0:
+            return True
+        text = (await locator.inner_text(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+    except Exception:
+        return True
+    return verify_text.lower() in text.lower()
 
 
 async def _scan_validation_errors(page: Page, within_form: bool = False) -> list[str]:
@@ -387,6 +567,31 @@ def _should_check_validation_error_after_action(action_type: str, label: str) ->
     if action_type in ("click", "submit"):
         return _label_looks_like_form_submit(label)
     return False
+
+
+# W65[2] ("Error Passthrough" — fatal-class short-circuit): hard-stop guard หลัง fill/click
+# (ดู _should_check_validation_error_after_action ด้านบน, เรียกใช้จริงหลัง action สำเร็จ) มี
+# พฤติกรรมถูกต้องอยู่แล้ว — break ทันทีพร้อมข้อความ error จริง ไม่ผ่าน LLM ตีความ ยกเว้น bare
+# "* Required" (กรองด้วย _is_bare_required_message แล้ว) จุดที่ยังขาดคือ guard ก่อน
+# finish_task(success=true) (เรียกใช้จริงในลูปหลักของ run_task ด้านล่าง) ซึ่งยังให้ LLM วน
+# nudge/retry ก่อนเสมอ (สูงสุด _MAX_PREMATURE_VALIDATION_ERROR_RETRIES ครั้ง) แม้ error จะเป็น
+# ประเภทที่ retry ไปก็ไม่มีทางหาย (เช่น login ผิด, ข้อมูลซ้ำ, ไม่มีสิทธิ์) — keyword list นี้ใช้
+# แยก error 2 กลุ่ม: "fatal" (ต้องข้อมูลใหม่จาก user เท่านั้นถึงจะแก้ได้ ไม่มีทาง retry แล้วหาย
+# เอง) vs error อื่นๆ ทั้งหมด (อาจเป็น timing/DOM ไม่นิ่ง ให้ LLM ลองแก้เองก่อนตามเดิม)
+_FATAL_VALIDATION_ERROR_KEYWORDS = (
+    "invalid credentials", "incorrect password", "invalid username or password",
+    "already exists", "unauthorized", "not authorized", "permission denied",
+    "ไม่ถูกต้อง", "ผิดพลาด", "มีอยู่แล้ว", "ไม่มีสิทธิ์",
+)
+
+
+def _is_fatal_validation_error(text: str) -> bool:
+    """W65[2]: True ถ้าข้อความ error ตรงกับ keyword ที่บ่งบอกว่าเป็นปัญหาที่ agent แก้เองไม่ได้
+    ด้วยการลองใหม่ (ต้องข้อมูล/สิทธิ์ใหม่จาก user เท่านั้น) — ใช้ก่อนยอมรับ
+    finish_task(success=true) เพื่อข้าม nudge-retry loop ไปบังคับความจริงลง final result ทันที
+    แทนที่จะเสีย round-trip LLM หลายครั้งไปกับ error ที่รู้อยู่แล้วว่าไม่มีทางหายเอง"""
+    lower = (text or "").lower()
+    return any(kw in lower for kw in _FATAL_VALIDATION_ERROR_KEYWORDS)
 
 
 # W5: loop-detection guard — บางโมเดล (เจอกับ Llama บน Groq) ถึงจะถูกเตือนแล้วก็ยัง
@@ -1023,6 +1228,7 @@ class Orchestrator:
         approved_plan: Optional[str] = None,
         site_manual_context: str = "",
         session_id: Optional[str] = None,
+        nav_target_page_query: Optional[str] = None,
     ) -> dict:
         """Perceive -> Plan -> Act loop บนหน้าเว็บเดียว จนกว่า LLM จะเรียก finish_task
         หรือครบ max_steps
@@ -1316,6 +1522,17 @@ class Orchestrator:
         premature_login_skip_count = 0
         premature_validation_error_count = 0
         premature_deletion_incomplete_count = 0
+        premature_table_verify_count = 0
+        premature_row_action_before_search_count = 0
+        # W64[7.1]: True เฉพาะช่วง "1 step ถัดไปทันที" หลัง fill/select ที่สำเร็จ — reset เป็น
+        # False หลัง action ถัดไปเสมอไม่ว่าจะเป็น action อะไร (ดู docstring ของ
+        # _ROW_ACTION_LABEL_RE ด้านบนสุดของไฟล์สำหรับเหตุผลเต็มว่าทำไม scope แคบแค่ 1 step)
+        filter_dirty_since_search = False
+        # W64[7.2]: True ตั้งแต่ครั้งแรกที่ action ใดๆ ใน task นี้มี toast_confirmed=True (ดู
+        # actions.py::ActionResult) — ใช้ตัดสินว่า table-verify guard (ดู
+        # _scan_created_item_in_table ด้านล่าง) ควร "ผ่อนปรน" แค่ไหนตอนหา verify_text ไม่เจอ
+        # ในตารางแม้ retry ครบแล้ว (ดู docstring เหนือจุดใช้งานจริงสำหรับเหตุผลเต็ม)
+        any_toast_confirmed_this_task = False
         # Task4 (W19, ดู _scan_validation_errors ด้านบนสุดของไฟล์): ผลของการ verify ครั้ง
         # สุดท้ายก่อนจบ task — "OK" default เสมอ เปลี่ยนเป็น "EXECUTION_FAILED_NEEDS_REPAIR"
         # เฉพาะตอนที่ยอมรับ finish_task(success=true) ไปทั้งที่ retry ครบโควตาแล้วยังเจอ
@@ -1346,6 +1563,10 @@ class Orchestrator:
         # เพิ่ง execute() จริงไปเมื่อ step ก่อนหน้า — ใช้คู่กับ _BULK_SAFE_REPEAT_TYPES
         # ด้านล่างตอนเช็ค consecutive_repeat_count (ดู docstring ตรงจุดเช็คด้านล่าง)
         last_action_succeeded: Optional[bool] = None
+        # W64[7.1]: label ของ field ล่าสุดที่ fill/select สำเร็จ (ตอนที่ filter_dirty_since_
+        # search เพิ่งถูกตั้งเป็น True) — ใช้แสดงใน nudge message เท่านั้น (ดู
+        # _PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE ด้านบนสุดของไฟล์)
+        last_filter_field_label = ""
         recent_actions: list[dict] = []  # เก็บ action ล่าสุดไว้เช็ค pattern วนซ้ำ (คาบ 2-4)
         # W31: จำนวนครั้งที่บังคับทำ recovery action (go_back/scroll) แทน action ที่ agent
         # เพิ่งขอไปแล้ว เพราะตรวจพบว่ากำลังวนซ้ำ — ดู _force_loop_recovery()/
@@ -1445,6 +1666,59 @@ class Orchestrator:
                     "message": "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้",
                     "reason": auto_login_failure_reason,
                 })
+
+            # W66[C] ("Fast-Path Navigation", manual trigger — opt-in เท่านั้น ค่า default
+            # None = พฤติกรรมเดิมทุกประการ ไม่กระทบ caller เดิมที่ไม่รู้จัก parameter นี้เลย):
+            # ลองเดินตาม nav path ที่เรียนรู้ไว้ (site_learning/) ไปหน้าเป้าหมายก่อนเข้า loop
+            # ปกติ — วางไว้หลัง auto-login เสมอ (ต้อง login ให้เสร็จก่อนถึงจะเห็นเมนู Admin/
+            # หน้าที่ต้อง auth) ไม่มี manual/หาไม่เจอ/replay ล้มเหลว -> fallback เงียบๆ กลับไป
+            # เริ่มจาก url เดิม (goto ซ้ำ) แล้วปล่อยให้ loop ปกติด้านล่างทำงานเหมือนไม่เคยระบุ
+            # nav_target_page_query เลย (ปลอดภัย ไม่แย่กว่าเดิม — pattern เดียวกับ fastpath
+            # เดิมทั้งไฟล์) *** lazy import กัน circular import (site_learning/__init__.py ->
+            # crawler.py -> orchestrator.py) — pattern เดียวกับ _maybe_auto_login() ***
+            #
+            # W67[D] (auto-decide): ถ้าไม่ได้ระบุ nav_target_page_query มาเอง (explicit
+            # trigger) แต่เปิด enable_nav_fastpath_auto_decide ไว้ (default True) ให้ใช้
+            # goal ตรงๆ เป็น query แทน — auto-decide ต้องมั่นใจกว่า explicit trigger (ที่
+            # user/caller ตั้งใจระบุมาเองแล้วเชื่อได้เต็มที่ ใช้ threshold หลวมเดิม=1) เพราะ
+            # จะลงมือคลิกจริงตามผล match โดยไม่มีใครยืนยันอีกชั้น จึงใช้
+            # nav_fastpath_min_match_score (default 2) ที่เข้มกว่า
+            effective_nav_query = nav_target_page_query
+            nav_min_score = 1
+            if effective_nav_query is None and settings.enable_nav_fastpath_auto_decide:
+                effective_nav_query = goal
+                nav_min_score = settings.nav_fastpath_min_match_score
+            if effective_nav_query:
+                nav_manual = None
+                nav_target_page = None
+                try:
+                    from backend.app.site_learning import storage as site_storage
+                    nav_domain = extract_domain(page.url)
+                    nav_manual = site_storage.load_manual(nav_domain)
+                    if nav_manual is not None:
+                        nav_target_page = site_storage.find_matching_page(
+                            nav_manual, effective_nav_query, min_score=nav_min_score
+                        )
+                except Exception:
+                    nav_manual, nav_target_page = None, None
+                if nav_manual is not None and nav_target_page is not None:
+                    nav_result = await fastpath_executor.execute_navigation(
+                        page, goal, nav_manual, nav_target_page, client, model, resolved_provider,
+                        ask_user_func=ask_user_func, on_event=_emit,
+                    )
+                    if verbose:
+                        print(
+                            f"[nav-fastpath] target={nav_target_page.name!r} "
+                            f"success={nav_result.get('success')} message={nav_result.get('message')}",
+                            flush=True,
+                        )
+                    if nav_result.get("success"):
+                        await wait_stable(page)
+                    else:
+                        # replay ล้มเหลว/ไม่มี path ให้ใช้ — กลับไปจุดเริ่มต้นเดิมให้แน่ใจ
+                        # (page อาจค้างอยู่กลางทางถ้า repair/escalate ยังไม่จบดี)
+                        await goto(page, url)
+                        await wait_stable(page)
 
             # Intent Classification: ตรวจจับ Intent ของผู้ใช้ก่อนเริ่ม Planner Loop
             initial_elements, initial_page_text = await get_snapshot(page)
@@ -1840,7 +2114,24 @@ class Orchestrator:
                     detected_errors: list[str] = []
                     if claimed_success and tool_use_id:
                         detected_errors = await _scan_validation_errors(page)
-                    if (
+                    # W65[2] ("Error Passthrough"): แยก error ที่ "fatal" (retry ไปก็ไม่มีทาง
+                    # หายเอง ต้องข้อมูล/สิทธิ์ใหม่จาก user เท่านั้น) ออกจาก error อื่นทั้งหมด —
+                    # fatal ข้าม nudge-retry loop ไปเลย บังคับความจริงลง final result ทันที
+                    # (ไม่ต้องรอ retry quota) ต่างจาก error ทั่วไปด้านล่างที่ยังให้ LLM ลองแก้เอง
+                    # ก่อนตามเดิมทุกประการ (backward compatible 100%)
+                    fatal_errors = [e for e in detected_errors if _is_fatal_validation_error(e)]
+                    if fatal_errors:
+                        fatal_text = "; ".join(fatal_errors)
+                        if verbose:
+                            print(f"[finish_task(true) พบ fatal validation error — ข้าม retry] {fatal_text}", flush=True)
+                        completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
+                        claimed_success = False
+                        tool_input["message"] = (
+                            "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
+                            f"ของระบบ: {fatal_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
+                            "ระบบจะกรอกค่านั้นแทนที่ในช่องเดิมแล้วดำเนินการต่อให้ทันที"
+                        )
+                    elif (
                         detected_errors
                         and premature_validation_error_count < _MAX_PREMATURE_VALIDATION_ERROR_RETRIES
                     ):
@@ -1856,20 +2147,26 @@ class Orchestrator:
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
                         messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
                         continue
-                    if detected_errors:
+                    elif detected_errors:
                         # retry ครบโควตาแล้วยังเจอ error ค้างอยู่ — ปล่อยผ่านไปตามที่โมเดล
                         # ยืนยัน (escape valve เดียวกับ guard อื่นในไฟล์นี้) แต่ tag ผลลัพธ์
                         # ไว้ให้ผู้เรียกรู้ว่าน่าสงสัย แทนที่จะค้างไม่รู้จบ
                         completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
 
-                    # W22 ("DOM-Based Post-Action Verification Guardrail"): เช็คเฉพาะ
-                    # deletion-intent goal (ดู _is_deletion_intent_goal ด้านบนสุดของไฟล์) —
+                    # W22 ("DOM-Based Post-Action Verification Guardrail", ขยายรวม edit-all
+                    # ใน W64[7.1]): เช็คเฉพาะ deletion-intent หรือ edit-all-intent goal (ดู
+                    # _is_deletion_intent_goal/_is_edit_all_intent_goal ด้านบนสุดของไฟล์) —
                     # อ่านจำนวนแถวที่เหลืออยู่จริงจาก DOM (ไม่ใช่เชื่อคำอธิบายของ LLM) ก่อน
                     # ยอมรับ finish_task(success=true) กันปัญหา hallucinated false-completion
-                    # ที่ user รายงานจริง (agent ตอบ "ไม่พบ/ลบครบแล้ว" ทั้งที่ตารางยังโชว์
-                    # "(3) Records Found")
+                    # ที่ user รายงานจริงทั้งสองแบบ (deletion: agent ตอบ "ไม่พบ/ลบครบแล้ว"
+                    # ทั้งที่ตารางยังโชว์ "(3) Records Found" — edit-all: agent เห็น 1 แถว
+                    # ตรงเงื่อนไข target เหลืออยู่แต่ไม่กด Edit ให้ครบ) — สัญญาณ "เสร็จ" ของ
+                    # ทั้งสองแบบเหมือนกันเป๊ะ: แถวที่ตรงเงื่อนไข filter เดิมต้องเหลือ 0
                     remaining_records: Optional[tuple[int, str]] = None
-                    if claimed_success and tool_use_id and _is_deletion_intent_goal(goal):
+                    if (
+                        claimed_success and tool_use_id
+                        and (_is_deletion_intent_goal(goal) or _is_edit_all_intent_goal(goal))
+                    ):
                         remaining_records = await _scan_remaining_target_records(page)
                     if (
                         remaining_records is not None
@@ -1887,13 +2184,14 @@ class Orchestrator:
                             )
                         nudge_text = _PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE.format(
                             count=remaining_count, text=remaining_text,
+                            action_hint=_premature_mutation_action_hint(goal),
                         )
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
                         messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
                         continue
                     if remaining_records is not None and remaining_records[0] > 0:
-                        # retry ครบโควตาแล้วยังลบไม่ครบจริง — ต่างจาก validation-error guard
-                        # ด้านบนที่ปล่อยผ่านตามคำยืนยันของโมเดล (error message ตีความได้
+                        # retry ครบโควตาแล้วยังลบ/แก้ไขไม่ครบจริง — ต่างจาก validation-error
+                        # guard ด้านบนที่ปล่อยผ่านตามคำยืนยันของโมเดล (error message ตีความได้
                         # หลายแบบ) ตัวเลขแถวที่เหลือนับได้ตรงๆ ไม่มีทางตีความผิด ต้อง "บังคับ
                         # ความจริง" ลง final result เสมอ (TRUTH-BASED RESPONSE GENERATION ตาม
                         # ที่ user สั่ง) — เขียนทับทั้ง claimed_success และ message ของ LLM เอง
@@ -1901,11 +2199,74 @@ class Orchestrator:
                         completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
                         remaining_count, _ = remaining_records
                         claimed_success = False
+                        # W64[7.1]: ข้อความต่างกันตาม intent — deletion พูดว่า "ยังไม่ถูกลบ"
+                        # ส่วน edit-all พูดว่า "ยังไม่ถูกแก้ไข" ไม่งั้นข้อความจะผิดความจริงถ้า
+                        # goal จริงๆ เป็นงานแก้ไข ไม่ใช่งานลบ
+                        if _is_deletion_intent_goal(goal):
+                            tool_input["message"] = (
+                                f"พบผู้ใช้งาน/รายการที่ตรงเงื่อนไขเหลืออยู่ {remaining_count} รายการในระบบ "
+                                f"และยังไม่ได้ถูกลบออก (พยายามลบซ้ำแล้ว "
+                                f"{premature_deletion_incomplete_count} ครั้งแต่ยังไม่สำเร็จ) — โปรดลองสั่ง"
+                                f"ลบอีกครั้งหรือดำเนินการต่อด้วยตนเอง"
+                            )
+                        else:
+                            tool_input["message"] = (
+                                f"พบผู้ใช้งาน/รายการที่ตรงเงื่อนไขเหลืออยู่ {remaining_count} รายการในระบบ "
+                                f"และยังไม่ได้ถูกแก้ไขค่าตามที่ต้องการ (พยายามแก้ไขซ้ำแล้ว "
+                                f"{premature_deletion_incomplete_count} ครั้งแต่ยังไม่สำเร็จ) — โปรดลองสั่ง"
+                                f"แก้ไขอีกครั้งหรือดำเนินการต่อด้วยตนเอง"
+                            )
+
+                    # W63[7.2] ("Strict Table Assertion & Truth Reporting"): เช็คเฉพาะตอนที่
+                    # LLM ระบุ verify_text มาเอง (ดู llm.py::_FINISH_TASK_PARAMS) — อ่าน DOM
+                    # จริงของ table body ก่อนยอมรับว่ารายการที่สร้าง/บันทึกไปโผล่ในตารางจริง
+                    # (ไม่ใช่เชื่อคำอธิบายของ LLM เฉยๆ — หลักการเดียวกับ deletion-verification
+                    # guard ด้านบน)
+                    verify_text = str(tool_input.get("verify_text") or "").strip()
+                    table_item_found = True
+                    if claimed_success and tool_use_id and verify_text:
+                        table_item_found = await _scan_created_item_in_table(page, verify_text)
+                    if (
+                        not table_item_found
+                        and premature_table_verify_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES
+                    ):
+                        premature_table_verify_count += 1
+                        if verbose:
+                            print(
+                                f"[finish_task(true) ไม่พบ verify_text ในตาราง "
+                                f"{premature_table_verify_count}/"
+                                f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] {verify_text}",
+                                flush=True,
+                            )
+                        nudge_text = _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE.format(text=verify_text)
+                        if any_toast_confirmed_this_task:
+                            nudge_text += _TOAST_CONFIRMED_NO_RECREATE_SUFFIX
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        continue
+                    if not table_item_found and any_toast_confirmed_this_task:
+                        # W64[7.2]: มีหลักฐาน toast ยืนยันสำเร็จจริงมาก่อนหน้านี้ใน task
+                        # เดียวกัน — ต่างจาก branch ด้านล่าง (ไม่มีหลักฐานอะไรเลยนอกจากคำยืนยัน
+                        # ของ LLM เอง) ตรงนี้ไม่ force claimed_success=False (คงค่า True ที่
+                        # ผ่านเงื่อนไข claimed_success ด้านบนมาแล้ว) แค่เขียนทับ message ด้วย
+                        # วลีตรงสเปคที่ user ระบุ ("บันทึกสำเร็จแล้ว แต่ไม่พบในตาราง") — ไม่ใช่
+                        # VERIFICATION_FAILED เพราะนี่ไม่ใช่ความล้มเหลว มีหลักฐานจริงว่าบันทึก
+                        # สำเร็จแล้ว แค่ตรวจไม่เจอในตาราง (อาจเป็นปัญหา search/filter/
+                        # pagination มากกว่า)
+                        completion_verification = "OK_SAVE_CONFIRMED_NOT_IN_TABLE"
+                        tool_input["message"] = "บันทึกข้อมูลเรียบร้อยแล้ว แต่ไม่พบรายการในตารางการค้นหา"
+                    elif not table_item_found:
+                        # retry ครบโควตาแล้วยังไม่เจอในตารางจริง และไม่มีหลักฐาน toast ยืนยัน
+                        # เลยด้วย — บังคับความจริงลง final result เสมอ (TRUTH-BASED RESPONSE
+                        # GENERATION เหมือน guard ด้านบน) ใช้ข้อความ "VERIFICATION_FAILED: Item
+                        # not found in results table." ตรงตามสเปคที่ user ระบุ ให้ผู้เรียก/
+                        # ผู้ตรวจสอบ log เห็นสัญญาณนี้ชัดเจน
+                        completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+                        claimed_success = False
                         tool_input["message"] = (
-                            f"พบผู้ใช้งาน/รายการที่ตรงเงื่อนไขเหลืออยู่ {remaining_count} รายการในระบบ "
-                            f"และยังไม่ได้ถูกลบออก (พยายามลบซ้ำแล้ว "
-                            f"{premature_deletion_incomplete_count} ครั้งแต่ยังไม่สำเร็จ) — โปรดลองสั่ง"
-                            f"ลบอีกครั้งหรือดำเนินการต่อด้วยตนเอง"
+                            f'VERIFICATION_FAILED: Item not found in results table. '
+                            f'(ค้นหา "{verify_text}" ในตารางผลลัพธ์แล้วไม่พบจริง หลังพยายามแล้ว '
+                            f"{premature_table_verify_count} ครั้ง)"
                         )
 
                     success = claimed_success
@@ -2047,6 +2408,37 @@ class Orchestrator:
                     (e.get("type", "") for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
 
+                # W64[7.1] ("Filter Order & False Completion" — ดู docstring เต็มของ
+                # _ROW_ACTION_LABEL_RE ด้านบนสุดของไฟล์): บล็อกการคลิกปุ่ม row-action
+                # (Edit/View/Delete/Download) ทันทีถ้า step ก่อนหน้าคือ fill/select ที่สำเร็จ
+                # โดยยังไม่ได้กด Search/ค้นหา/Enter ยืนยัน filter นั้นเลย — เช็คก่อน dispatch
+                # จริง (เหมือน login-password guard ด้านบน) ไม่ผ่าน RAG/middleware evaluator
+                # ที่พึ่ง LLM เพราะนี่คือ deterministic state ล้วนๆ ไม่ต้องเดา
+                if (
+                    filter_dirty_since_search
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and action_label
+                    and _ROW_ACTION_LABEL_RE.search(action_label)
+                ):
+                    if premature_row_action_before_search_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES:
+                        premature_row_action_before_search_count += 1
+                        if verbose:
+                            print(
+                                f"[row-action ก่อน search {premature_row_action_before_search_count}/"
+                                f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] label={action_label!r} "
+                                f"prev_field={last_filter_field_label!r}",
+                                flush=True,
+                            )
+                        nudge_text = _PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE.format(
+                            prev_label=last_filter_field_label or "(ไม่ทราบชื่อ field)", label=action_label,
+                        )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        filter_dirty_since_search = False
+                        continue
+                    # เกินโควตาเตือนแล้วยังไม่ยอมกด Search ก่อน ปล่อยผ่านไปตามที่โมเดลเลือก
+                    # แทนที่จะค้างไม่รู้จบ (escape valve เดียวกับ guard อื่นในไฟล์นี้)
+
                 # W7[B]: RAG-based permission — ดึงคู่มือด้วย query แคบเฉพาะ action นี้
                 # (ไม่ใช่ manual_context ด้านบนที่ query=goal กว้างทั้ง task) แล้วส่งให้
                 # execute()/classify_action() เช็คว่าคู่มือระบุไว้ไหมว่า action นี้ต้องขอ
@@ -2146,6 +2538,24 @@ class Orchestrator:
                 # is_bulk_safe_repeat (ดู docstring ตรงจุดเช็คด้านบน)
                 last_action_succeeded = result.success
                 steps_taken += 1
+
+                # W64[7.1]: อัปเดต filter_dirty_since_search — True เฉพาะตอน fill/select
+                # สำเร็จรอบนี้เท่านั้น (reset เป็น False เสมอไม่ว่า action อื่นจะเป็นอะไร รวมถึง
+                # ตอน guard ด้านบนเพิ่งบล็อกไปเอง — ดู docstring ของ _ROW_ACTION_LABEL_RE
+                # สำหรับเหตุผลที่ scope แคบแค่ 1 step)
+                if tool_input.get("type") in ("fill", "select") and result.success:
+                    filter_dirty_since_search = True
+                    last_filter_field_label = action_label
+                else:
+                    filter_dirty_since_search = False
+
+                # W64[7.2]: บันทึกว่า task นี้เคยมี action ที่ toast ยืนยันสำเร็จจริงแล้วหรือยัง
+                # (ดู actions.py::ActionResult.toast_confirmed) — ใช้ตัดสิน leniency ของ
+                # table-verify guard ด้านล่าง (ครั้งเดียวพอ ไม่ต้อง reset กลับ False เพราะ
+                # "เคยยืนยันสำเร็จแล้วอย่างน้อย 1 ครั้งใน task นี้" ยังเป็นความจริงตลอดไปไม่ว่า
+                # action ถัดๆ ไปจะเป็นอะไรก็ตาม)
+                if result.toast_confirmed:
+                    any_toast_confirmed_this_task = True
                 # W10[D]: แนบ label ของ element เป้าหมาย (ชื่อปุ่ม/ช่องกรอกจริงบนหน้าเว็บ
                 # เช่น "Login", "Username" — มาจาก perception.py::get_snapshot() ตัวเดียว
                 # กับที่ action_label ด้านบนใช้เช็ค permission อยู่แล้ว) เข้า history/event
@@ -2578,7 +2988,7 @@ class Orchestrator:
             return await fastpath_executor.execute_template(
                 page=page, url=url, goal=goal, template_id=template_id, steps=steps,
                 slot_values=slot_values, client=client, model=model, provider=resolved_provider,
-                on_event=on_event, run_task_fallback=_run_task_fallback,
+                ask_user_func=ask_user_func, on_event=on_event, run_task_fallback=_run_task_fallback,
             )
         finally:
             if owns_context:

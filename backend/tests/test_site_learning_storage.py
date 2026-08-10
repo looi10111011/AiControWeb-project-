@@ -4,7 +4,7 @@ import pytest
 
 from backend.app.config import settings
 from backend.app.site_learning import storage
-from backend.app.site_learning.schema import ButtonInfo, PageInfo, SiteManual, UIPatternInfo
+from backend.app.site_learning.schema import ButtonInfo, FormFieldInfo, PageInfo, SiteManual, UIPatternInfo
 
 
 @pytest.fixture(autouse=True)
@@ -359,3 +359,92 @@ def test_load_manual_defaults_errors_to_empty_list_for_old_manuals_without_it():
 
     loaded = storage.load_manual("legacy.com")
     assert loaded.errors == []
+
+
+# --- W65[1] ("Required-Field Validation"): build_strict_manual_context() เดิมมีแค่ block
+# page.buttons — page.forms (มี FormFieldInfo.required เก็บไว้ตั้งแต่ crawl) ไม่เคยถูกอ่าน
+# เลยจนถึงตอนนี้ (dead data) — เพิ่ม block ใหม่ให้ planner เห็นฟิลด์ที่ required ล่วงหน้า
+
+
+def test_build_strict_manual_context_lists_required_and_optional_form_fields():
+    page = PageInfo(
+        name="Change Password", url="/changePasswordSave",
+        forms=[
+            FormFieldInfo(label="Current Password", required=True),
+            FormFieldInfo(label="New Password", required=True),
+            FormFieldInfo(label="Middle Name", required=False),
+        ],
+    )
+
+    context = storage.build_strict_manual_context(page)
+
+    assert "Recorded form fields on this page (label — required?):" in context
+    assert "- Current Password *จำเป็น" in context
+    assert "- New Password *จำเป็น" in context
+    assert "- Middle Name" in context
+    assert "Middle Name *จำเป็น" not in context
+
+
+def test_build_strict_manual_context_falls_back_to_field_name_or_placeholder():
+    page = PageInfo(
+        name="Signup", url="/signup",
+        forms=[
+            FormFieldInfo(field_name="email", required=True),
+            FormFieldInfo(placeholder="Zip Code", required=False),
+        ],
+    )
+
+    context = storage.build_strict_manual_context(page)
+
+    assert "- email *จำเป็น" in context
+    assert "- Zip Code" in context
+
+
+def test_build_strict_manual_context_omits_forms_block_when_no_forms_recorded():
+    page = PageInfo(name="Dashboard", url="/dashboard")
+
+    context = storage.build_strict_manual_context(page)
+
+    assert "Recorded form fields" not in context
+
+
+# --- W67[D]: find_matching_page(manual, goal, min_score) — min_score default=1 คือ
+# พฤติกรรมเดิมทุกประการ (caller เดิม 3 จุดใน routes.py ไม่ส่ง min_score เลย) เพิ่มเข้ามาให้
+# caller ที่ต้องการความมั่นใจสูงกว่า (nav-fastpath auto-decide) กรอง match ที่ไม่มั่นใจออกได้
+
+
+def _manual_with_admin_page() -> SiteManual:
+    return SiteManual(website="example.com", pages=[
+        PageInfo(name="Dashboard", url="/dashboard", description="home page"),
+        PageInfo(
+            name="User Management", url="/admin/users",
+            description="Manage system users", breadcrumb=["Home", "Admin", "User Management"],
+        ),
+    ])
+
+
+def test_find_matching_page_default_min_score_matches_loosely_like_before():
+    manual = _manual_with_admin_page()
+
+    page = storage.find_matching_page(manual, "users")
+
+    assert page is not None
+    assert page.name == "User Management"
+
+
+def test_find_matching_page_returns_none_when_score_below_min_score():
+    manual = _manual_with_admin_page()
+
+    # "users" เจอแค่ 1 token match (score=1) — min_score=2 ต้องกรองออก แม้ default (1) จะผ่าน
+    page = storage.find_matching_page(manual, "users", min_score=2)
+
+    assert page is None
+
+
+def test_find_matching_page_min_score_still_returns_page_when_score_meets_threshold():
+    manual = _manual_with_admin_page()
+
+    page = storage.find_matching_page(manual, "admin users management", min_score=2)
+
+    assert page is not None
+    assert page.name == "User Management"

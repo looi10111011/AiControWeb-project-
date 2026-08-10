@@ -168,10 +168,17 @@ def is_private_or_internal(domain: str) -> bool:
     if hostname == "localhost":
         return True
     try:
-        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+        addresses = {
+            info[4][0] for info in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        }
     except (socket.gaierror, ValueError, OSError):
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    return any(
+        ipaddress.ip_address(address).is_private
+        or ipaddress.ip_address(address).is_loopback
+        or ipaddress.ip_address(address).is_link_local
+        for address in addresses
+    )
 
 
 def classify_action(

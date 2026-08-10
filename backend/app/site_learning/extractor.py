@@ -409,7 +409,12 @@ _EXTRACT_JS = r"""
     const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
     if (!text) return;
     seenHref.add(href);
-    navLinks.push({ text, href, menu_path: [text] });
+    // W66[A] ("Fast-Path Navigation"): selector ให้ crawler.py หา element ตัวนี้กลับมา
+    // เจอสดๆ อีกครั้งหลัง extract เสร็จ (ตอนกำลังจะ queue ลิงก์นี้เข้า BFS จริง) เพื่อคำนวณ
+    // locator descriptor ผ่าน dom_locator.py::compute_locator_descriptor() — ใช้
+    // computeSelector() ตัวเดียวกับที่ buttons/forms ด้านบนใช้ (ดู docstring หัวไฟล์
+    // dom_locator.py ว่าทำไม priority ต้องตรงกันทั้งสองฝั่ง)
+    navLinks.push({ text, href, menu_path: [text], selector: computeSelector(a) });
   });
 
   // ---- breadcrumb ----

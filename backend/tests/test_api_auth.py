@@ -30,6 +30,12 @@ def test_no_api_key_setting_leaves_endpoints_open(client):
     assert resp.status_code == 200
 
 
+def test_network_exposed_server_without_api_key_is_rejected(client, monkeypatch):
+    monkeypatch.setattr(settings, "api_host", "0.0.0.0")
+    resp = client.get("/tasks")
+    assert resp.status_code == 503
+
+
 def test_missing_api_key_header_returns_401(client, _api_key_required):
     resp = client.get("/tasks")
     assert resp.status_code == 401

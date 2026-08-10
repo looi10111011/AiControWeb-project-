@@ -17,6 +17,7 @@ from backend.app.core.orchestrator import (
     _MAX_PREMATURE_ALL_FAILED_RETRIES,
     _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
+    _MAX_PREMATURE_TABLE_VERIFY_RETRIES,
     _MAX_PREMATURE_TRUE_FINISH_RETRIES,
     _MAX_PREMATURE_VALIDATION_ERROR_RETRIES,
     _PREMATURE_ALL_FAILED_NUDGE,
@@ -34,6 +35,9 @@ from backend.app.core.orchestrator import (
     _make_dialog_handler,
     _login_form_needs_password,
     _is_deletion_intent_goal,
+    _is_edit_all_intent_goal,
+    _is_fatal_validation_error,
+    _scan_created_item_in_table,
     _scan_remaining_target_records,
     _scan_validation_errors,
     _is_bare_required_message,
@@ -289,6 +293,202 @@ async def test_run_task_does_not_emit_auto_login_failed_event_when_login_succeed
 
     failed_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "auto_login_failed"]
     assert failed_events == []
+
+
+# --- W66[C] ("Fast-Path Navigation", manual trigger): nav_target_page_query is opt-in
+# (default None = พฤติกรรมเดิมทุกประการ, เทสต์เดิมทั้งไฟล์ที่ไม่ระบุ parameter นี้ยังผ่านหมด
+# — ดูผลรัน). ทั้ง 3 เทสต์ mock _maybe_auto_login/site_learning.storage/
+# fastpath_executor.execute_navigation ให้ไม่แตะ browser/LLM จริงเลย
+
+
+@pytest.mark.asyncio
+async def test_run_task_skips_nav_fastpath_silently_when_no_manual_exists():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual", return_value=None) as mock_load_manual, \
+         patch("backend.app.core.orchestrator.fastpath_executor.execute_navigation", AsyncMock()) as mock_exec_nav, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", nav_target_page_query="Admin",
+        )
+
+    assert result["success"] is True
+    mock_load_manual.assert_called_once()
+    mock_exec_nav.assert_not_awaited()  # ไม่มี manual -> ไม่ลอง replay เลย
+    assert mock_goto.await_count == 1  # goto เริ่มต้นครั้งเดียวตามปกติ ไม่มี fallback goto ซ้ำ
+
+
+@pytest.mark.asyncio
+async def test_run_task_continues_normally_after_successful_nav_fastpath():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_manual = MagicMock()
+    mock_target_page = MagicMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual", return_value=mock_manual), \
+         patch("backend.app.site_learning.storage.find_matching_page", return_value=mock_target_page), \
+         patch(
+             "backend.app.core.orchestrator.fastpath_executor.execute_navigation",
+             AsyncMock(return_value={"success": True, "steps": 2, "message": "ok", "execution_mode": "nav"}),
+         ) as mock_exec_nav, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", nav_target_page_query="Admin",
+        )
+
+    assert result["success"] is True
+    mock_exec_nav.assert_awaited_once()
+    assert mock_goto.await_count == 1  # nav สำเร็จ -> ไม่ต้อง goto กลับจุดเริ่มต้นซ้ำ
+
+
+@pytest.mark.asyncio
+async def test_run_task_falls_back_to_original_url_when_nav_fastpath_fails():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_manual = MagicMock()
+    mock_target_page = MagicMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual", return_value=mock_manual), \
+         patch("backend.app.site_learning.storage.find_matching_page", return_value=mock_target_page), \
+         patch(
+             "backend.app.core.orchestrator.fastpath_executor.execute_navigation",
+             AsyncMock(return_value={"success": False, "steps": 0, "message": "[FAIL]", "execution_mode": "nav_unavailable"}),
+         ) as mock_exec_nav, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", nav_target_page_query="Admin",
+        )
+
+    # ล้มเหลว -> ยัง fallback ไปทำงานปกติต่อได้ ไม่แย่กว่าเดิม (ไม่ throw/ไม่หยุด task)
+    assert result["success"] is True
+    mock_exec_nav.assert_awaited_once()
+    assert mock_goto.await_count == 2  # goto เริ่มต้น + goto กลับไป url เดิมหลัง nav ล้มเหลว
+    assert mock_goto.await_args_list[-1].args[1] == "https://example.com"
+
+
+# --- W67[D] ("Fast-Path Navigation", auto-decide): ไม่ระบุ nav_target_page_query เอง แต่
+# settings.enable_nav_fastpath_auto_decide เปิดอยู่ (default True) -> ใช้ goal ตรงๆ เป็น query
+# แทน โดยใช้ threshold เข้มกว่า (nav_fastpath_min_match_score) จาก find_matching_page() —
+# explicit nav_target_page_query ยัง override ได้เหมือนเดิมด้วย threshold หลวม (1)
+
+
+@pytest.mark.asyncio
+async def test_run_task_auto_decides_nav_fastpath_using_goal_when_query_not_given():
+    from backend.app.config import settings
+
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_manual = MagicMock()
+    mock_target_page = MagicMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual", return_value=mock_manual), \
+         patch("backend.app.site_learning.storage.find_matching_page", return_value=mock_target_page) as mock_find, \
+         patch(
+             "backend.app.core.orchestrator.fastpath_executor.execute_navigation",
+             AsyncMock(return_value={"success": True, "steps": 2, "message": "ok", "execution_mode": "nav"}),
+         ) as mock_exec_nav, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ไปหน้า Admin จัดการผู้ใช้", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    mock_exec_nav.assert_awaited_once()  # ไม่ระบุ nav_target_page_query เอง แต่ auto-decide ยัง trigger ได้
+    mock_find.assert_called_once_with(
+        mock_manual, "ไปหน้า Admin จัดการผู้ใช้", min_score=settings.nav_fastpath_min_match_score,
+    )
+    assert mock_goto.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_auto_decide_nav_fastpath_when_setting_disabled(monkeypatch):
+    from backend.app.config import settings
+
+    monkeypatch.setattr(settings, "enable_nav_fastpath_auto_decide", False)
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)) as mock_goto, \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual") as mock_load_manual, \
+         patch("backend.app.core.orchestrator.fastpath_executor.execute_navigation", AsyncMock()) as mock_exec_nav, \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ไปหน้า Admin จัดการผู้ใช้", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    mock_load_manual.assert_not_called()  # setting ปิด -> ไม่แม้แต่จะพยายามหา manual เลย
+    mock_exec_nav.assert_not_awaited()
+    assert mock_goto.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_task_explicit_nav_query_uses_loose_threshold_not_auto_decide_threshold():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    mock_manual = MagicMock()
+    mock_target_page = MagicMock()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._maybe_auto_login", AsyncMock(return_value=None)), \
+         patch("backend.app.site_learning.storage.load_manual", return_value=mock_manual), \
+         patch("backend.app.site_learning.storage.find_matching_page", return_value=mock_target_page) as mock_find, \
+         patch(
+             "backend.app.core.orchestrator.fastpath_executor.execute_navigation",
+             AsyncMock(return_value={"success": True, "steps": 2, "message": "ok", "execution_mode": "nav"}),
+         ), \
+         patch(
+             "backend.app.core.orchestrator.llm.next_action",
+             AsyncMock(return_value=("finish_task", {"success": True, "message": "เสร็จ"}, "", [], llm.TokenUsage())),
+         ):
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", nav_target_page_query="Admin",
+        )
+
+    mock_find.assert_called_once_with(mock_manual, "Admin", min_score=1)
 
 
 def _patch_pooled_browser():
@@ -3926,7 +4126,13 @@ async def test_run_task_rejects_finish_task_true_when_validation_errors_visible(
     W20 (Task12 follow-up): action แรกใช้ "select" (ไม่ใช่ "fill") ตั้งใจ — หลังจาก fill เปิด
     ให้ trigger hard-stop guard ใหม่ด้วยแล้ว (ดู _should_check_validation_error_after_action)
     ต้องใช้ action type ที่ guard ใหม่ไม่ครอบคลุมเพื่อทดสอบ guard เดิม (ก่อน finish_task) แยก
-    จากกันจริงๆ ไม่งั้น hard-stop ใหม่จะดักไปก่อนตั้งแต่ step แรก ไม่ทันถึง finish_task เลย"""
+    จากกันจริงๆ ไม่งั้น hard-stop ใหม่จะดักไปก่อนตั้งแต่ step แรก ไม่ทันถึง finish_task เลย
+
+    W65[2]: ใช้ error message ที่ไม่ fatal ("Should have at least 7 characters" — ไม่ตรง
+    _FATAL_VALIDATION_ERROR_KEYWORDS) ตั้งใจ เพื่อทดสอบเส้นทาง nudge-retry ทั่วไปแยกจากเส้นทาง
+    fatal-short-circuit ใหม่ (เดิมใช้ "Employee Name already exists" ซึ่งตอนนี้ถูกจัดเป็น
+    fatal แล้ว ย้ายไปทดสอบที่ test_run_task_short_circuits_finish_task_on_fatal_validation_
+    error แทน)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
     fill_result = ActionResult(True, "select(1)", "เลือกสำเร็จ")
 
@@ -3945,7 +4151,7 @@ async def test_run_task_rejects_finish_task_true_when_validation_errors_visible(
          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
          patch(
              "backend.app.core.orchestrator._scan_validation_errors",
-             AsyncMock(side_effect=[["Employee Name already exists"], []]),
+             AsyncMock(side_effect=[["Should have at least 7 characters"], []]),
          ) as mock_scan, \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
         result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
@@ -3987,6 +4193,88 @@ async def test_run_task_accepts_finish_task_after_retries_exhausted_and_tags_res
 
     assert result["success"] is True  # ยอมรับตามที่โมเดลยืนยัน (escape valve)
     assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
+
+
+# ---------------- W65[2] ("Error Passthrough" — fatal-class short-circuit) ----------------
+
+
+def test_is_fatal_validation_error_matches_unfixable_error_classes():
+    assert _is_fatal_validation_error("Invalid Credentials") is True
+    assert _is_fatal_validation_error("Employee Name already exists") is True
+    assert _is_fatal_validation_error("ชื่อผู้ใช้นี้มีอยู่แล้ว") is True
+    assert _is_fatal_validation_error("You are not authorized to perform this action") is True
+    assert _is_fatal_validation_error("Required") is False
+    assert _is_fatal_validation_error("Should have at least 7 characters") is False
+    assert _is_fatal_validation_error("") is False
+    assert _is_fatal_validation_error(None) is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_short_circuits_finish_task_on_fatal_validation_error():
+    """W65[2] (บั๊กที่ต้องการแก้: guard เดิมวน nudge/retry ให้ LLM ลองใหม่ก่อนเสมอ แม้ error
+    จะเป็นประเภทที่ retry ไปก็ไม่มีทางหาย เช่น login ผิด) — fatal error ต้องข้าม retry loop
+    ไปเลย บังคับ success=False + ข้อความจริงทันที ไม่ต้องรอ finish_task ครั้งที่ 2"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "select(1)", "เลือกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "select", "index": 1, "label": "x"}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เข้าสู่ระบบสำเร็จ"}, "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fill_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_validation_errors",
+             AsyncMock(return_value=["Invalid Credentials"]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is False
+    assert "Invalid Credentials" in result["message"]
+    assert result["completion_verification"] == "TASK_FAILED_USER_INPUT_ERROR"
+    assert mock_scan.await_count == 1  # ไม่ retry ซ้ำเลย
+    assert mock_next_action.await_count == 2  # ไม่มี finish_task รอบสอง
+
+
+@pytest.mark.asyncio
+async def test_run_task_still_retries_non_fatal_validation_error_before_finish_task():
+    """regression: error ที่ไม่ fatal ยังต้องผ่าน nudge-retry loop เดิมทุกประการ (ไม่ใช่ทุก
+    error จะถูก short-circuit) — mirror test_run_task_rejects_finish_task_true_when_
+    validation_errors_visible เดิมทุกประการ เพื่อยืนยันว่า W65[2] ไม่กระทบ error ทั่วไป"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    fill_result = ActionResult(True, "select(1)", "เลือกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "select", "index": 1, "label": "x"}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "บันทึกสำเร็จ"}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "บันทึกสำเร็จจริงๆ"}, "t2", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=fill_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_validation_errors",
+             AsyncMock(side_effect=[["Should have at least 7 characters"], []]),
+         ), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is True
+    assert result["message"] == "บันทึกสำเร็จจริงๆ"
+    assert mock_next_action.await_count == 3  # ถูกปฏิเสธ 1 ครั้ง -> ลองใหม่อีกรอบ (retry ปกติ)
+    assert result["completion_verification"] == "OK"
 
 
 # ---------------- W22 ("DOM-Based Post-Action Verification Guardrail") ----------------
@@ -4034,6 +4322,52 @@ async def test_scan_remaining_target_records_treats_no_records_found_as_zero():
     result = await _scan_remaining_target_records(mock_page)
 
     assert result == (0, "No Records Found")
+
+
+# W68b (บั๊กจริงที่ user รายงานซ้ำหลัง W68: goal edit-all ตรวจจับถูกแล้ว แต่ agent ยัง claim
+# "0 รายการ" ทั้งที่ตารางจริงมี 16 แถว — สาเหตุที่สอง: อ่าน DOM ครั้งเดียวทันทีตอน finish_task
+# ถูกเรียก ชนกับช่วงที่ AJAX ของปุ่ม Search ยังอัปเดต DOM ไม่เสร็จ) — ยืนยันว่า "0" ถูก
+# double-check ก่อนเชื่อ ส่วน >0/None ไม่ต้องรอเพิ่ม (ไม่มี latency cost ในเคสปกติ)
+@pytest.mark.asyncio
+async def test_scan_remaining_target_records_rechecks_after_stale_zero_reading():
+    locator = MagicMock()
+    first = MagicMock()
+    first.count = AsyncMock(return_value=1)
+    first.inner_text = AsyncMock(side_effect=["No Records Found", "(16) Records Found"])
+    locator.first = first
+    mock_page = MagicMock()
+    mock_page.locator = MagicMock(return_value=locator)
+
+    result = await _scan_remaining_target_records(mock_page)
+
+    assert result == (16, "(16) Records Found")  # เชื่อค่าที่อ่านซ้ำรอบสอง (สดกว่า) ไม่ใช่ 0 เดิม
+    assert first.inner_text.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_remaining_target_records_keeps_zero_when_recheck_still_zero():
+    locator = MagicMock()
+    first = MagicMock()
+    first.count = AsyncMock(return_value=1)
+    first.inner_text = AsyncMock(side_effect=["No Records Found", "No Records Found"])
+    locator.first = first
+    mock_page = MagicMock()
+    mock_page.locator = MagicMock(return_value=locator)
+
+    result = await _scan_remaining_target_records(mock_page)
+
+    assert result == (0, "No Records Found")  # ยืนยันตรงกันทั้งสองรอบ -> เชื่อว่า 0 จริง
+    assert first.inner_text.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_remaining_target_records_does_not_recheck_nonzero_reading():
+    mock_page = _make_record_count_locator_page("(3) Records Found")
+
+    result = await _scan_remaining_target_records(mock_page)
+
+    assert result == (3, "(3) Records Found")
+    mock_page.locator.assert_called_once()  # >0 ไม่ต้องอ่านซ้ำ ไม่มี latency เพิ่ม
 
 
 @pytest.mark.asyncio
@@ -4168,6 +4502,469 @@ async def test_run_task_skips_deletion_guard_for_non_deletion_goal():
     assert result["success"] is True
     assert mock_scan.await_count == 0
     assert result["completion_verification"] == "OK"
+
+
+# --- W63[7.2] ("Strict Table Assertion & Truth Reporting", ticket Issue 7.2) ---
+
+
+def _make_table_body_locator_page(text):
+    """text=None -> ไม่มี table body element เลยในหน้า (count=0), text=str -> เจอ table body
+    ตัวแรกที่มี inner_text ตามนี้ (mirror _make_record_count_locator_page ด้านบน)"""
+    locator = MagicMock()
+    first = MagicMock()
+    if text is None:
+        first.count = AsyncMock(return_value=0)
+    else:
+        first.count = AsyncMock(return_value=1)
+        first.inner_text = AsyncMock(return_value=text)
+    locator.first = first
+    mock_page = MagicMock()
+    mock_page.locator = MagicMock(return_value=locator)
+    return mock_page
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_true_when_text_present():
+    mock_page = _make_table_body_locator_page("Admin | AutoUser_99 | ESS | Enabled")
+
+    result = await _scan_created_item_in_table(mock_page, "AutoUser_99")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_case_insensitive():
+    mock_page = _make_table_body_locator_page("admin | autouser_99 | ess")
+
+    result = await _scan_created_item_in_table(mock_page, "AutoUser_99")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_false_when_text_absent():
+    mock_page = _make_table_body_locator_page("Admin | SomeoneElse | ESS")
+
+    result = await _scan_created_item_in_table(mock_page, "AutoUser_99")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_false_when_table_body_empty():
+    """table body มีอยู่จริงแต่ไม่มีแถวเลย (เช่น "No Records Found") — ถือเป็นหลักฐานว่ายังไม่
+    พบรายการนี้จริง ไม่ใช่แค่ "เช็คไม่ได้" (ต่างจากตอนไม่มี table body element เลย)"""
+    mock_page = _make_table_body_locator_page("")
+
+    result = await _scan_created_item_in_table(mock_page, "AutoUser_99")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_returns_true_when_no_table_body_on_page():
+    """หน้าไม่มี table body element เลย (ไม่ใช่หน้าตาราง) -> True กัน guard บล็อก finish_task
+    ที่อาจถูกต้องอยู่แล้วบนหน้าที่ไม่มีตารางแบบนี้จริง"""
+    mock_page = _make_table_body_locator_page(None)
+
+    result = await _scan_created_item_in_table(mock_page, "AutoUser_99")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_scan_created_item_in_table_fails_safe_on_bare_mock_page():
+    result = await _scan_created_item_in_table(AsyncMock(), "AutoUser_99")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_finish_task_true_when_verify_text_not_in_table():
+    """LLM ระบุ verify_text มาแต่ table body จริงไม่มีข้อความนั้น -> ปฏิเสธ
+    finish_task(success=true) แม้ LLM จะยืนยันว่าสร้างสำเร็จแล้วก็ตาม"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+        (
+            "finish_task",
+            {"success": True, "message": "สร้างสำเร็จแล้ว", "verify_text": "AutoUser_99"},
+            "t1", [], llm.TokenUsage(),
+        ),
+        (
+            "finish_task",
+            {"success": True, "message": "สร้างสำเร็จจริงๆ แล้ว", "verify_text": "AutoUser_99"},
+            "t2", [], llm.TokenUsage(),
+        ),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_created_item_in_table",
+             AsyncMock(side_effect=[False, True]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "สร้าง user ใหม่ชื่อ AutoUser_99", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert result["message"] == "สร้างสำเร็จจริงๆ แล้ว"
+    assert mock_scan.await_count == 2
+    assert mock_next_action.await_count == 3  # ถูกปฏิเสธ 1 ครั้ง -> ลองใหม่อีกรอบ
+    assert result["completion_verification"] == "OK"
+
+
+@pytest.mark.asyncio
+async def test_run_task_forces_verification_failed_when_table_verify_retries_exhausted():
+    """W63[7.2] ("TRUTH-BASED RESPONSE GENERATION" เหมือน deletion guard): retry ครบโควตาแล้ว
+    ยังไม่พบ verify_text ในตารางจริง -> บังคับ success=False และข้อความต้องมี
+    "VERIFICATION_FAILED" ตรงตามสเปคเป๊ะ ไม่ใช่คำอธิบาย hallucinate ของ LLM"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+    ] + [
+        (
+            "finish_task",
+            {"success": True, "message": "สร้างสำเร็จแล้ว", "verify_text": "AutoUser_99"},
+            f"t{i}", [], llm.TokenUsage(),
+        )
+        for i in range(1, 2 + _MAX_PREMATURE_TABLE_VERIFY_RETRIES)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table", AsyncMock(return_value=False)), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "สร้าง user ใหม่ชื่อ AutoUser_99", provider="anthropic",
+        )
+
+    assert result["success"] is False
+    assert "VERIFICATION_FAILED: Item not found in results table." in result["message"]
+    assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
+
+
+@pytest.mark.asyncio
+async def test_run_task_skips_table_verify_guard_when_verify_text_empty():
+    """LLM ไม่ได้ระบุ verify_text มา (goal ไม่เกี่ยวกับการยืนยันรายการในตาราง) -> ไม่เรียก
+    _scan_created_item_in_table() เลย"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จแล้ว"}, "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_created_item_in_table", AsyncMock(return_value=False),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ไปหน้า Dashboard แล้วบอกจำนวนพนักงาน", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert mock_scan.await_count == 0
+    assert result["completion_verification"] == "OK"
+
+
+# --- W64[7.1] ("Filter Order & False Completion", ticket Issue 7.1) ---
+
+
+def test_is_edit_all_intent_goal_matches_keywords():
+    assert _is_edit_all_intent_goal("เปลี่ยนทุก Role ของ user ที่เป็น ESS เป็น Admin") is True
+    assert _is_edit_all_intent_goal("update every employee's status to active") is True
+    assert _is_edit_all_intent_goal("edit all ESS users to Admin") is True
+    assert _is_edit_all_intent_goal("ลบคนที่เป็น Role ESS ออกให้หมด") is False
+    assert _is_edit_all_intent_goal("") is False
+    assert _is_edit_all_intent_goal(None) is False
+
+
+# W68 (บั๊กจริงที่ user รายงาน — ดู roadmap.txt): keyword เดิมด้านบนต้องเจอ "เปลี่ยนทุก"/
+# "แก้ทุก" ติดกันเป๊ะเท่านั้น แต่คำพูดธรรมชาติจริงมักแยกคำ "เปลี่ยน...ทุกคน..." ห่างกันด้วยคำ
+# อื่น (เช่น goal จริงที่ user พิมพ์: "...เปลี่ยน Role ของทุกคนในผลการค้นหาให้เป็น Admin...")
+# ทำให้ exact-phrase match พลาด เลยไม่เปิด _scan_remaining_target_records() guard ปล่อยให้
+# agent ตอบ "ไม่พบผู้ใช้ Role ESS (0 รายการ)" หลุดผ่านไปทั้งที่ตารางจริงยังมี user เหลืออยู่ —
+# เทียบกับ test_is_deletion_intent_goal_matches_thai_and_english_keywords() บรรทัดที่ยืนยันว่า
+# ประโยคเดียวกันนี้ *ไม่ใช่* deletion-intent (ถูกต้อง) แต่ไม่มีใครเทสต์ฝั่ง edit-all-intent เลย
+# จนพบบั๊กจริงจาก production
+def test_is_edit_all_intent_goal_matches_natural_phrasing_with_words_between_verb_and_bulk_marker():
+    assert _is_edit_all_intent_goal(
+        "ไปที่หน้า Admin ค้นหา user ทุกคนที่ไม่ใช่ Admin แล้วทำการเปลี่ยน Role "
+        "ของทุกคนในผลการค้นหาให้เป็น Admin ให้หมด"
+    ) is True
+    assert _is_edit_all_intent_goal("เปลี่ยน Role ของ user ทุกคนเป็น Admin") is True
+    assert _is_edit_all_intent_goal("แก้ไขสถานะพนักงานทั้งหมดให้เป็น Active") is True
+    # มี verb แต่ไม่มี bulk marker เลย -> ไม่ใช่ edit-all (แก้แค่คนเดียว ไม่ต้องเปิด guard)
+    assert _is_edit_all_intent_goal("เปลี่ยน Role ของ John เป็น Admin") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_finish_task_true_when_edit_all_target_records_still_remain():
+    """W64[7.1]: guard เดียวกับ deletion (W22) แต่ขยายรวม edit-all-intent goal ด้วย — ตาราง
+    ที่กรองแล้วยังโชว์ "(1) Records Found" (แถว ESS ที่ยังไม่ถูกแก้ Role) -> ปฏิเสธ
+    finish_task(success=true) แม้ LLM จะยืนยันว่าแก้ไขครบแล้วก็ตาม"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+        (
+            "finish_task",
+            {"success": True, "message": "เปลี่ยน Role ครบทุกคนแล้ว"},
+            "t1", [], llm.TokenUsage(),
+        ),
+        (
+            "finish_task",
+            {"success": True, "message": "เปลี่ยนครบจริงๆ แล้ว"},
+            "t2", [], llm.TokenUsage(),
+        ),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_remaining_target_records",
+             AsyncMock(side_effect=[(1, "(1) Records Found"), (0, "No Records Found")]),
+         ) as mock_scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "เปลี่ยนทุก Role ของ user ที่เป็น ESS เป็น Admin", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert result["message"] == "เปลี่ยนครบจริงๆ แล้ว"
+    assert mock_scan.await_count == 2
+    assert mock_next_action.await_count == 3  # ถูกปฏิเสธ 1 ครั้ง -> ลองใหม่อีกรอบ
+    assert result["completion_verification"] == "OK"
+
+
+@pytest.mark.asyncio
+async def test_run_task_forces_truthful_failure_for_edit_all_uses_edit_wording():
+    """W64[7.1]: ต่างจาก deletion guard เดิม (พูดว่า "ยังไม่ได้ถูกลบออก") — edit-all-intent
+    ต้องใช้ข้อความ "ยังไม่ได้ถูกแก้ไขค่า" แทน ไม่งั้นข้อความจะผิดความจริง (ไม่มีอะไรถูกลบเลย)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+    ] + [
+        (
+            "finish_task",
+            {"success": True, "message": "เปลี่ยนครบทุกคนแล้ว"},
+            f"t{i}", [], llm.TokenUsage(),
+        )
+        for i in range(1, 2 + _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch(
+             "backend.app.core.orchestrator._scan_remaining_target_records",
+             AsyncMock(return_value=(1, "(1) Records Found")),
+         ), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "เปลี่ยนทุก Role ของ user ที่เป็น ESS เป็น Admin", provider="anthropic",
+        )
+
+    assert result["success"] is False
+    assert "ยังไม่ได้ถูกแก้ไขค่า" in result["message"]
+    assert "ยังไม่ได้ถูกลบออก" not in result["message"]
+    assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
+
+
+def _make_row_action_elements():
+    return [
+        {"index": 1, "label": "Role", "tag": "select", "type": ""},
+        {"index": 2, "label": "Edit", "tag": "button", "type": ""},
+        {"index": 3, "label": "Search", "tag": "button", "type": ""},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_task_blocks_row_action_click_immediately_after_unconfirmed_filter_change():
+    """W64[7.1] (บั๊กจริง: agent เลือก Role=ESS ใน dropdown filter แล้วคลิก Edit บนตารางทันที
+    ก่อนกด Search — แถวที่ Edit จึงเป็นแถวเก่าก่อนกรอง ไม่ใช่แถวที่ตรงเงื่อนไขจริง): click ปุ่ม
+    row-action (Edit) ทันทีหลัง select ที่สำเร็จ (ยังไม่กด Search) ต้องถูกปฏิเสธ/นัดจ์ก่อน —
+    หลังกด Search แล้ว คลิก Edit ตัวเดิมต้องผ่านได้ปกติ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    action_result = ActionResult(True, "action", "สำเร็จ")
+    elements = _make_row_action_elements()
+
+    next_action_calls = [
+        ("browser_action", {"type": "select", "index": 1, "label": "ESS"}, "t0", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t1", [], llm.TokenUsage()),  # ถูกบล็อก
+        ("browser_action", {"type": "click", "index": 3}, "t2", [], llm.TokenUsage()),  # Search
+        ("browser_action", {"type": "click", "index": 2}, "t3", [], llm.TokenUsage()),  # Edit ผ่านแล้ว
+        ("finish_task", {"success": True, "message": "แก้ไขสำเร็จ"}, "t4", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=action_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "แก้ไข Role ของ user ที่เป็น ESS เป็น Admin", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert mock_next_action.await_count == 5
+    # select(1) + click Search(1) + click Edit ที่ผ่านแล้ว(1) = 3 — ตัวที่ถูกบล็อกไม่ถึง execute() เลย
+    assert mock_execute.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_task_allows_row_action_click_without_preceding_fill_or_select():
+    """งาน edit แถวเดียวธรรมดาที่ไม่มีการกรอง filter อะไรเลยตั้งแต่ต้น (คลิก Edit ทันทีเป็น
+    action แรก) ต้องไม่ถูกบล็อก — filter_dirty_since_search เริ่มต้นเป็น False เสมอ"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    action_result = ActionResult(True, "action", "สำเร็จ")
+    elements = _make_row_action_elements()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "แก้ไขสำเร็จ"}, "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=action_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        result = await Orchestrator().run_task(
+            "https://example.com", "แก้ไขพนักงานคนแรกในตาราง", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert mock_next_action.await_count == 2
+    assert mock_execute.await_count == 1
+
+
+# --- W64[7.2] ("Add-Action Idempotency Lock", ticket Issue 7.2) ---
+
+
+@pytest.mark.asyncio
+async def test_run_task_uses_qualified_message_when_toast_confirmed_but_verify_text_not_found():
+    """W64[7.2] (บั๊กจริง: agent บันทึกพนักงานใหม่สำเร็จจริง (มี toast ยืนยัน) แต่ค้นหาเพื่อ
+    verify แล้วไม่เจอเพราะ AJAX table ยังโหลดไม่เสร็จ): ต่างจาก guard เดิม (W63[7.2], ไม่มี
+    หลักฐาน toast เลย) — มี toast_confirmed=True มาก่อนหน้าใน task เดียวกัน -> ไม่ force
+    success=False, ใช้ข้อความ "บันทึกข้อมูลเรียบร้อยแล้ว แต่ไม่พบรายการในตารางการค้นหา" แทน
+    VERIFICATION_FAILED"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    save_result = ActionResult(
+        True, "click(1)", 'บันทึกสำเร็จ [พบข้อความยืนยันสำเร็จ: "Successfully Saved"]',
+        toast_confirmed=True,
+    )
+
+    next_action_calls = [
+        ("browser_action", {"type": "submit", "index": 1}, "t0", [], llm.TokenUsage()),
+    ] + [
+        (
+            "finish_task",
+            {
+                "success": True, "message": "บันทึกพนักงานใหม่สำเร็จ",
+                "verify_text": "Siamyut Phasida",
+            },
+            f"t{i}", [], llm.TokenUsage(),
+        )
+        for i in range(1, 2 + _MAX_PREMATURE_TABLE_VERIFY_RETRIES)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=save_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table", AsyncMock(return_value=False)), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "เพิ่มพนักงานใหม่ชื่อ Siamyut Phasida", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert result["message"] == "บันทึกข้อมูลเรียบร้อยแล้ว แต่ไม่พบรายการในตารางการค้นหา"
+    assert result["completion_verification"] == "OK_SAVE_CONFIRMED_NOT_IN_TABLE"
+
+
+@pytest.mark.asyncio
+async def test_run_task_keeps_verification_failed_when_no_toast_confirmed():
+    """regression: ไม่มี action ไหน toast_confirmed=True เลยใน task นี้ -> guard เดิม
+    (W63[7.2]) ต้องทำงานเหมือนเดิมทุกประการ (force success=False, ข้อความ
+    VERIFICATION_FAILED)"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")  # toast_confirmed default False
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+    ] + [
+        (
+            "finish_task",
+            {"success": True, "message": "สร้างสำเร็จแล้ว", "verify_text": "AutoUser_99"},
+            f"t{i}", [], llm.TokenUsage(),
+        )
+        for i in range(1, 2 + _MAX_PREMATURE_TABLE_VERIFY_RETRIES)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table", AsyncMock(return_value=False)), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "สร้าง user ใหม่ชื่อ AutoUser_99", provider="anthropic",
+        )
+
+    assert result["success"] is False
+    assert "VERIFICATION_FAILED: Item not found in results table." in result["message"]
+    assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
 
 
 # --- W20 (Task12, "UI Validation Error Detection" — Early Termination Guardrail): hard-stop

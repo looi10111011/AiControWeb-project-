@@ -126,6 +126,10 @@ async def verify_api_key(
     ไม่ได้ — ดู GET /tasks/{id}/stream, GET /api/site-manual/learn/{id}/stream, และ
     _issue_stream_ticket() ด้านบนสำหรับที่มาของ ticket)"""
     if not settings.api_key:
+        # A local-only console may deliberately run without auth, but accepting
+        # unauthenticated requests once it is exposed on the network is unsafe.
+        if settings.api_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(status_code=503, detail="API_KEY is required for a network-exposed server")
         return
     if x_api_key == settings.api_key:
         return
@@ -484,6 +488,7 @@ async def _run_with_resolved_browser(
             tab_reuse_policy=req.tab_reuse_policy,
             ask_user_func=ask_user_func,
             owner_token=req.session_owner_token,
+            require_owner_token=True,
         )
 
         # W19-6 ("Master Controller" MODULE 3, "Ordinal Selection"/multi-turn strategy):
@@ -699,7 +704,9 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     if req.session_id:
         session_registry = request.app.state.session_registry
         try:
-            session = session_registry.get(req.session_id, owner_token=req.session_owner_token)
+            session = session_registry.get(
+                req.session_id, owner_token=req.session_owner_token, require_owner_token=True,
+            )
         except SessionOwnershipError:
             raise HTTPException(status_code=403, detail="session_id นี้ไม่ใช่ของ owner_token ที่ส่งมา")
         if session is not None and session_registry.is_healthy(session):
@@ -829,6 +836,7 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
                     req.session_id, use_user_browser=False, headless=req.headless,
                     target_url=req.url, pool=pool, tab_reuse_policy=req.tab_reuse_policy,
                     ask_user_func=ask_user_func, owner_token=req.session_owner_token,
+                    require_owner_token=True,
                 )
                 return await orchestrator.run_fastpath(
                     url=req.url, goal=req.goal, template_id=req.template_id, steps=req.steps,
@@ -1033,7 +1041,9 @@ async def close_session(
     session_registry เลย ไม่งั้นปุ่ม "New Session" จะโดน 404 ทั้งที่จริงมี state ให้เคลียร์"""
     session_registry = request.app.state.session_registry
     try:
-        closed = await session_registry.close(session_id, owner_token=session_owner_token)
+        closed = await session_registry.close(
+            session_id, owner_token=session_owner_token, require_owner_token=True,
+        )
     except SessionOwnershipError:
         raise HTTPException(status_code=403, detail="session_id นี้ไม่ใช่ของ owner_token ที่ส่งมา")
     file_chat_memory: dict = request.app.state.file_chat_memory

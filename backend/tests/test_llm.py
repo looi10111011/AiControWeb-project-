@@ -108,6 +108,25 @@ def test_browser_action_schema_includes_read_page_data_type():
     assert "read_page_data" in type_enum
 
 
+# --- W65[3] ("Vault Expansion — Current Password Auto-fill") ---
+
+
+def test_browser_action_schema_includes_fill_secret_type():
+    type_enum = llm._BROWSER_ACTION_PARAMS["properties"]["type"]["enum"]
+    assert "fill_secret" in type_enum
+
+
+def test_browser_action_schema_has_secret_property_restricted_to_current_password():
+    props = llm._BROWSER_ACTION_PARAMS["properties"]
+    assert props["secret"]["enum"] == ["current_password"]
+
+
+def test_browser_action_schema_does_not_require_secret():
+    """action ทั่วไปอื่นๆ ต้องยังเรียกได้ปกติโดยไม่ต้องมี secret เลย — มีความหมายเฉพาะตอน
+    type="fill_secret" เท่านั้น"""
+    assert "secret" not in llm._BROWSER_ACTION_PARAMS["required"]
+
+
 def test_browser_action_schema_has_query_and_target_hint_properties():
     props = llm._BROWSER_ACTION_PARAMS["properties"]
     assert props["query"]["type"] == "string"
@@ -136,6 +155,35 @@ def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
     assert "Current Password ≠ New Password" in llm.SYSTEM_PROMPT
     assert "ห้ามกรอกรหัสผ่านใหม่ลงช่อง\n    (ก) เด็ดขาด" in llm.SYSTEM_PROMPT
     assert "ให้เรียก finish_task(success=false) ทันทีก่อนแตะช่อง (ก) เลย" in llm.SYSTEM_PROMPT
+
+
+# --- W65[1]/[3] ("Required-Field Validation" / "Vault Expansion") ---
+
+
+def test_system_prompt_requires_asking_for_missing_required_field_value():
+    assert 'W65[1] ("Required-Field Validation")' in llm.SYSTEM_PROMPT
+    assert '"[required]"' in llm.SYSTEM_PROMPT
+    assert "ให้เรียก finish_task(success=false) พร้อมระบุชัดเจนว่าขาดค่าอะไรก่อนแตะฟิลด์นั้น" in llm.SYSTEM_PROMPT
+
+
+def test_system_prompt_prefers_fill_secret_for_current_password_field():
+    assert 'W65[3] ("Vault Expansion' in llm.SYSTEM_PROMPT
+    assert '"fill_secret"' in llm.SYSTEM_PROMPT
+    assert '"current_password"' in llm.SYSTEM_PROMPT
+
+
+def test_plan_prompt_template_asks_for_missing_required_value():
+    assert "Required-Field Check ก่อนร่างแผน" in llm._PLAN_PROMPT_TEMPLATE
+    assert "*จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
+
+
+# --- W65[4] ("Structured Page-Grouped Plan Output") ---
+
+
+def test_plan_prompt_template_instructs_page_grouped_format():
+    assert "Page-Grouped Plan Format" in llm._PLAN_PROMPT_TEMPLATE
+    assert 'หน้า Login: กรอก Username, กรอก Password, กด Login' in llm._PLAN_PROMPT_TEMPLATE
+    assert "Current Password *จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
 
 
 # --- ป้องกัน agent ยอมแพ้เร็วเกินไป: ต้องลองค้นหาก่อนสรุปว่า "ไม่พบ" ---

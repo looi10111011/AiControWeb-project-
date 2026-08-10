@@ -256,6 +256,7 @@ from playwright.async_api import Browser, Frame, Page
 
 from backend.app.config import settings
 from backend.app.core import llm
+from backend.app.core.dom_locator import compute_locator_descriptor
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.permission.rules import extract_domain, install_ssrf_guard
 from backend.app.site_learning.auto_login import attempt_login, find_login_fields, verify_login_success
@@ -694,7 +695,17 @@ async def crawl_site(
     manual_errors: list[dict] = []
     try:
         visited: set[str] = set()
-        queue: list[str] = [start_url]
+        # W66[A] ("Fast-Path Navigation"): queue เดิมพก URL เฉยๆ ไม่มีทางรู้เลยว่าเดินมาจาก
+        # หน้าไหน/คลิกอะไร — เปลี่ยนเป็นพก (url, parent_url, arrived_via_descriptor) ไปด้วย
+        # เพื่อให้ตอน extract หน้าที่ dequeue มา เซ็ต PageInfo.parent_url/arrived_via ได้ทันที
+        # (ดู schema.py::PageInfo สำหรับความหมายเต็มของสอง field นี้) — start_url คือ root
+        # ของ crawl เสมอ (parent_url="", arrived_via={}) *** จำกัดขอบเขตเฉพาะเส้นทาง BFS
+        # หลักนี้เท่านั้น (v1) — หน้าที่เจอผ่าน _explore_buttons() (DFS click) หรือ login flow
+        # ยังไม่ได้ thread parent/arrived_via ให้ (ยังคง default ว่างเปล่าจาก PageInfo เดิม)
+        # เพราะเป็นเส้นทาง secondary ที่ซับซ้อนกว่า ปลอดภัยเพราะแค่แปลว่า "ไม่มีข้อมูล
+        # navigation ให้หน้านี้" — nav-step builder (fastpath_executor.py) จะ fail-safe คืน
+        # None ให้เอง ไม่ throw ***
+        queue: list[tuple[str, str, dict]] = [(start_url, "", {})]
         queued: set[str] = {_normalize_url(start_url)}
         estimated_total = 1
         login_attempted = False
@@ -827,7 +838,17 @@ async def crawl_site(
                 normalized_link = _normalize_url(absolute)
                 if normalized_link in visited or normalized_link in queued:
                     continue
-                queue.append(absolute)
+                # W66[A]: คำนวณ locator descriptor ของลิงก์นี้สดๆ ตอนนี้ (page ยังอยู่บนหน้า
+                # ที่ nav_links ถูก extract มาจริง — ดู urljoin(page.url, href) ด้านบนที่ใช้
+                # premise เดียวกันอยู่แล้ว) ให้ arrived_via ของหน้าที่กำลังจะถูก queue นี้ —
+                # link["selector"] มาจาก extractor.py::computeSelector() (ใหม่, W66[A])
+                # compute_locator_descriptor() ไม่ throw เองอยู่แล้ว (คืน {} ถ้าหา element
+                # ไม่เจอ/frame detach) ไม่ต้องมี try/except เพิ่มที่นี่
+                arrived_via_descriptor = {}
+                link_selector = link.get("selector", "")
+                if link_selector:
+                    arrived_via_descriptor = await compute_locator_descriptor(page, link_selector)
+                queue.append((absolute, page_info.url, arrived_via_descriptor))
                 queued.add(normalized_link)
                 estimated_total = max(estimated_total, len(pages) + len(queue))
 
@@ -1139,7 +1160,7 @@ async def crawl_site(
                 manual_errors.append({"url": page.url, "phase": "login", "error": reason})
 
         while queue and len(pages) < effective_max_pages:
-            url = queue.pop(0)
+            url, parent_url, arrived_via = queue.pop(0)
             normalized = _normalize_url(url)
             if normalized in visited:
                 continue
@@ -1182,6 +1203,11 @@ async def crawl_site(
             await _reveal_dynamic_content(page)
             await _wait_for_dom_stable(page)
             page_info, nav_links = await extract_page(page)
+            # W66[A]: ผูก parent/arrived_via จาก queue entry เข้ากับ page_info ที่เพิ่ง
+            # extract ทันที — ครอบคลุมทุกจุดที่เรียก _record_page(page_info, ...) ด้านล่าง
+            # ในลูปนี้โดยอัตโนมัติ (ใช้ page_info ตัวเดียวกัน ไม่ต้องแก้ที่ _record_page เอง)
+            page_info.parent_url = parent_url
+            page_info.arrived_via = arrived_via
 
             # W15: login bootstrap — ลองแค่ครั้งเดียวตลอดทั้ง crawl (login_attempted)
             # ตรงหน้าแรกที่เจอ password field จริงเท่านั้น ไม่ใช่ทุกหน้าที่มี password

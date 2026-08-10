@@ -60,6 +60,9 @@ logs/
 output/
 tmp/
 
+# ---- บันทึกงานรายสัปดาห์ (local only ไม่ต้องขึ้น repo) ----
+Task/
+
 # ---- IDE / ระบบปฏิบัติการ ----
 .vscode/
 .idea/

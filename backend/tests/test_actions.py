@@ -11,8 +11,11 @@ from backend.app.core.actions import (
     _MODAL_CONFIRM_CLICK_RETRIES,
     _MODAL_DETACH_TIMEOUT_MS,
     _MODAL_RELOAD_TIMEOUT_MS,
+    _SUCCESS_TOAST_SELECTOR,
     _detect_confirmation_modal,
+    _detect_success_toast,
     execute,
+    fill_secret,
     resolve_confirmation_modal,
 )
 from backend.app.core.perception import get_snapshot
@@ -525,6 +528,134 @@ async def test_execute_delete_action_also_auto_resolves_confirmation_modal():
     assert "ตรวจพบ confirmation modal" in result.message
 
 
+# W63[7.1] ("Save Confirmation & Toast Wait", ticket Issue 7.1)
+
+
+@pytest.mark.asyncio
+async def test_detect_success_toast_returns_text_when_visible():
+    mock_page = MagicMock()
+    toast = MagicMock()
+    toast.wait_for = AsyncMock()
+    toast.inner_text = AsyncMock(return_value="Successfully Saved")
+    wrapper = MagicMock()
+    wrapper.first = toast
+    mock_page.locator = MagicMock(return_value=wrapper)
+
+    result = await _detect_success_toast(mock_page)
+
+    assert result == "Successfully Saved"
+    mock_page.locator.assert_called_once_with(_SUCCESS_TOAST_SELECTOR)
+
+
+@pytest.mark.asyncio
+async def test_detect_success_toast_returns_none_when_not_visible_in_time():
+    mock_page = MagicMock()
+    toast = MagicMock()
+    toast.wait_for = AsyncMock(side_effect=PWTimeout("timeout"))
+    wrapper = MagicMock()
+    wrapper.first = toast
+    mock_page.locator = MagicMock(return_value=wrapper)
+
+    result = await _detect_success_toast(mock_page)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_detect_success_toast_fails_safe_on_bare_mock_page():
+    result = await _detect_success_toast(AsyncMock())
+
+    assert result is None
+
+
+# click ที่ label เป็นปุ่ม Save/Submit/Confirm ต้องเช็ค success toast อัตโนมัติหลังคลิกสำเร็จ —
+# mirror รูปแบบเทสต์เดียวกับ confirmation-modal ด้านบนทุกประการ (patch
+# _detect_confirmation_modal ให้ False เสมอกันชนกับ flow modal ที่คนละ elif กัน)
+
+
+@pytest.mark.asyncio
+async def test_execute_click_checks_toast_when_label_matches_save():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=False)), \
+         patch(
+             "backend.app.core.actions._detect_success_toast",
+             AsyncMock(return_value="Successfully Saved"),
+         ) as mock_toast:
+        result = await execute(mock_page, {"type": "click", "index": 5}, label="Save")
+
+    assert result.success is True
+    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+    assert result.toast_confirmed is True  # W64[7.2]
+    mock_toast.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_notes_missing_toast_when_label_matches_save():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=False)), \
+         patch("backend.app.core.actions._detect_success_toast", AsyncMock(return_value=None)):
+        result = await execute(mock_page, {"type": "click", "index": 5}, label="บันทึก")
+
+    assert result.success is True
+    assert "ไม่พบ toast" in result.message
+    assert result.toast_confirmed is False  # W64[7.2]
+
+
+@pytest.mark.asyncio
+async def test_execute_click_skips_toast_check_for_non_save_label():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=False)), \
+         patch("backend.app.core.actions._detect_success_toast", AsyncMock()) as mock_toast:
+        result = await execute(mock_page, {"type": "click", "index": 5}, label="Next Page")
+
+    assert result.success is True
+    assert "toast" not in result.message
+    assert result.toast_confirmed is False  # W64[7.2]: default เมื่อไม่ได้เช็ค toast เลย
+    mock_toast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_prefers_modal_over_toast_when_both_apply():
+    """label ตรงกับ Save คำเดียวกับที่ modal อาจใช้ (เช่น "Confirm") แต่ modal ถูก detect ก่อน
+    -> ต้องไม่เรียก toast check ซ้ำ (elif กันชนกัน คนละ flow)"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=True)), \
+         patch(
+             "backend.app.core.actions.resolve_confirmation_modal",
+             AsyncMock(return_value=" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว (x)]"),
+         ), \
+         patch("backend.app.core.actions._detect_success_toast", AsyncMock()) as mock_toast:
+        result = await execute(
+            mock_page, {"type": "click", "index": 5}, label="Confirm",
+            ask_user_func=AsyncMock(return_value=True),
+        )
+
+    assert "ตรวจพบ confirmation modal" in result.message
+    mock_toast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_submit_action_preserves_toast_confirmed():
+    """W64[7.2]: type="submit" (DEFAULT_NEEDS_CONFIRMATION) dispatch ผ่าน
+    _dispatch_click_with_retry() ตัวเดียวกับ plain click แล้ว re-wrap ActionResult ใหม่ —
+    ต้องคง toast_confirmed (และ locator_descriptor) จาก result เดิมไว้ด้วย ไม่ทิ้งไปเงียบๆ
+    เหมือนที่เคยเป็นก่อนแก้ (bug จริงที่เจอระหว่างเขียนฟีเจอร์นี้)"""
+    mock_page = AsyncMock()
+    ask_user_func = AsyncMock(return_value=True)
+    with patch("backend.app.core.actions._detect_confirmation_modal", AsyncMock(return_value=False)), \
+         patch(
+             "backend.app.core.actions._detect_success_toast",
+             AsyncMock(return_value="Successfully Saved"),
+         ):
+        result = await execute(
+            mock_page, {"type": "submit", "index": 3}, label="Save", ask_user_func=ask_user_func,
+        )
+
+    assert result.success is True
+    assert result.toast_confirmed is True
+    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+
+
 # W3[A] (ปิดจ็อบ 2026-07-15): switch_tab() implement ไว้แล้วตั้งแต่ก่อนหน้านี้ (dispatch
 # ผ่าน execute()/enum ของ llm.py ครบ) แต่ไม่เคยมี unit test เลย — เพิ่มให้ครบตาม
 # มาตรฐานเดียวกับ action อื่นในไฟล์นี้
@@ -647,6 +778,71 @@ async def test_execute_fill_dispatches_normally_when_not_redundant():
     assert result.success is True
     assert "[ข้าม]" not in result.message
     mock_page.fill.assert_awaited_once()
+
+
+# ---------------- W65[3] ("Vault Expansion — Current Password Auto-fill") ----------------
+# ค่าลับต้องไม่หลุดเข้า ActionResult.message เด็ดขาด (เทสต์สำคัญที่สุดของฟีเจอร์นี้) — mock
+# site_learning.storage.load_credentials ที่ fill_secret() lazy-import มา (ดู comment ใน
+# actions.py ว่าทำไมต้อง lazy import — กัน circular import กับ site_learning/crawler.py)
+
+
+@pytest.mark.asyncio
+async def test_fill_secret_fills_stored_password_without_leaking_it_in_message():
+    mock_page = AsyncMock()
+    mock_page.url = "https://demo.example.com/pim/changePasswordSave"
+    with patch(
+        "backend.app.site_learning.storage.load_credentials",
+        return_value={"username": "admin", "password": "s3cr3t-real-password"},
+    ) as mock_load:
+        result = await fill_secret(mock_page, 4, "current_password")
+
+    assert result.success is True
+    assert "s3cr3t-real-password" not in result.message
+    assert "s3cr3t-real-password" not in str(result)
+    mock_load.assert_called_once_with("demo.example.com")
+    mock_page.fill.assert_awaited_once_with(
+        '[data-ai-index="4"]', "s3cr3t-real-password", timeout=_ELEMENT_ACTION_TIMEOUT_MS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_secret_fails_gracefully_when_no_credential_stored():
+    mock_page = AsyncMock()
+    mock_page.url = "https://demo.example.com/pim/changePasswordSave"
+    with patch("backend.app.site_learning.storage.load_credentials", return_value=None):
+        result = await fill_secret(mock_page, 4, "current_password")
+
+    assert result.success is False
+    assert "ไม่มี credential ที่บันทึกไว้" in result.message
+    mock_page.fill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fill_secret_rejects_unknown_secret_key():
+    mock_page = AsyncMock()
+    mock_page.url = "https://demo.example.com/pim/changePasswordSave"
+    with patch("backend.app.site_learning.storage.load_credentials") as mock_load:
+        result = await fill_secret(mock_page, 4, "new_password")
+
+    assert result.success is False
+    assert "ไม่รู้จัก secret_key" in result.message
+    mock_load.assert_not_called()  # ไม่ต้องเสีย I/O เรียก vault เลยถ้า secret_key ไม่รู้จักตั้งแต่แรก
+    mock_page.fill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_dispatches_fill_secret_type_to_fill_secret_function():
+    mock_page = AsyncMock()
+    mock_page.url = "https://demo.example.com/pim/changePasswordSave"
+    with patch(
+        "backend.app.site_learning.storage.load_credentials",
+        return_value={"username": "admin", "password": "hunter2"},
+    ):
+        result = await execute(mock_page, {"type": "fill_secret", "index": 4, "secret": "current_password"})
+
+    assert result.success is True
+    assert "hunter2" not in result.message
+    mock_page.fill.assert_awaited_once_with('[data-ai-index="4"]', "hunter2", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
 
 
 # ---------------- W40: execute() ต้องกด element ที่อยู่ใน <iframe> ได้จริง ----------------

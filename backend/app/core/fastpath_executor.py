@@ -30,14 +30,19 @@ from playwright.async_api import Locator, Page
 
 from backend.app.config import settings
 from backend.app.core import llm, procedural_memory
-from backend.app.core.actions import wait_stable
+from backend.app.core.actions import AskUserFunc, goto, wait_stable
 from backend.app.core.dom_locator import resolve_locator
 from backend.app.core.perception import get_snapshot
+from backend.app.permission.rules import ActionRisk, classify_action
 
 _ELEMENT_ACTION_TIMEOUT_MS = 3000
 
 OnEventFunc = Callable[[dict], Awaitable[None]]
 RunTaskFallbackFunc = Callable[[], Awaitable[dict]]
+
+
+class FastpathPermissionDenied(Exception):
+    """A template step was blocked or denied before it changed the page."""
 
 
 def _tokens_dict(usage: "llm.TokenUsage") -> dict:
@@ -47,6 +52,111 @@ def _tokens_dict(usage: "llm.TokenUsage") -> dict:
         "cache_read": usage.cache_read_tokens,
         "cache_creation": usage.cache_creation_tokens,
     }
+
+
+# ------------------------------------------------------------
+# W66[C] ("Fast-Path Navigation", manual trigger): เดินไปหน้าที่เรียนรู้ไว้แล้ว
+# (site_learning/) โดยไม่เรียก LLM เลยตราบใดที่ทุก click สำเร็จ — reuse execute_template()
+# ด้านล่างเป๊ะๆ (step schema เดียวกัน, resolve_locator+verify+repair+escalate เดียวกัน) แค่
+# ที่มาของ steps ต่างกัน: มาจาก PageInfo.parent_url/arrived_via chain (site_learning/
+# schema.py, crawler.py) แทนที่จะมาจาก procedural_memory template ที่ผูกกับ goal เดิมเป๊ะๆ
+#
+# manual/target_page ใช้ type hint Any ตั้งใจ (ไม่ import site_learning.schema เข้ามา) —
+# fastpath_executor.py อยู่ในสาย import ที่ site_learning/__init__.py -> crawler.py ->
+# orchestrator.py -> fastpath_executor.py ผ่านอยู่แล้ว ถ้า import schema.py กลับเข้ามาที่นี่
+# อีกจะเกิด circular import ทันที (บั๊กเดียวกับที่เจอตอนแก้ actions.py::fill_secret() ใน
+# W65[3] — ดู comment ที่นั่น) — SiteManual/PageInfo เป็นแค่ duck-typed data class ที่นี่
+# ------------------------------------------------------------
+
+def build_navigation_steps(manual: Any, target_page: Any) -> Optional[tuple[str, list[dict]]]:
+    """เดินจาก target_page ย้อนกลับผ่าน parent_url จนถึง root (page ที่ parent_url == "")
+    แล้วกลับด้าน (root -> target) ประกอบเป็น step list shape เดียวกับ _TEMPLATE_STEP_SCHEMA
+    (llm.py) ที่ execute_template() ด้านล่างกินได้ตรงๆ — คืน (root_url, steps) หรือ None ถ้า
+    เดินย้อนไม่ถึง root จริง (ไม่ throw, fail-safe):
+      - เจอ cycle ผิดปกติ (กันไม่ให้วนไม่รู้จบ)
+      - parent_url ชี้ไปหน้าที่ไม่มีอยู่ใน manual.pages เลย (ไม่เคยถูก crawl บันทึกไว้)
+      - เจอ hop ที่ arrived_via ว่างเปล่า (v1: หน้าที่มาจาก DFS-click/login flow ยังไม่ได้
+        thread parent/arrived_via ให้ — ดู crawler.py W66[A] docstring)"""
+    pages_by_url = {p.url: p for p in manual.pages}
+    chain: list[Any] = []
+    current = target_page
+    seen_urls: set[str] = set()
+    while True:
+        if current.url in seen_urls:
+            return None
+        seen_urls.add(current.url)
+        chain.append(current)
+        if not current.parent_url:
+            break
+        parent = pages_by_url.get(current.parent_url)
+        if parent is None:
+            return None
+        current = parent
+    chain.reverse()  # root -> target
+
+    root_url = chain[0].url
+    steps: list[dict] = []
+    for page_info in chain[1:]:  # ข้าม root เอง (ไม่มี arrived_via ให้ตัวเอง โดยนิยาม)
+        if not page_info.arrived_via:
+            return None
+        steps.append({"action": "click", "target": dict(page_info.arrived_via)})
+    return root_url, steps
+
+
+async def execute_navigation(
+    page: Page,
+    goal: str,
+    manual: Any,
+    target_page: Any,
+    client: Any,
+    model: str,
+    provider: str,
+    ask_user_func: Optional[AskUserFunc] = None,
+    on_event: Optional[OnEventFunc] = None,
+) -> dict:
+    """เดินไปหน้า target_page ตาม nav path ที่เรียนรู้ไว้ (build_navigation_steps ด้านบน)
+    แล้ว replay ผ่าน execute_template() เดิมตรงๆ — "success" ที่นี่หมายถึง "เดินไปถึงหน้า
+    เป้าหมายสำเร็จ" เท่านั้น ไม่ใช่ goal ทั้งหมดเสร็จ (ผู้เรียก — orchestrator.py::run_task()
+    — ต้องทำงานที่เหลือต่อเองด้วย perceive-plan-act loop ปกติหลังจากนี้)
+
+    W66[C] (manual trigger, scope รอบนี้): เรียก execute_template() โดย
+    **run_task_fallback=None เสมอ** — ตั้งใจไม่ auto-escalate ไป run_task() เต็มรูปแบบเอง
+    (จะเสี่ยง recursive call เพราะฟังก์ชันนี้ถูกเรียกจากภายใน run_task() เองอยู่แล้ว) ถ้า
+    replay ล้มเหลว/escalate execute_template() จะคืน {success: False, ...} ตรงๆ แทน — ผู้
+    เรียก (run_task()) มีหน้าที่ goto(url) กลับไปจุดเริ่มต้นเดิมเองแล้วเดินหน้า loop ปกติ
+    ต่อ (เหมือนไม่เคยมี nav_target_page_query เลย — ปลอดภัยกว่า ไม่แย่กว่าเดิม)
+
+    W67 (bug fix): execute_template() **ไม่ navigate เองเลย** (ดู docstring ของมัน — สมมติ
+    ว่า page อยู่ถูกที่แล้วก่อนเรียก) เดิมฟังก์ชันนี้ไม่เคย goto(root_url) เองเลย พึ่ง
+    "บังเอิญ" ว่า caller (run_task()) เพิ่ง goto(url) มาก่อนหน้านี้เอง ซึ่งไม่รับประกันว่า
+    url ตรงกับ crawl root เป๊ะเสมอ (เช่น auto-login redirect ไปคนละหน้า) — เพิ่ม goto
+    ตรงนี้เองให้ชัดเจน ไม่พึ่งพฤติกรรมของ caller อีกต่อไป"""
+    nav_data = build_navigation_steps(manual, target_page)
+    if nav_data is None:
+        return {
+            "success": False, "steps": 0,
+            "message": "[FAIL] ไม่มีข้อมูล navigation path ที่ใช้ replay ได้สำหรับหน้านี้",
+            "history": [], "tokens": _tokens_dict(llm.TokenUsage()),
+            "plan": "", "final_page_state": "", "execution_mode": "nav_unavailable",
+        }
+    root_url, click_steps = nav_data
+    await goto(page, root_url)
+    await wait_stable(page)
+    if not click_steps:
+        # target_page คือ root เอง (ไม่มี hop ให้เดินเลย) — ถือว่า "ถึงแล้ว" ทันที ไม่ต้อง
+        # replay อะไรต่อ (goto(root_url) ด้านบนพาไปถึงแล้ว)
+        return {
+            "success": True, "steps": 0, "message": "อยู่หน้าเป้าหมายอยู่แล้ว (root page)",
+            "history": [], "tokens": _tokens_dict(llm.TokenUsage()),
+            "plan": "", "final_page_state": "", "execution_mode": "nav",
+        }
+
+    template_id = f"nav:{manual.website}:{target_page.name}"
+    return await execute_template(
+        page=page, url=root_url, goal=goal, template_id=template_id, steps=click_steps,
+        slot_values={}, client=client, model=model, provider=provider,
+        ask_user_func=ask_user_func, on_event=on_event, run_task_fallback=None,
+    )
 
 
 async def _dispatch_step(locator: Locator, action: str, value: Optional[str], timeout: int) -> None:
@@ -96,6 +206,29 @@ async def _verify_step(locator: Locator, action: str, expected_value: Optional[s
         )
 
 
+async def _check_step_permission(
+    action: str, descriptor: dict, ask_user_func: Optional[AskUserFunc],
+) -> None:
+    """Apply the normal action-risk policy before a fast-path locator mutation.
+
+    Fast-path uses stable locators instead of perception indexes, but that must not
+    bypass the permission boundary used by the regular executor.
+    """
+    label = str(
+        descriptor.get("accessible_name")
+        or descriptor.get("label")
+        or descriptor.get("text")
+        or ""
+    )
+    risk = classify_action({"type": action}, label=label)
+    if risk is ActionRisk.BLOCKED:
+        raise FastpathPermissionDenied(f"blocked action: {action} ({label or 'unnamed target'})")
+    if risk is ActionRisk.NEEDS_CONFIRMATION:
+        cmd = {"type": action, "label": label, "fastpath": True}
+        if ask_user_func is None or not await ask_user_func(cmd):
+            raise FastpathPermissionDenied(f"action was not approved: {action} ({label or 'unnamed target'})")
+
+
 def _mask_step_for_repair(step: dict) -> dict:
     """ไม่ส่งค่าจริงของ step ที่ sensitive=True เข้า LLM prompt เด็ดขาด (ดู
     llm.repair_step() docstring ที่ระบุว่าผู้เรียกต้อง mask เอง) — คืน copy ใหม่เสมอ
@@ -116,6 +249,7 @@ async def execute_template(
     client: Any,
     model: str,
     provider: str,
+    ask_user_func: Optional[AskUserFunc] = None,
     on_event: Optional[OnEventFunc] = None,
     run_task_fallback: Optional[RunTaskFallbackFunc] = None,
 ) -> dict:
@@ -190,8 +324,21 @@ async def execute_template(
                 error_text = "หา element ที่ตรงกับ locator ของ step นี้ไม่เจอบนหน้าปัจจุบัน"
             else:
                 try:
+                    await _check_step_permission(action, descriptor, ask_user_func)
                     await _dispatch_step(locator, action, substituted_value, _ELEMENT_ACTION_TIMEOUT_MS)
                     await _verify_step(locator, action, substituted_value, sensitive)
+                except FastpathPermissionDenied as e:
+                    procedural_memory.record_template_outcome(template_id, success=False)
+                    return {
+                        "success": False,
+                        "steps": step_num - 1,
+                        "message": f"[BLOCKED] {e}",
+                        "history": history,
+                        "tokens": _tokens_dict(total_usage),
+                        "plan": "",
+                        "final_page_state": "",
+                        "execution_mode": "fastpath_blocked",
+                    }
                 except Exception as e:
                     error_text = str(e)
 

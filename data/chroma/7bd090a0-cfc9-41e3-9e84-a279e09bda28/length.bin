@@ -1,1 +1,1 @@
-invalid type: string "URL: https://opensource-demo.orangehrmlive.com/\nGoal: เปล\u{e35}\u{e48}ยนรห\u{e31}สผ\u{e48}านของฉ\u{e31}นเป\u{e47}น 12345678\nOutcome: failed\nSummary: ไม\u{e48}สามารถดำเน\u{e34}นการต\u{e48}อได\u{e49} เน\u{e37}\u{e48}องจากข\u{e49}อม\u{e39}ลท\u{e35}\u{e48}กรอกไมc}
+invalid type: string "ไปท\u{e35}\u{e48}หน\u{e49}า Admin ค\u{e49}นหา user ท\u{e38}กคนท\u{e35}\u{e48}ไม\u{e48}ใช\u{e48} Admin แล\u{e49}วทำการเปล\u{e35}\u{e48}ยน Role ของท\u{e38}กคนในผลการค\u{e49}นหาให\u{e49}กลายเป\u{e47}น 'Admin' ให\u{e49}หมด", expected i64u{e47}��ว������

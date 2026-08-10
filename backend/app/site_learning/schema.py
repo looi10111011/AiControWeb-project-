@@ -137,6 +137,18 @@ class PageInfo:
     search_box: bool = False
     modals: list[str] = field(default_factory=list)
     tabs: list[str] = field(default_factory=list)
+    # W66[A] ("Fast-Path Navigation"): parent_url/arrived_via ผูกเป็น parent-pointer tree
+    # (BFS crawl ค้นพบแต่ละหน้าครั้งแรกจากหน้าเดียวเสมอตามธรรมชาติ ไม่ต้องเก็บ graph เต็ม
+    # รูปแบบ) — parent_url ว่างเปล่าสำหรับหน้าเริ่มต้นของ crawl (root) เท่านั้น ทุกหน้าอื่น
+    # ต้องมี URL ของหน้าที่ถูกค้นพบมาจาก — arrived_via คือ locator descriptor (shape เดียว
+    # กับที่ dom_locator.py::compute_locator_descriptor() คืน: tag/explicit_role/
+    # implicit_role/accessible_name/data_testid/css_fallback) ของปุ่ม/ลิงก์บนหน้า parent_url
+    # ที่ crawler คลิกจริงเพื่อมาถึงหน้านี้ — เดินย้อนจาก parent_url ของหน้าเป้าหมายกลับไปถึง
+    # root แล้วกลับด้าน ได้ลำดับ click ที่พา agent จาก root ไปถึงหน้านั้นได้จริง (ดู
+    # fastpath_executor.py::build_navigation_steps()) ว่างเปล่าทั้งคู่ = ไม่มีข้อมูล
+    # navigation ให้ใช้ (เว็บ/หน้านี้ยังไม่เคย crawl มาก่อน หรือ crawl ก่อน W66)
+    parent_url: str = ""
+    arrived_via: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -187,6 +199,8 @@ class SiteManual:
                 search_box=bool(p.get("search_box", False)),
                 modals=list(p.get("modals", [])),
                 tabs=list(p.get("tabs", [])),
+                parent_url=p.get("parent_url", ""),
+                arrived_via=dict(p.get("arrived_via", {})),
             )
             for p in data.get("pages", [])
         ]

@@ -214,6 +214,20 @@ class Settings(BaseSettings):
     # ไม่ต้องแก้โค้ด (เช่น tier ที่จ่ายเงินแล้วมี RPM สูงกว่า free-tier มาก ปรับให้ต่ำลงได้)
     step_pacing_delay_seconds: float = 3.0
 
+    # W67: nav-fastpath (ดู core/fastpath_executor.py::execute_navigation,
+    # core/orchestrator.py::run_task) — W66 เปิดใช้ได้แค่ manual trigger (ต้องระบุ
+    # nav_target_page_query เข้ามาเอง) ตัวนี้เปิดให้ orchestrator ตัดสินใจเองจาก goal
+    # โดยตรงเมื่อไม่ได้ระบุ query มา (auto-decide) — เปิด default True เพราะ fail-safe
+    # อยู่แล้วทุกจุด (ไม่มี manual/ไม่ match พอ -> fallback ไป URL เดิม/LLM loop ปกติเงียบๆ
+    # ไม่ throw ไม่แย่กว่าเดิม) ประโยชน์ (ประหยัด LLM call ต่อ step ระหว่างเดินทาง) มากกว่า
+    # ความเสี่ยง
+    enable_nav_fastpath_auto_decide: bool = True
+    # threshold เข้มกว่า default 1 ของ find_matching_page() เดิม (ใช้กับ Strict Guided
+    # Plan context ที่แค่โชว์ข้อความให้ LLM อ่านเฉยๆ match หลวมๆ ก็ยังปลอดภัย) —
+    # auto-decide ต้องมั่นใจกว่าเพราะจะลงมือคลิกจริงตาม nav path ที่ match ได้ ไม่ใช่แค่ให้
+    # LLM อ่านประกอบการตัดสินใจ
+    nav_fastpath_min_match_score: int = 2
+
 
 settings = Settings()
 
