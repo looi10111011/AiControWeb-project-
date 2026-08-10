@@ -50,7 +50,14 @@ from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 from backend.app.core import state_filter
 from backend.app.core.dom_locator import compute_locator_descriptor
 from backend.app.core.perception import count_elements, extract_table_data, resolve_frame
-from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action, install_ssrf_guard
+from backend.app.permission.rules import (
+    DEFAULT_NEEDS_CONFIRMATION, ActionRisk, classify_action, extract_domain, install_ssrf_guard,
+)
+# W65[3] ("Vault Expansion"): site_learning.storage ไม่ได้ import ตรงนี้ระดับ module — ยืนยัน
+# แล้วว่าจะเกิด circular import จริง (site_learning/__init__.py -> crawler.py ->
+# orchestrator.py -> fastpath_executor.py -> กลับมา actions.py ที่ยังโหลดไม่เสร็จ) ต้อง lazy
+# import ข้างในฟังก์ชันแทน (ดู fill_secret() ด้านล่าง) — pattern เดียวกับที่ orchestrator.py::
+# _maybe_auto_login() ใช้อยู่แล้วสำหรับปัญหาเดียวกันเป๊ะ
 
 # ask_user_func: callback ให้ orchestrator/UI ชั้นบนตัดสินใจแทน blocking input()
 # เช่น API server (W10) จะ inject callback ที่ส่ง event ไป UI แล้วรอ user กดยืนยันจริง
@@ -74,6 +81,16 @@ class ActionResult:
     # ที่ยังไม่เกิดผลจริง) — default None ท้ายสุดไม่กระทบ call site เดิมที่สร้าง
     # ActionResult(success, action, message) แบบ positional 3 ตัวเลยสักที่เดียว
     locator_descriptor: Optional[dict] = None
+    # W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2): True เฉพาะตอน
+    # _detect_success_toast() (ดู _dispatch_click_with_retry ด้านล่าง) เจอ toast/ข้อความ
+    # ยืนยันสำเร็จจริงหลัง click ที่ label เป็น Save/Submit/Confirm — สัญญาณที่ตรวจสอบได้จริง
+    # (ไม่ใช่แค่คำอธิบายของ LLM) ว่า "ข้อมูลถูกบันทึกจริงแล้ว" ให้ orchestrator.py ใช้ตัดสินใจ
+    # ว่า finish_task guard (ดู _scan_created_item_in_table) ควร "เชื่อ" ว่างานสำเร็จแล้วแม้
+    # ตรวจไม่เจอใน table body ภายหลัง (อาจเป็นปัญหา search/filter/pagination ไม่ใช่ว่าไม่ได้
+    # ถูกสร้างจริง) แทนที่จะบังคับ VERIFICATION_FAILED เหมือนตอนไม่มีหลักฐานยืนยันเลย — string
+    # matching ข้อความ toast โดยตรงเปราะบางกว่า (ต้องคง format ให้ตรงกันข้าม 2 ไฟล์) จึงใช้
+    # field ที่ type-checked แทน (pattern เดียวกับ locator_descriptor ด้านบน)
+    toast_confirmed: bool = False
 
     def __str__(self):
         mark = "OK" if self.success else "FAIL"
@@ -178,7 +195,49 @@ async def hover(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         return ActionResult(False, f"hover({index})", f"error: {e}")
 
 
-async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
+# W63[7.1] ("Save Confirmation & Toast Wait" — ticket Issue 7.1): เดิมมีแค่คำแนะนำใน
+# SYSTEM_PROMPT (W19 "Task Completion Verifier") ให้ LLM "มองหา" toast เองตอนจะเรียก
+# finish_task เท่านั้น ไม่มีการเช็คระดับโค้ดเลย — ปัญหาคือ toast มักเป็น element ชั่วคราว
+# (auto-dismiss ไม่กี่วินาที) ถ้าไปเช็คตอน finish_task (ซึ่งอาจเกิดขึ้นหลาย step ถัดมา หลัง
+# LLM ทำ action อื่นต่อไปแล้ว) toast อาจหายไปแล้วจริงๆ ทั้งที่ save สำเร็จ ทำให้เช็คตอนนั้นไม่
+# น่าเชื่อถือ — ย้ายจุดเช็คมาไว้ทันทีหลัง click ที่ label บ่งบอกว่าเป็นปุ่ม Save/Submit/Confirm
+# (จุดเดียวกับที่ _dispatch_click_with_retry() เช็ค confirmation modal อยู่แล้วด้านล่าง) รอ
+# สั้นๆ (bounded, ไม่ throw ถ้าไม่เจอ) แล้วแนบผลลัพธ์ต่อท้าย message ให้ LLM เห็นทันทีว่า toast
+# ปรากฏจริงไหม แทนที่จะฝากความหวังไว้กับการเดาของ LLM เองล้วนๆ (defense-in-depth เหมือน
+# pattern อื่นในไฟล์นี้ เช่น modal auto-resolve ด้านล่าง)
+_SAVE_LABEL_RE = re.compile(r"\b(save|submit|confirm|update)\b|บันทึก|ยืนยัน|อัปเดต|อัพเดท", re.IGNORECASE)
+
+# เรียงจากเจาะจงที่สุด (OrangeHRM .oxd-toast) ไปกว้างสุด (ARIA live region/toast framework
+# ทั่วไป) — ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว เพราะ role="status"/role="alert" และ
+# class ที่มีคำว่า toast/snackbar/notification เป็น pattern มาตรฐานที่ web framework ทั่วไปใช้
+# ร่วมกันจริง (Material/Bootstrap/Ant Design ฯลฯ) ต่างจาก _RECORD_COUNT_SELECTOR ใน
+# orchestrator.py ที่ข้อความ "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย
+_SUCCESS_TOAST_SELECTOR = (
+    '.oxd-toast--success, .oxd-toast-container, '
+    '[role="status"]:not(:empty), [role="alert"]:not(:empty), '
+    '[class*="toast" i]:not(:empty), [class*="snackbar" i]:not(:empty), '
+    '[class*="notification" i][class*="success" i]:not(:empty)'
+)
+
+_TOAST_WAIT_TIMEOUT_MS = 2500
+
+
+async def _detect_success_toast(page: Page) -> Optional[str]:
+    """W63[7.1]: เช็คว่ามี success toast/confirmation message โผล่ขึ้นมาจริงหลัง action นี้
+    ไหม — คืนข้อความที่เจอ (ตัดสั้นๆ ไม่เกิน 200 ตัวอักษร) หรือ None ถ้าไม่เจอ/เช็คไม่ได้
+    (ไม่ throw ให้ click ที่เพิ่ง success พัง — หลักการเดียวกับ _detect_confirmation_modal
+    ด้านล่าง) รอสั้นๆ (_TOAST_WAIT_TIMEOUT_MS) ให้ animation/network เข้ามาแสดงผลก่อนถ้ายังไม่
+    เจอทันที เพราะ toast มักปรากฏหลัง response กลับมาไม่กี่ร้อย ms ไม่ใช่ทันทีที่คลิก"""
+    try:
+        locator = page.locator(_SUCCESS_TOAST_SELECTOR).first
+        await locator.wait_for(state="visible", timeout=_TOAST_WAIT_TIMEOUT_MS)
+        text = (await locator.inner_text(timeout=_ELEMENT_ACTION_TIMEOUT_MS)).strip()
+        return text[:200] if text else None
+    except Exception:
+        return None
+
+
+async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") -> ActionResult:
     """เหมือน _dispatch_with_retry() ทั่วไป (ครั้งแรก + retry อีก _ACTION_RETRIES-1 ครั้ง)
     แต่เฉพาะ click(): ตั้งแต่รอบ retry ที่ 2 เป็นต้นไป hover() บน element เป้าหมายก่อนคลิก
     ซ้ำเสมอ 1 ครั้ง — แก้ปัญหาปุ่ม hover-to-reveal ที่ perception.py ติด index ให้แล้วแต่
@@ -213,6 +272,22 @@ async def _dispatch_click_with_retry(page: Page, index: int) -> ActionResult:
                         result.success, result.action, f"{result.message}{modal_note}",
                         locator_descriptor=result.locator_descriptor,
                     )
+            elif label and _SAVE_LABEL_RE.search(label):
+                # W63[7.1]: ไม่เช็ค toast ถ้าเพิ่งเจอ confirmation modal ไปแล้วด้านบน (คนละ
+                # flow กัน — modal คือปุ่ม Delete/Remove ที่ต้องยืนยันซ้ำ ไม่ใช่ปุ่ม Save) —
+                # จำกัดเฉพาะ label ที่ตรงคำ Save/Submit/Confirm กัน overhead การรอ toast บน
+                # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
+                toast_text = await _detect_success_toast(page)
+                toast_note = (
+                    f' [พบข้อความยืนยันสำเร็จ: "{toast_text}"]' if toast_text
+                    else " [ไม่พบ toast/ข้อความยืนยันสำเร็จภายในเวลาที่กำหนดหลังคลิก — "
+                         "ตรวจสอบ validation error หรือดูว่าหน้าเปลี่ยนกลับไปหน้ารายการเองแล้ว"
+                         "หรือยังก่อนถือว่าสำเร็จ]"
+                )
+                result = ActionResult(
+                    result.success, result.action, f"{result.message}{toast_note}",
+                    locator_descriptor=result.locator_descriptor, toast_confirmed=bool(toast_text),
+                )
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
@@ -407,6 +482,53 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
         return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
     except Exception as e:
         return ActionResult(False, f"fill({index})", f"error: {e}")
+
+
+# W65[3] ("Vault Expansion — Current Password Auto-fill"): แทนที่จะสร้าง multi-named-secret
+# store ใหม่ (ต้องเปลี่ยน schema credentials.json จาก single-pair เป็น dict — เสี่ยง/effort
+# สูงเกินจำเป็นสำหรับ use case นี้) reuse credential login ที่บันทึกไว้ต่อโดเมนอยู่แล้ว
+# (site_learning/storage.py::save_credentials/load_credentials) เป็น "current password"
+# โดยตรง — ตรงกับความหมายจริง (current password ก็คือรหัสที่ใช้ login อยู่ตอนนี้)
+#
+# ***ต้องไม่หลุดเข้า LLM context เด็ดขาด*** (หลักการเดียวกับ orchestrator.py::
+# _maybe_auto_login) — ค่าจริงไม่เคยถูกส่งผ่าน cmd["text"] จาก LLM เลย (LLM ส่งแค่ secret_key
+# ที่เป็นชื่อ symbolic เช่น "current_password" มา) และ ActionResult.message ต้องไม่ echo ค่า
+# จริงกลับไปด้วย (message บอกแค่ "สำเร็จ"/"ล้มเหลว" เฉยๆ) — ต่างจาก fill() ธรรมดาด้านบนที่ log
+# ข้อความที่กรอกไว้ตรงๆ ได้เพราะเป็นข้อมูลที่ LLM ให้มาเองอยู่แล้ว ไม่ใช่ความลับ
+_SUPPORTED_SECRET_KEYS = {"current_password"}
+
+
+async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
+    """กรอกค่าลับที่บันทึกไว้ (ตอนนี้รองรับแค่ secret_key="current_password" — รหัสผ่านที่ใช้
+    login เว็บนี้อยู่) ลงช่อง input ตาม index — คืน [FAIL] แบบ fail-safe (ไม่มี credential
+    บันทึกไว้/secret_key ที่ไม่รู้จัก) ให้ LLM fallback ไปถาม user เองตามกติกา W65[1] ปกติ
+    แทนที่จะ throw หรือค้าง"""
+    if secret_key not in _SUPPORTED_SECRET_KEYS:
+        return ActionResult(False, f"fill_secret({index})", f"ไม่รู้จัก secret_key '{secret_key}' — ต้องถาม user เอง")
+
+    # Lazy import กัน circular import (site_learning -> crawler.py -> orchestrator.py ->
+    # fastpath_executor.py -> actions.py) — pattern เดียวกับ orchestrator.py::_maybe_auto_login()
+    from backend.app.site_learning import storage as site_storage
+
+    domain = extract_domain(page.url)
+    creds = site_storage.load_credentials(domain)  # sync call, pattern เดียวกับ _maybe_auto_login
+    if not creds or not creds.get("password"):
+        return ActionResult(False, f"fill_secret({index})", "ไม่มี credential ที่บันทึกไว้สำหรับเว็บนี้ — ต้องถาม user เอง")
+
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        await target.click(selector, timeout=timeout)
+        await target.press(selector, "ControlOrMeta+a", timeout=timeout)
+        await target.press(selector, "Backspace", timeout=timeout)
+        await target.fill(selector, creds["password"], timeout=timeout)
+        descriptor = await compute_locator_descriptor(target, selector)
+        # ***ห้าม echo ค่าจริงกลับใน message เด็ดขาด*** ต่างจาก fill() ปกติด้านบน
+        return ActionResult(True, f"fill_secret({index})", "กรอกรหัสผ่านที่บันทึกไว้สำเร็จ", locator_descriptor=descriptor)
+    except PWTimeout:
+        return ActionResult(False, f"fill_secret({index})", "กรอกไม่ได้ (timeout)")
+    except Exception as e:
+        return ActionResult(False, f"fill_secret({index})", f"error: {e}")
 
 
 async def select_option(page: Page, index: int, label: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
@@ -767,12 +889,19 @@ async def execute(
             redundant = await state_filter.check_click_redundant(page, cmd["index"])
             if redundant is not None:
                 return ActionResult(False, f"click({cmd['index']})", f"[ข้าม] {redundant}")
-            return await _dispatch_click_with_retry(page, cmd["index"])
+            return await _dispatch_click_with_retry(page, cmd["index"], label)
         if t == "fill":
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
                 return ActionResult(True, f"fill({cmd['index']})", f"[ข้าม] {redundant}")
             return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+        if t == "fill_secret":
+            # W65[3]: ไม่เช็ค state_filter.check_fill_redundant() เหมือน "fill" ด้านบน — ฟังก์ชัน
+            # นั้นต้องการ cmd["text"] (ค่าจริงที่จะเทียบกับค่าปัจจุบันในช่อง) แต่ fill_secret ไม่มี
+            # ค่าจริงให้ LLM เห็นเลยตั้งแต่ต้น (แค่ secret_key เป็นชื่อ symbolic) ข้ามการเช็คนี้ไป
+            # เป็นแค่ optimization ที่เสียไป ไม่กระทบ correctness (retry wrapper ด้านล่างยังกัน
+            # DOM ไม่นิ่งได้ตามปกติ)
+            return await _dispatch_with_retry(fill_secret, page, cmd["index"], cmd.get("secret", ""))
         if t == "select":      return await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
         if t == "check":
             redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
@@ -800,8 +929,15 @@ async def execute(
             # click ธรรมดา — คืน label เดิม (เช่น "submit(2)") ไม่ใช่ "click(2)" กันสับสน
             # (ใช้ retry wrapper เดียวกับ click ปกติ รวม hover-on-retry ด้วย — ปุ่ม hover-to-
             # reveal ก็อาจเป็นปุ่มความเสี่ยงสูงได้เหมือนกัน เช่น "Delete" ที่โผล่มาตอน hover)
-            result = await _dispatch_click_with_retry(page, cmd["index"])
-            return ActionResult(result.success, f"{t}({cmd['index']})", result.message)
+            result = await _dispatch_click_with_retry(page, cmd["index"], label)
+            # W64[7.2]: คง locator_descriptor/toast_confirmed จาก result เดิมไว้ด้วย (เดิม
+            # re-wrap ทิ้งทั้งสอง field นี้ไปเงียบๆ — "Save"/"Submit" ที่ classify_action()
+            # มองว่าเสี่ยงพอต้องขออนุมัติ (เช่น label มีคำว่า "Confirm Purchase") ก็ยัง
+            # ต้องการให้ toast_confirmed สะท้อนความจริงถูกต้องเหมือน plain click ทุกประการ)
+            return ActionResult(
+                result.success, f"{t}({cmd['index']})", result.message,
+                locator_descriptor=result.locator_descriptor, toast_confirmed=result.toast_confirmed,
+            )
         return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
     except KeyError as e:
         return ActionResult(False, f"{t}", f"ขาด parameter: {e}")

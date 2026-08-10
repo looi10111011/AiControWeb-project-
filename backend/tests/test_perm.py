@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from playwright.async_api import async_playwright
@@ -397,6 +397,15 @@ def test_is_private_or_internal_false_for_public_domain():
 
 def test_is_private_or_internal_false_for_unresolvable_hostname():
     assert is_private_or_internal("this-domain-does-not-exist-xyz123.invalid") is False
+
+
+def test_is_private_or_internal_blocks_any_private_dns_answer():
+    answers = [
+        (None, None, None, None, ("8.8.8.8", 0)),
+        (None, None, None, None, ("fd00::1", 0, 0, 0)),
+    ]
+    with patch("backend.app.permission.rules.socket.getaddrinfo", return_value=answers):
+        assert is_private_or_internal("mixed.example") is True
 
 
 def test_classify_action_blocks_goto_to_cloud_metadata_ip():

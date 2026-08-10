@@ -102,7 +102,9 @@ class SessionRegistry:
         self._sessions: dict[str, BrowserSession] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def get(self, session_id: str, owner_token: Optional[str] = None) -> Optional[BrowserSession]:
+    def get(
+        self, session_id: str, owner_token: Optional[str] = None, *, require_owner_token: bool = False,
+    ) -> Optional[BrowserSession]:
         """Security (SEC-4 follow-up): owner_token ไม่ส่งมา (None, default) = พฤติกรรมเดิม
         ทุกประการ (ยังไม่เช็คความเป็นเจ้าของ) — ใช้แบบนี้เฉพาะจุดที่ยังไม่มี HTTP layer มา
         เกี่ยวข้อง (เช่น debug/internal call) เท่านั้น ทุก endpoint จริงที่รับ session_id
@@ -110,7 +112,10 @@ class SessionRegistry:
         session ที่มีอยู่จริง โยน SessionOwnershipError (ไม่คืน None เงียบๆ กัน caller
         เข้าใจผิดว่า "ไม่มี session นี้" ทั้งที่จริงๆ มีแต่ไม่ใช่เจ้าของ)"""
         session = self._sessions.get(session_id)
-        if session is not None and owner_token is not None and session.owner_token != owner_token:
+        if session is not None and (
+            (require_owner_token and not owner_token) or
+            (owner_token is not None and session.owner_token != owner_token)
+        ):
             raise SessionOwnershipError(f"session_id {session_id!r} ไม่ใช่ของ owner_token นี้")
         return session
 
@@ -137,6 +142,7 @@ class SessionRegistry:
         tab_reuse_policy: Optional[str],
         ask_user_func: Optional[AskUserFunc],
         owner_token: Optional[str] = None,
+        require_owner_token: bool = False,
     ) -> BrowserSession:
         """session_id เคยเจอมาก่อน -> คืนตัวเดิมถ้ายัง healthy (ดู is_healthy()) ถ้าไม่
         healthy แล้วจะกู้คืนอัตโนมัติก่อนคืน (ดู _recover() — ไม่ fail ทันที) ไม่เคยเจอ ->
@@ -156,7 +162,9 @@ class SessionRegistry:
         พึ่งกลไกนี้ เช่น demo/test — ดู BrowserSession.owner_token default_factory)"""
         existing = self._sessions.get(session_id)
         if existing is not None:
-            if owner_token is not None and existing.owner_token != owner_token:
+            if (require_owner_token and not owner_token) or (
+                owner_token is not None and existing.owner_token != owner_token
+            ):
                 raise SessionOwnershipError(f"session_id {session_id!r} ไม่ใช่ของ owner_token นี้")
             return await self._reuse_or_recover(
                 existing, target_url=target_url, pool=pool,
@@ -166,7 +174,9 @@ class SessionRegistry:
         async with self._lock_for(session_id):
             existing = self._sessions.get(session_id)
             if existing is not None:
-                if owner_token is not None and existing.owner_token != owner_token:
+                if (require_owner_token and not owner_token) or (
+                    owner_token is not None and existing.owner_token != owner_token
+                ):
                     raise SessionOwnershipError(f"session_id {session_id!r} ไม่ใช่ของ owner_token นี้")
                 return await self._reuse_or_recover(
                     existing, target_url=target_url, pool=pool,
@@ -389,7 +399,9 @@ class SessionRegistry:
         page = await context.new_page()
         return BrowserSession(session_id, "pool", page, context, browser, None, pool=pool, **session_kwargs)
 
-    async def close(self, session_id: str, owner_token: Optional[str] = None) -> bool:
+    async def close(
+        self, session_id: str, owner_token: Optional[str] = None, *, require_owner_token: bool = False,
+    ) -> bool:
         """ปิด session — คืน False ถ้าไม่พบ session_id นี้ (ปิดไปแล้ว/ไม่เคยมีอยู่จริง)
         ปิดเฉพาะ resource ที่ session นี้เป็นเจ้าของเองจริงๆ ตาม mode
 
@@ -410,7 +422,10 @@ class SessionRegistry:
         เช็ค is_connected() ก่อนคืน browser กลับ pool กัน poison pool ด้วย browser ที่ตายไป
         แล้ว) แทนที่จะเขียนตรรกะเดิมซ้ำแบบไม่มี error handling"""
         existing = self._sessions.get(session_id)
-        if existing is not None and owner_token is not None and existing.owner_token != owner_token:
+        if existing is not None and (
+            (require_owner_token and not owner_token) or
+            (owner_token is not None and existing.owner_token != owner_token)
+        ):
             raise SessionOwnershipError(f"session_id {session_id!r} ไม่ใช่ของ owner_token นี้")
         session = self._sessions.pop(session_id, None)
         self._locks.pop(session_id, None)

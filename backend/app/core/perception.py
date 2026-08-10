@@ -401,6 +401,15 @@ _COLLECT_JS = r"""
     // (ดู marker pattern อื่นในไฟล์นี้ เช่น [active อยู่แล้ว]/[ถูกบังอยู่])
     const isDisabled = !!el.disabled;
 
+    // W65[1] ("Required-Field Validation"): เดิม HTML `required`/`aria-required` attribute
+    // ถูก crawl เก็บไว้ใน site_manuals (site_learning/schema.py::FormFieldInfo.required)
+    // แต่ perception.py (เส้นทาง live DOM ที่ agent ใช้จริงตอนรัน task) ไม่เคยอ่านค่านี้เลย
+    // ทำให้ agent ไม่รู้ว่า field ไหน "ต้องกรอกจริง" จนกว่าจะลอง submit แล้วเจอ validation
+    // error ย้อนหลัง — แปะ marker "[required]" ให้ตรงๆ ตั้งแต่ perceive (เหมือน [disabled]
+    // ด้านบน) ให้ agent เห็นล่วงหน้าว่าต้องมีค่าจริงก่อนกด submit (ดู SYSTEM_PROMPT W65 rule
+    // ใน llm.py ที่ใช้ marker นี้ตัดสินใจว่าต้องถาม user ก่อนไหม)
+    const isRequired = !!(el.required || el.getAttribute('aria-required') === 'true');
+
     // W9[A]: เช็คว่า element นี้ถูก popup/modal/overlay อื่นบังอยู่จริงไหม —
     // getBoundingClientRect()/CSS visibility ข้างบนเช็คแค่ว่า element เอง "มองเห็นได้"
     // เฉยๆ ไม่ได้เช็คว่ามี element อื่นวางทับอยู่ข้างบน (เช่น cookie-consent banner/
@@ -537,6 +546,11 @@ _COLLECT_JS = r"""
     if (isDisabled) {
       label = label ? `${label} [disabled]` : '[disabled]';
     }
+    // W65[1]: เงื่อนไขอิสระจาก disabled เหมือนกัน (field ที่ required อาจ enable/disable
+    // อยู่ก็ได้ ไม่เกี่ยวกัน) แปะซ้อนกับ marker อื่นได้ปกติ
+    if (isRequired) {
+      label = label ? `${label} [required]` : '[required]';
+    }
 
     // W50 (viewport-aware sorting): เช็คว่า element นี้อยู่ในกรอบจอที่มองเห็นตอนนี้ไหม
     // (ไม่ใช่ obscured เช็คด้านบนที่ดูว่าโดน element อื่นบังอยู่หรือเปล่า — ตัวนี้ดูแค่
@@ -661,10 +675,28 @@ async def resolve_frame(page: Page, selector: str) -> Union[Page, Frame]:
 # ที่ให้ LLM เรียกเอง) กันไม่ให้ token cost ต่อ step โตขึ้นถาวรเหมือนที่ get_snapshot() ระวัง
 # ไว้อยู่แล้ว (trim system prompt/filter footer/prompt caching)
 
+# W63[3.3] ("Accurate Record Counting" — ticket Issue 3.3, บั๊กจริง: querySelectorAll(...).length
+# เดิมนับ node ที่ match selector "ทุกตัวใน DOM" ตรงๆ ไม่สนว่ามองเห็นได้จริงไหม — เว็บจำนวนมาก
+# (รวม OrangeHRM) ทิ้ง <option>/แถวตารางของหน้าอื่นที่ยัง paginate ไม่มาถึง/dropdown ที่ยังไม่เปิด
+# ไว้ใน DOM เดิมด้วย display:none/ไม่ได้ layout เลย ทำให้ "จำนวนที่นับได้" สูงกว่าจำนวนแถว/รายการ
+# ที่ user เห็นจริงบนจอเสมอถ้า selector ที่ LLM เดามากว้างเกินไปโดยไม่ตั้งใจไปโดน node ที่ซ่อนอยู่
+# — กรองเฉพาะ element ที่ "เห็นได้จริง" ก่อนนับ (มี layout size + display ไม่ใช่ none +
+# visibility ไม่ใช่ hidden) เกณฑ์เดียวกับที่ get_snapshot() ใช้ตัดสินว่า element ไหน "เห็นได้"
+# (ดู hasSize/notDisplayNone ด้านบนของไฟล์นี้) ยกเว้นไม่ต้องรองรับ hover-to-reveal
+# (opacity:0/visibility:hidden ที่ยัง "นับได้" สำหรับปุ่มคลิก — W47) เพราะจุดประสงค์ต่างกัน: ที่
+# นี่นับ "รายการที่มีอยู่จริงตามที่ user มองเห็น" ไม่ใช่หา element ที่คลิกได้แม้จะซ่อนชั่วคราว
 _COUNT_ELEMENTS_JS = r"""
 (selector) => {
   try {
-    return document.querySelectorAll(selector).length;
+    let count = 0;
+    for (const el of document.querySelectorAll(selector)) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      count++;
+    }
+    return count;
   } catch (e) {
     return 0;
   }
@@ -804,6 +836,12 @@ def _lookup_annotation(query: str, candidates: list[str]) -> tuple[str, bool]:
     return f"[พบ '{match}' ใกล้เคียงกับคำค้น '{query}' ที่คุณพิมพ์ — ไม่ตรงกันเป๊ะ ตรวจสอบก่อนใช้คำตอบ]\n\n", True
 
 
+# W64[7.2]: เวลารอก่อนลอง extract_table_data() lookup ซ้ำรอบเดียวตอนไม่เจอ query ในรอบแรก —
+# สั้นพอที่จะไม่ทำให้ query ที่หาไม่เจอจริงๆ (ไม่ใช่แค่ AJAX ยังโหลดไม่เสร็จ) ช้าเกินจำเป็น แต่
+# นานพอให้ table reload ทั่วไปที่เจอจริง (OrangeHRM ฯลฯ) เสร็จทัน
+_LOOKUP_RETRY_WAIT_SEC = 2.0
+
+
 async def extract_table_data(page: Page, table_hint: str, query: str = "") -> str:
     """Lane 2: ดึงตาราง/list ที่ตรงกับ table_hint (CSS selector) มาแปลงเป็น markdown
     table (ถ้าเป็น <table>) หรือ JSON list กระชับ (ถ้าเป็น container อื่นที่มี item ลูก
@@ -825,7 +863,25 @@ async def extract_table_data(page: Page, table_hint: str, query: str = "") -> st
     บนหน้าจริงๆ (get_snapshot() ไม่เคยโชว์โครงสร้างตาราง/class name ให้ LLM เห็นเลย)
 
     ไม่พบ element/ตาราง/list ใดๆ ในทุก frame เลย (แม้ fallback แล้ว) คืนข้อความ "[FAIL] ..."
-    อธิบายเหตุผล (ไม่ throw ออกไป เหมือน action อื่นๆ ในระบบ — ดู actions.py::ActionResult)"""
+    อธิบายเหตุผล (ไม่ throw ออกไป เหมือน action อื่นๆ ในระบบ — ดู actions.py::ActionResult)
+
+    W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2, บั๊กจริง: agent ค้นหาแถวที่
+    เพิ่งบันทึกไปทันทีหลัง Save โดยไม่รอ AJAX table reload ให้เสร็จก่อน อ่านได้ตารางเก่า/ว่าง
+    เปล่า แล้วเข้าใจผิดว่าบันทึกไม่สำเร็จ — เมื่อมี query (กำลังหาค่าเฉพาะเจาะจง) และรอบแรกหา
+    ไม่เจอเลย ให้รอสั้นๆ (_LOOKUP_RETRY_WAIT_SEC) แล้วลองสแกนใหม่อีกครั้งก่อนยอม [FAIL] จริง —
+    ไม่กระทบ happy path เลย (เพิ่ม latency เฉพาะตอนหาไม่เจอรอบแรกเท่านั้น) และไม่กระทบ query
+    ว่างเปล่า (ขอสรุปทั้งตาราง ไม่ใช่ lookup ค่าเฉพาะ)"""
+    result = await _extract_table_data_once(page, table_hint, query)
+    if query and result.startswith("[FAIL]"):
+        await asyncio.sleep(_LOOKUP_RETRY_WAIT_SEC)
+        result = await _extract_table_data_once(page, table_hint, query)
+    return result
+
+
+async def _extract_table_data_once(page: Page, table_hint: str, query: str) -> str:
+    """W64[7.2]: สแกนจริง 1 รอบ — แยกออกมาจาก extract_table_data() เพื่อให้เรียกซ้ำได้หลัง
+    รอ AJAX reload (ดู docstring ของ extract_table_data ด้านบน) โดยไม่ต้องเขียน loop scan
+    ซ้ำสองที่"""
     main_frame = page.main_frame
     frames = [main_frame] + [f for f in page.frames if f != main_frame]
     for frame in frames:

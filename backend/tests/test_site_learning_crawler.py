@@ -149,6 +149,33 @@ async def test_crawl_site_does_not_revisit_the_same_page_twice(fixture_server):
 
 
 @pytest.mark.asyncio
+async def test_crawl_site_records_parent_url_and_arrived_via_for_bfs_pages(fixture_server):
+    """W66[A] ("Fast-Path Navigation"): เพจที่เจอผ่าน BFS หลัก (nav <a href> ปกติ) ต้องมี
+    parent_url ชี้กลับไปหน้าที่ค้นพบลิงก์นี้จริง และ arrived_via เป็น locator descriptor
+    ที่ resolve กลับมาเจอ element เดิมได้จริง (ไม่ใช่ dict ว่างเปล่า) — start page (root)
+    ต้อง parent_url ว่างเปล่าเสมอตามนิยาม"""
+    with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            manual = await crawl_site(browser, f"{fixture_server}/index.html", max_pages=10)
+            await browser.close()
+
+    by_name_fragment = {p.url.rsplit("/", 1)[-1]: p for p in manual.pages}
+    index_page = by_name_fragment["index.html"]
+    dashboard_page = by_name_fragment["dashboard.html"]
+    products_page = by_name_fragment["products.html"]
+
+    assert index_page.parent_url == ""
+    assert index_page.arrived_via == {}
+
+    assert dashboard_page.parent_url == index_page.url
+    assert dashboard_page.arrived_via.get("accessible_name") == "Dashboard"
+
+    assert products_page.parent_url == index_page.url
+    assert products_page.arrived_via.get("accessible_name") == "Products"
+
+
+@pytest.mark.asyncio
 async def test_crawl_site_respects_max_pages_limit(fixture_server):
     with patch("backend.app.site_learning.crawler.llm.generate_text", _mock_generate_text()):
         async with async_playwright() as p:

@@ -229,15 +229,18 @@ def delete_credentials(domain: str) -> bool:
     return True
 
 
-def find_matching_page(manual: SiteManual, goal: str) -> Optional[PageInfo]:
+def find_matching_page(manual: SiteManual, goal: str, min_score: int = 1) -> Optional[PageInfo]:
     """W21 ("Self-Learned Site Manual Integration"): หาแค่ "หน้าเดียวที่น่าจะตรงกับ goal
     ที่สุด" จาก manual ที่ crawl มาแล้ว ให้ routes.py ใช้ตัดสินใจว่าจะฉีด Strict Guided Plan
     context (ดู llm.py::build_strict_manual_context) หรือไม่ — matching แบบ keyword overlap
     ล้วนๆ (นับจำนวนคำใน goal ที่ยาว >= 3 ตัวอักษรที่ปรากฏใน name/description/breadcrumb ของ
     แต่ละหน้า) ไม่ใช้ embedding/ChromaDB เลย เพราะ manual นี้เป็น JSON แบนบนดิสก์อยู่แล้ว (ดู
     docstring หัวไฟล์) มีจำนวนหน้าต่อเว็บไซต์น้อยพอที่ keyword scoring ตรงไปตรงมาก็เพียงพอ ไม่
-    คุ้มเพิ่ม dependency ใหม่ — คืน None ถ้าไม่มีหน้าไหนได้คะแนนเลย (ไม่มีคำไหนตรงกันแม้แต่คำ
-    เดียว) ให้ caller fallback ไป dynamic planner ตามปกติ"""
+    คุ้มเพิ่ม dependency ใหม่ — คืน None ถ้าไม่มีหน้าไหนได้คะแนนถึง min_score (default 1 =
+    พฤติกรรมเดิมทุกประการ ไม่กระทบ caller เดิม) ให้ caller fallback ไป dynamic planner ตามปกติ
+    W67: เพิ่ม min_score ให้ caller ที่ต้องการความมั่นใจสูงกว่า (เช่น nav-fastpath auto-decide
+    ที่ลงมือคลิกจริงตาม match ไม่ใช่แค่โชว์ context ให้ LLM อ่านเฉยๆ) ปรับ threshold เข้มขึ้นได้
+    โดยไม่กระทบ caller เดิมที่ยังใช้ default 1"""
     goal_tokens = {t for t in re.split(r"[^\w]+", (goal or "").lower()) if len(t) >= 3}
     if not goal_tokens:
         return None
@@ -250,6 +253,8 @@ def find_matching_page(manual: SiteManual, goal: str) -> Optional[PageInfo]:
         if score > best_score:
             best_score = score
             best_page = page
+    if best_score < min_score:
+        return None
     return best_page
 
 
@@ -298,6 +303,17 @@ def build_strict_manual_context(page: PageInfo) -> str:
             label = b.text or b.aria_label or b.title or b.icon_hint or "(ไม่มี label)"
             selector_hint = b.selector or b.xpath or "(ไม่มี selector บันทึกไว้)"
             lines.append(f"  - {label} — {selector_hint}")
+    # W65[1] ("Required-Field Validation"): FormFieldInfo.required ถูก crawl เก็บไว้ตั้งแต่
+    # extractor.py::_EXTRACT_JS แล้ว (form field's HTML `required`/`aria-required`) แต่ก่อน
+    # หน้านี้ไม่เคยมีใครอ่านเลย (dead data) — เพิ่ม block เดียวกับ buttons ด้านบนให้ planner
+    # เห็นล่วงหน้าว่าหน้านี้มีฟิลด์อะไรบ้าง/ฟิลด์ไหนบังคับ ก่อนจะร่างแผน (ดู _PLAN_PROMPT_
+    # TEMPLATE ใน llm.py ที่ใช้ข้อมูลนี้ตัดสินใจว่าต้องถาม user หาค่าที่ขาดก่อนไหม)
+    if page.forms:
+        lines.append("Recorded form fields on this page (label — required?):")
+        for f in page.forms[:20]:
+            field_label = f.label or f.field_name or f.placeholder or "(ไม่มี label)"
+            req_note = " *จำเป็น" if f.required else ""
+            lines.append(f"  - {field_label}{req_note}")
     return "\n".join(lines)
 
 

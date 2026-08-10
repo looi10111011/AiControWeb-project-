@@ -1049,9 +1049,8 @@ def test_close_session_with_correct_owner_token_succeeds(client):
     assert close_resp.status_code == 200
 
 
-def test_close_session_without_owner_token_still_works_when_none_was_ever_set(client):
-    """sanity: caller เดิมที่ไม่รู้จัก field นี้เลย (ไม่เคยส่ง session_owner_token ตั้งแต่
-    สร้าง session) ยังปิด session ได้ปกติทุกประการ — backward-compat"""
+def test_close_session_without_owner_token_is_rejected(client):
+    """The HTTP layer must not allow a caller to omit the session secret."""
     with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
         MockOrchestrator.return_value.run_task = AsyncMock(return_value=_FAKE_RESULT)
         resp = client.post(
@@ -1060,7 +1059,7 @@ def test_close_session_without_owner_token_still_works_when_none_was_ever_set(cl
         _poll_until(client, resp.json()["task_id"])
 
     close_resp = client.post("/sessions/sess-no-token/close")
-    assert close_resp.status_code == 200
+    assert close_resp.status_code == 403
 
 
 def test_create_task_with_mismatched_session_owner_token_fails_the_task(client):
@@ -1211,13 +1210,13 @@ def test_generate_plan_with_existing_session_perceives_that_page(client):
 
         resp1 = client.post(
             "/api/execute_plan",
-            json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-plan"},
+            json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-plan", "session_owner_token": "plan-owner"},
         )
         _poll_until(client, resp1.json()["task_id"])
 
         resp2 = client.post(
             "/api/generate_plan",
-            json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-plan"},
+            json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-plan", "session_owner_token": "plan-owner"},
         )
 
     assert resp2.status_code == 200
@@ -1280,12 +1279,12 @@ def test_execute_plan_reuses_session_page_across_calls(client):
 
         resp1 = client.post(
             "/api/execute_plan",
-            json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-exec"},
+            json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-exec", "session_owner_token": "exec-owner"},
         )
         _poll_until(client, resp1.json()["task_id"])
         resp2 = client.post(
             "/api/execute_plan",
-            json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-exec"},
+            json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-exec", "session_owner_token": "exec-owner"},
         )
         _poll_until(client, resp2.json()["task_id"])
 
@@ -1406,7 +1405,7 @@ def test_execute_plan_fastpath_reuses_session_page(client, monkeypatch):
         mock_run_fastpath = AsyncMock(return_value=_FASTPATH_RESULT)
         MockOrchestrator.return_value.run_fastpath = mock_run_fastpath
 
-        body = {**_FASTPATH_BODY, "session_id": "sess-fastpath"}
+        body = {**_FASTPATH_BODY, "session_id": "sess-fastpath", "session_owner_token": "fastpath-owner"}
         resp = client.post("/api/execute_plan", json=body)
         _poll_until(client, resp.json()["task_id"])
 

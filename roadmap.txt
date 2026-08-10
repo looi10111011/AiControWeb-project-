@@ -3326,6 +3326,417 @@
            fail เดิมที่ยิง Anthropic API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง
            dev นี้ (ไม่มี regression ใหม่จากงานชุดนี้)
 
+  [x] W63  ticket ภายนอก (สไตล์เดียวกับ Task/W21.txt เดิม — "Principal Software
+           Engineer & Browser Agent Architect" header) ขอ 6 fix: strict form
+           input (2.2), search mandatory trigger (3.1), accurate record
+           counting (3.3), recruitment eye icon selector (4.1), save
+           confirmation/toast wait (7.1), strict table assertion (7.2) —
+           เสร็จแล้ว (2026-08-10)
+
+           ticket เสนอ hardcode selector เฉพาะ OrangeHRM ตรงๆ (เช่น
+           `.oxd-table-card`, `.oxd-toast--success`, `.bi-eye-fill`,
+           `.oxd-table-body`) เข้าไปใน core logic — ตรวจสอบก่อนแล้วพบว่า
+           ระบบนี้เป็น LLM-driven ล้วนๆ ไม่มี "Form Handler"/"Table Executor"/
+           "Assertion Engine" เป็น class จริงตามที่ ticket เรียก และ pattern
+           ที่ทีมนี้ใช้มาตลอด (ดู W21 ด้านบน ที่ ticket เดิมก็เสนอ selector
+           เดียวกันนี้มาแล้วครั้งหนึ่ง) คือ generalize เป็น heuristic/regex/
+           fallback-list ในชั้น perception/action แทนที่จะ hardcode ตรงๆ —
+           ทำตาม pattern เดิมทั้งหมด ไม่ hardcode OrangeHRM class ใหม่เข้า
+           core ไฟล์เลยสักจุด:
+
+           (2.2) ตรวจสอบแล้วว่า architecture เดิมเป็น per-field action อยู่
+           แล้ว (LLM สั่ง browser_action ทีละ field เท่านั้น ไม่มี code path
+           "fill ทุกช่องที่เจอ" อยู่เลย) — เพิ่มกติกา W63[2.2] ใน llm.py
+           SYSTEM_PROMPT ห้าม fill/select/check field ที่ goal ไม่ได้ระบุ
+           ชัดเจน แม้ฟอร์มจะบังคับกรอกครบก็ให้ finish_task(false) ถามแทนเดา
+
+           (3.1) ตรวจสอบแล้วว่า W20 "No Redundant Search Submission" +
+           wait_stable() ครอบคลุมอยู่แล้ว — เพิ่มกติกา W63[3.1] เสริมชัดเจน
+           ห้ามอ่าน/นับตารางก่อนกด Search จริง
+
+           (3.3) บั๊กจริงที่เจอ: perception.py::count_elements() เดิมนับ
+           document.querySelectorAll(selector).length ตรงๆ ไม่กรอง
+           visibility เลย ทำให้นับ dropdown option/แถวที่ display:none/
+           visibility:hidden รวมเข้าไปด้วย ไม่ตรงกับที่ user เห็นจริง — แก้
+           _COUNT_ELEMENTS_JS ให้กรองเฉพาะ element ที่มี layout size +
+           display ไม่ใช่ none + visibility ไม่ใช่ hidden ก่อนนับ (generic
+           ทุกเว็บ ไม่ผูก OrangeHRM)
+
+           (4.1) ตรวจสอบแล้วว่า perception.py::ICON_CLASS_LABEL_RULES (W21)
+           มี regex \\beye\\b ที่ match ".bi-eye-fill" อยู่แล้ว (hyphen เป็น
+           word boundary) — ไม่ต้องแก้อะไรเพิ่ม
+
+           (7.1) เดิมมีแค่คำแนะนำใน SYSTEM_PROMPT (W19 "Task Completion
+           Verifier") ให้ LLM "มองหา" toast เองตอน finish_task ซึ่งอาจสายไป
+           เพราะ toast auto-dismiss — เพิ่ม actions.py:
+           _SUCCESS_TOAST_SELECTOR (role=status/alert + class ที่มีคำว่า
+           toast/snackbar/notification เป็น pattern มาตรฐานทั่วไป, OrangeHRM
+           .oxd-toast เป็นแค่ 1 ตัวในลิสต์ fallback) + _detect_success_toast()
+           เรียกทันทีหลัง click ที่ label ตรง Save/Submit/Confirm/บันทึก/
+           ยืนยัน (ผูกกับ _dispatch_click_with_retry() จุดเดียวกับที่เช็ค
+           confirmation modal อยู่แล้ว — คนละ elif กัน) แนบผลลัพธ์ต่อท้าย
+           message ให้ LLM เห็นทันที + เพิ่มกติกา W63[7.1] อธิบายวิธีตีความ
+
+           (7.2) เพิ่ม verify_text parameter (optional) เข้า
+           llm.py::_FINISH_TASK_PARAMS (ใช้ร่วมกันทั้ง 3 provider) ให้ LLM
+           ระบุข้อความที่ควรเห็นในตารางถ้า success=true + orchestrator.py:
+           _TABLE_BODY_SELECTOR (tbody/[role=rowgroup]/class ที่มีคำว่า
+           table+body มาตรฐาน, .oxd-table-body เป็นแค่ 1 ตัวในลิสต์) +
+           _scan_created_item_in_table() ผูกเข้า finish_task guard chain
+           เดียวกับ deletion-verification guard (W22) เป๊ะ: nudge ให้ลองใหม่
+           สูงสุด _MAX_PREMATURE_TABLE_VERIFY_RETRIES ครั้งก่อน แล้วบังคับ
+           ความจริงลง final result (TRUTH-BASED RESPONSE GENERATION) ด้วย
+           ข้อความ "VERIFICATION_FAILED: Item not found in results table."
+           ตรงตามสเปค ticket ถ้ายัง retry ไม่เจอ
+
+           รันเต็มชุด backend/tests/test_orchestrator.py +
+           test_actions.py + test_perception.py + test_llm.py: ผ่านหมด
+           (268+150 เคส รวม unit test ใหม่ 20+ เคสสำหรับ 3 จุดที่แก้โค้ดจริง)
+           เหลือ fail เดิม 8 เคสใน test_orchestrator.py ที่ยิง Anthropic API
+           จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ (baseline เดิมทุกประการ
+           ยืนยันด้วย git stash diff ก่อน/หลังแก้ ไม่มี regression ใหม่) —
+           test_api.py มี 1 เคส (test_create_task_with_session_id_reuses_
+           same_page_across_calls) fail อยู่ก่อนแล้วเช่นกัน แต่เป็นไฟล์ที่ไม่
+           เกี่ยวกับงานชุดนี้เลย (ไม่ได้แตะ routes.py/session_registry.py/
+           task_manager.py) — ไม่ได้ไล่แก้ต่อในรอบนี้ (out of scope)
+
+  [x] W64  ticket ภายนอกรอบสอง (สไตล์เดียวกับ W63 — "Principal Software Engineer
+           & Browser Automation Architect" header, มาจาก execution log 2 บั๊กจริง)
+           ขอ 2 fix: filter order & false completion (7.1), panic retry loop จาก
+           add-action idempotency (7.2) — เสร็จแล้ว (2026-08-10)
+
+           (7.1a, "Filter Order") บั๊ก: agent เลือก Role=ESS ใน filter dropdown
+           แล้วคลิก Edit บนตารางทันทีก่อนกด Search — แถวที่ Edit จึงเป็นแถวเก่า
+           ก่อนกรอง ไม่ใช่แถวที่ตรงเงื่อนไขจริง — เพิ่ม hard guard ระดับโค้ดใน
+           orchestrator.py: filter_dirty_since_search (True แค่ 1 step ทันทีหลัง
+           fill/select สำเร็จ, reset เป็น False หลัง action ถัดไปเสมอไม่ว่าจะเป็น
+           อะไร — scope แคบสุดเท่าที่จำเป็นกัน false-positive กับ edit เดี่ยวที่ไม่
+           เกี่ยวกับ filter เลย) + _ROW_ACTION_LABEL_RE (Edit/View/Delete/Download,
+           reuse label ที่ ICON_CLASS_LABEL_RULES ของ perception.py W21 แปะให้
+           อยู่แล้ว) บล็อกคลิก row-action ถ้า filter_dirty_since_search=True ก่อน
+           dispatch จริง พร้อม nudge ให้กด Search ก่อน
+
+           (7.1b, "False Completion" — ต่อยอด W22): agent เห็น 1 แถว ESS เหลืออยู่
+           ในตารางที่กรองแล้วแต่ไม่กด Edit ให้ครบ ดันเรียก finish_task(success=
+           true) — สาเหตุ/สัญญาณเดียวกับ deletion false-completion (W22) เป๊ะ
+           (แถวที่ตรงเงื่อนไข filter เดิมต้องเหลือ 0 ถึงจะถือว่าเสร็จ ไม่ว่าจะเป็น
+           งานลบหรือแก้ไข) — เพิ่ม _is_edit_all_intent_goal()/
+           _EDIT_ALL_INTENT_KEYWORDS ("เปลี่ยนทุก"/"edit all"/ฯลฯ) OR เข้ากับ
+           _is_deletion_intent_goal() เดิมเป็นเงื่อนไขเปิดใช้
+           _scan_remaining_target_records() (reuse ฟังก์ชันเดิมของ W22 ทั้งดุ้น
+           ไม่ต้องแก้อะไรเลย) + แยกคำแนะนำ/ข้อความ nudge/forced-failure ตาม intent
+           จริง (_premature_mutation_action_hint() — deletion พูด "กลับไปลบ", edit
+           พูด "กลับไปแก้ไข" ไม่งั้นข้อความจะผิดความจริงถ้า goal เป็นงานแก้ไข)
+
+           (7.2a, "AJAX Race") บั๊ก: agent บันทึกพนักงานใหม่สำเร็จจริง (มี toast
+           ยืนยัน) แล้วค้นหาเพื่อ verify ทันทีโดยไม่รอ AJAX table reload ให้เสร็จ
+           ก่อน อ่านได้ตารางเก่า/ว่างเปล่า เข้าใจผิดว่าบันทึกไม่สำเร็จ — แก้ที่
+           perception.py::extract_table_data() ตรงๆ: แยก scan จริงออกเป็น
+           _extract_table_data_once() แล้วให้ extract_table_data() เรียกซ้ำอีก 1
+           ครั้งหลังรอสั้นๆ (_LOOKUP_RETRY_WAIT_SEC=2s) เฉพาะตอนมี query (lookup ค่า
+           เฉพาะเจาะจง) และรอบแรกหาไม่เจอเลย — ไม่กระทบ happy path/query ว่างเปล่า
+           เลย (เพิ่ม latency เฉพาะตอนหาไม่เจอรอบแรกเท่านั้น)
+
+           (7.2b, "Idempotency Lock") บั๊กต่อเนื่อง: แม้จะรอ AJAX แล้วยังหาไม่เจอ
+           จริงๆ (เช่น search/filter/pagination ผิด) — agent เดิม "ตื่นตระหนก" กด
+           Reset แล้วกรอกฟอร์ม Add Employee ใหม่ทั้งหมดซ้ำอีกรอบ จนเกิด error
+           ข้อมูลซ้ำ — เพิ่ม actions.py: ActionResult.toast_confirmed (field ใหม่
+           default False, ตั้ง True เฉพาะตอน _detect_success_toast() ของ W63[7.1]
+           เจอ toast จริง — type-safe กว่า string-sniffing ข้อความ toast ข้าม 2
+           ไฟล์) + แก้ execute()'s DEFAULT_NEEDS_CONFIRMATION branch ที่เดิม re-wrap
+           ActionResult ทิ้ง locator_descriptor/toast_confirmed ไปเงียบๆ (บั๊กเดิม
+           ที่ไม่เคยมีใครสังเกต เจอระหว่างเขียน field ใหม่นี้ แก้ไปด้วยเลย) +
+           orchestrator.py: any_toast_confirmed_this_task (True ตลอด task ตั้งแต่
+           ครั้งแรกที่เจอ toast) ให้ table-verify guard เดิม (W63[7.2]) "ผ่อนปรน"
+           เมื่อหา verify_text ไม่เจอในตารางแม้ retry ครบแล้ว: มี toast evidence ->
+           ไม่ force success=False, ใช้ข้อความ "บันทึกข้อมูลเรียบร้อยแล้ว แต่ไม่พบ
+           รายการในตารางการค้นหา" ตรงสเปคแทน VERIFICATION_FAILED (ไม่กระทบ
+           พฤติกรรมเดิมเลยถ้าไม่มี toast evidence — ยัง VERIFICATION_FAILED เหมือน
+           เดิมทุกประการ) + nudge message ระหว่าง retry ก็เตือนห้ามกด Reset/กรอก
+           ฟอร์มใหม่ซ้ำด้วยถ้ามี toast evidence แล้ว
+
+           เพิ่ม SYSTEM_PROMPT rule W64[7.1]/W64[7.2] ใน llm.py เสริมทั้งสองเรื่อง
+           เป็น prose (backup ให้ deterministic guard ด้านบน ไม่ใช่แหล่งเดียวที่
+           พึ่งได้)
+
+           รันเต็มชุด backend/tests/test_orchestrator.py +
+           test_actions.py + test_perception.py + test_llm.py: 429 ผ่าน
+           (รวม unit/integration test ใหม่ 14 เคสสำหรับ 4 กลไกที่แก้โค้ดจริง)
+           เหลือ fail เดิม 8 เคสที่ยิง Anthropic API จริง (baseline เดิมเป๊ะ ไม่มี
+           regression ใหม่)
+
+  [x] W65  user ขอ upgrade เพิ่ม 4 อย่างที่คุยสรุปข้อดี-ข้อเสียกันไปก่อน (State
+           Management, Parameter Mapping/Slot Filling, Dynamic Wait, Error
+           Handling, Planner Pipeline — 5 หัวข้อ) เลือกทำ 3 ก่อน (required-field
+           validation, error passthrough, vault expansion) แล้วค่อยทำงานสร้าง
+           output (structured plan) — ผ่าน EnterPlanMode วางแผนก่อนเขียนโค้ดจริง
+           (spawn 3 Explore agent คู่ขนานสำรวจโค้ดจริงก่อนร่างแผน) — เสร็จแล้ว
+           (2026-08-10)
+
+           (1, "Required-Field Validation") FormFieldInfo.required ถูก crawl
+           เก็บไว้ตั้งแต่ extractor.py มานานแล้วแต่เป็น dead data ไม่มีใครอ่านเลย —
+           เพิ่ม perception.py::_COLLECT_JS marker "[required]" (มิเรอร์ pattern
+           "[disabled]" เป๊ะ, อ่านจาก HTML required/aria-required attribute) +
+           site_learning/storage.py::build_strict_manual_context() เพิ่ม block
+           "Recorded form fields on this page" (label — required?) ต่อจาก block
+           buttons เดิม + llm.py SYSTEM_PROMPT W65[1] ขยายกติกาที่เคย hardcode
+           เฉพาะ Change Password (W20 "Current Password ≠ New Password") ให้
+           ครอบคลุมทุกฟิลด์ที่มี marker นี้: ห้ามเดา/ปล่อยว่างแล้ว submit ต้อง
+           finish_task(false) ถามก่อนเสมอ + _PLAN_PROMPT_TEMPLATE เพิ่มกติกาให้
+           ขั้นตอนสุดท้ายของแผนเป็นการถามค่าที่ขาดถ้ามีฟิลด์ required ไม่มีค่าใน goal
+
+           (2, "Error Passthrough") hard-stop guard หลัง fill/click (orchestrator.py,
+           _should_check_validation_error_after_action) ทำงานถูกต้องอยู่แล้ว (break
+           ทันทีพร้อม error จริง) แต่ guard ก่อน finish_task ยังวน nudge/retry LLM
+           ก่อนเสมอแม้ error จะเป็นประเภทที่ retry ไปก็ไม่มีทางหาย (login ผิด/ข้อมูลซ้ำ)
+           — เพิ่ม _FATAL_VALIDATION_ERROR_KEYWORDS + _is_fatal_validation_error()
+           แยก error 2 กลุ่ม: fatal ข้าม nudge-retry loop ไปเลย บังคับ success=False
+           + ข้อความจริงทันที (reuse completion_verification tag
+           "TASK_FAILED_USER_INPUT_ERROR" เดิมจาก hard-stop guard) ส่วน error อื่น
+           ยังผ่าน retry loop เดิมทุกประการ (backward compatible) — ต้องแก้เทสต์เดิม
+           1 ตัวที่ใช้ "Employee Name already exists" เป็นตัวอย่าง error ทั่วไป (ตอนนี้
+           ถูกจัดเป็น fatal แล้วตามกติกาใหม่) เปลี่ยนไปใช้ error อื่นที่ไม่ fatal แทน
+
+           (3, "Vault Expansion") เลือก MVP ต่ำความเสี่ยง: reuse credential login ที่
+           บันทึกไว้ต่อโดเมนอยู่แล้ว (site_learning/storage.py, single username+password
+           pair) เป็น "current password" ตรงๆ แทนที่จะสร้าง multi-named-secret store
+           ใหม่ (เปลี่ยน schema credentials.json — เสี่ยง/effort สูงเกินจำเป็น) — เพิ่ม
+           actions.py::fill_secret() (มิเรอร์ fill() แต่รับ secret_key แทน text, ค่า
+           จริงไม่หลุดเข้า ActionResult.message เด็ดขาด) + branch ใหม่ใน execute() +
+           llm.py tool schema เพิ่ม type "fill_secret" + property "secret" (enum
+           ["current_password"] เท่านั้น) + SYSTEM_PROMPT W65[3] สั่งให้ลอง fill_secret
+           ก่อนถาม user เสมอสำหรับช่อง Current Password ในฟอร์มเปลี่ยนรหัสผ่าน
+
+           บั๊กที่เจอระหว่างทำ (3): import site_learning.storage ระดับ module ใน
+           actions.py ทำให้เกิด circular import จริง (site_learning/__init__.py ->
+           crawler.py -> orchestrator.py -> fastpath_executor.py -> กลับมา actions.py
+           ที่ยังโหลดไม่เสร็จ) — แก้ด้วย lazy import ข้างในฟังก์ชัน fill_secret() แทน
+           (pattern เดียวกับที่ orchestrator.py::_maybe_auto_login() ใช้อยู่แล้วสำหรับ
+           ปัญหาเดียวกันเป๊ะ พบเจอ pattern นี้จากการสำรวจโค้ดก่อนแก้)
+
+           (4, "Structured Page-Grouped Plan Output") ไม่รื้อ pipeline เดิม (backend
+           คืน prose string เดียว, frontend parse ด้วย regex "N. ...", ไม่ทำ structured
+           JSON plan ตามที่ประเมินความเสี่ยงไว้ก่อนหน้า) — แก้แค่ _PLAN_PROMPT_TEMPLATE
+           เพิ่มกติกาจัดรูปแบบให้แต่ละเลขข้อ = 1 หน้า รวม action ทั้งหมดของหน้านั้นไว้
+           บรรทัดเดียว คั่นด้วยจุลภาค ต่อท้าย "*จำเป็น" ให้ field ที่ required (ใช้ข้อมูล
+           forms ที่เพิ่งเปิดใช้จากข้อ 1) — เข้ากันได้ 100% กับ frontend parser/
+           completed_plan_step เดิม ไม่ต้องแก้ backend schema/frontend เลย
+
+           รันเต็มชุด backend/tests/test_orchestrator.py + test_actions.py +
+           test_perception.py + test_llm.py + test_site_learning_storage.py +
+           test_orchestrator_auto_login.py ทุกครั้งหลังแก้แต่ละงาน: 481 ผ่าน (รวม
+           unit/integration test ใหม่ ~25 เคส) เหลือ fail เดิม 8 เคสที่ยิง Anthropic
+           API จริงด้วย key ที่ใช้ไม่ได้ในเครื่อง dev นี้ (baseline เดิมเป๊ะ ไม่มี
+           regression ใหม่) — ไม่สามารถ demo end-to-end ผ่าน browser จริงได้ในรอบนี้
+           เพราะ API key ใช้งานไม่ได้ในเครื่อง verify ได้แค่ระดับ unit/integration
+           test ที่ mock LLM response เท่านั้น
+
+  [x] W66  user เสนอไอเดีย "ให้ agent เดินตาม site map ที่เรียนรู้ไว้แล้วสำหรับส่วน
+           นำทาง (ไม่ต้องเรียก LLM คิดใหม่ทุก step ประหยัด token) ส่วนเนื้อหาที่ต้อง
+           คิดจริงให้ LLM คิดตามปกติ ถ้าเว็บไหนไม่มี map ก็ fallback ไป LLM ทั้งหมด" —
+           วางแผนผ่าน EnterPlanMode (spawn 2 รอบ Explore agent คู่ขนานสำรวจโค้ดจริง
+           ก่อนร่างแผนทั้งสองรอบ) แบ่งเป็น 5 ชิ้นงาน A-E เสนอให้ user เลือก scope ผ่าน
+           AskUserQuestion — user เลือก "A+B+C แบบ manual trigger" (เก็บ D: auto-decide
+           เมื่อไหร่ควรใช้ และ E: ต่อสาย routes.py/frontend อัตโนมัติ ไว้รอบหน้า) —
+           เสร็จแล้ว (2026-08-10)
+
+           ก่อนแก้พบรากปัญหาจริง: ไม่มี "เส้นทางเดิน" ให้ agent เดินเลยสักเว็บเดียว —
+           schema.py::PageInfo.menu_path ไม่เคยถูกสร้างจริง (BFS crawl ไม่เคยพก
+           "เส้นทางที่เดินมา" ติดไปกับ URL ในคิวเลย, fallback เป็นแค่ [page.name] เสมอ)
+           และไม่มี page-to-page edge/graph เก็บไว้ที่ไหนเลยทั้งระบบ (แม้ crawl จะคลิก
+           ผ่านจริงและรู้ URL ก่อน/หลังคลิก แต่ข้อมูลนี้ถูกทิ้งทันที ไม่ persist)
+
+           (A, "แก้ crawler ให้จับเส้นทางจริง") ใช้ parent-pointer tree แทน graph เต็ม
+           รูปแบบ (BFS ค้นพบแต่ละหน้าครั้งแรกจากหน้าเดียวเสมอตามธรรมชาติ พอแล้ว) — เพิ่ม
+           PageInfo.parent_url/arrived_via (schema.py, arrived_via คือ locator descriptor
+           shape เดียวกับ dom_locator.py::compute_locator_descriptor()) + เปลี่ยน BFS
+           queue (crawler.py) จาก list[str] เป็น list[tuple[url, parent_url,
+           arrived_via]] — ตอน queue ลิงก์ใหม่คำนวณ descriptor สดๆ ด้วย
+           compute_locator_descriptor() (reuse ของเดิมจาก dom_locator.py ตรงๆ ไม่ต้อง
+           เขียนใหม่) ต้องเพิ่ม selector ให้ nav_links ก่อน (extractor.py — เดิมมีแค่
+           {text, href, menu_path} ไม่มี selector ให้ query element กลับมาสดๆ ได้เลย
+           — reuse computeSelector() ตัวเดียวกับที่ buttons/forms ใช้อยู่แล้ว) — ขอบเขต
+           v1 จำกัดเฉพาะเส้นทาง BFS หลัก (ไม่รวม DFS-click/login flow — หน้าที่มาจาก
+           ทางนั้นมี parent_url/arrived_via ว่างเปล่าตามปกติของ PageInfo เดิม
+           nav-step builder จะ fail-safe คืน None ให้เอง ไม่ throw)
+
+           (B, "locator descriptor สำหรับปุ่ม navigation") ครอบคลุมอยู่ในงาน A แล้ว
+           ทั้งหมด (เรียก compute_locator_descriptor() ตอน queue ลิงก์ผ่าน BFS) — ไม่ต้อง
+           แก้ dom_locator.py เลย ไม่ขยาย ButtonInfo ทั้งหมด (ปุ่มที่ไม่ใช่ nav ยังใช้
+           selector/xpath เดิมพอ)
+
+           (C, "Navigation-replay executor", manual trigger) เพิ่ม
+           fastpath_executor.py::build_navigation_steps() (เดิน parent_url chain ย้อน
+           จาก target ถึง root แล้วกลับด้าน ประกอบเป็น step list) + execute_navigation()
+           (เรียก execute_template() เดิมตรงๆ ด้วย steps ที่สร้างขึ้น — step schema ตรง
+           กับ _TEMPLATE_STEP_SCHEMA เดิมเป๊ะ ไม่ต้องสร้าง executor ใหม่เลย) — ตั้งใจ
+           run_task_fallback=None เสมอ (กัน recursive call เพราะถูกเรียกจากภายใน
+           run_task() เอง) — เพิ่ม Orchestrator.run_task(nav_target_page_query=None)
+           parameter ใหม่ (opt-in, default ไม่กระทบพฤติกรรมเดิมเลย) วางไว้หลัง
+           auto-login เสมอ (ต้อง login ก่อนถึงจะเห็นเมนูที่ต้อง auth) — สำเร็จ ก็ปล่อยให้
+           loop ปกติทำงานต่อจากหน้าที่เดินมาถึง — ล้มเหลว/ไม่มี manual/ไม่มี nav path ก็
+           goto กลับ url เดิมแล้วทำงานปกติต่อ (ปลอดภัย ไม่แย่กว่าเดิม)
+
+           บั๊กที่เจอระหว่างทำ: (1) import site_learning.storage/schema ระดับ module ใน
+           fastpath_executor.py/crawler.py จะ circular import ทันที (สายเดิมที่เจอตั้งแต่
+           W65[3]: site_learning/__init__.py -> crawler.py -> orchestrator.py ->
+           fastpath_executor.py) — แก้ด้วย lazy import (orchestrator.py) และ type hint
+           Any แทนการ import schema.py ตรงๆ (fastpath_executor.py, มีแค่
+           dom_locator.py ที่ import ตรงได้เพราะเป็น leaf module ไม่มี backend.app.core
+           import อื่นเลย) (2) เจอ test เดิม 1 เคส (test_crawl_site_treats_mid_crawl_
+           login_page_as_dead_end) fail อยู่ก่อนแล้ว — ยืนยันด้วย git stash ว่าไม่ใช่
+           regression จากงานนี้ (fail เหมือนกันบน crawler.py ต้นฉบับที่ยังไม่แก้อะไรเลย)
+           น่าจะเป็นบั๊ก W33 page-template dedup ที่จับ session-expired.html ว่าซ้ำกับ
+           login.html (โครงสร้าง input+button เหมือนกันเป๊ะ) — spawn_task แยกไว้แก้ทีหลัง
+           ไม่ปนกับงานนี้
+
+           รันเต็มชุด backend/tests/test_site_learning_crawler.py (72 เคส) +
+           test_fastpath_executor.py + test_orchestrator.py + test_run_fastpath.py +
+           test_site_learning_storage.py + test_actions.py + test_llm.py +
+           test_perception.py ทุกครั้งหลังแก้แต่ละงาน (รวม test ใหม่ ~15 เคส เทสต์
+           parent_url/arrived_via ยิงจริงผ่าน chromium+HTTP fixture server จริง ไม่ mock
+           เพื่อพิสูจน์ descriptor resolve กลับมาเจอ element เดิมได้จริง): ผ่านหมด เหลือ
+           fail เดิม 8 เคสจาก Anthropic API key (baseline เดิมเป๊ะ) + 1 เคสที่รู้อยู่แล้ว
+           ว่าเป็นบั๊กแยกไม่เกี่ยวกับงานนี้ (ดูย่อหน้าบั๊กด้านบน) ไม่มี regression ใหม่
+
+           ไม่ได้ทำรอบนี้ (ตามที่ user เลือก scope): D (auto-decide เมื่อไหร่ควรใช้ nav
+           fastpath จาก goal เอง) และ E (ต่อสาย routes.py/frontend ให้เรียกอัตโนมัติ) —
+           ตอนนี้เรียกได้แค่ผ่าน Orchestrator.run_task(nav_target_page_query=...) ตรงๆ
+           (test/debug) เท่านั้น รอพิสูจน์ความเชื่อถือได้ก่อนค่อยต่อ UI จริงในรอบหน้า
+
+  [x] W67  user พิมพ์ "งั้นทำต่อเลย" — ทำต่อจาก W66 ส่วนที่เหลือ: D (auto-decide) และ
+           E (pipeline integration) วางแผนผ่าน EnterPlanMode (spawn Explore agent สำรวจ
+           routes.py/schemas.py/frontend/storage.py จริงก่อนร่างแผน) ถาม user ผ่าน
+           AskUserQuestion แค่ข้อเดียว (ค่า default ของ enable_nav_fastpath_auto_decide
+           ควรเป็น True หรือ False) — user เลือก "เปิด (True)" — เสร็จแล้ว (2026-08-10)
+
+           ข่าวดีจากการสำรวจ: Orchestrator.run_task() เป็นจุดร่วมเดียวที่ทั้ง POST /tasks
+           และ POST /api/execute_plan เรียกผ่าน (ผ่าน routes.py::_run_with_resolved_
+           browser() ทั้งคู่) — แปลว่า D ทำแค่ในไฟล์เดียว (orchestrator.py) แล้ว E ได้มา
+           ฟรีทันที ไม่ต้องแก้ routes.py/schemas.py/frontend เลย
+
+           (D, auto-decide) เพิ่ม min_score: int = 1 parameter ให้
+           site_learning/storage.py::find_matching_page() (default เดิมทุกประการ ไม่
+           กระทบ caller เดิม 3 จุด — คืน None ถ้า best_score < min_score แทนที่จะคืนหน้าที่
+           match ไม่มั่นใจ) + เพิ่ม config.py::enable_nav_fastpath_auto_decide: bool = True
+           (เปิด default ตามที่ user เลือก) และ nav_fastpath_min_match_score: int = 2
+           (เข้มกว่า default เดิม 1 ของ context-injection use case เพราะ auto-decide ลงมือ
+           คลิกจริงตาม match ไม่ใช่แค่โชว์ context ให้ LLM อ่านเฉยๆ) — แก้ block W66[C]
+           เดิมใน orchestrator.py::run_task(): ถ้าไม่ได้ระบุ nav_target_page_query มาเอง
+           (explicit trigger) แต่ enable_nav_fastpath_auto_decide เปิดอยู่ ใช้ goal ตรงๆ
+           เป็น query แทน (threshold เข้ม 2) — explicit trigger ยังใช้ threshold หลวมเดิม
+           (1) เหมือน W66 ทุกประการ ไม่กระทบพฤติกรรมเดิมของ caller ที่ระบุ query มาเอง
+
+           (E, pipeline integration) ไม่ต้องแก้โค้ดอะไรเพิ่ม — ยืนยันแล้วตามที่คาด: เปิด
+           enable_nav_fastpath_auto_decide แล้วทุก task (ทั้ง POST /tasks แบบ ad-hoc และ
+           POST /api/execute_plan แบบ confirm-plan) ที่มี manual เรียนรู้ไว้แล้วได้
+           ประโยชน์ทันทีผ่าน run_task() เดียวกัน — execute_template() เดิม emit SSE
+           {"kind": "step", ..., "fastpath": True} ต่อ click อยู่แล้ว (ไม่ต้องเพิ่มโค้ด
+           observability ใหม่ ถ้าจะทำ UI indicator ทีหลังก็มี marker ให้ใช้แล้ว)
+
+           บั๊กที่เจอระหว่างสำรวจ (แก้พ่วงไปด้วยเพราะแตะโค้ดจุดนี้อยู่แล้ว):
+           fastpath_executor.py::execute_navigation() เดิม (W66[C]) ไม่เคย
+           goto(root_url) เองเลย สมมติเงียบๆ ว่า page อยู่ตรงนั้นพอดีแล้ว (ใช้ได้เพราะ
+           run_task() เพิ่ง goto(url) มาก่อนหน้านี้เอง แต่ไม่รับประกันว่า url ตรงกับ crawl
+           root เป๊ะเสมอ เช่น auto-login redirect ไปคนละหน้า) — เพิ่ม
+           await goto(page, root_url) + await wait_stable(page) ทันทีหลังคำนวณ root_url
+           (ก่อนเช็ค target-is-root) import goto เพิ่มจาก core/actions.py
+
+           เทสต์ใหม่: storage.py (3 เคส — default min_score เดิม, กรอง score ต่ำกว่า
+           threshold ออก, ผ่านเมื่อถึง threshold), orchestrator.py (3 เคส — auto-decide
+           ใช้ goal เป็น query เมื่อไม่ระบุ query เอง+setting เปิด, ไม่ auto-decide เมื่อ
+           setting ปิด, explicit query ยัง override ด้วย threshold หลวมเดิม),
+           fastpath_executor.py (2 เคส — goto(root_url) ถูกเรียกก่อน execute_template()
+           เสมอ ทั้งกรณีมี click steps และกรณี target เป็น root เอง) — ต้องเพิ่ม
+           patch("...fastpath_executor.goto", AsyncMock()) เข้า autouse fixture เดิมของ
+           test_fastpath_executor.py ด้วย (เทสต์เก่า 3 เคสของ execute_navigation() ใช้
+           MagicMock() เป็น page เฉยๆ ไม่เคย mock goto() มาก่อนเพราะเดิมไม่เคยเรียกเลย)
+
+           รันเต็มชุด test_site_learning_storage.py (32 เคส) + test_fastpath_executor.py
+           (17 เคส) + test_orchestrator.py (176 เคส): ผ่านหมด เหลือ fail เดิม 8 เคสจาก
+           Anthropic API key เท่านั้น (baseline เดิมเป๊ะ) ไม่มี regression ใหม่ — ข้อจำกัด
+           เดิม: ทดสอบ end-to-end จริงผ่าน browser ไม่ได้ในเครื่องนี้ (API key ใช้ไม่ได้)
+
+  [x] W68  user รายงานบั๊กจริงจากการใช้งาน (สั่ง "ไปที่หน้า Admin ค้นหา user ทุกคนที่ไม่ใช่
+           Admin แล้วทำการเปลี่ยน Role ของทุกคนในผลการค้นหาให้เป็น Admin ให้หมด") — agent
+           ตอบ "ไม่พบผู้ใช้ที่มี Role เป็น ESS ในระบบ (ผลการค้นหาแสดง 0 รายการ)... ทุกขั้นตอน
+           เสร็จสมบูรณ์เรียบร้อยแล้ว" ทั้งที่ browser ค้างอยู่หน้าที่โชว์ "(16) Records Found"
+           พร้อมแถว ess_user_... Role=ESS อยู่จริง — user ส่ง screenshot มาถาม ตรวจสอบแล้วแก้
+           เสร็จ (2026-08-10)
+
+           root cause: orchestrator.py::_is_edit_all_intent_goal() (W64[7.1]) เดิมจับ
+           exact-phrase เท่านั้น (_EDIT_ALL_INTENT_KEYWORDS = "แก้ไขทั้งหมด"/"เปลี่ยนทุก"/
+           "แก้ทุก"/"edit all"/"update every"/"change all" ต้องติดกันเป๊ะ) — goal จริงพิมพ์
+           แบบธรรมชาติ "...เปลี่ยน Role ของทุกคน..." คำว่า "เปลี่ยน" กับ "ทุกคน" ถูกคั่นด้วย
+           "Role ของ" ไม่ติดกัน จึงไม่ match เลย — ฟังก์ชันนี้เป็นเงื่อนไขเปิดใช้
+           _scan_remaining_target_records() (guard เดียวที่อ่าน DOM จริงก่อนยอมรับ
+           finish_task(success=true) แทนเชื่อคำอธิบายของ LLM) พอ match พลาด guard ทั้งชุดเลย
+           ไม่ทำงาน ปล่อยให้คำตอบ hallucinate (LLM อ่าน table state ก่อน AJAX search reload
+           เสร็จ เจอ 0 แถวชั่วคราวแล้วเข้าใจผิดว่าไม่มี ESS user จริง) หลุดผ่านไปทั้งดุ้นโดยไม่มี
+           การตรวจทานอะไรเลย — สังเกตได้ว่ามี test เดิมอยู่แล้วที่ยืนยันว่าประโยคนี้ *ไม่ใช่*
+           deletion-intent (test_is_deletion_intent_goal_matches_thai_and_english_keywords,
+           ถูกต้องอยู่แล้ว) แต่ไม่เคยมีใครเทสต์ประโยคเดียวกันนี้กับฝั่ง edit-all-intent เลย จน
+           เจอบั๊กจริงจาก production ก่อน
+
+           แก้โดยเปลี่ยน _is_edit_all_intent_goal() จาก exact-phrase matching เป็น "มี
+           mutation verb (เปลี่ยน/แก้ไข/แก้/ปรับ/update/change/edit/set) และมี bulk marker
+           (ทุก/ทั้งหมด/ให้หมด/all/every/each) อยู่ที่ไหนก็ได้ในข้อความเดียวกัน" แทน ไม่ต้อง
+           ติดกันเป็นวลีเดียวอีกต่อไป (เป็น superset ของ keyword ชุดเดิมทั้งหมด ยัง backward
+           compatible) — ความเสี่ยง false-positive ต่ำเพราะ guard ที่เปิดใช้เอง fail-safe
+           อยู่แล้ว (ไม่เจอ element "(N) Records Found" บนหน้า = ปล่อยผ่านเงียบๆ ไม่ block
+           อะไรเลย ดู _scan_remaining_target_records docstring) — ไม่แตะ
+           _is_deletion_intent_goal() เลย (keyword เดิมเป็นคำเดียว "ลบ"/"delete"/"remove"/
+           "ล้าง" ไม่มีปัญหา adjacency แบบนี้)
+
+           เทสต์ใหม่: test_is_edit_all_intent_goal_matches_natural_phrasing_with_words_
+           between_verb_and_bulk_marker() — reproduce ประโยคจริงจาก user ตรงๆ (ต้องเป็น True
+           ตอนนี้) + เคสอื่นที่คำแยกกันแบบธรรมชาติ + เคสลบล้าง (มี verb แต่ไม่มี bulk marker
+           ต้องเป็น False เหมือนเดิม เพราะเป็นการแก้คนเดียว ไม่ใช่ edit-all) รันเต็มชุด
+           test_orchestrator.py (177 เคส): ผ่านหมด เหลือ fail เดิม 8 เคสจาก Anthropic API
+           key เท่านั้น (baseline เดิมเป๊ะ) ไม่มี regression ใหม่
+
+  [x] W68b user ทดสอบ task เดิมซ้ำหลัง W68 (goal เดียวกันเป๊ะ) — agent ยัง claim "ผลการ
+           ค้นหาแสดง 0 รายการ" ทั้งที่ตารางจริงโชว์ "(16) Records Found" อีกครั้ง แม้
+           _is_edit_all_intent_goal() จะตรงแล้วก็ตาม (ยืนยันด้วย unit test W68) — user ส่ง
+           screenshot รอบสองมาถาม ตรวจสอบเพิ่มเติมแล้วพบสาเหตุที่สอง แก้เสร็จ (2026-08-10)
+
+           ตรวจ environment ก่อน: พบ python process 4 ตัว (2 คู่ run.py+uvicorn — คู่หนึ่งใช้
+           .venv, อีกคู่ใช้ system Python) เริ่มพร้อมกันเวลาเดียว มีแค่ตัวเดียว (system Python,
+           uvicorn) ที่ bind port 8000 จริง (netstat ยืนยัน) — process เริ่มหลัง orchestrator.py
+           ถูกแก้ไขล่าสุด (W68) แล้ว ดังนั้นโค้ด W68 ควรจะ live อยู่แล้วตอนทดสอบ ไม่ใช่ปัญหา
+           server ไม่ restart — ต้องหาสาเหตุอื่นต่อ (แจ้ง user ให้ทราบว่ามี python process
+           ซ้ำซ้อน 4 ตัวด้วย ควรเคลียร์ทิ้งอันที่ไม่ใช้เพื่อกันความสับสนต่อไป)
+
+           root cause ตัวที่สอง: orchestrator.py::_scan_remaining_target_records() (W22, ตัว
+           guard ที่อ่าน DOM จริงก่อนยอมรับ finish_task) เดิมอ่าน "(N) Records Found"/"No
+           Records Found" แค่ครั้งเดียวทันทีตอนถูกเรียก — ถ้าจังหวะนั้นตรงกับช่วงที่ AJAX ของ
+           ปุ่ม Search ยัง update DOM ไม่เสร็จ (wait_stable() ก่อนหน้าใช้ networkidle timeout
+           4s แต่ timeout ก็แค่ "ไม่ถือเป็น fail ร้ายแรง" เดินหน้าต่อได้เลย ไม่รับประกันว่า
+           DOM re-render เสร็จจริงเสมอ) จะอ่านได้ "0"/สถานะเก่าตกค้าง — เท่ากับทั้ง LLM (จาก
+           snapshot) และ guard (จาก DOM สด) เห็น "0" ตรงกันพร้อมกันในจังหวะเดียวกัน ทำให้ guard
+           ที่ควรจะจับ false-completion กลับ "เห็นด้วย" กับคำตอบ hallucinate ไปเองซะงั้น (guard
+           ไม่มีเหตุผลจะ block เพราะ 0<=0 ก็คือเงื่อนไข "เสร็จแล้ว" ของมันเองพอดี) — ต่างจาก
+           W68 (เงื่อนไขเปิดใช้ guard พลาด) ตรงนี้คือ guard เปิดถูกแล้วแต่ตัว guard เองก็โดน
+           race condition หลอกไปด้วย
+
+           แก้โดยแยก _scan_remaining_target_records() เดิมเป็น
+           _scan_remaining_target_records_once() (อ่านครั้งเดียว, logic เดิมทุกประการ) แล้ว
+           ห่อด้วย wrapper ใหม่ชื่อเดิม _scan_remaining_target_records() ที่ double-check
+           เฉพาะตอนอ่านได้ผล "0" เท่านั้น (asyncio.sleep(_ZERO_RECORD_RECHECK_DELAY_SECONDS =
+           0.8s) แล้วอ่านซ้ำอีกรอบ ถ้ารอบสองได้ >0 ให้เชื่อรอบสองแทน สดกว่า น่าเชื่อถือกว่า) —
+           เลือก double-check เฉพาะเคส "0" เพราะเป็นเคสเดียวที่อันตราย (ปล่อยผ่านไม่มี retry
+           เลย) ส่วนผล ">0"/None ไม่ต้องรอเพิ่มเลย (ไม่มี latency cost ในเคสปกติที่ guard ทำงาน
+           ถูกต้องอยู่แล้ว) — เทสต์ใหม่ 3 เคส: recheck แล้วพบว่าจริงๆ ไม่ใช่ 0 (>0) ต้องเชื่อค่า
+           รอบสอง, recheck แล้วยืนยัน 0 ทั้งสองรอบ (ต้องคงผล 0 เหมือนเดิม ไม่ false-positive
+           กลับด้าน), ผล >0 ตั้งแต่รอบแรกไม่ต้อง recheck เลย (latency guard)
+
+           รันเต็มชุด test_orchestrator.py (180 เคส): ผ่านหมด เหลือ fail เดิม 8 เคสจาก
+           Anthropic API key เท่านั้น (baseline เดิมเป๊ะ) ไม่มี regression ใหม่ — ข้อจำกัด:
+           ยังทดสอบกับ opensource-demo.orangehrmlive.com จริงในเครื่องนี้ไม่ได้ (API key ใช้
+           ไม่ได้) ต้องรอ user ทดสอบซ้ำบน live server (ต้อง restart server ให้แน่ใจว่าโหลดโค้ด
+           ใหม่ล่าสุดจริงๆ ก่อน เพราะพบ python process ซ้ำซ้อนหลายตัวในเครื่อง) เพื่อยืนยันว่า
+           แก้ครบทั้งสองสาเหตุแล้วจริง
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

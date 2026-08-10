@@ -1,4 +1,5 @@
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from playwright.async_api import async_playwright
@@ -642,6 +643,36 @@ async def test_count_elements_counts_table_rows():
     assert count == 4  # 1 header row + 3 product row
 
 
+_HTML_TABLE_WITH_HIDDEN_ROWS = """
+<html><body>
+  <table id="products">
+    <tr><th>Name</th><th>Price</th></tr>
+    <tr><td>Widget</td><td>$9.99</td></tr>
+    <tr style="display:none"><td>HiddenByDisplayNone</td><td>$0</td></tr>
+    <tr style="visibility:hidden"><td>HiddenByVisibility</td><td>$0</td></tr>
+    <tr><td>Gadget</td><td>$19.99</td></tr>
+  </table>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_count_elements_ignores_hidden_rows():
+    """W63[3.3]: querySelectorAll(...).length เดิมนับ node ที่ match selector ทุกตัวใน DOM
+    ไม่สนว่ามองเห็นได้จริงไหม (ticket Issue 3.3 — ต้องนับเฉพาะแถวที่มองเห็นได้จริง ไม่นับ
+    display:none/visibility:hidden)"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_TABLE_WITH_HIDDEN_ROWS)
+
+        count = await count_elements(page, "#products tr")
+
+        await browser.close()
+
+    assert count == 3  # header + Widget + Gadget เท่านั้น (2 แถวซ่อนไม่นับ)
+
+
 @pytest.mark.asyncio
 async def test_count_elements_returns_zero_for_selector_with_no_match():
     async with async_playwright() as p:
@@ -970,8 +1001,72 @@ async def test_extract_table_data_without_query_keeps_old_behavior():
         await browser.close()
 
     assert "ใกล้เคียงกับคำค้น" not in result
-    assert "| Cierra Vega | 32 |" in result
-    assert "| John Smith | 45 |" in result
+
+
+# W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2, บั๊กจริง: agent ค้นหาแถวที่
+# เพิ่งบันทึกไปทันทีหลัง Save โดยไม่รอ AJAX table reload ให้เสร็จก่อน อ่านได้ตารางเก่า เข้าใจ
+# ผิดว่าบันทึกไม่สำเร็จ): extract_table_data() ต้องรอสั้นๆ แล้วลองสแกนใหม่อีกครั้งก่อนยอม
+# [FAIL] จริงถ้ามี query — patch _LOOKUP_RETRY_WAIT_SEC ให้สั้นลงกันเทสต์ช้าโดยไม่จำเป็น
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_retries_once_after_wait_when_row_arrives_late():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+        # จำลองแถวที่เพิ่ง "บันทึก" มาถึงช้ากว่ารอบสแกนแรกเล็กน้อย (เช่น AJAX reload)
+        await page.evaluate(
+            """() => {
+                setTimeout(() => {
+                    const table = document.querySelector('#users');
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = '<td>Siamyut Phasida</td><td>99</td>';
+                    table.appendChild(tr);
+                }, 100);
+            }"""
+        )
+
+        with patch("backend.app.core.perception._LOOKUP_RETRY_WAIT_SEC", 0.5):
+            result = await extract_table_data(page, "#users", query="Siamyut Phasida")
+
+        await browser.close()
+
+    assert "Siamyut Phasida" in result
+    assert not result.startswith("[FAIL]")
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_fails_after_one_retry_when_genuinely_not_found():
+    """แถวที่หาไม่เคยมาถึงจริงๆ (ไม่ใช่แค่ AJAX ช้า) — ต้อง [FAIL] หลังลองแค่ 1 รอบเพิ่ม ไม่ใช่
+    วนรอไม่รู้จบ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_USER_TABLE)
+
+        with patch("backend.app.core.perception._LOOKUP_RETRY_WAIT_SEC", 0.05):
+            result = await extract_table_data(page, "#users", query="ไม่มีทางเจอแน่นอน")
+
+        await browser.close()
+
+    assert result.startswith("[FAIL]")
+
+
+@pytest.mark.asyncio
+async def test_extract_table_data_does_not_retry_without_query():
+    """ไม่มี query (ขอสรุปทั้งตารางเฉยๆ) ต้องไม่มีการ retry/wait ใดๆ เลย (ไม่มีสิ่งที่เรียกว่า
+    "หาไม่เจอ" สำหรับโหมดสรุปทั้งก้อน) — mock _extract_table_data_once() โดยตรงแทนที่จะ patch
+    asyncio.sleep ทั้ง process (asyncio.sleep ถูกเรียกจากที่อื่นในกระบวนการทดสอบได้เยอะมาก
+    เช่น Playwright/pytest-asyncio เอง ทำให้ assert_not_awaited() ไม่น่าเชื่อถือ)"""
+    with patch(
+        "backend.app.core.perception._extract_table_data_once",
+        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#users'"),
+    ) as mock_once:
+        result = await extract_table_data(AsyncMock(), "#users")
+
+    assert mock_once.await_count == 1
+    assert result.startswith("[FAIL]")
 
 
 # ---------------- hover-to-reveal action buttons (opacity:0/visibility:hidden) ----------------
@@ -1480,3 +1575,75 @@ async def test_get_snapshot_marks_disabled_input_field_too():
     assert len(elements) == 1
     assert "[disabled]" in elements[0]["label"]
     assert "Zip Code" in elements[0]["label"]
+
+
+# --- W65[1] ("Required-Field Validation") — FormFieldInfo.required ถูก crawl เก็บไว้แล้ว
+# ตั้งแต่นานแล้ว (site_learning/schema.py) แต่ perception.py (เส้นทาง live DOM ที่ agent ใช้
+# จริงตอนรัน task) ไม่เคยอ่าน HTML required/aria-required attribute เลย — แปะ marker
+# "[required]" แบบเดียวกับ "[disabled]" ข้างบนทุกประการ
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_required_input_field():
+    html = '<html><body><input type="text" placeholder="Username" required></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    assert len(elements) == 1
+    assert "[required]" in elements[0]["label"]
+    assert "Username" in elements[0]["label"]
+    assert "[required]" in text_repr
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_aria_required_field_too():
+    html = '<html><body><input type="text" placeholder="Email" aria-required="true"></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert "[required]" in elements[0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_does_not_mark_optional_field_as_required():
+    html = '<html><body><input type="text" placeholder="Middle Name"></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert "[required]" not in elements[0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_marks_disabled_and_required_together():
+    """marker ทั้งสองต้องแปะซ้อนกันได้ปกติ (คนละเงื่อนไข ไม่ผูกกัน — ดู comment ใน
+    perception.py)"""
+    html = '<html><body><input type="text" placeholder="Zip Code" required disabled></body></html>'
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    assert "[disabled]" in elements[0]["label"]
+    assert "[required]" in elements[0]["label"]

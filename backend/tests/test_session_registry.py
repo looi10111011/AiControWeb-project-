@@ -520,6 +520,21 @@ async def test_get_or_create_allows_reuse_without_owner_token_check_when_not_pro
     assert second is first
 
 
+@pytest.mark.asyncio
+async def test_get_or_create_requires_owner_token_for_external_reuse():
+    pool = _fake_pool()
+    registry = SessionRegistry()
+    await registry.get_or_create(
+        "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+        pool=pool, tab_reuse_policy=None, ask_user_func=None, owner_token="secret-abc",
+    )
+    with pytest.raises(SessionOwnershipError):
+        await registry.get_or_create(
+            "sess-1", use_user_browser=False, headless=None, target_url="https://example.com",
+            pool=pool, tab_reuse_policy=None, ask_user_func=None, require_owner_token=True,
+        )
+
+
 def test_get_with_matching_owner_token_returns_session():
     session = BrowserSession(
         "sess-1", "pool", AsyncMock(), AsyncMock(), AsyncMock(), None,
