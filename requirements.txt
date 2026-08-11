@@ -43,3 +43,8 @@ pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.28.1   # ให้ fastapi.testclient.TestClient ใช้ (W10[A])
 psutil==7.2.2   # W11[A]: หา/ฆ่า chromium process จริงของ BrowserPool สำหรับ chaos test
+# MiniWoB++ evaluation (core/miniwob_eval.py, run.py "miniwob"): ใช้แค่ยืมไฟล์ HTML/JS ของ
+# task ที่ bundle มากับ package นี้ (miniwob/html/miniwob/*.html) ไม่ได้เรียก Python/Gym API
+# ของ package นี้เลยสักฟังก์ชัน (มันผูกกับ Selenium/Gymnasium action space ที่ไม่ตรงกับ
+# agent ตัวนี้ — ดู core/miniwob_eval.py หัวไฟล์)
+miniwob==1.0

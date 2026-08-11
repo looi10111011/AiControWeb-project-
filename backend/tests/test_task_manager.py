@@ -338,6 +338,59 @@ async def test_resolve_approval_edited_plan_ignored_for_non_plan_requests():
     assert await asyncio.wait_for(approval_task, timeout=1) is True
     assert "plan" not in cmd
 
+
+# ---------------- W_resume ("Mid-Task Input Request") ----------------
+# บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่กลางทางแล้ว finish_task(false) จบ task
+# ทั้งหมด ทำให้เทิร์นถัดไปที่ user ตอบค่ามาต้องเริ่มงานใหม่จากศูนย์ — answer_text mirrors
+# edited_plan ข้างบนทุกประการ แค่คนละ cmd type/key
+
+
+@pytest.mark.asyncio
+async def test_resolve_approval_with_answer_text_mutates_the_pending_cmd():
+    """answer_text ต้องแก้ info["cmd"]["answer"] ใน-place ก่อน resolve future —
+    orchestrator.py::_request_user_input() ยังถือ reference ของ cmd dict ก้อนเดิมอยู่ พอ
+    future resolve กลับมาต้องอ่านคำตอบที่แก้แล้วออกไปทำ task เดิมต่อทันที"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("t13", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
+
+    cmd = {"type": "request_user_input", "prompt": "รหัสผ่านใหม่คืออะไร?", "sensitive": True}
+    approval_task = asyncio.create_task(tm.request_approval("t13", cmd))
+    await asyncio.wait_for(queue.get(), timeout=1)  # approval_request
+
+    assert tm.resolve_approval(
+        "t13", list(record.pending.keys())[0], True, answer_text="Sup3rSecret!",
+    ) is True
+    assert await asyncio.wait_for(approval_task, timeout=1) is True
+    # cmd คือ dict ก้อนเดียวกับที่ orchestrator.py ถืออยู่ — ต้องเห็นการแก้ไขสะท้อนกลับมาที่
+    # นี่ด้วย (ไม่ใช่แค่ใน record.pending ภายในเท่านั้น)
+    assert cmd["answer"] == "Sup3rSecret!"
+
+    finish.set()
+    await _drain_task_done(queue)
+
+
+@pytest.mark.asyncio
+async def test_resolve_approval_answer_text_ignored_for_non_input_requests():
+    """answer_text ไม่ควรมีผลอะไรกับ permission prompt ทั่วไป/confirm_plan (cmd ไม่ใช่ type
+    request_user_input) — กัน misuse ที่อาจแอบเติม key "answer" ที่ไม่มีความหมายอะไรสำหรับ
+    action ปกติ"""
+    tm = TaskManager()
+    finish = asyncio.Event()
+    record = tm.submit("t14", "https://example.com", "goal", None, _controllable_coro(finish))
+    queue = _subscribe(record)
+
+    cmd = {"type": "purchase", "index": 3}
+    approval_task = asyncio.create_task(tm.request_approval("t14", cmd))
+    await asyncio.wait_for(queue.get(), timeout=1)
+
+    assert tm.resolve_approval(
+        "t14", list(record.pending.keys())[0], True, answer_text="should be ignored",
+    ) is True
+    assert await asyncio.wait_for(approval_task, timeout=1) is True
+    assert "answer" not in cmd
+
     finish.set()
     await _drain_task_done(queue)
 

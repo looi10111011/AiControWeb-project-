@@ -154,7 +154,7 @@ def test_system_prompt_instructs_read_page_data_and_favors_counting():
 def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
     assert "Current Password ≠ New Password" in llm.SYSTEM_PROMPT
     assert "ห้ามกรอกรหัสผ่านใหม่ลงช่อง\n    (ก) เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert "ให้เรียก finish_task(success=false) ทันทีก่อนแตะช่อง (ก) เลย" in llm.SYSTEM_PROMPT
+    assert 'ให้เรียก request_user_input (ดู W_resume ด้านล่าง' in llm.SYSTEM_PROMPT
 
 
 # --- W65[1]/[3] ("Required-Field Validation" / "Vault Expansion") ---
@@ -163,7 +163,34 @@ def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
 def test_system_prompt_requires_asking_for_missing_required_field_value():
     assert 'W65[1] ("Required-Field Validation")' in llm.SYSTEM_PROMPT
     assert '"[required]"' in llm.SYSTEM_PROMPT
-    assert "ให้เรียก finish_task(success=false) พร้อมระบุชัดเจนว่าขาดค่าอะไรก่อนแตะฟิลด์นั้น" in llm.SYSTEM_PROMPT
+    assert "ให้เรียก request_user_input (ดู W_resume ด้านล่างสำหรับรายละเอียดเต็ม)" in llm.SYSTEM_PROMPT
+    assert "ห้ามใช้\n  finish_task(success=false) กับกรณีนี้เด็ดขาด" in llm.SYSTEM_PROMPT
+
+
+# --- W_resume ("Mid-Task Input Request") — บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่
+# กลางทางแล้วเรียก finish_task(false) จบ task ทั้งหมด ทำให้เทิร์นถัดไปที่ user ตอบค่ามา
+# กลายเป็นเริ่มงานใหม่จากศูนย์แทนที่จะทำ plan เดิมต่อ
+
+
+def test_system_prompt_documents_request_user_input_tool():
+    assert 'W_resume ("Mid-Task Input Request")' in llm.SYSTEM_PROMPT
+    assert "request_user_input(prompt, sensitive)" in llm.SYSTEM_PROMPT
+    assert "sensitive: true เมื่อค่าที่ถามเป็นรหัสผ่าน/ข้อมูลลับ" in llm.SYSTEM_PROMPT
+
+
+def test_request_user_input_tool_registered_for_all_three_providers():
+    assert llm.REQUEST_USER_INPUT_TOOL["name"] == "request_user_input"
+    assert "prompt" in llm.REQUEST_USER_INPUT_TOOL["input_schema"]["properties"]
+    assert "sensitive" in llm.REQUEST_USER_INPUT_TOOL["input_schema"]["properties"]
+    assert llm.REQUEST_USER_INPUT_TOOL["input_schema"]["required"] == ["prompt"]
+
+    groq_names = {t["function"]["name"] for t in llm._GROQ_TOOLS}
+    assert "request_user_input" in groq_names
+
+    gemini_names = {
+        fn["name"] for tool in llm._GEMINI_TOOLS for fn in tool["function_declarations"]
+    }
+    assert "request_user_input" in gemini_names
 
 
 def test_system_prompt_prefers_fill_secret_for_current_password_field():

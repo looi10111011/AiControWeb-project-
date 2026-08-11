@@ -131,6 +131,225 @@ async def test_execute_fill_clears_existing_text_via_select_all_and_backspace_be
     assert call_order == ["click", "press", "press", "fill"]
 
 
+# ---------------- W_chain ("Compound Actions") — fill+key, click/select/check+then_click_index ----------------
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_with_key_chains_press_key_on_success():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello", "key": "Enter"})
+
+    assert result.success is True
+    assert "press_key" in result.message
+    mock_page.fill.assert_awaited_once_with('[data-ai-index="0"]', "hello", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    # ต้องเป็นการกด key จริง (ครั้งที่ 3 ต่อจาก Ctrl+A/Backspace ที่ fill() ทำเองอยู่แล้ว)
+    mock_page.press.assert_any_call('[data-ai-index="0"]', "Enter", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    assert mock_page.press.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_without_key_does_not_press_extra_key():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello"})
+
+    assert result.success is True
+    assert "press_key" not in result.message
+    # แค่ Ctrl+A + Backspace ของ fill() เอง ไม่มีการกด key เพิ่ม
+    assert mock_page.press.await_count == 2
+
+
+def _make_fill_mock_page():
+    """W_datepicker: fill() ตอนนี้เรียก target.locator(selector).evaluate(...) หลัง
+    .fill() สำเร็จเสมอ (dismiss popup ที่อาจเปิดจาก focus) — เหมือน _make_select_mock_page
+    ด้านบน ต้อง mock .locator() แบบ sync (MagicMock) ไม่ใช่ AsyncMock ทั้งก้อน ไม่งั้นเรียก
+    .locator(selector) จะได้ coroutine กลับมาแทน Locator object จริง"""
+    mock_page = AsyncMock()
+    dismiss_locator = MagicMock()
+    dismiss_locator.evaluate = AsyncMock()
+    mock_page.locator = MagicMock(return_value=dismiss_locator)
+    return mock_page, dismiss_locator
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_dismisses_any_popup_opened_by_focus_after_success():
+    """W_datepicker follow-up — false positive จริงที่เจอ: fill(From Date) บน OrangeHRM
+    Leave List เปิด date-picker popup เป็นผลข้างเคียงของ focus (framework เอง ไม่ใช่
+    intentional) popup แทรก element ใหม่เข้า DOM ทำให้ index ของ "To Date" เลื่อนหนี ถ้า
+    ไม่ปิด popup ทันที agent (หรือ compound action อื่นในคำสั่งเดียวกัน) จะอ้าง index ผิด
+    ไปกดปุ่มนำทางปฏิทินแทนช่องกรอกจริงเงียบๆ — ยืนยันแล้วว่าต้อง blur()+คลิก body จริง
+    (Escape เพียงอย่างเดียวไม่ปิด popup นี้ เพราะ framework ผูก listener กับ outside-click)"""
+    mock_page, dismiss_locator = _make_fill_mock_page()
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "2026-15-05"})
+
+    assert result.success is True
+    dismiss_locator.evaluate.assert_awaited_once_with(
+        "el => { el.blur(); document.body.click(); }"
+    )
+    mock_page.wait_for_timeout.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_still_succeeds_when_popup_dismissal_itself_fails():
+    """dismiss เป็นแค่ best-effort cleanup — ต้องไม่ทำให้ fill() ที่สำเร็จไปแล้วกลายเป็น
+    fail เพราะขั้นตอนเสริมนี้พัง (เช่น element หลุดจาก DOM ไปแล้วหลัง fill)"""
+    mock_page, dismiss_locator = _make_fill_mock_page()
+    dismiss_locator.evaluate = AsyncMock(side_effect=Exception("detached"))
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello"})
+
+    assert result.success is True
+    assert "hello" in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_does_not_chain_key_when_fill_itself_fails():
+    mock_page = AsyncMock()
+    mock_page.fill = AsyncMock(side_effect=Exception("boom"))
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello", "key": "Enter"})
+
+    assert result.success is False
+    # Ctrl+A/Backspace เกิดก่อน fill() throw ได้ (2 ครั้ง) แต่ต้องไม่มีการกด "Enter" เพิ่มเลย
+    enter_calls = [c for c in mock_page.press.await_args_list if c.args[1:2] == ("Enter",)]
+    assert enter_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_chains_then_click_index_when_no_key_given():
+    """W_chain follow-up — false positive จริงที่เจอ: MiniWoB "enter-text" ไม่มี
+    Enter-to-submit เลย (input ไม่ได้อยู่ใน <form>, ไม่มี keypress listener) ทำให้
+    fill+key:"Enter" กรอกค่าถูกต้องแต่ไม่เคย submit จริง (ปุ่ม Submit ไม่เคยถูกคลิก) —
+    then_click_index ให้ fill "คลิกปุ่มจริง" แทนได้ในคำสั่งเดียวกัน เชื่อถือได้กว่า
+    key:"Enter" เสมอเมื่อเห็นปุ่ม submit จริงในหน้า"""
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "Livia", "then_click_index": 1})
+
+    assert result.success is True
+    assert "then click(1)" in result.message
+    mock_page.fill.assert_awaited_once_with('[data-ai-index="0"]', "Livia", timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+    # fill() เองเรียก .click() บน index 0 เพื่อ focus ก่อน clear อยู่แล้ว (1 ครั้ง) บวกกับ
+    # click ที่ chain ไปยัง index 1 อีก 1 ครั้ง — เช็คว่ามีการคลิก index 1 เกิดขึ้นจริง
+    # แยกต่างหาก (ไม่สนใจ call ของ index 0 ที่เป็นผลข้างเคียงปกติของ fill())
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="1"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_can_chain_both_key_and_then_click_index_together():
+    mock_page = AsyncMock()
+
+    result = await execute(
+        mock_page, {"type": "fill", "index": 0, "text": "hi", "key": "Enter", "then_click_index": 1},
+    )
+
+    assert result.success is True
+    assert "press_key" in result.message
+    assert "then click(1)" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="1"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_fill_does_not_chain_click_when_fill_itself_fails():
+    mock_page = AsyncMock()
+    mock_page.fill = AsyncMock(side_effect=Exception("boom"))
+
+    result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hi", "then_click_index": 1})
+
+    assert result.success is False
+    # fill() เองเรียก .click() บน index 0 เพื่อ focus ก่อน clear (ปกติ) แต่ไม่มีทางคลิก
+    # index 1 (then_click_index) เลยเพราะ fill ล้มเหลวก่อนถึงจุดนั้น
+    click_selectors = {c.args[0] for c in mock_page.click.await_args_list}
+    assert '[data-ai-index="1"]' not in click_selectors
+
+
+@pytest.mark.asyncio
+async def test_execute_click_chains_then_click_index_when_provided():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is True
+    assert "then click(5)" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="5"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_click_does_not_chain_when_primary_action_fails():
+    mock_page = AsyncMock()
+    mock_page.click = AsyncMock(side_effect=Exception("boom"))
+
+    result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is False
+    assert "then click" not in result.message
+    # ยังพยายามคลิก index 0 (retry ตามปกติ) แต่ไม่มีทางคลิก index 5 เลยเพราะ primary fail
+    click_selectors = {c.args[0] for c in mock_page.click.await_args_list}
+    assert '[data-ai-index="5"]' not in click_selectors
+
+
+@pytest.mark.asyncio
+async def test_execute_click_without_then_click_index_behaves_exactly_as_before():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "click", "index": 0})
+
+    assert result.success is True
+    mock_page.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_click_chain_skipped_when_secondary_needs_confirmation_and_user_rejects():
+    """then_click_index ที่ label เข้าข่ายเสี่ยง (เช่น "Delete") ต้องผ่าน permission check
+    เต็มรูปแบบเหมือน action เดี่ยวๆ ทุกประการ — ห้ามข้าม human-in-the-loop เด็ดขาดแค่เพราะ
+    เป็น action ที่สองในคำสั่งเดียวกัน ผลลัพธ์ของ primary action ต้องไม่หายไปด้วย"""
+    mock_page = AsyncMock()
+    ask_user_func = AsyncMock(return_value=False)  # user ปฏิเสธ
+
+    result = await execute(
+        mock_page, {"type": "click", "index": 0, "then_click_index": 5},
+        ask_user_func=ask_user_func, then_label="Delete",
+    )
+
+    assert result.success is True  # primary (index 0) ยังสำเร็จอยู่
+    assert "ไม่ได้คลิกต่อ" in result.message
+    ask_user_func.assert_awaited_once()
+    click_selectors = {c.args[0] for c in mock_page.click.await_args_list}
+    assert '[data-ai-index="5"]' not in click_selectors  # ไม่เคยคลิกจริง
+
+
+@pytest.mark.asyncio
+async def test_execute_click_chain_proceeds_when_secondary_needs_confirmation_and_user_approves():
+    mock_page = AsyncMock()
+    ask_user_func = AsyncMock(return_value=True)  # user อนุมัติ
+
+    result = await execute(
+        mock_page, {"type": "click", "index": 0, "then_click_index": 5},
+        ask_user_func=ask_user_func, then_label="Delete",
+    )
+
+    assert result.success is True
+    assert "then click(5)" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="5"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_check_chains_then_click_index():
+    mock_page = AsyncMock()
+
+    result = await execute(mock_page, {"type": "check", "index": 2, "then_click_index": 7})
+
+    assert result.success is True
+    assert "then click(7)" in result.message
+    mock_page.click.assert_awaited_once_with('[data-ai-index="7"]', timeout=_ELEMENT_ACTION_TIMEOUT_MS)
+
+
 @pytest.mark.asyncio
 async def test_execute_select_and_check_also_get_retried(_no_real_sleep):
     mock_page = _make_select_mock_page(["A"], [PWTimeout("boom"), None])

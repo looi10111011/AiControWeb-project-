@@ -1056,6 +1056,29 @@ async function respondApproval(taskId, requestId, approved) {
   } catch (e) {}
 }
 
+// W_resume ("Mid-Task Input Request"): answers a "request_user_input" prompt (agent
+// stopped mid-plan to ask for a value it can't know/guess, e.g. a new password to set) —
+// answerText null means the user hit Cancel, which the backend treats as "declined" (see
+// TaskManager.resolve_approval()/orchestrator.py::_request_user_input()) rather than an
+// error; the agent gets a clear "user did not answer" tool result and decides how to
+// proceed on its own, same task run, no restart.
+async function respondUserInput(taskId, requestId, answerText) {
+  delete pendingApprovals[taskId];
+  renderHistory();
+  if (selectedConvId && conversationIdForTask(taskId) === selectedConvId) renderSelected();
+  try {
+    await apiFetch(`${API}/tasks/${taskId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        request_id: requestId,
+        approved: answerText !== null,
+        answer_text: answerText,
+      }),
+    });
+  } catch (e) {}
+}
+
 async function stopTask(taskId) {
   $("btnStop").disabled = true;
   try {
@@ -1896,7 +1919,31 @@ function renderTaskTurn(task) {
   // before approval) and the turn's own progress/result messages below.
 
   if (task.status === "running") {
-    if (pending && pending.cmd) {
+    // W_resume ("Mid-Task Input Request"): agent stopped mid-plan to ask the human for a
+    // value it can't know/guess (e.g. a new password to set) — distinct from the
+    // Approve/Deny permission card below (cmd.type === "request_user_input" instead of a
+    // risky action) — see respondUserInput() and the click-delegation handler for
+    // [data-submit-user-input]/[data-decline-user-input].
+    if (pending && pending.cmd && pending.cmd.type === "request_user_input") {
+      const inputType = pending.cmd.sensitive ? "password" : "text";
+      html += `
+        <div class="msg agent">
+          <div class="avatar">${agentIcon}</div>
+          <div>
+            <div class="bubble approval-bubble">
+              <div class="approval-title">Input needed</div>
+              <div class="approval-cmd">${escapeHtml(pending.cmd.prompt || "")}</div>
+              <div class="manual-banner-login-fields">
+                <input type="${inputType}" id="userInputAnswer-${task.task_id}" placeholder="Your answer" autocomplete="off" />
+              </div>
+              <div class="approval-actions">
+                <button class="btn-approve" data-task="${task.task_id}" data-request="${pending.request_id}" data-submit-user-input="true">Submit</button>
+                <button class="btn-deny" data-task="${task.task_id}" data-request="${pending.request_id}" data-decline-user-input="true">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    } else if (pending && pending.cmd) {
       html += `
         <div class="msg agent">
           <div class="avatar">${agentIcon}</div>
@@ -2711,6 +2758,17 @@ document.addEventListener("click", (e) => {
   const correctionBtn = e.target.closest("[data-submit-correction]");
   if (correctionBtn) {
     submitCorrectionValue(correctionBtn.dataset.submitCorrection);
+    return;
+  }
+  const submitInputBtn = e.target.closest("[data-submit-user-input]");
+  if (submitInputBtn) {
+    const field = document.getElementById(`userInputAnswer-${submitInputBtn.dataset.task}`);
+    respondUserInput(submitInputBtn.dataset.task, submitInputBtn.dataset.request, field ? field.value : "");
+    return;
+  }
+  const declineInputBtn = e.target.closest("[data-decline-user-input]");
+  if (declineInputBtn) {
+    respondUserInput(declineInputBtn.dataset.task, declineInputBtn.dataset.request, null);
     return;
   }
   const btn = e.target.closest("[data-approve]");

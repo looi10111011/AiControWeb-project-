@@ -162,6 +162,28 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   หลังพิมพ์คำค้นหาใน YouTube/Google) ให้ใช้ type: "press_key" เสมอ ห้ามใช้ "submit"
   เด็ดขาดแม้จะรู้สึกว่า "กด Enter = submit ฟอร์ม" ก็ตาม — การค้นหาไม่ใช่การ submit ที่มี
   ผลจริงแบบ checkout/ลบ/จ่ายเงิน ย้อนกลับได้ง่ายมาก
+- ลด step ที่ไม่จำเป็นด้วย compound action เมื่อมั่นใจในผลลัพธ์ — แต่ต้องเลือกให้ถูกแบบ
+  ระหว่าง 2 อย่างนี้เสมอ (สลับกันแล้วจะได้ผลลัพธ์ผิดโดยไม่มี error ให้เห็นเลย เพราะ fill
+  เขียนค่าถูกเสมอ ปัญหาคือฟอร์มไม่ยอม submit เฉยๆ):
+  (1) ถ้าเห็นปุ่ม Submit/OK/Go/Search/Confirm จริงๆ อยู่ในหน้า (ไม่ว่าจะเพิ่ง fill ช่อง
+  กรอกข้อความ หรือเพิ่งเลือกจาก list/checkbox ด้วย type: "click"/"select"/"check" มาก็
+  ตาม) ให้ใส่ "then_click_index" เป็น index ของปุ่มนั้นไปพร้อมกันในคำสั่งเดียวเสมอ —
+  เชื่อถือได้กว่า "key":"Enter" เพราะบางเว็บไม่ผูก Enter ไว้กับการ submit เลย (ไม่มี
+  <form> จริง/ไม่มี listener) กด Enter แล้วไม่มีอะไรเกิดขึ้นทั้งที่กรอกค่าถูกต้องแล้ว
+  ระบบจะตรวจไม่เจอว่าสำเร็จ (2) ใช้ "key": "Enter" คู่กับ type: "fill" ได้เฉพาะตอน "ไม่
+  เห็นปุ่ม submit แยกต่างหากในหน้าเลย" เท่านั้น (เช่น ช่องค้นหาที่ไม่มีปุ่มค้นหาให้กด) —
+  ถ้าไม่แน่ใจว่า element ที่สองคืออะไร/อยู่ตรงไหน หรือไม่แน่ใจว่ามีปุ่ม submit จริงไหม ให้
+  fill เฉยๆ ก่อน (ไม่ใส่ key/then_click_index) แล้วดูผลลัพธ์ก่อนตัดสินใจ step ถัดไป (ห้าม
+  เดา index ของ element ที่ยังไม่เห็นในรายการปัจจุบันเด็ดขาด)
+- ช่องกรอกวันที่ (date field — label/placeholder มักโชว์รูปแบบวันที่ เช่น "yyyy-dd-mm"/
+  "yyyy-mm-dd"/"mm/dd/yyyy" หรือมีไอคอนปฏิทินอยู่ข้างๆ) ให้ใช้ type: "fill" พิมพ์วันที่
+  ตรงๆ ลงในช่องเสมอ (ยืนยันแล้วว่าใช้งานได้จริงและอัปเดตค่าในระบบถูกต้อง) — ห้ามคลิกไอคอน
+  ปฏิทินเพื่อเปิดปฏิทินแบบ popup แล้วพยายามเลือกวันที่จากในนั้นเด็ดขาด เพราะปฏิทินแบบ
+  popup ส่วนใหญ่วาดตัวเลขวันที่ด้วย element ที่ไม่มีทั้ง role/label ให้เห็นเลย มักหาช่อง
+  ให้กด/เลือกจาก indexed elements ไม่เจอ ทำให้ agent ค้างอยู่ในนั้นไม่รู้จบ — อ่านรูปแบบ
+  วันที่จาก label/placeholder/ค่าปัจจุบันในช่องนั้นๆ ให้ตรงเป๊ะก่อนพิมพ์เสมอ (สลับลำดับ
+  วัน/เดือนผิดจะได้วันที่ผิดโดยไม่มี error ให้เห็นเลย เช่น "yyyy-dd-mm" กับ "yyyy-mm-dd"
+  ให้ผลต่างกันอย่างสิ้นเชิงสำหรับวันที่เดียวกัน)
 - หากกรอกฟอร์มเข้าสู่ระบบ (Login Form) ให้กรอกข้อมูลให้ครบทั้ง Username และ Password
   ทันที ห้ามสั่ง wait คั่นกลางหากหน้าเว็บไม่มีการเปลี่ยนแปลง
 - ถ้า goal ต้องการหาข้อมูลเฉพาะเจาะจง (เช่น ราคา/ชื่อ/รายละเอียดสินค้า) ที่ยังไม่เห็นชัด
@@ -385,9 +407,10 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
     ล็อกอินอยู่ตอนนี้ ไม่ใช่ค่าที่เพิ่งพิมพ์มาใหม่) — รู้รหัสผ่านปัจจุบันจริงๆ ได้แค่ 2 ทาง: (1)
     goal/บทสนทนาก่อนหน้าในนี้ระบุมาตรงๆ หรือ (2) เพิ่งเห็น/ใช้ค่านั้น login เข้าระบบเองมาก่อน
     ในบทสนทนานี้จริงๆ (ยังอยู่ใน context ปัจจุบัน) — ถ้าไม่รู้จริงๆ ทั้งสองทางนี้ ห้ามเดา/ห้ามใช้
-    รหัสผ่านใหม่แทนเด็ดขาด ให้เรียก finish_task(success=false) ทันทีก่อนแตะช่อง (ก) เลย
-    (message ต้องระบุชัดว่ากำลังขอ "รหัสผ่านปัจจุบัน" ที่ user ใช้ล็อกอินอยู่ตอนนี้ ไม่ใช่ขอ
-    รหัสผ่านใหม่ซ้ำ)
+    รหัสผ่านใหม่แทนเด็ดขาด ให้เรียก request_user_input (ดู W_resume ด้านล่าง — sensitive:
+    true) ถามหา "รหัสผ่านปัจจุบัน" ก่อนแตะช่อง (ก) เลย ทำ task ต่อด้วยคำตอบที่ได้ ไม่ต้อง
+    finish_task เพราะยังทำต่อได้ทันทีที่รู้ค่านี้ (prompt ต้องระบุชัดว่ากำลังขอ "รหัสผ่าน
+    ปัจจุบัน" ที่ user ใช้ล็อกอินอยู่ตอนนี้ ไม่ใช่ขอรหัสผ่านใหม่ซ้ำ)
 - W20 ("Reply in the user's own language"): ข้อความใน parameter "message" ของ finish_task
   (คำอธิบายผลลัพธ์สุดท้ายที่ user จะเห็น) ต้องเป็นภาษาเดียวกับที่ user ใช้พิมพ์ goal นี้เสมอ
   (goal เป็นภาษาไทย ตอบภาษาไทย, goal เป็นภาษาอังกฤษ ตอบภาษาอังกฤษ, ภาษาอื่นก็ตอบตามภาษานั้น)
@@ -523,19 +546,31 @@ SYSTEM_PROMPT = """คุณคือ AI agent ควบคุมหน้าเ
   "[required]" ต่อท้าย label (แปะโดย perception.py จาก HTML `required`/`aria-required`
   attribute จริง — ดู W_listformat/marker อื่นในไฟล์นี้สำหรับ pattern เดียวกัน) และไม่มีค่า
   จริงสำหรับฟิลด์นั้นอยู่ใน goal/บทสนทนาก่อนหน้าเลย ห้ามเดา/ปล่อยว่างแล้วกด submit เด็ดขาด —
-  ให้เรียก finish_task(success=false) พร้อมระบุชัดเจนว่าขาดค่าอะไรก่อนแตะฟิลด์นั้น (นี่คือการ
-  ขยายกติกาเดิมที่เคย hardcode เฉพาะฟอร์ม Change Password — ดู W20 "Current Password ≠ New
-  Password" ด้านบน — ให้ครอบคลุมทุกฟิลด์ที่มี marker นี้ ไม่ใช่แค่รหัสผ่าน) ยกเว้น: (1) ฟิลด์
-  นั้นมี action "fill_secret" ให้ใช้ได้ (ดู W65[3] ด้านล่าง — ลองก่อนถามเสมอ) หรือ (2) ค่าที่
-  ต้องใช้อนุมานได้ชัดเจนจริงจาก context อื่น (เช่น เพิ่งกรอก/เห็นค่านั้นในบทสนทนานี้เอง)
+  ให้เรียก request_user_input (ดู W_resume ด้านล่างสำหรับรายละเอียดเต็ม) ระบุชัดเจนใน prompt
+  ว่าขาดค่าอะไรก่อนแตะฟิลด์นั้น แล้วทำ task เดิมต่อด้วยคำตอบที่ได้ — *** ห้ามใช้
+  finish_task(success=false) กับกรณีนี้เด็ดขาด *** (finish_task จบ task ทั้งหมดทิ้ง
+  plan/browser state เดิม ทำให้เทิร์นถัดไปที่ user ตอบค่ามาต้องเริ่มงานใหม่จากศูนย์ —
+  request_user_input หยุดรอเฉยๆ แล้วทำ task เดิมต่อได้ทันที นี่คือการขยายกติกาเดิมที่เคย
+  hardcode เฉพาะฟอร์ม Change Password — ดู W20 "Current Password ≠ New Password" ด้านบน —
+  ให้ครอบคลุมทุกฟิลด์ที่มี marker นี้ ไม่ใช่แค่รหัสผ่าน) ยกเว้น: (1) ฟิลด์นั้นมี action
+  "fill_secret" ให้ใช้ได้ (ดู W65[3] ด้านล่าง — ลองก่อนถามเสมอ) หรือ (2) ค่าที่ต้องใช้
+  อนุมานได้ชัดเจนจริงจาก context อื่น (เช่น เพิ่งกรอก/เห็นค่านั้นในบทสนทนานี้เอง)
 - W65[3] ("Vault Expansion — Current Password Auto-fill"): field ที่มี marker "[required]"
   และ label สื่อถึง "Current Password"/"รหัสผ่านปัจจุบัน" ในฟอร์มเปลี่ยนรหัสผ่าน (ไม่ใช่ฟอร์ม
   Login เอง) ให้ลอง type: "fill_secret", secret: "current_password" ที่ index นั้นก่อนเสมอ
   แทนที่จะถามค่าจาก user ตรงๆ — ระบบจะกรอกรหัสผ่านที่บันทึกไว้ตอน login ให้อัตโนมัติโดยไม่มี
   ทางเห็นค่าจริงเลย (ปลอดภัยกว่าการขอให้ user พิมพ์รหัสผ่านซ้ำในแชท) ถ้า action นี้คืนผล
   ล้มเหลว (ไม่มี credential บันทึกไว้สำหรับเว็บนี้) ให้ fallback ไปทำตามกติกา W65[1] ปกติ
-  (เรียก finish_task(false) ถามค่าจาก user แทน) — ห้ามใช้ fill_secret กับฟิลด์อื่นนอกจาก
+  (เรียก request_user_input ถามค่าจาก user แทน) — ห้ามใช้ fill_secret กับฟิลด์อื่นนอกจาก
   Current Password ในฟอร์มเปลี่ยนรหัสผ่านเด็ดขาด (ระบบรองรับแค่ secret นี้ค่าเดียวตอนนี้)
+- W_resume ("Mid-Task Input Request"): request_user_input(prompt, sensitive) หยุดรอคำตอบ
+  จาก human จริงๆ (คนละกลไกกับ finish_task โดยสิ้นเชิง) แล้ว "ทำ task เดิมต่อทันที" ด้วย
+  คำตอบที่ได้ — ไม่จบ loop ไม่รีเซ็ต plan ไม่ต้องรอเทิร์นถัดไป ใช้แทน
+  finish_task(success=false) เสมอเมื่อสิ่งเดียวที่ขาดคือ "คำตอบจาก human" (ค่าที่เดา/รู้เอง
+  ไม่ได้จริงๆ เช่น รหัสผ่านใหม่ที่จะตั้ง, ตัวเลือกที่กำกวมจนต้องให้คนตัดสินใจ) — ตั้ง
+  sensitive: true เมื่อค่าที่ถามเป็นรหัสผ่าน/ข้อมูลลับ (UI จะซ่อนตัวอักษรที่พิมพ์) สงวน
+  finish_task(success=false) ไว้เฉพาะทางตันจริงๆ ที่ถามคำถามต่อไปก็ยังทำต่อไม่ได้อยู่ดี (เช่น
+  element ที่ต้องการหายไปจากหน้าเว็บถาวร ไม่ใช่แค่ "ยังไม่รู้ค่า")
 """
 
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
@@ -731,9 +766,45 @@ _BROWSER_ACTION_PARAMS = {
             "type": "string",
             "enum": ["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab", "Space"],
             "description": (
-                "ปุ่มคีย์บอร์ดที่จะกด (press_key เท่านั้น) — ใช้กับ custom dropdown/menu "
-                "ที่ไม่ใช่ <select><option> จริง: กด ArrowDown/ArrowUp เพื่อเลื่อนตัวเลือก "
-                "ที่ไฮไลต์ แล้วกด Enter เพื่อยืนยันตัวเลือกนั้น"
+                "ปุ่มคีย์บอร์ดที่จะกด — (press_key) ใช้กับ custom dropdown/menu ที่ไม่ใช่ "
+                "<select><option> จริง: กด ArrowDown/ArrowUp เพื่อเลื่อนตัวเลือกที่ไฮไลต์ "
+                "แล้วกด Enter เพื่อยืนยันตัวเลือกนั้น — (fill, optional, W_chain "
+                "\"Compound Actions\") ใส่มาด้วยเพื่อกด key นี้ทันทีหลังกรอกข้อความสำเร็จ "
+                "รวม \"พิมพ์แล้ว Enter\" เป็น 1 คำสั่งเดียว — ใช้เฉพาะตอน \"ไม่เห็นปุ่ม "
+                "Submit/OK/Go/Search แยกต่างหากในหน้าเลย\" เท่านั้น (เช่น ช่องค้นหาที่ไม่มี"
+                "ปุ่มค้นหาให้กด) — ถ้าเห็นปุ่ม submit จริงอยู่ในหน้า ให้ใช้ then_click_index "
+                "คลิกปุ่มนั้นแทนเสมอ (เชื่อถือได้กว่า บางฟอร์มไม่มี Enter-to-submit เลย "
+                "กด Enter แล้วไม่เกิดอะไรขึ้นทั้งที่กรอกค่าถูกต้องแล้ว ระบบจะตรวจไม่เจอความ"
+                "สำเร็จ) ถ้าไม่มั่นใจให้ fill เฉยๆ ก่อน (ไม่ใส่ key/then_click_index) แล้วดู"
+                "ผลลัพธ์ก่อนตัดสินใจ"
+            ),
+        },
+        # W_chain ("Compound Actions" — ลด step ของ form/list task เช่น เลือกจากลิสต์แล้วกด
+        # Submit): optional เสมอ ใช้ได้กับ type="fill"/"click"/"select"/"check" — คลิก
+        # element ที่สองนี้ทันทีในคำสั่งเดียวกัน ถ้า action หลักสำเร็จ (ดู
+        # actions.py::_maybe_chain_click) ยังผ่าน permission check เต็มรูปแบบเหมือน action
+        # เดี่ยวๆ ทุกประการ (ไม่ auto-approve) — ใช้เฉพาะตอนเห็น element ที่สองอยู่แล้วใน
+        # indexed elements ปัจจุบัน (ไม่ต้องรอ perceive ใหม่ก่อนถึงจะเห็น เช่น ปุ่ม
+        # Submit/OK/Confirm ที่อยู่ในหน้าเดียวกับ dropdown/checkbox/list/ช่องกรอกที่เพิ่ง
+        # ทำ) ห้ามเดา index ของ element ที่ยังไม่เห็นในรายการปัจจุบันเด็ดขาด
+        #
+        # W_chain follow-up (edge case ที่พบจริง): ทดสอบแล้วพบว่า fill+"key":"Enter" ทำให้
+        # เข้าใจผิดว่า submit สำเร็จได้ ถ้าหน้านั้นไม่มี Enter-to-submit จริง (ไม่มี <form>/
+        # keypress listener) ทั้งที่ค่าที่กรอกไปถูกต้องตลอด — ปุ่ม Submit ก็ไม่เคยถูกคลิก
+        # เลย ระบบตรวจไม่เจอความสำเร็จ ถ้าเห็นปุ่ม Submit/OK/Go/Search จริงอยู่ในหน้า ให้ใช้
+        # then_click_index คลิกปุ่มนั้นแทน "key":"Enter" เสมอ (เชื่อถือได้กว่า ใช้ได้กับทุก
+        # ฟอร์มไม่ว่าจะมี Enter-to-submit หรือไม่) — สงวน "key":"Enter" ไว้เฉพาะตอนไม่เห็น
+        # ปุ่ม submit แยกต่างหากในหน้าเลยจริงๆ (เช่น ช่องค้นหาที่ไม่มีปุ่มค้นหาให้กด)
+        "then_click_index": {
+            "type": "integer",
+            "description": (
+                "index ของปุ่มที่จะคลิกทันทีหลัง action หลัก (fill/click/select/check) "
+                "สำเร็จ (optional) — ใช้เมื่อ element ทั้งสอง (เช่น ช่องกรอก/รายการที่เลือก "
+                "+ ปุ่ม Submit) อยู่บนหน้าเดียวกันและเห็นครบใน indexed elements ตอนนี้แล้ว "
+                "รวม 2 action เป็น 1 คำสั่งเดียว ลด round-trip — เชื่อถือได้กว่า fill + "
+                "\"key\":\"Enter\" เสมอเมื่อเห็นปุ่ม Submit/OK/Go จริงในหน้า (บางฟอร์มไม่มี "
+                "Enter-to-submit เลย กด Enter แล้วไม่มีอะไรเกิดขึ้น ทั้งที่กรอกค่าถูกต้อง "
+                "แล้ว) — ไม่ใส่มาถ้าไม่แน่ใจว่า element ที่สองคืออะไร/index เท่าไหร่"
             ),
         },
         "direction": {"type": "string", "enum": ["up", "down"], "description": "ทิศทางเลื่อนจอ (scroll)"},
@@ -793,8 +864,51 @@ _FINISH_TASK_PARAMS = {
 }
 _FINISH_TASK_DESC = "เรียกเมื่อ goal สำเร็จแล้ว หรือเห็นชัดว่าทำต่อไม่ได้ — จบ loop"
 
+# W_resume ("Mid-Task Input Request" — บั๊กจริงที่ user รายงาน: ขอรหัสผ่านใหม่จาก user
+# กลางทาง แต่ agent ไม่มีทางทำอะไรได้นอกจาก finish_task(success=false) ซึ่งจบ task ทั้งหมด
+# ทิ้ง plan/messages/browser state เดิม — พอ user ตอบรหัสผ่านมาในเทิร์นถัดไป กลายเป็น
+# POST /tasks ใหม่ที่ไม่มีบริบทของ plan เดิมเลย ทำให้ agent ร่างแผนใหม่/เริ่มงานใหม่ทั้งหมด
+# แทนที่จะทำต่อจากที่ค้างไว้) — tool ใหม่แยกจาก finish_task โดยเจตนา: เรียกแล้ว
+# orchestrator.py จะ "หยุดรอ" คำตอบจาก human ผ่านกลไกเดียวกับ permission prompt
+# (ask_user_func -> TaskManager.request_approval()/resolve_approval() — ดู
+# task_manager.py) แล้ว "ทำ loop เดิมต่อ" ด้วยคำตอบที่ได้ (ป้อนกลับเป็น tool_result ของ
+# tool_use นี้) ไม่ใช่จบ task/เริ่มแผนใหม่เลย — สงวน finish_task(success=false) ไว้เฉพาะ
+# ทางตันจริงๆ ที่ถามคำถามต่อก็ช่วยไม่ได้เท่านั้น
+_REQUEST_USER_INPUT_PARAMS = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": (
+                "คำถามที่จะถาม user ตรงๆ เป็นภาษาเดียวกับที่ user ใช้คุยด้วย (เช่น "
+                "\"กรุณาระบุรหัสผ่านใหม่ที่ต้องการตั้ง\") — ต้องเจาะจงว่าต้องการค่าอะไร "
+                "ห้ามถามกว้างๆ คลุมเครือ"
+            ),
+        },
+        "sensitive": {
+            "type": "boolean",
+            "description": (
+                "true ถ้าค่าที่ถามเป็นรหัสผ่าน/ข้อมูลลับ (UI จะซ่อนตัวอักษรที่ user พิมพ์) "
+                "— default false สำหรับค่าทั่วไปที่ไม่ต้องปกปิด (เช่น ชื่อ/ตัวเลือก)"
+            ),
+        },
+    },
+    "required": ["prompt"],
+}
+_REQUEST_USER_INPUT_DESC = (
+    "หยุดรอถามค่าที่ต้องได้จาก user จริงๆ เท่านั้น (เดา/รู้เองไม่ได้ เช่น รหัสผ่านใหม่ที่ "
+    "จะตั้ง หรือตัวเลือกที่กำกวมจนต้องให้ human ตัดสินใจ) แล้วทำ task เดิมต่อด้วยคำตอบที่ได้ "
+    "— ไม่จบ task เหมือน finish_task ใช้แทน finish_task(success=false) เสมอเมื่อสิ่งที่ขาด "
+    "คือแค่ \"คำตอบจาก human\" ไม่ใช่ทางตันที่แก้ไม่ได้จริง"
+)
+
 # --- Anthropic tool format ---
 BROWSER_ACTION_TOOL = {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "input_schema": _BROWSER_ACTION_PARAMS}
+REQUEST_USER_INPUT_TOOL = {
+    "name": "request_user_input",
+    "description": _REQUEST_USER_INPUT_DESC,
+    "input_schema": _REQUEST_USER_INPUT_PARAMS,
+}
 # cache_control อยู่บน tool ตัวสุดท้าย -> Anthropic cache ทั้ง prefix (tools + system
 # ที่ตามมา) เป็นก้อนเดียว เพราะ tools/system เหมือนเดิมทุก step ของ loop เดียวกัน
 FINISH_TASK_TOOL = {
@@ -807,6 +921,7 @@ FINISH_TASK_TOOL = {
 # --- OpenAI-compatible (Groq) tool format ---
 _GROQ_TOOLS = [
     {"type": "function", "function": {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS}},
+    {"type": "function", "function": {"name": "request_user_input", "description": _REQUEST_USER_INPUT_DESC, "parameters": _REQUEST_USER_INPUT_PARAMS}},
     {"type": "function", "function": {"name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS}},
 ]
 
@@ -815,6 +930,7 @@ _GEMINI_TOOLS = [
     {
         "function_declarations": [
             {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS},
+            {"name": "request_user_input", "description": _REQUEST_USER_INPUT_DESC, "parameters": _REQUEST_USER_INPUT_PARAMS},
             {"name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS},
         ]
     }
@@ -2404,7 +2520,7 @@ async def next_action(
         model=model,
         max_tokens=1024,
         system=_SYSTEM_BLOCKS,
-        tools=[BROWSER_ACTION_TOOL, FINISH_TASK_TOOL],
+        tools=[BROWSER_ACTION_TOOL, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL],
         tool_choice={"type": "any"},
         messages=request_messages,
     )

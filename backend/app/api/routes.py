@@ -1009,7 +1009,10 @@ async def respond_task(task_id: str, req: RespondRequest, request: Request) -> d
     ยิงมาที่นี่ — request_id ต้องตรงกับ approval_request event ล่าสุดที่ยังไม่ถูกตอบ
     (ดู TaskManager.resolve_approval()) ไม่งั้นถือว่าหมดอายุ/ตอบไปแล้ว คืน 404"""
     task_manager: TaskManager = request.app.state.task_manager
-    ok = task_manager.resolve_approval(task_id, req.request_id, req.approved, edited_plan=req.edited_plan)
+    ok = task_manager.resolve_approval(
+        task_id, req.request_id, req.approved,
+        edited_plan=req.edited_plan, answer_text=req.answer_text,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="ไม่พบ pending request นี้ (อาจหมดอายุหรือตอบไปแล้ว)")
     return {"status": "ok"}

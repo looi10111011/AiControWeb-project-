@@ -468,7 +468,28 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
 # ว่างเปล่าแล้วไม่มีอะไรให้ .fill() ต้องเคลียร์ซ้ำอีก)
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index — เคลียร์ข้อความเดิมด้วย
-    focus -> select-all -> Backspace ก่อนเสมอ (ดู module comment ด้านบน)"""
+    focus -> select-all -> Backspace ก่อนเสมอ (ดู module comment ด้านบน)
+
+    W_datepicker ("Popup Dismissal After Fill" — บั๊กจริงที่ user รายงาน: agent กรอกวันที่
+    ในช่อง "From Date" สำเร็จ แต่ "To Date" กลับไม่ถูกกรอกแล้วแจ้ง success เท่านั้น) —
+    ยืนยันจากการทดสอบจริงบน OrangeHRM Leave List ว่า focus (จาก target.click() ด้านบน)
+    ทำให้ date-picker calendar popup เปิดขึ้นมาเป็นผลข้างเคียงของ framework เอง (ไม่ใช่
+    intentional — เราแค่ต้องการ focus ก่อน clear text) popup นี้แทรก element ใหม่ (ปุ่ม
+    นำทางเดือน/ปี) เข้า DOM ทำให้ data-ai-index ของ element ถัดๆ ไปใน DOM order เลื่อน
+    หนีจากตำแหน่งเดิม (สลับ index ของ "To Date" ไปเป็น index ของปุ่มนำทางปฏิทินแทน) ถ้า
+    agent (หรือ compound action อื่นในคำสั่งเดียวกัน) อ้าง index จาก snapshot ก่อนหน้าที่
+    ยังไม่มี popup — พลาด target ไปกดปุ่มปฏิทินแทนช่องกรอกจริงเงียบๆ โดยไม่มี error ให้เห็น
+    เลย (ปุ่มปฏิทินไม่ error แค่ไม่มีผลตามที่ agent ตั้งใจ) — ปิด popup ทันทีหลัง fill()
+    สำเร็จเสมอ กัน state ที่ไม่คาดคิดแบบนี้หลุดไปถึงรอบ perceive ถัดไป
+
+    ทดสอบแล้ว: Escape เพียงอย่างเดียวไม่ปิด popup นี้ (framework ผูก listener กับ
+    outside-click ไม่ใช่ keydown) ต้องเป็นการคลิกจริงเท่านั้น — blur() + คลิกที่ <body>
+    ตรงๆ (ไม่ใช่คลิกตำแหน่งพิกัดบนหน้าจอที่อาจไปโดน element อื่นที่มี handler ไม่พึงประสงค์
+    เช่น link ที่พาไป navigate โดยไม่ตั้งใจ — body ไม่มีทางมี handler ที่ทำอะไรเองอยู่แล้ว)
+    จำลอง "คลิกออกไปข้างนอก" แบบที่มนุษย์จริงทำหลังพิมพ์เสร็จตามธรรมชาติอยู่แล้ว ปลอดภัยกับ
+    input ทั่วไปที่ไม่มี popup อะไรเลยด้วย (ไม่มีผลข้างเคียง) — best-effort เท่านั้น ห่อ
+    try/except กันไม่ให้ fill() ที่สำเร็จไปแล้วกลายเป็น fail เพราะขั้นตอนเสริมนี้พังเฉยๆ
+    (เช่น element หลุดจาก DOM ไปแล้วหลัง fill)"""
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
@@ -476,6 +497,15 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
         await target.press(selector, "ControlOrMeta+a", timeout=timeout)
         await target.press(selector, "Backspace", timeout=timeout)
         await target.fill(selector, text, timeout=timeout)
+        try:
+            await target.locator(selector).evaluate("el => { el.blur(); document.body.click(); }")
+            # popup ปิดจริง (ยืนยันจากการทดสอบ) แต่ไม่ synchronous — framework ใช้
+            # transition/nextTick ก่อนถอด element ออกจาก DOM จริง (~100-300ms) ไม่รอตรงนี้
+            # จะคืนผลลัพธ์ก่อน popup หายจริง ทำให้ get_snapshot() รอบถัดไป (ที่ orchestrator
+            # เรียกทันทีหลัง action นี้) ยังเห็น popup/ปุ่มนำทางค้างอยู่
+            await target.wait_for_timeout(200)
+        except Exception:
+            pass
         descriptor = await compute_locator_descriptor(target, selector)
         return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ", locator_descriptor=descriptor)
     except PWTimeout:
@@ -816,10 +846,88 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label
 # ------------------------------------------------------------
 # ทางเข้าเดียวสำหรับ W4: agent ส่ง action มาเป็น dict แล้ว dispatch
 # ------------------------------------------------------------
+async def _check_permission(
+    cmd: dict, ask_user_func: Optional[AskUserFunc], label: str, manual_guidance: str,
+    allowed_domains: Optional[set], element_tag: str, element_type: str,
+) -> Optional[str]:
+    """W_chain ("Compound Actions" — ลด step ของ form/list task): เดิมเช็ค permission
+    inline อยู่ที่หัว execute() เท่านั้น (ครั้งเดียวต่อ cmd) — แยกเป็นฟังก์ชันย่อยเพื่อเรียก
+    ซ้ำได้กับ "action ที่สอง" ที่ chain ต่อท้ายใน cmd เดียวกัน (ดู then_click_index ด้านล่าง)
+    โดยไม่ต้อง duplicate logic — คืน None ถ้าอนุญาตให้ทำต่อได้ (SAFE หรือ NEEDS_CONFIRMATION
+    ที่ approve แล้ว) หรือคืนข้อความ error ถ้าถูกบล็อก/ถูกปฏิเสธ (ให้ผู้เรียกคืน ActionResult
+    ที่ fail เอง — ฟังก์ชันนี้ไม่รู้จัก "action" string ของ ActionResult)"""
+    risk = classify_action(
+        cmd, label=label, manual_guidance=manual_guidance, allowed_domains=allowed_domains,
+        element_tag=element_tag, element_type=element_type,
+    )
+    if risk == ActionRisk.BLOCKED:
+        return "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)"
+    if risk == ActionRisk.NEEDS_CONFIRMATION:
+        approved = await _confirm_action(cmd, ask_user_func, label)
+        if not approved:
+            return REJECTED_BY_USER_MESSAGE
+    return None
+
+
+async def _maybe_chain_click(
+    page: Page, cmd: dict, primary: ActionResult, ask_user_func: Optional[AskUserFunc],
+    manual_guidance: str, allowed_domains: Optional[set],
+    then_label: str, then_tag: str, then_type: str,
+) -> ActionResult:
+    """W_chain: ถ้า cmd มี "then_click_index" (LLM ขอคลิก element ที่สองต่อทันทีในคำสั่ง
+    เดียวกัน — ใช้กับ fill/select/check ที่ตามด้วยปุ่ม Submit/OK ที่ "เห็นอยู่แล้ว" ในหน้า
+    เดิม ไม่ต้อง perceive ใหม่ก่อน) ให้ dispatch คลิกที่สองต่อทันที รวมเป็น ActionResult
+    เดียว ลด LLM round-trip จาก 2-3 step เหลือ 1 step ต่อ interaction pattern แบบนี้ — คู่กับ
+    fill โดยเฉพาะ นี่คือทางเลือกที่ "เชื่อถือได้กว่า" fill+key:"Enter" เสมอเมื่อเห็นปุ่ม
+    submit จริงในหน้า เพราะบางเว็บไม่มี Enter-to-submit เลย (ดู docstring จุดเรียกใน
+    execute() ส่วน fill — ยืนยันจากการทดสอบจริงว่า fill() เขียนค่าถูกต้องเสมอ ปัญหาที่เจอ
+    จริงคือ Enter บางหน้าไม่มีผลอะไรเลย ไม่ใช่ fill() พังหรือ event มาไม่ทัน)
+
+    ไม่ chain เลยถ้า primary action เอง fail (ไม่มีเหตุผลจะคลิกต่อถ้าขั้นแรกยังไม่สำเร็จ) หรือ
+    cmd ไม่มี then_click_index มาเลย (คืน primary เดิมตรงๆ ไม่กระทบ caller เดิมที่ไม่เคยใช้
+    ฟีเจอร์นี้แม้แต่นิดเดียว)
+
+    ความปลอดภัย: action ที่สองยังผ่าน classify_action()/ask_user_func เต็มรูปแบบเหมือน
+    action เดี่ยวๆ ทุกประการ (เรียก _check_permission() ซ้ำ ไม่ได้ auto-approve เพราะเป็น
+    action ที่สอง) — ถ้าต้องขออนุมัติ/ถูกบล็อก จะไม่ทำต่อ แค่คืนผลของ primary เฉยๆ (ความคืบ
+    หน้าที่เกิดขึ้นจริงแล้วไม่หายไป) พร้อมข้อความบอกให้สั่ง click ที่สองแยกเป็น step ถัดไปแทน
+    — ไม่มีทางข้าม human-in-the-loop ผ่านช่องทางนี้ได้เลย
+
+    manual_guidance/allowed_domains ใช้ค่าเดียวกับที่ primary action ได้รับ (ไม่ query RAG
+    ซ้ำรอบสองสำหรับ target ที่สอง — เสีย latency ที่เพิ่งลดไปกลับคืนหมด ขัดจุดประสงค์ของ
+    feature นี้เอง) ยอมรับว่าอาจไม่ specific เท่าที่ควรสำหรับ target ที่สอง แต่ปลอดภัยกว่า
+    ไม่มี guidance เลย"""
+    then_index = cmd.get("then_click_index")
+    if then_index is None or not primary.success:
+        return primary
+
+    synthetic_cmd = {"type": "click", "index": then_index}
+    denial = await _check_permission(
+        synthetic_cmd, ask_user_func, then_label, manual_guidance, allowed_domains, then_tag, then_type,
+    )
+    if denial is not None:
+        return ActionResult(
+            primary.success,
+            primary.action,
+            f"{primary.message} (ไม่ได้คลิกต่อที่ index {then_index}: {denial} — สั่ง click "
+            f"แยกเป็น step ถัดไปแทน)",
+            locator_descriptor=primary.locator_descriptor, toast_confirmed=primary.toast_confirmed,
+        )
+
+    second = await _dispatch_click_with_retry(page, then_index, then_label)
+    return ActionResult(
+        primary.success and second.success,
+        primary.action,
+        f"{primary.message} + then click({then_index}): {second.message}",
+        locator_descriptor=primary.locator_descriptor,
+        toast_confirmed=primary.toast_confirmed or second.toast_confirmed,
+    )
+
+
 async def execute(
     page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
     manual_guidance: str = "", allowed_domains: Optional[set] = None, element_tag: str = "",
-    element_type: str = "",
+    element_type: str = "", then_label: str = "", then_tag: str = "", then_type: str = "",
 ) -> ActionResult:
     """
     รับคำสั่งจาก LLM ในรูป dict เช่น:
@@ -856,19 +964,23 @@ async def execute(
     (เช่น input ที่ type="text"/"search"/"submit") — ส่งต่อให้ classify_action() คู่กับ
     element_tag (ดู permission/rules.py::SAFE_INPUT_TAG/RISKY_INPUT_TYPES) ไม่ส่งมาก็ได้
     (default "")
+
+    then_label/then_tag/then_type (W_chain, "Compound Actions"): label/tag/type ของ
+    element ที่ cmd["then_click_index"] ชี้ไป (ถ้ามี — ใช้ได้กับ type="fill"/"select"/
+    "check"/"click" ดู _maybe_chain_click() ด้านล่าง)
+    เหมือน label/element_tag/element_type ด้านบนทุกประการแค่สำหรับ target ตัวที่สองของ
+    action เดียวกัน — orchestrator.py resolve มาจาก elements list เดียวกับที่ resolve
+    label/element_tag/element_type ของ action หลัก ไม่ส่งมาก็ได้ (default "" ทั้งคู่ —
+    then_click_index ที่ไม่มี label/tag/type แนบมาก็ยังเช็ค permission ได้ปกติ แค่ไม่มี
+    สัญญาณเสริมให้ classify_action() ใช้)
     """
     t = cmd.get("type")
 
-    risk = classify_action(
-        cmd, label=label, manual_guidance=manual_guidance, allowed_domains=allowed_domains,
-        element_tag=element_tag, element_type=element_type,
+    denial = await _check_permission(
+        cmd, ask_user_func, label, manual_guidance, allowed_domains, element_tag, element_type,
     )
-    if risk == ActionRisk.BLOCKED:
-        return ActionResult(False, f"{t}", "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)")
-    if risk == ActionRisk.NEEDS_CONFIRMATION:
-        approved = await _confirm_action(cmd, ask_user_func, label)
-        if not approved:
-            return ActionResult(False, f"{t}", REJECTED_BY_USER_MESSAGE)
+    if denial is not None:
+        return ActionResult(False, f"{t}", denial)
 
     try:
         # click/fill/select/check ผ่าน retry wrapper (W5) เพราะพังบ่อยจาก DOM ยังไม่นิ่ง
@@ -889,12 +1001,45 @@ async def execute(
             redundant = await state_filter.check_click_redundant(page, cmd["index"])
             if redundant is not None:
                 return ActionResult(False, f"click({cmd['index']})", f"[ข้าม] {redundant}")
-            return await _dispatch_click_with_retry(page, cmd["index"], label)
+            result = await _dispatch_click_with_retry(page, cmd["index"], label)
+            return await _maybe_chain_click(
+                page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
+                then_label, then_tag, then_type,
+            )
         if t == "fill":
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
                 return ActionResult(True, f"fill({cmd['index']})", f"[ข้าม] {redundant}")
-            return await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+            result = await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+            # W_chain ("Compound Actions"): "key" (เดิมมีไว้ใช้กับ press_key เท่านั้น) ใช้
+            # ร่วมกับ fill ได้ด้วย — กด key นี้ (ปกติ "Enter") ทันทีหลัง fill สำเร็จ รวม
+            # "Focus + Type + Press Enter" เป็น 1 step เดียว (fill() เองก็ focus element
+            # อยู่แล้วตั้งแต่ต้น — ดู fill() ด้านบน) แทนที่จะต้องรอ perceive ใหม่แล้วสั่ง
+            # press_key แยกอีก step — ไม่ต้องเช็ค permission ซ้ำ (press_key ไม่เคยอยู่ใน
+            # DEFAULT_NEEDS_CONFIRMATION เลย ปลอดภัยเสมอไม่ว่า index ไหน)
+            if result.success and cmd.get("key"):
+                key_result = await _dispatch_with_retry(press_key, page, cmd["index"], cmd["key"])
+                result = ActionResult(
+                    result.success and key_result.success, result.action,
+                    f"{result.message} + then press_key({cmd['key']}): {key_result.message}",
+                    locator_descriptor=result.locator_descriptor,
+                )
+            # W_chain follow-up (false-positive fix — reported after enabling "key" above):
+            # ยืนยันจากการทดสอบจริงบน MiniWoB "enter-text" ว่า fill() เขียนค่าลง DOM ถูกต้อง
+            # เป๊ะเสมอ (ไม่มีปัญหาเรื่อง event/state ไม่ทัน — Playwright's .fill() dispatch
+            # input event ให้เองอยู่แล้วแบบ synchronous) แต่บางหน้าเว็บ "ไม่ฟัง" Enter เลย
+            # (<input> ไม่ได้อยู่ใน <form> จริง ไม่มี keypress listener) ทำให้ agent ที่เดา
+            # ใช้ "key":"Enter" กับฟอร์มแบบนี้เข้าใจผิดว่า submit ไปแล้วทั้งที่ปุ่ม Submit
+            # จริงยังไม่เคยถูกคลิกเลย (ค่าที่กรอกไปถูกต้องอยู่ตลอด ไม่ใช่ปัญหา timing/event
+            # แต่เป็นปัญหา "เลือก action ผิด") — เพิ่ม then_click_index ให้ใช้กับ fill ได้
+            # ด้วย (เดิมมีแค่ click/select/check) ให้ agent สั่ง "fill + คลิกปุ่ม Submit ที่
+            # เห็นอยู่แล้ว" เป็น 1 คำสั่งได้ตรงๆ แทนที่จะเดาว่า Enter ใช้ได้ไหม — ทางเลือกที่
+            # เชื่อถือได้กว่า key:"Enter" เสมอเมื่อเห็นปุ่ม submit จริงอยู่ในหน้า (ดู
+            # SYSTEM_PROMPT ใน llm.py สำหรับลำดับความสำคัญที่แนะนำ agent)
+            return await _maybe_chain_click(
+                page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
+                then_label, then_tag, then_type,
+            )
         if t == "fill_secret":
             # W65[3]: ไม่เช็ค state_filter.check_fill_redundant() เหมือน "fill" ด้านบน — ฟังก์ชัน
             # นั้นต้องการ cmd["text"] (ค่าจริงที่จะเทียบกับค่าปัจจุบันในช่อง) แต่ fill_secret ไม่มี
@@ -902,12 +1047,21 @@ async def execute(
             # เป็นแค่ optimization ที่เสียไป ไม่กระทบ correctness (retry wrapper ด้านล่างยังกัน
             # DOM ไม่นิ่งได้ตามปกติ)
             return await _dispatch_with_retry(fill_secret, page, cmd["index"], cmd.get("secret", ""))
-        if t == "select":      return await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
+        if t == "select":
+            result = await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
+            return await _maybe_chain_click(
+                page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
+                then_label, then_tag, then_type,
+            )
         if t == "check":
             redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
             if redundant is not None:
                 return ActionResult(True, f"check({cmd['index']})", f"[ข้าม] {redundant}")
-            return await _dispatch_with_retry(check, page, cmd["index"])
+            result = await _dispatch_with_retry(check, page, cmd["index"])
+            return await _maybe_chain_click(
+                page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
+                then_label, then_tag, then_type,
+            )
         if t == "scroll":
             direction = cmd.get("direction", "down")
             redundant = await state_filter.check_scroll_redundant(page, direction)

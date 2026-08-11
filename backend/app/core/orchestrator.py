@@ -60,6 +60,14 @@ _PREMATURE_FALSE_FINISH_NUDGE = (
 # page แรกจริงๆ เช่น "verify ว่าอยู่หน้า login") แค่ให้ยืนยันอีกครั้งก่อนเหมือนกัน
 _MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
 
+# W_resume ("Mid-Task Input Request"): request_user_input หยุด loop รอ human ตอบแล้วทำต่อ
+# (ดู llm.py::REQUEST_USER_INPUT_TOOL) — จำกัดจำนวนครั้งที่เรียก tool นี้ได้ต่อ task กัน
+# LLM วนถามไม่รู้จบโดยไม่มีความคืบหน้าจริง (เช่น ถามซ้ำเพราะไม่ยอมอ่านคำตอบที่ได้มาแล้ว) —
+# เกินโควตานี้แล้วปฏิเสธไม่ให้หยุดรออีก ป้อน tool_result บอกเหตุผลแล้วบังคับให้ตัดสินใจเอง
+# ต่อ (ไม่ finish_task ทันทีเงียบๆ — ให้ LLM เห็นเหตุผลแล้วเลือก action ต่อไปเอง เหมือน
+# escape valve อื่นในไฟล์นี้)
+_MAX_REQUEST_USER_INPUT_CALLS = 3
+
 # W44: qa_summary เดิมตอบด้วย llm.summarize_page() ตัวเดียว (ไม่มี tool ให้เรียกเลย) เห็น
 # แค่ page_text จาก get_snapshot() (interactive elements ล้วนๆ ไม่มีเนื้อหาตาราง/list) —
 # คำถามแบบ "เห็นชื่อ X ในตารางไหม" เลยตอบไม่ได้เสมอแม้ read_page_data/extract_table_data()
@@ -1108,6 +1116,33 @@ async def _confirm_plan(plan_text: str, ask_user_func: Optional[AskUserFunc]) ->
     return choice.strip().lower() in ("y", "yes"), plan_text
 
 
+async def _request_user_input(
+    prompt_text: str, sensitive: bool, ask_user_func: Optional[AskUserFunc],
+) -> tuple[bool, str]:
+    """W_resume ("Mid-Task Input Request" — บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่
+    กลางทางแล้ว finish_task(false) จบ task ทั้งหมดทิ้ง plan/messages/browser state เดิม
+    ทำให้เทิร์นถัดไปที่ user ตอบค่ามาต้องเริ่มงานใหม่จากศูนย์) — หยุดรอคำตอบจาก human จริงๆ
+    "กลางทาง" โดยไม่จบ loop เลย (คนละกลไกจาก finish_task โดยสิ้นเชิง — ผู้เรียกยังคง await
+    coroutine เดิมอยู่ที่จุดนี้ ไม่คืน control กลับไปให้ caller ของ run_task() จนกว่าจะได้
+    คำตอบ) ใช้ ask_user_func เดียวกับ _confirm_plan()/permission prompt ทุกประการ (cmd
+    dict บอกชนิดคำขอผ่าน "type" — ask_user_func เดิม/routes.py::_make_ask_user_func ไม่
+    ต้องแก้อะไรเลย เพราะ forward cmd แบบ generic อยู่แล้ว ไม่ special-case type ไหนเป็น
+    พิเศษ)
+
+    คืนค่า (provided, answer) — provided=False ถ้า user ปฏิเสธ/หมดเวลา (ask_user_func คืน
+    False) answer มาจาก cmd["answer"] ที่ resolve_approval() (task_manager.py) mutate เข้า
+    cmd dict ก้อนเดียวกับที่เรา await อยู่นี้ตรงๆ ก่อน future resolve กลับมา — pattern
+    เดียวกับที่ _confirm_plan() อ่าน cmd["plan"] กลับมาทุกประการ (ห้ามเชื่อตัวแปรที่ปิด
+    scope ไปแล้วตอนส่งเข้า ask_user_func ต้องอ่านจาก cmd หลัง await เสร็จเท่านั้น)"""
+    if ask_user_func is not None:
+        cmd = {"type": "request_user_input", "prompt": prompt_text, "sensitive": sensitive}
+        provided = bool(await ask_user_func(cmd))
+        return provided, (cmd.get("answer", "") if provided else "")
+    print(f"\n=== Agent ต้องการข้อมูลเพิ่มเติม ===\n{prompt_text}", flush=True)
+    answer = await asyncio.to_thread(input, "คำตอบ: ")
+    return True, answer
+
+
 class Orchestrator:
     def __init__(self):
         self.memory = ShortTermMemory()
@@ -1524,6 +1559,9 @@ class Orchestrator:
         premature_deletion_incomplete_count = 0
         premature_table_verify_count = 0
         premature_row_action_before_search_count = 0
+        # W_resume: จำนวนครั้งที่เรียก request_user_input ไปแล้วใน task นี้ (ดู
+        # _MAX_REQUEST_USER_INPUT_CALLS ด้านบนสุดของไฟล์)
+        request_user_input_count = 0
         # W64[7.1]: True เฉพาะช่วง "1 step ถัดไปทันที" หลัง fill/select ที่สำเร็จ — reset เป็น
         # False หลัง action ถัดไปเสมอไม่ว่าจะเป็น action อะไร (ดู docstring ของ
         # _ROW_ACTION_LABEL_RE ด้านบนสุดของไฟล์สำหรับเหตุผลเต็มว่าทำไม scope แคบแค่ 1 step)
@@ -2023,6 +2061,58 @@ class Orchestrator:
                         flush=True,
                     )
 
+                # W_resume ("Mid-Task Input Request"): ตรวจก่อน finish_task เสมอ (คนละ tool
+                # กันเลย ไม่ใช่ alias/ไม่ผ่าน guard ของ finish_task ด้านล่างเลยสักจุด) —
+                # หยุด loop รอคำตอบจาก human จริงๆ ผ่าน _request_user_input() (mechanism
+                # เดียวกับ _confirm_plan()/permission prompt) แล้ว "ทำ loop เดิมต่อทันที"
+                # ด้วยคำตอบที่ได้ (ป้อนกลับเป็น tool_result ของ tool_use นี้เอง) — ไม่ return
+                # ไม่ reset plan ไม่ต้องรอเทิร์นถัดไปเหมือน finish_task(false) เดิม
+                if tool_name == "request_user_input":
+                    prompt_text = str(tool_input.get("prompt", "")).strip()
+                    sensitive = bool(tool_input.get("sensitive", False))
+
+                    if request_user_input_count >= _MAX_REQUEST_USER_INPUT_CALLS:
+                        if verbose:
+                            print(
+                                f"[request_user_input เกินโควตา {_MAX_REQUEST_USER_INPUT_CALLS} "
+                                "ครั้ง — ปฏิเสธไม่ให้หยุดรออีก]", flush=True,
+                            )
+                        messages = append_tool_result(
+                            messages, tool_use_id,
+                            f"[ระบบปฏิเสธ] ถามคำถามลักษณะนี้ครบ {_MAX_REQUEST_USER_INPUT_CALLS} "
+                            "ครั้งแล้วใน task นี้ ห้ามเรียก request_user_input อีก ให้ตัดสินใจ"
+                            "เองจากข้อมูลที่มีอยู่แล้ว หรือเรียก finish_task(success=false) "
+                            "ถ้าทำต่อไม่ได้จริงๆ",
+                        )
+                        continue
+
+                    request_user_input_count += 1
+                    steps_taken += 1
+                    provided, answer = await _request_user_input(prompt_text, sensitive, ask_user_func)
+                    log_cmd = {"type": "request_user_input", "prompt": prompt_text, "sensitive": sensitive}
+                    result_text = (
+                        f"user ตอบ: {answer}" if provided
+                        else "[ไม่ได้คำตอบ] user ปฏิเสธ/ไม่ตอบภายในเวลาที่กำหนด"
+                    )
+                    if verbose:
+                        print(f"[request_user_input] {prompt_text!r} -> {result_text}", flush=True)
+                    self.memory.record({
+                        "step": steps_taken,
+                        "cmd": log_cmd,
+                        "label": "",
+                        "result": result_text,
+                        "success": provided,
+                        "tokens": _tokens_dict(usage),
+                        "locator_descriptor": None,
+                    })
+                    await _emit({
+                        "kind": "step", "step": steps_taken, "cmd": log_cmd,
+                        "label": "", "result": result_text, "success": provided,
+                        "tokens": _tokens_dict(total_usage),
+                    })
+                    messages = append_tool_result(messages, tool_use_id, result_text)
+                    continue
+
                 if tool_name == "finish_task":
                     claimed_success = bool(tool_input.get("success", False))
 
@@ -2408,6 +2498,23 @@ class Orchestrator:
                     (e.get("type", "") for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
 
+                # W_chain ("Compound Actions"): เดียวกับ action_label/action_tag/
+                # action_element_type ด้านบนทุกประการ แค่ resolve ให้ then_click_index
+                # (element ที่สองที่จะคลิกต่อทันทีถ้ามี — ดู llm.py::_BROWSER_ACTION_PARAMS
+                # "then_click_index", actions.py::_maybe_chain_click) จาก elements snapshot
+                # เดียวกัน ให้ classify_action() ของ action ที่สองมีสัญญาณเสริมเหมือน action
+                # หลักทุกประการ ไม่ใช่แค่ index เปล่าๆ
+                then_click_index = tool_input.get("then_click_index")
+                then_label = next(
+                    (e["label"] for e in elements if e["index"] == then_click_index), ""
+                ) if then_click_index is not None else ""
+                then_tag = next(
+                    (e.get("tag", "") for e in elements if e["index"] == then_click_index), ""
+                ) if then_click_index is not None else ""
+                then_element_type = next(
+                    (e.get("type", "") for e in elements if e["index"] == then_click_index), ""
+                ) if then_click_index is not None else ""
+
                 # W64[7.1] ("Filter Order & False Completion" — ดู docstring เต็มของ
                 # _ROW_ACTION_LABEL_RE ด้านบนสุดของไฟล์): บล็อกการคลิกปุ่ม row-action
                 # (Edit/View/Delete/Download) ทันทีถ้า step ก่อนหน้าคือ fill/select ที่สำเร็จ
@@ -2533,6 +2640,7 @@ class Orchestrator:
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
                     manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
                     element_tag=action_tag, element_type=action_element_type,
+                    then_label=then_label, then_tag=then_tag, then_type=then_element_type,
                 )
                 # W21: เก็บผลลัพธ์ของ action นี้ไว้ให้ loop-guard ตอนต้น step ถัดไปเช็ค
                 # is_bulk_safe_repeat (ดู docstring ตรงจุดเช็คด้านบน)
