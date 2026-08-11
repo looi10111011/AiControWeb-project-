@@ -145,6 +145,33 @@ _COLLECT_JS = r"""
     return '';
   };
 
+  // W_toggle ("Switch/Toggle Label Resolver" — บั๊กจริงที่ user รายงาน: agent แก้ toggle
+  // switch ไม่ได้เลย เช่น "Include Past Employees" บน OrangeHRM Leave List) — ยืนยันจาก
+  // DOM จริง: ปุ่ม toggle พวกนี้ (<div class="oxd-switch-wrapper"><label><input
+  // type=checkbox opacity:0><span class="oxd-switch-input">...</span></label></div>)
+  // ไม่มีทั้ง id/label[for]/wrapping-label-ที่มีข้อความเลย (label ที่ห่อ input ว่างเปล่า
+  // สนิท) — ข้อความอธิบายจริง ("Include Past Employees") อยู่ใน <p>/sibling แยกต่างหาก
+  // "ก่อนหน้า" container ของ toggle ทั้งก้อน (พี่น้องของ .oxd-switch-wrapper เอง ไม่ใช่
+  // บรรพบุรุษ/ลูกของ element ที่ได้ index) — เดินขึ้นไม่กี่ชั้น (พอสำหรับ pattern
+  // "label -> wrapper -> grid-item" ที่พบจริง) เช็ค previous sibling ทุกตัวในแต่ละชั้น
+  // หาตัวแรกที่เป็นข้อความสั้นๆ ไม่มี element โต้ตอบได้ซ้อนอยู่ข้างใน (กัน match ปุ่ม/ช่อง
+  // กรอกอื่นที่บังเอิญอยู่ก่อนหน้าผิดที่) คืนค่าว่างถ้าไม่เจอเลย (ไม่ throw ไม่เดามั่ว)
+  const getPrecedingSiblingLabelText = (node) => {
+    let cur = node;
+    for (let depth = 0; depth < 4 && cur; depth++) {
+      let sib = cur.previousElementSibling;
+      while (sib) {
+        const t = (sib.innerText || sib.textContent || '').trim();
+        if (t && t.length <= 80 && !sib.querySelector('input, button, select, textarea, a')) {
+          return t;
+        }
+        sib = sib.previousElementSibling;
+      }
+      cur = cur.parentElement;
+    }
+    return '';
+  };
+
   // W19 ("Pre-Execution Planner & Navigation Guard" ข้อ "Log Cleanliness"): เมนู/แท็บที่
   // ถูกเลือก/active อยู่แล้ว บาง framework จะไม่ trigger navigation/DOM change ซ้ำถ้าคลิก
   // ทับตัวเดิม (โครงสร้างหน้าเหมือนเดิมทุกอย่าง) ทำให้ wait_stable() ที่รอ networkidle/
@@ -319,6 +346,36 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
+  // W_toggle ("Switch/Toggle Label Resolver" — บั๊กจริงที่ user รายงาน: agent เปิด/ปิด
+  // toggle "Include Past Employees" บน OrangeHRM Leave List ไม่ได้เลย) — สาเหตุตรงๆ จาก
+  // การตรวจ DOM จริง: pattern เดียวกับ checkbox/radio wrapper ด้านบนเป๊ะ (native
+  // <input type="checkbox"> ซ่อนด้วย opacity:0 วาด toggle ที่มองเห็นแทนด้วย
+  // <span class="oxd-switch-input">) แต่ชื่อ class ไม่มีคำว่า "checkbox" เลยสักตัว
+  // (CHECKBOX_WRAPPER_SELECTOR ด้านบนจับไม่ได้) — ต่างจาก checkbox/radio ตรงที่ input ถูก
+  // ห่อด้วย <label> เปล่าๆ (ไม่มี text ใดๆ ข้างใน label เลย) ทำให้แม้แต่
+  // 'label:has(input[type="checkbox"])' ใน CHECKBOX_WRAPPER_SELECTOR ก็ยังไม่ช่วย เพราะ
+  // input ข้างในแมตช์ selectors มาตรฐาน (bare 'input') อยู่แล้ว ทำให้ label ถูก skip ที่
+  // guard `cand.querySelector(selectors)` ด้านบน (คิดว่า input ข้างในจะได้ index ของ
+  // ตัวเองแทน) แต่ input เองก็ถูกกรองทิ้งจาก visibility check ด้านล่างอีกที (opacity:0 +
+  // ไม่เข้าเงื่อนไข exemption ไหนเลยเพราะ isCheckboxWrapperCandidate เช็คคำว่า "checkbox"
+  // เท่านั้น) — สุทธิคือไม่มี element ไหนแทน toggle นี้ในหน้าเลยสักตัว
+  //
+  // *** ตั้งใจแยกเป็น selector/candidate ของตัวเอง ไม่รวมกับ CHECKBOX_WRAPPER_SELECTOR ***
+  // เพราะ isCheckboxWrapperCandidate (ด้านล่าง) ให้ label เริ่มต้นเป็น "Select row"/
+  // "Select All" ซึ่งออกแบบมาสำหรับ checkbox เลือกแถวในตารางเท่านั้น ถ้า toggle switch ที่
+  // เป็นคนละความหมายกันสิ้นเชิง (เช่น "Include Past Employees") ไปติด class ที่มีคำว่า
+  // checkbox ปนมาโดยบังเอิญ จะได้ label ผิดทันที — switch ใช้ isSwitchCandidate
+  // แยกต่างหาก (ดูด้านล่าง) ที่ไม่มี default แบบนั้นเลย ต้องหา label จริงจาก sibling text
+  // เท่านั้น (getPrecedingSiblingLabelText — ดูด้านบนสุดของไฟล์)
+  const SWITCH_WRAPPER_SELECTOR = [
+    '[class*="switch-input" i]', '[class*="switch-wrapper" i]', '[role="switch"]',
+  ].join(',');
+  for (const cand of document.querySelectorAll(SWITCH_WRAPPER_SELECTOR)) {
+    if (cand.closest(selectors)) continue;
+    if (cand.querySelector(selectors)) continue;
+    nodes.push(cand);
+  }
+
   // W21 ("Icon-based Action Button Resolver"): ปุ่ม action ในตาราง (View/Download/Edit/
   // Delete ฯลฯ) ที่ implement ด้วย icon font/SVG ล้วนๆ ข้างใน <button> จริง (เช่น
   // <button><i class="bi-eye-fill"></i></button> — OrangeHRM Recruitment candidate table)
@@ -387,8 +444,15 @@ _COLLECT_JS = r"""
     // checkbox wrapper บางเว็บทำ (ในเคสจริงของ OrangeHRM เองตัว span.oxd-radio-input
     // มองเห็นปกติอยู่แล้ว ไม่ได้ต้องพึ่ง exemption นี้ — กันไว้เผื่อเว็บอื่น)
     const isRadioWrapperCandidate = (el.className || '').toString().toLowerCase().includes('radio');
+    // W_toggle: เหมือน isCheckboxWrapperCandidate/isRadioWrapperCandidate ข้างบนเป๊ะ แค่
+    // คนละ widget (switch/toggle) — ตั้งใจแยก const ต่างหาก (ไม่รวมเข้า
+    // isCheckboxWrapperCandidate) เพราะตัวนี้ต้อง "ไม่" trigger checkboxWrapperLabel
+    // ("Select row"/"Select All") ด้านล่าง — ดู docstring ของ SWITCH_WRAPPER_SELECTOR
+    const isSwitchCandidate = (el.className || '').toString().toLowerCase().includes('switch') ||
+      el.getAttribute('role') === 'switch';
     const isClickableCandidate = ['a', 'button'].includes(el.tagName.toLowerCase()) ||
-      el.getAttribute('role') === 'button' || isCheckboxWrapperCandidate || isRadioWrapperCandidate;
+      el.getAttribute('role') === 'button' || isCheckboxWrapperCandidate || isRadioWrapperCandidate ||
+      isSwitchCandidate;
     const hoverRevealCandidate = hasSize && notDisplayNone && hiddenByOwnStyle && isClickableCandidate;
 
     const visible = hasSize && notDisplayNone && (!hiddenByOwnStyle || hoverRevealCandidate);
@@ -478,10 +542,18 @@ _COLLECT_JS = r"""
     const radioWrapperLabel = isRadioWrapperCandidate
       ? ((el.closest('label') && (el.closest('label').innerText || '').trim()) || '')
       : '';
+    // W_toggle: switch (span.oxd-switch-input เป็นต้น) เอง innerText ว่างเปล่าเสมอเหมือน
+    // radio wrapper ข้างบน แต่ต่างตรงที่ label ที่บอกความหมาย ("Include Past Employees")
+    // ไม่ได้อยู่ใน <label> เดียวกันเลย (label ที่ห่อ switch ว่างเปล่าสนิท) ต้องเดินหา
+    // sibling ก่อนหน้าแทน (getPrecedingSiblingLabelText — ดูด้านบนสุดของไฟล์) — ตั้งใจไม่มี
+    // default แบบ checkboxWrapperLabel เลย (ไม่มีความหมายทั่วไปแบบ "Select row" ให้ switch
+    // เดา ถ้าหา sibling text ไม่เจอจริงๆ ต้องคืนค่าว่างไปเลย ให้ fallback อื่น (icon
+    // class ฯลฯ) ลองต่อแทนที่จะโชว์ label ผิดความหมาย)
+    const switchLabel = isSwitchCandidate ? getPrecedingSiblingLabelText(el) : '';
     const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
                       humanize(dataTest) || el.getAttribute('name') ||
                       humanize(el.id) || checkboxWrapperLabel || radioWrapperLabel ||
-                      getIconClassLabel(el) || '';
+                      switchLabel || getIconClassLabel(el) || '';
 
     // ปุ่มตะกร้าหลังใส่สินค้าแล้วมี badge span ลูก (เช่น "1") ทำให้ innerText
     // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้

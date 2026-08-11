@@ -38,7 +38,7 @@ def test_save_manual_creates_version_1_and_all_derived_files():
     # ไม่มีไฟล์ประวัติแยกต่อเวอร์ชัน (vN.json) อีกต่อไป — save_manual() ทับ latest.json
     # ตรงๆ ทุกครั้งตามที่ user ขอ (กันไฟล์สะสมไม่รู้จบบนดิสก์ที่ commit เข้า git)
     assert set(os.listdir(domain_dir)) == {
-        "latest.json", "ui-map.json", "selectors.json", "knowledge.json",
+        "latest.json", "ui-map.json", "selectors.json", "knowledge.json", "llm-manual.json",
     }
 
 
@@ -64,7 +64,7 @@ def test_save_manual_bumps_version_on_subsequent_saves():
     # ต่อไป (latest.json ถูกทับตรงๆ) — ดู docstring save_manual()
     domain_dir = os.path.join(settings.site_manuals_dir, "example.com")
     assert set(os.listdir(domain_dir)) == {
-        "latest.json", "ui-map.json", "selectors.json", "knowledge.json",
+        "latest.json", "ui-map.json", "selectors.json", "knowledge.json", "llm-manual.json",
     }
 
 
@@ -448,3 +448,122 @@ def test_find_matching_page_min_score_still_returns_page_when_score_meets_thresh
 
     assert page is not None
     assert page.name == "User Management"
+
+
+# --- W69: build_llm_manual() — reshape SiteManual เป็นฟอร์แมตคู่มือ QA แบบมนุษย์เขียน
+# (semantic key -> css selector แบนๆ ต่อหน้า) ให้ paste เข้า prompt LLM ได้ตรงๆ
+
+
+def test_build_llm_manual_produces_semantic_elements_per_page():
+    manual = SiteManual(website="example.com", pages=[
+        PageInfo(
+            name="Login", url="https://example.com/auth/login", description="sign in page",
+            buttons=[ButtonInfo(text="Sign In", selector="button[type='submit']", is_form_submit=True)],
+            forms=[FormFieldInfo(label="Username", input_type="text", selector="input[name='username']")],
+        ),
+    ])
+
+    result = storage.build_llm_manual(manual)
+
+    assert result["app"] == "example.com"
+    assert result["base_url"] == "https://example.com"
+    page = result["pages"]["login_page"]
+    assert page["url"] == "/auth/login"
+    assert page["description"] == "sign in page"
+    assert page["elements"]["username_input"] == "input[name='username']"
+    assert page["elements"]["sign_in_button"] == "button[type='submit']"
+
+
+def test_build_llm_manual_nav_items_get_link_suffix_not_button():
+    manual = SiteManual(website="example.com", pages=[
+        PageInfo(
+            name="Home", url="/",
+            buttons=[ButtonInfo(text="Reports", selector="a.nav-reports", is_nav_menu_item=True)],
+        ),
+    ])
+
+    result = storage.build_llm_manual(manual)
+
+    assert result["pages"]["home_page"]["elements"]["reports_link"] == "a.nav-reports"
+
+
+def test_build_llm_manual_includes_ui_pattern_container_and_buttons():
+    manual = SiteManual(website="example.com", pages=[
+        PageInfo(
+            name="Products", url="/products",
+            ui_patterns=[
+                UIPatternInfo(
+                    name="Product Card", ui_type="Card",
+                    buttons=[ButtonInfo(text="Add to Cart", selector="button.add-to-cart")],
+                    selector="div.product-card", item_count=42,
+                ),
+            ],
+        ),
+    ])
+
+    result = storage.build_llm_manual(manual)
+
+    elements = result["pages"]["products_page"]["elements"]
+    assert elements["product_card_list"] == "div.product-card"
+    assert elements["product_card_add_to_cart_button"] == "button.add-to-cart"
+
+
+def test_build_llm_manual_page_key_dedupes_when_names_collide():
+    manual = SiteManual(website="example.com", pages=[
+        PageInfo(name="Users", url="/admin/users"),
+        PageInfo(name="Users", url="/reports/users"),
+    ])
+
+    result = storage.build_llm_manual(manual)
+
+    assert set(result["pages"].keys()) == {"users_page", "users_page_2"}
+
+
+def test_build_llm_manual_shared_selectors_needs_at_least_three_pages():
+    pages = [
+        PageInfo(name=f"Page{i}", url=f"/p{i}", buttons=[ButtonInfo(text="Logout", selector="a.logout-link")])
+        for i in range(3)
+    ]
+    manual = SiteManual(website="example.com", pages=pages)
+
+    result = storage.build_llm_manual(manual)
+
+    assert result["shared_selectors"]["logout_button"] == "a.logout-link"
+
+
+def test_build_llm_manual_no_shared_selectors_below_threshold():
+    pages = [
+        PageInfo(name=f"Page{i}", url=f"/p{i}", buttons=[ButtonInfo(text="Logout", selector="a.logout-link")])
+        for i in range(2)
+    ]
+    manual = SiteManual(website="example.com", pages=pages)
+
+    result = storage.build_llm_manual(manual)
+
+    assert result["shared_selectors"] == {}
+
+
+def test_build_llm_manual_skips_elements_with_no_label_or_no_selector():
+    manual = SiteManual(website="example.com", pages=[
+        PageInfo(
+            name="Home", url="/",
+            buttons=[
+                ButtonInfo(text="", selector="button.mystery"),  # ไม่มี label เลย
+                ButtonInfo(text="Ghost", selector=""),  # ไม่มี selector เลย
+            ],
+        ),
+    ])
+
+    result = storage.build_llm_manual(manual)
+
+    assert result["pages"]["home_page"]["elements"] == {}
+
+
+def test_save_manual_writes_llm_manual_file_derived_from_the_same_data():
+    storage.save_manual(_sample_manual())
+
+    llm_manual_path = os.path.join(settings.site_manuals_dir, "example.com", "llm-manual.json")
+    assert os.path.exists(llm_manual_path)
+    import json
+    data = json.loads(open(llm_manual_path, encoding="utf-8").read())
+    assert data["pages"]["dashboard_page"]["elements"]["export_button"] == "button.export"

@@ -5,25 +5,33 @@ embedding เกี่ยวข้องเลย (คนละระบบก�
 จับจองความหมายไว้แล้ว)
 
 โครงสร้างโฟลเดอร์ต่อโดเมน (settings.site_manuals_dir/{domain}/):
-    latest.json    — version ล่าสุดเสมอ, ตัวที่ orchestrator โหลดไปใช้จริง — save_manual()
+    latest.json     — version ล่าสุดเสมอ, ตัวที่ orchestrator โหลดไปใช้จริง — save_manual()
                      เขียนทับไฟล์นี้ตรงๆ ทุกครั้ง ไม่เก็บไฟล์ประวัติแยกต่อเวอร์ชัน (vN.json)
                      อีกต่อไป (ตามที่ user ขอ — กันไฟล์สะสมไม่รู้จบบนดิสก์ที่ commit เข้า
                      git) manual.version ยังนับเพิ่มไว้เป็น metadata ปกติ แค่ไม่มีไฟล์แยก
-    ui-map.json    — tree โครงสร้างเมนู (derive จาก menu_path ของทุกหน้า)
-    selectors.json — flat lookup {"หน้า > ปุ่ม": {css, xpath, aria, data_testid}}
-    knowledge.json — {page_name: description} ฉบับย่อ ไว้ยัด prompt ถูกๆ
+    ui-map.json     — tree โครงสร้างเมนู (derive จาก menu_path ของทุกหน้า)
+    selectors.json  — flat lookup {"หน้า > ปุ่ม": {css, xpath, aria, data_testid}}
+    knowledge.json  — {page_name: description} ฉบับย่อ ไว้ยัด prompt ถูกๆ
+    llm-manual.json — W69: reshape ของ latest.json แบบเดียวกับคู่มือ QA ที่มนุษย์เขียนเอง
+                     ({page_key: {url, elements: {semantic_key: css_selector}}} แบนๆ) ไว้
+                     paste เข้า prompt LLM ตรงๆ ได้โดยไม่ต้องรู้จัก schema ภายในของระบบนี้
+                     เลย — ดู build_llm_manual() ด้านล่างสำหรับขอบเขต (ไม่มี assertions/
+                     notes/api เพราะข้อมูลพวกนั้นต้องมาจากการทดสอบจริงที่ crawler นี้ตั้งใจ
+                     ไม่ทำ)
 """
 
 import json
 import re
 import time
+import urllib.parse
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from backend.app.config import settings
-from backend.app.site_learning.schema import PageInfo, SiteManual
+from backend.app.site_learning.schema import ButtonInfo, FormFieldInfo, PageInfo, SiteManual
 
 
 def _domain_dir(domain: str) -> Path:
@@ -100,6 +108,184 @@ def _build_knowledge(manual: SiteManual) -> dict:
     return {p.name: p.description for p in manual.pages if p.name}
 
 
+# --- W69: llm-manual.json — reshape SiteManual เป็นฟอร์แมตคู่มือ QA แบบมนุษย์เขียน (semantic
+# key -> css selector แบนๆ ต่อหน้า) ตามที่ user ขอ — เก็บ selector/label เท่านั้น (จาก crawl
+# ล้วนๆ), ไม่มี assertions/notes/api เพราะข้อมูลพวกนั้น (เช่น "submit ผิดรหัสผ่านแล้วเจอ error
+# ว่าอะไร") ต้องมาจากการทดสอบจริงที่ crawler นี้ตั้งใจไม่ทำ (deterministic, ห้ามกด Submit — ดู
+# crawler.py หัวไฟล์)
+
+
+def _slugify(text: str) -> str:
+    """แปลง label เป็น snake_case ล้วนๆ (a-z0-9 + underscore) ไว้ใช้เป็น key ของ
+    pages/elements ใน llm-manual.json — ตัดอักขระอื่นทั้งหมดออกรวมถึงภาษาไทย/unicode อื่นๆ
+    เพราะ key ต้องเป็น ASCII อ่าน/ค้นหาได้ง่ายสำหรับ LLM หรือ tooling downstream"""
+    return re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower()).strip("_")
+
+
+def _dedupe_key(base: str, used: set[str]) -> str:
+    key = base
+    i = 2
+    while key in used:
+        key = f"{base}_{i}"
+        i += 1
+    used.add(key)
+    return key
+
+
+def _semantic_key(label: str, suffix: str, used: set[str]) -> str:
+    slug = _slugify(label) or suffix or "field"
+    if suffix and not slug.endswith(suffix):
+        slug = f"{slug}_{suffix}"
+    return _dedupe_key(slug, used)
+
+
+def _page_key(page: PageInfo, used: set[str]) -> str:
+    base = _slugify(page.name) or _slugify(urllib.parse.urlparse(page.url).path) or "page"
+    if not base.endswith("page"):
+        base = f"{base}_page"
+    return _dedupe_key(base, used)
+
+
+def _button_label(b: ButtonInfo) -> str:
+    """ลำดับความสำคัญเดียวกับ crawler.py::_button_label — text > aria_label > title >
+    icon_hint > data_testid (humanized) เขียนแยกไว้ที่นี่แทนการ import ข้ามไฟล์ กัน circular
+    import (crawler.py import storage.py อยู่แล้วสำหรับ save_manual())"""
+    return (
+        b.text or b.aria_label or b.title or b.icon_hint
+        or b.data_testid.replace("-", " ").replace("_", " ").strip()
+    )
+
+
+def _button_suffix(b: ButtonInfo) -> str:
+    return "link" if b.is_nav_menu_item else "button"
+
+
+_FIELD_SUFFIX_BY_INPUT_TYPE = {
+    "checkbox": "checkbox", "radio": "radio", "select": "select",
+    "select-one": "select", "select-multiple": "select",
+    "textarea": "textarea", "file": "upload",
+}
+
+
+def _field_label(f: FormFieldInfo) -> str:
+    return f.label or f.field_name or f.placeholder
+
+
+def _field_suffix(f: FormFieldInfo) -> str:
+    return _FIELD_SUFFIX_BY_INPUT_TYPE.get((f.input_type or "").strip().lower(), "input")
+
+
+def _build_page_elements(page: PageInfo) -> dict[str, str]:
+    """semantic_key -> css selector ของหน้าเดียว — รวมปุ่ม/ช่องฟอร์มระดับหน้าปกติ บวก
+    container selector + ปุ่มของ ui_patterns (การ์ด/แถวตารางที่ซ้ำกันหลาย instance — ใช้
+    selector ที่ match ได้กับทุก instance ไม่ใช่แค่ตัวแทนตัวแรก) ข้าม element ที่ไม่มี
+    label หรือไม่มี selector เลย (ไม่มีประโยชน์ให้ LLM อ้างอิง)"""
+    elements: dict[str, str] = {}
+    used: set[str] = set()
+    for b in page.buttons:
+        label = _button_label(b)
+        if not label or not b.selector:
+            continue
+        elements[_semantic_key(label, _button_suffix(b), used)] = b.selector
+    for f in page.forms:
+        label = _field_label(f)
+        if not label or not f.selector:
+            continue
+        elements[_semantic_key(label, _field_suffix(f), used)] = f.selector
+    for pattern in page.ui_patterns:
+        if pattern.selector:
+            elements[_semantic_key(pattern.name or "item", "list", used)] = pattern.selector
+        for b in pattern.buttons:
+            label = _button_label(b)
+            if not label or not b.selector:
+                continue
+            full_label = f"{pattern.name} {label}" if pattern.name else label
+            elements[_semantic_key(full_label, _button_suffix(b), used)] = b.selector
+    return elements
+
+
+def _relative_page_url(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path or "/"
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
+def _detect_scheme(manual: SiteManual) -> str:
+    for page in manual.pages:
+        scheme = urllib.parse.urlparse(page.url).scheme if page.url else ""
+        if scheme:
+            return scheme
+    return "https"
+
+
+# ต้องเจอ selector เดียวกันเป๊ะบนหน้าต่างกันอย่างน้อยเท่านี้ก่อนถือว่าเป็น "component ที่ใช้
+# ร่วมกันทั้งเว็บ" (nav/toast/spinner ฯลฯ) แทนที่จะเป็น element เฉพาะหน้าใดหน้าหนึ่งที่บังเอิญ
+# ซ้ำกัน — เลข 3 เลือกแบบ heuristic กันเว็บที่มีแค่ 1-2 หน้าโดนดันทุก element เข้า shared
+# หมดทั้งที่ยังไม่เห็นรูปแบบซ้ำจริงๆ
+_SHARED_SELECTOR_MIN_PAGES = 3
+
+
+def _build_shared_selectors(pages_elements: dict[str, dict[str, str]]) -> dict[str, str]:
+    """selector ที่ปรากฏ (string ตรงกันเป๊ะ) บนหน้าต่างกันตั้งแต่ _SHARED_SELECTOR_MIN_PAGES
+    หน้าขึ้นไป น่าจะเป็น component ที่ใช้ร่วมกันทั้งเว็บ — ยกออกมาไว้ต่างหากให้อ้างอิงได้โดยไม่
+    ต้องเจาะจงหน้า (ยังคงอยู่ในแต่ละหน้าใน pages[].elements ตามเดิมด้วย ไม่ตัดออก — เก็บซ้ำได้
+    ไม่เสียหาย) ทำงานแบบ best-effort จากข้อมูล crawl ที่มีอยู่แล้วล้วนๆ ไม่เดา/เติมความรู้จาก
+    ภายนอก คืน {} เฉยๆ ถ้าไม่มี selector ไหนถึงเกณฑ์ (เว็บที่ crawl ได้น้อยหน้า)"""
+    selector_pages: dict[str, set[str]] = {}
+    selector_labels: dict[str, list[str]] = {}
+    for page_key, elements in pages_elements.items():
+        for key, selector in elements.items():
+            selector_pages.setdefault(selector, set()).add(page_key)
+            selector_labels.setdefault(selector, []).append(key)
+
+    shared: dict[str, str] = {}
+    used: set[str] = set()
+    for selector, pages_seen in selector_pages.items():
+        if len(pages_seen) < _SHARED_SELECTOR_MIN_PAGES:
+            continue
+        canonical = Counter(selector_labels[selector]).most_common(1)[0][0]
+        shared[_dedupe_key(canonical, used)] = selector
+    return shared
+
+
+def build_llm_manual(manual: SiteManual) -> dict:
+    """W69: reshape SiteManual (schema.py — โครงสร้างภายในที่ orchestrator ใช้จริง) เป็น
+    ฟอร์แมต {app, base_url, pages: {page_key: {url, elements}}, shared_selectors} แบบเดียว
+    กับคู่มือ QA ที่มนุษย์เขียนเอง (ดู scratchpad ตัวอย่างที่ user ส่งมา) — page_key/
+    semantic_key ได้จาก _slugify() ของ name/label ที่ crawl มา ไม่มี LLM call เพิ่ม (ข้อมูล
+    ทุกอย่างมีอยู่แล้วใน manual จาก describe_page()/extract_page() ตอน crawl) ตั้งใจไม่ใส่
+    assertions/notes/instance_notes/api ตามที่ user ยืนยัน — ฟิลด์พวกนั้นต้องมาจากการทดสอบ
+    จริง (submit ฟอร์มผิดดูข้อความ error, สังเกต network request) ซึ่งขัดกับกติกาเดิมของ
+    crawler นี้ (deterministic, ห้ามกด Submit)"""
+    used_page_keys: set[str] = set()
+    pages: dict[str, dict] = {}
+    pages_elements: dict[str, dict[str, str]] = {}
+    for page in manual.pages:
+        page_key = _page_key(page, used_page_keys)
+        elements = _build_page_elements(page)
+        pages_elements[page_key] = elements
+        entry: dict = {"url": _relative_page_url(page.url)}
+        if page.name:
+            entry["name"] = page.name
+        if page.description:
+            entry["description"] = page.description
+        entry["elements"] = elements
+        pages[page_key] = entry
+
+    scheme = _detect_scheme(manual)
+    return {
+        "app": manual.website,
+        "base_url": f"{scheme}://{manual.website}" if manual.website else "",
+        "version": manual.version,
+        "generated_at": manual.generated_at,
+        "summary": manual.summary,
+        "pages": pages,
+        "shared_selectors": _build_shared_selectors(pages_elements),
+    }
+
+
 def save_manual(manual: SiteManual) -> int:
     """บันทึก manual ใหม่ทั้งก้อน ทับ latest.json ตัวเดิมตรงๆ ไม่เก็บไฟล์ประวัติ vN.json
     แยกต่างหากอีกต่อไป (เดิมเขียน v{N}.json ทุกครั้งที่ save ไม่เคยลบ — ไฟล์สะสมไม่รู้จบ
@@ -118,6 +304,7 @@ def save_manual(manual: SiteManual) -> int:
     _write_json(domain_dir / "ui-map.json", _build_ui_map(manual))
     _write_json(domain_dir / "selectors.json", _build_selectors(manual))
     _write_json(domain_dir / "knowledge.json", _build_knowledge(manual))
+    _write_json(domain_dir / "llm-manual.json", build_llm_manual(manual))
     return new_version
 
 

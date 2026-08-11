@@ -290,3 +290,9 @@ class RespondRequest(BaseModel):
     # ใช้แผนเดิมที่ AI ร่างไว้ไม่แก้) ดู TaskManager.resolve_approval()/orchestrator.py::
     # _confirm_plan() สำหรับตำแหน่งที่ใช้ค่านี้จริง
     edited_plan: Optional[str] = None
+    # W_resume ("Mid-Task Input Request"): ถ้า request นี้เป็น request_user_input (ไม่ใช่
+    # permission prompt/confirm_plan) นี่คือคำตอบที่ user พิมพ์ตอบคำถามที่ agent ถามกลาง
+    # task (เช่น "รหัสผ่านใหม่ที่ต้องการตั้งคืออะไร") — ส่งมาก็ต่อเมื่อ user ตอบจริง (None =
+    # ปฏิเสธ/ข้าม ดู TaskManager.resolve_approval()/orchestrator.py::_request_user_input()
+    # สำหรับตำแหน่งที่ใช้ค่านี้จริง) เหมือน edited_plan ข้างบนทุกประการ แค่คนละ cmd type
+    answer_text: Optional[str] = None

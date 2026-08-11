@@ -272,7 +272,8 @@ class TaskManager:
             record.pending.pop(request_id, None)
 
     def resolve_approval(
-        self, task_id: str, request_id: str, approved: bool, edited_plan: Optional[str] = None,
+        self, task_id: str, request_id: str, approved: bool,
+        edited_plan: Optional[str] = None, answer_text: Optional[str] = None,
     ) -> bool:
         """เรียกจาก POST /tasks/{id}/respond — คืน False ถ้าไม่พบ request_id นี้แล้ว
         (ตอบไปแล้ว/หมดอายุ/task_id ผิด) ให้ endpoint คืน 404 ต่อ
@@ -282,7 +283,12 @@ class TaskManager:
         เดิม (ไม่สร้างใหม่) เพราะ orchestrator.py::_confirm_plan() ยังถือ reference ของ
         dict ก้อนเดียวกันนี้อยู่ (ส่งเข้า ask_user_func ไปแล้วแต่ยังไม่ทิ้ง) พอ future
         resolve กลับมา จะอ่าน cmd["plan"] ที่ถูกแก้แล้วออกไปใช้แทนแผนเดิมที่ AI ร่างไว้ —
-        ไม่แตะ action อื่น (permission prompt ทั่วไปไม่มี key "plan" ให้แก้อยู่แล้ว)"""
+        ไม่แตะ action อื่น (permission prompt ทั่วไปไม่มี key "plan" ให้แก้อยู่แล้ว)
+
+        W_resume ("Mid-Task Input Request"): answer_text — เหมือน edited_plan ข้างบนทุก
+        ประการ แค่คนละ cmd type (request_user_input) และคนละ key ("answer" แทน "plan") —
+        orchestrator.py::_request_user_input() ยังถือ reference ของ cmd dict ก้อนเดียวกัน
+        นี้อยู่เช่นกัน อ่าน cmd["answer"] กลับไปใช้ทำ task เดิมต่อทันทีโดยไม่จบ loop"""
         record = self._tasks.get(task_id)
         if record is None:
             return False
@@ -291,5 +297,7 @@ class TaskManager:
             return False
         if edited_plan is not None and info["cmd"].get("type") == "confirm_plan":
             info["cmd"]["plan"] = edited_plan
+        if answer_text is not None and info["cmd"].get("type") == "request_user_input":
+            info["cmd"]["answer"] = answer_text
         info["future"].set_result(approved)
         return True

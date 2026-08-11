@@ -20,6 +20,7 @@ from backend.app.core.orchestrator import (
     _MAX_PREMATURE_TABLE_VERIFY_RETRIES,
     _MAX_PREMATURE_TRUE_FINISH_RETRIES,
     _MAX_PREMATURE_VALIDATION_ERROR_RETRIES,
+    _MAX_REQUEST_USER_INPUT_CALLS,
     _PREMATURE_ALL_FAILED_NUDGE,
     _PREMATURE_FALSE_FINISH_NUDGE,
     _PREMATURE_TRUE_FINISH_NUDGE,
@@ -795,6 +796,7 @@ async def test_run_task_user_browser_mode_derives_allowed_domains_from_url_when_
         mock_page, {"type": "click", "index": 1},
         ask_user_func=None, label="", manual_guidance="",
         allowed_domains={"saucedemo.com"}, element_tag="", element_type="",
+        then_label="", then_tag="", then_type="",
     )
 
 
@@ -826,6 +828,7 @@ async def test_run_task_user_browser_mode_passes_explicit_allowed_domains_to_exe
         mock_page, {"type": "click", "index": 1},
         ask_user_func=None, label="", manual_guidance="",
         allowed_domains={"custom.example.com"}, element_tag="", element_type="",
+        then_label="", then_tag="", then_type="",
     )
 
 
@@ -1032,6 +1035,7 @@ async def test_run_task_executes_action_then_finishes():
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 2},
         ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
+        then_label="", then_tag="", then_type="",
     )
     assert result["history"] == [
         {
@@ -1054,6 +1058,175 @@ async def test_run_task_executes_action_then_finishes():
     ]
     # ต้องรวม token ของทั้ง 2 รอบ next_action (browser_action + finish_task) ไม่ใช่แค่รอบสุดท้าย
     assert result["tokens"] == {"input": 110, "output": 25, "cache_read": 0, "cache_creation": 0}
+
+
+@pytest.mark.asyncio
+async def test_run_task_resolves_label_tag_type_for_then_click_index():
+    """W_chain ("Compound Actions"): then_click_index ต้อง resolve label/tag/type จาก
+    elements snapshot เดียวกับที่ action หลัก (index) ใช้ — เหมือน action_label/
+    action_tag/action_element_type ทุกประการแค่สำหรับ target ตัวที่สอง (ดู
+    orchestrator.py บริเวณที่ resolve action_label ก่อน execute())"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "select(1)", "เลือกสำเร็จ + then click(5): คลิกสำเร็จ")
+    elements = [
+        {"index": 1, "label": "Carolynn", "tag": "li", "type": ""},
+        {"index": 5, "label": "Submit", "tag": "button", "type": ""},
+    ]
+
+    next_action_calls = [
+        (
+            "browser_action",
+            {"type": "select", "index": 1, "label": "Carolynn", "then_click_index": 5},
+            "tool_1", ["m1"], llm.TokenUsage(),
+        ),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m2"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "elements"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task("https://example.com", "choose from list", provider="anthropic")
+
+    assert result["success"] is True
+    mock_execute.assert_awaited_once_with(
+        mock_browser.new_page.return_value,
+        {"type": "select", "index": 1, "label": "Carolynn", "then_click_index": 5},
+        ask_user_func=None, label="Carolynn", manual_guidance="", allowed_domains=None,
+        element_tag="li", element_type="",
+        then_label="Submit", then_tag="button", then_type="",
+    )
+
+
+# --- W_resume ("Mid-Task Input Request") — บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่
+# กลางทางแล้ว finish_task(false) จบ task ทั้งหมด ทำให้เทิร์นถัดไปที่ user ตอบค่ามาต้องเริ่ม
+# งานใหม่จากศูนย์แทนที่จะทำ plan เดิมต่อ — request_user_input ต้อง "หยุดรอ" ผ่าน
+# ask_user_func เดียวกับ permission prompt แล้วทำ loop เดิมต่อทันทีด้วยคำตอบที่ได้ (ไม่
+# return/ไม่จบ task)
+
+
+@pytest.mark.asyncio
+async def test_run_task_request_user_input_pauses_then_continues_same_loop_with_answer():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "fill(0)", "กรอกสำเร็จ")
+
+    next_action_calls = [
+        (
+            "request_user_input",
+            {"prompt": "รหัสผ่านใหม่คืออะไร?", "sensitive": True},
+            "tool_ask", ["m1"], llm.TokenUsage(),
+        ),
+        ("browser_action", {"type": "fill", "index": 0, "text": "answer-goes-here"}, "tool_fill", ["m2"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m3"], llm.TokenUsage()),
+    ]
+
+    async def fake_ask_user_func(cmd):
+        assert cmd["type"] == "request_user_input"
+        cmd["answer"] = "Sup3rSecret!"  # mutate in place, mirrors resolve_approval() mutating cmd["answer"]
+        return True
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "elements"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]) as mock_append, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "change my password", provider="anthropic",
+            ask_user_func=fake_ask_user_func,
+        )
+
+    # ไม่จบ task ตอนเจอ request_user_input เลย — ทำ loop เดิมต่อจน finish_task(true) จริง
+    assert result["success"] is True
+    assert result["message"] == "เสร็จ"
+    # คำตอบที่ user ให้มาต้องถูกป้อนกลับเป็น tool_result ของ tool_use "tool_ask" (ไม่ใช่
+    # ถูกทิ้ง/เพิกเฉย) ให้ LLM เห็นแล้วใช้ทำ step ถัดไปต่อ
+    answer_result_calls = [c for c in mock_append.call_args_list if c.args[1] == "tool_ask"]
+    assert len(answer_result_calls) == 1
+    assert "Sup3rSecret!" in answer_result_calls[0].args[2]
+    # history ต้องมี entry ของ request_user_input step ด้วย (ไม่ใช่แค่ fill/finish)
+    request_steps = [h for h in result["history"] if h["cmd"].get("type") == "request_user_input"]
+    assert len(request_steps) == 1
+    assert request_steps[0]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_task_request_user_input_declined_still_continues_without_hanging():
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    next_action_calls = [
+        ("request_user_input", {"prompt": "ต้องการค่าอะไรสักอย่าง"}, "tool_ask", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ทำต่อไม่ได้"}, "tool_f", ["m2"], llm.TokenUsage()),
+    ]
+
+    async def declining_ask_user_func(cmd):
+        return False  # ผู้ใช้ปฏิเสธ/หมดเวลา — ไม่ mutate cmd["answer"] เลย
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "elements"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await asyncio.wait_for(
+            Orchestrator().run_task(
+                "https://example.com", "goal", provider="anthropic",
+                # max_steps=2: หลัง request_user_input 1 step (steps_taken=1), เงื่อนไข
+                # "premature false finish" guard (steps_taken < max_steps-1) ต้องเป็นเท็จ
+                # ทันที กันไม่ให้ finish_task(false) ที่ next_action_calls จบไว้ให้ต้องผ่าน
+                # retry-nudge cycle ของ guard นั้นเพิ่ม (คนละเรื่องกับสิ่งที่เทสต์นี้สนใจ)
+                max_steps=2, ask_user_func=declining_ask_user_func,
+            ),
+            timeout=5,
+        )
+
+    # ไม่ค้าง (มี timeout ป้องกันไว้ด้านบนแล้ว) และจบด้วยผลลัพธ์ที่สมเหตุสมผล ไม่ throw
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_request_user_input_repeat_cap_forces_rejection():
+    """ป้องกัน LLM วนถามไม่รู้จบโดยไม่มีความคืบหน้าจริง — เกินโควตา
+    _MAX_REQUEST_USER_INPUT_CALLS แล้วต้องถูกปฏิเสธ ไม่ใช่หยุดรอเพิ่มอีก"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+
+    # เรียก request_user_input ซ้ำเกินโควตา 1 ครั้ง แล้วค่อย finish_task
+    next_action_calls = [
+        ("request_user_input", {"prompt": f"คำถามที่ {i}"}, f"tool_{i}", [f"m{i}"], llm.TokenUsage())
+        for i in range(_MAX_REQUEST_USER_INPUT_CALLS + 1)
+    ] + [("finish_task", {"success": False, "message": "ทำต่อไม่ได้"}, "tool_f", ["mf"], llm.TokenUsage())]
+
+    ask_user_func = AsyncMock(return_value=False)
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "elements"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await asyncio.wait_for(
+            Orchestrator().run_task(
+                "https://example.com", "goal", provider="anthropic",
+                # max_steps=4: หลัง request_user_input ที่ "ยอมรับ" ครบ
+                # _MAX_REQUEST_USER_INPUT_CALLS (3) ครั้ง steps_taken=3 — ต้องให้เงื่อนไข
+                # premature-false-finish guard เป็นเท็จทันทีตอนถึง finish_task(false)
+                # เหมือนเทสต์ข้างบน (คนละเรื่องกับ repeat cap ที่เทสต์นี้สนใจจริงๆ)
+                max_steps=4, ask_user_func=ask_user_func,
+            ),
+            timeout=5,
+        )
+
+    # ask_user_func ต้องถูกเรียกไม่เกิน quota เลย (ครั้งที่เกินโควตาต้องถูกปฏิเสธก่อนจะไป
+    # เรียก ask_user_func เลยด้วยซ้ำ ไม่ใช่แค่ไม่หยุดรอ)
+    assert ask_user_func.await_count == _MAX_REQUEST_USER_INPUT_CALLS
 
 
 # W44: qa_summary ตอนนี้วน next_action() แบบจำกัด (ดู _QA_SUMMARY_MAX_STEPS) แทนที่จะเรียก
@@ -1312,6 +1485,7 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 5},
         ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
+        then_label="", then_tag="", then_type="",
     )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
     append_tool_result_mock.assert_any_call(["m1"], "tool_f1", _PREMATURE_FALSE_FINISH_NUDGE)

@@ -7,7 +7,7 @@
 	(2) ใช้คู่มือที่ user ป้อนเพิ่ม
 
 ----------------------------------------------------------------
-  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-07)
+  สถานะความคืบหน้า (อัปเดตล่าสุด: 2026-08-11)
 ----------------------------------------------------------------
 
   [x] W1 [A]  Repo/Branch + Playwright & FastAPI skeleton — เสร็จ
@@ -3736,6 +3736,125 @@
            ไม่ได้) ต้องรอ user ทดสอบซ้ำบน live server (ต้อง restart server ให้แน่ใจว่าโหลดโค้ด
            ใหม่ล่าสุดจริงๆ ก่อน เพราะพบ python process ซ้ำซ้อนหลายตัวในเครื่อง) เพื่อยืนยันว่า
            แก้ครบทั้งสองสาเหตุแล้วจริง
+
+  [x] W69  site_learning: เพิ่ม llm-manual.json — reshape SiteManual (JSON ภายในที่
+           orchestrator ใช้จริง) เป็นฟอร์แมตคู่มือ QA แบบมนุษย์เขียนเอง ({page_key: {url,
+           elements: {semantic_key: css_selector}}, shared_selectors}) ให้ paste เข้า
+           prompt ของ LLM ตัวอื่น/เครื่องมืออื่นได้ตรงๆ โดยไม่ต้องรู้จัก schema ภายในของระบบนี้
+           เลย — เขียนใหม่ทุกครั้งที่ save_manual() ถูกเรียก (crawl ครั้งแรก/relearn-page) ควบคู่
+           กับ ui-map.json/selectors.json/knowledge.json เดิม ตั้งใจไม่มี assertions/notes/api
+           (ข้อมูลพวกนั้นต้องมาจากการทดสอบจริง เช่น submit ฟอร์มผิดดู error message ซึ่งขัดกับ
+           กติกาเดิมของ crawler นี้ — deterministic, ห้ามกด Submit) ไม่ต่อสาย inject เข้า
+           orchestrator prompt เดิมเลย (ของเดิม knowledge.json/SiteManual context ยังทำงาน
+           เหมือนเดิมทุกประการ — ไฟล์นี้ไว้ใช้ภายนอกเท่านั้นตามที่ user ยืนยัน)
+           เทสต์ใหม่ 8 เคสใน test_site_learning_storage.py (รวม 48 เคสในไฟล์): ผ่านหมด
+
+  [x] W70  ทดสอบกับ MiniWoB++ (Farama-Foundation/miniwob-plusplus) benchmark —
+           core/miniwob_eval.py รันชุด task มาตรฐาน (click-test/click-button/
+           click-checkboxes/enter-text/click-dialog/focus-text/click-tab/choose-list)
+           ผ่าน Orchestrator.run_task() ตรงๆ เหมือน core/evaluation.py (SauceDemo) ทุก
+           ประการ ต่างแค่ยืมไฟล์ HTML/JS ของ task จาก pip package `miniwob` เฉยๆ (ไม่ใช้
+           Gymnasium/Selenium API ของ package นั้นเลย เพราะเป็นคนละ action-space กับ agent
+           ตัวนี้ที่รับ goal เป็นภาษาธรรมชาติ) — เจอ 3 บั๊กจริงจากการรันจริง (ไม่ใช่แค่เขียน
+           harness เฉยๆ): (1) MiniWoB มี "cover div" ที่ต้องคลิก START ก่อนโจทย์จะสุ่มจริง
+           (ไม่มีเอกสารพูดถึง) ทำให้ agent เสีย step แรกไปกดปุ่มที่ไม่ใช่ task จริง (2)
+           episode timer default 10 วินาที (คิดมาสำหรับ RL policy ตอบสนองทันที) ทำให้ LLM
+           agent โดนตัดสินแพ้ก่อนจะมีโอกาสทำอะไรเลย (3) โจทย์สุ่มใหม่ทุกครั้งที่หน้าโหลด แต่
+           ต้องรู้ข้อความโจทย์ "ก่อน" เรียก run_task() (goal เป็น argument ปกติ) ทั้งที่
+           run_task() navigate ซ้ำเองเสมอ — แก้ทั้ง 3 ข้อด้วย page.add_init_script()
+           เดียว: inject seeded Math.random() (ให้ navigate ซ้ำได้ episode เดิมเป๊ะ) +
+           ยืดเวลา timer เป็น 5 นาที + ข้าม cover div อัตโนมัติ ไม่แก้ orchestrator.py เลย
+           สักบรรทัด — เทสต์ 12 เคสใหม่ (test_miniwob_eval.py) รัน python run.py miniwob
+           ยืนยัน pass 100% (8/8 task) ตามที่ user รายงาน
+
+  [x] W71  ลด latency ของ form/list task (compound actions) — user รายงานว่า
+           enter-text/choose-list บน MiniWoB ใช้ 5-6 step ทั้งที่ UI เล็กๆ (แต่ละ step คือ
+           LLM round-trip เต็มรูปแบบ) — เพิ่ม 2 กลไกให้ execute() รวมหลาย action เป็น
+           คำสั่งเดียว: (1) type: "fill" รับ "key" เพิ่มได้ (เดิมมีแค่ press_key) กด key
+           นั้นทันทีหลัง fill สำเร็จ ("Focus + Type + Enter" ใน 1 step) (2) type:
+           "click"/"select"/"check"/"fill" รับ "then_click_index" ได้ — คลิก element ที่
+           สองทันทีถ้า action หลักสำเร็จ (เช่น เลือกจาก list แล้วกด Submit ใน 1 step) —
+           ความปลอดภัยคงเดิมทุกประการ: action ที่สองยังผ่าน classify_action()/
+           ask_user_func เต็มรูปแบบเหมือน action เดี่ยวๆ (ไม่ auto-approve) ถ้าต้องขอ
+           อนุมัติ/ถูกบล็อก จะไม่ทำต่อ แค่คืนผลของ action หลักเฉยๆ ไม่มีทางข้าม
+           human-in-the-loop ผ่านช่องทางนี้ได้เลย — เทสต์ใหม่ 9 เคสใน test_actions.py
+           (รวม 68 เคส): ผ่านหมด รัน test_orchestrator.py เต็มชุดยืนยันไม่มี regression
+
+  [x] W71b user ทดสอบ W71 จริงแล้วพบ false positive: enter-text รายงานสำเร็จทั้งที่ From/To
+           Date field ยังเป็นค่า default อยู่ (agent ใช้ fill+key:"Enter" แทนที่จะกดปุ่ม
+           Submit จริง) — ตรวจ reward-scoring JS ของ MiniWoB "enter-text" แล้วยืนยัน: fill()
+           เขียนค่าลง DOM ถูกต้องเสมอ (ไม่ใช่ปัญหา event/timing ตามที่คาดแรกๆ) แต่หน้านี้ไม่มี
+           <form> จริง/ไม่มี keypress listener เลย กด Enter จึงไม่มีผลอะไรทั้งที่กรอกค่าถูกแล้ว
+           — แก้ด้วยการปรับ SYSTEM_PROMPT ให้ "then_click_index" (จาก W71) เป็นตัวเลือกแรกเสมอ
+           เมื่อเห็นปุ่ม Submit/OK/Go จริงในหน้า สงวน "key":"Enter" ไว้เฉพาะไม่เห็นปุ่มแยก
+           ต่างหากเลยจริงๆ — ยืนยันด้วยการรัน fill+then_click_index จริงบน MiniWoB
+           "enter-text": reward 0.998 ทันทีตั้งแต่ครั้งแรก เทสต์ใหม่ 3 เคสใน test_actions.py
+
+  [x] W72  ขยับไป WebArena — ตรวจสอบความเป็นไปได้ก่อนเริ่ม (Docker Desktop ติดตั้งไว้แต่
+           daemon สตาร์ทไม่ได้: เครื่องเป็น Windows 11 Home ไม่รองรับ Hyper-V และ WSL2 ยังไม่
+           ได้ติดตั้ง ต้อง `wsl --install` แบบ admin + reboot เครื่องก่อน ซึ่งต้องขอ
+           อนุญาตจาก user ก่อนเสมอ) — WebArena เต็มรูปแบบ (6 เว็บ) ต้องการพื้นที่ ~1TB
+           (Wikipedia dump คนเดียวก็ ~180GB) แต่เครื่องมีว่างแค่ 96.5GB ไม่พอสำหรับ full
+           setup อยู่ดีแม้ Docker จะพร้อม — เสนอ 3 ทาง (partial local ~15GB/AWS EC2/เปลี่ยน
+           ไป Mind2Web) user เลือก "หยุดก่อน" ไม่ดำเนินการต่อในตอนนี้ — ไม่มีการแก้โค้ดใดๆ
+
+  [x] W73  user เสนอทดสอบกับ OrangeHRM/PrestaShop บน Docker ในเครื่องแทน (~5-10GB พอ) —
+           ยัง blocked ด้วยเหตุผลเดียวกับ W72 (WSL2) จึงทำ core/orangehrm_eval.py แทนชั่วคราว
+           โดยใช้ opensource-demo.orangehrmlive.com (public demo) — reuse
+           core/evaluation.py::run_evaluation() ตัวเดียวกับ SauceDemo ตรงๆ (ไม่ต้องมี
+           plumbing ใหม่เลยเพราะเป็นเว็บทั่วไป ไม่ใช่ environment ที่มี reward signal พิเศษ
+           แบบ MiniWoB) — เลือกเฉพาะ task ที่ safe บน shared public instance (login, ค้นหา
+           ที่คาดผลได้แน่นอน, เพิ่ม candidate สมัครงานที่ goal สร้างใหม่ทุกครั้งกันชนกับ
+           record คนอื่น) หลีกเลี่ยง credential-mutating/destructive โดยเจตนา — เทสต์ใหม่
+           15 เคสใน test_orangehrm_eval.py: ผ่านหมด ย้ายไป self-hosted ทันทีที่ Docker พร้อม
+
+  [x] W74  user รายงานบั๊กจริงจากการทดสอบ OrangeHRM: agent เปิด/ปิดตัวเลือก "Include Past
+           Employees" (Leave List) ไม่ได้เลย — ตรวจ DOM จริงพบ: OrangeHRM ซ่อน native
+           <input type="checkbox"> ด้วย opacity:0 วาด toggle ที่มองเห็นแทนด้วย
+           <span class="oxd-switch-input"> ห่อด้วย <label> ที่ไม่มีข้อความเลย (ต่างจาก
+           checkbox/radio wrapper ที่ perception.py รองรับอยู่แล้วตั้งแต่ W21 — pattern
+           class ไม่มีคำว่า "checkbox" เลยสักตัว จับไม่ได้) ข้อความอธิบายจริง ("Include Past
+           Employees") อยู่ใน sibling <p> "ก่อนหน้า" container ทั้งก้อน ไม่ใช่ข้างในตัวมันเอง
+           เลย — ไม่มี element ไหนแทน toggle นี้ใน snapshot เลยสักตัว (ไม่ใช่แค่ label ไม่ดี)
+           — แก้ด้วย SWITCH_WRAPPER_SELECTOR ใหม่ (แยกจาก checkbox/radio wrapper เจตนา กัน
+           label ผิดๆ "Select row" ที่ออกแบบมาสำหรับ table checkbox เท่านั้น) +
+           getPrecedingSiblingLabelText() เดินหา sibling text ก่อนหน้า container — ยืนยัน
+           สดบน opensource-demo.orangehrmlive.com: index+label ถูกต้อง ("Include Past
+           Employees") และ check() ติ๊กสำเร็จจริง เทสต์ใหม่ 3 เคสใน test_perception.py
+
+  [x] W75  user รายงานบั๊กจริงต่อ: From/To Date ("dropdown") แก้ไม่ได้ แต่ agent แจ้ง
+           สำเร็จแล้ว — ตรวจสอบพบว่า fill() เขียนค่าถูกเสมอ แต่ calendar picker ที่เปิดเป็น
+           ผลข้างเคียงของ focus (framework เอง ไม่ใช่โค้ดเรา) แทรก element ใหม่ (ปุ่มนำทาง
+           เดือน/ปี) เข้า DOM ทำให้ index ของ element ถัดไปใน DOM order เลื่อนหนี — ถ้า
+           compound action อื่นในคำสั่งเดียวกันอ้าง index จาก snapshot ก่อนหน้าที่ยังไม่มี
+           popup จะพลาดไปกดปุ่มปฏิทินแทนช่องกรอกจริงเงียบๆ ไม่มี error ให้เห็นเลย — Escape
+           เพียงอย่างเดียวไม่ปิด popup นี้ (framework ผูก listener กับ outside-click ไม่ใช่
+           keydown) ต้องเป็นการคลิกจริง — แก้ fill() ให้ blur()+คลิก <body> (ปลอดภัยเสมอ ไม่
+           มีทางไปโดน element อื่นที่มี handler ไม่พึงประสงค์) ทันทีหลัง fill() สำเร็จเสมอ +
+           รอ transition ปิด popup ~200ms ก่อนคืนผลลัพธ์ — ยืนยันสดว่า index กลับมาตรงเดิม
+           ทันทีหลัง fix (ไม่มี drift อีก) เทสต์ใหม่ 2 เคสใน test_actions.py
+
+  [x] W76  ("Mid-Task Input Request") user รายงานบั๊กจริง: หลังขอรหัสผ่านใหม่จาก user กลาง
+           task, agent ไม่เอา input ไปใส่ plan เดิม แต่ gen plan ใหม่เริ่มงานใหม่เลย —
+           root cause: กติกาเดิม (W65[1]) มีแค่ finish_task(success=false) ให้ใช้ตอนขาดค่า
+           จาก user ซึ่งจบ task ทั้งหมดทิ้ง plan/messages/browser state เดิม พอ user ตอบค่า
+           มาในเทิร์นถัดไป กลายเป็น POST /tasks ใหม่ที่ไม่มีบริบทของ plan เดิมเลย — เพิ่ม tool
+           ใหม่แยกต่างหาก request_user_input(prompt, sensitive) ที่ "หยุดรอ" คำตอบจาก human
+           ผ่านกลไกเดียวกับ permission prompt เป๊ะ (TaskManager.request_approval()/
+           resolve_approval() — Future ที่ coroutine await อยู่, resolve ผ่าน POST
+           /tasks/{id}/respond) แล้ว "ทำ loop เดิมต่อทันที" ด้วยคำตอบที่ได้ (ป้อนกลับเป็น
+           tool_result ของ tool_use เดิม ไม่ return/ไม่ reset plan เลย) — คำตอบส่งกลับผ่าน
+           cmd["answer"] ที่ resolve_approval() mutate เข้า dict ก้อนเดิมก่อน resolve future
+           (pattern เดียวกับ edited_plan/cmd["plan"] ของ confirm_plan ทุกประการ ไม่ต้องเพิ่ม
+           กลไกใหม่เลย) — SYSTEM_PROMPT เปลี่ยนทุกจุดที่เคยสั่ง finish_task(false) ตอนขาดค่า
+           จาก user (W20 "Current Password", W65[1] required-field) ให้เรียก
+           request_user_input แทน ห้ามใช้ finish_task(false) กับกรณีนี้เด็ดขาด + จำกัด
+           สูงสุด 3 ครั้งต่อ task กัน LLM วนถามไม่รู้จบ — frontend เพิ่ม prompt การ์ดใหม่
+           (ช่องกรอกซ่อนตัวอักษรถ้า sensitive:true) แทน Approve/Deny เดิม — เทสต์ใหม่รวม 8
+           เคส (llm.py/orchestrator.py/task_manager.py) + ยืนยันสดผ่าน dev server จริง
+           (inject event ปลอม เห็น prompt render ถูกต้อง คลิก Submit/Cancel ยิง POST
+           /tasks/{id}/respond ด้วย body ที่ถูกต้องจริง) รันเต็มชุดทุกไฟล์ที่เกี่ยวข้อง:
+           ผ่านหมด เหลือ fail เดิมเท่าเดิมจาก Anthropic API key เท่านั้น ไม่มี regression ใหม่
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

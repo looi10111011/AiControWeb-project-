@@ -1522,6 +1522,103 @@ async def test_get_snapshot_still_sees_plain_unstyled_radio_buttons():
     assert "Premium" in labels
 
 
+# --- W_toggle ("Switch/Toggle Label Resolver") — บั๊กจริงที่ user รายงาน: agent เปิด/ปิด
+# toggle "Include Past Employees" บน OrangeHRM Leave List ไม่ได้เลย — ยืนยันจาก DOM จริง
+# (opensource-demo.orangehrmlive.com) ว่า OrangeHRM ซ่อน native <input type="checkbox">
+# ด้วย opacity:0 แล้ววาด toggle ที่มองเห็นแทนด้วย <span class="oxd-switch-input"> ห่อด้วย
+# <label> ที่ไม่มีข้อความเลย — ข้อความอธิบายจริงอยู่ใน sibling <p> "ก่อนหน้า" container
+# ทั้งก้อน (พี่น้องของ .oxd-switch-wrapper เอง) ไม่ใช่ข้างในตัวมันเลย — จำลอง DOM แบบ
+# เดียวกันตรงๆ ด้วย inline style (page.set_content() ไม่โหลด stylesheet จริง)
+
+_HTML_WITH_CUSTOM_SWITCH = """
+<html><body>
+  <div class="oxd-grid-item">
+    <p class="oxd-text orangehrm-leave-filter-text">Include Past Employees</p>
+    <div class="oxd-switch-wrapper">
+      <label>
+        <input type="checkbox" style="opacity:0;">
+        <span class="oxd-switch-input" style="display:inline-block;width:34px;height:18px;"></span>
+      </label>
+    </div>
+  </div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_sees_custom_switch_hidden_by_opacity_with_sibling_label():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(_HTML_WITH_CUSTOM_SWITCH)
+
+        elements, text_repr = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Include Past Employees" in labels
+    assert "Include Past Employees" in text_repr
+    # ไม่ใช่ checkbox wrapper (ไม่ควรได้ label ผิดความหมายอย่าง "Select row")
+    assert "Select row" not in labels
+    assert "Select All" not in labels
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_switch_without_findable_sibling_label_gets_empty_label_not_wrong_one():
+    """ไม่มี sibling text ให้เจอเลย — ต้องคืนค่าว่าง ไม่ใช่เดา label ผิดๆ (เช่น "Select
+    row" จาก checkboxWrapperLabel ที่ตั้งใจแยกออกไปแล้ว)"""
+    html = """
+    <html><body>
+      <div class="oxd-switch-wrapper">
+        <label>
+          <input type="checkbox" style="opacity:0;">
+          <span class="oxd-switch-input" style="display:inline-block;width:34px;height:18px;"></span>
+        </label>
+      </div>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    switch_elements = [e for e in elements if e["tag"] == "span"]
+    assert len(switch_elements) == 1
+    assert switch_elements[0]["label"] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_snapshot_still_sees_plain_checkbox_wrapper_unaffected_by_switch_fix():
+    """sanity: checkbox wrapper (ไม่ใช่ switch) ยังได้ "Select row" default เหมือนเดิมทุก
+    ประการ — fix นี้ไม่ควรกระทบ checkboxWrapperLabel เลย"""
+    html = """
+    <html><body>
+      <table><tbody><tr><td>
+        <label>
+          <input type="checkbox" style="opacity:0;">
+          <span class="oxd-checkbox-input" style="display:inline-block;width:18px;height:18px;"></span>
+        </label>
+      </td></tr></tbody></table>
+    </body></html>
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+
+        elements, _ = await get_snapshot(page)
+
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert "Select row" in labels
+
+
 # --- ACC-2 (accuracy audit follow-up) — บั๊กที่พบจาก security/accuracy audit: element ที่
 # disabled ถูกกรองทิ้งจาก snapshot ไปเลยเดิม (LLM ไม่มีทางรู้ว่ามันมีอยู่ ไม่ใช่แค่กดไม่ได้)
 # — ตอนนี้ยังติด index ปกติ แต่แปะ marker "[disabled]" แทน

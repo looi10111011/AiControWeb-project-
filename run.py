@@ -1292,6 +1292,72 @@ def run_evaluation_harness():
     asyncio.run(_run())
 
 
+def run_miniwob_evaluation():
+    """MiniWoB++ (https://github.com/Farama-Foundation/miniwob-plusplus) smoke test — รัน
+    core/miniwob_eval.py::DEFAULT_TASKS ทีละตัวผ่าน Orchestrator.run_task() ตรงๆ (headless,
+    auto_approve, provider จาก .env) บนไฟล์ HTML ของ task ที่ bundle มากับ pip package
+    `miniwob` (ต้อง `pip install miniwob` ก่อน — ดู requirements.txt) แล้วพิมพ์รายงานสรุป
+    success rate / reward / step / token ต่อ task — ดู docstring หัวไฟล์ miniwob_eval.py
+    สำหรับรายละเอียดว่าทำไมไม่ใช้ Gymnasium/Selenium API ของ package นี้ตรงๆ"""
+    print("=== MiniWoB++ Evaluation (Farama benchmark tasks) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.miniwob_eval import DEFAULT_TASKS, run_miniwob_evaluation as run_miniwob
+
+    print(f"Provider: {settings.llm_provider}", flush=True)
+    print(f"รัน {len(DEFAULT_TASKS)} task: {', '.join(DEFAULT_TASKS)} (headless, auto_approve)...\n", flush=True)
+
+    async def _run():
+        report = await run_miniwob()
+
+        print("=== ผลลัพธ์รายภารกิจ ===", flush=True)
+        for r in report.results:
+            outcome = "สำเร็จ" if r.success else "ไม่สำเร็จ"
+            print(f"  [{r.task}] {outcome} — reward={r.reward:.2f}, {r.steps} step, {r.total_tokens} token", flush=True)
+            print(f"      instruction: {r.utterance or '(อ่านไม่ได้)'}", flush=True)
+            print(f"      {'error: ' + r.error if r.error else 'message: ' + r.message}", flush=True)
+
+        n = len(report.results)
+        n_success = sum(1 for r in report.results if r.success)
+        print("\n=== สรุปรวม ===", flush=True)
+        print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
+        print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
+        print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+
+    asyncio.run(_run())
+
+
+def run_orangehrm_evaluation():
+    """OrangeHRM public demo evaluation — รัน core/orangehrm_eval.py::ORANGEHRM_TASKS
+    (+ add_candidate ที่ goal สร้างใหม่ทุกครั้ง) ผ่าน Orchestrator.run_task() ตรงๆ
+    (headless, auto_approve) บน opensource-demo.orangehrmlive.com จริง — ทางเลือกชั่วคราว
+    ระหว่างรอ Docker/WSL2 พร้อมใช้งาน (ดู docstring หัวไฟล์ orangehrm_eval.py สำหรับ
+    ข้อจำกัดของการทดสอบบน shared public demo)"""
+    print("=== OrangeHRM Evaluation (public demo — ชั่วคราวระหว่างรอ Docker) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.orangehrm_eval import ORANGEHRM_TASKS, run_orangehrm_evaluation as run_orangehrm
+
+    print(f"Provider: {settings.llm_provider}", flush=True)
+    print(f"รัน {len(ORANGEHRM_TASKS) + 1} task บน opensource-demo.orangehrmlive.com (headless, auto_approve)...\n", flush=True)
+
+    async def _run():
+        report = await run_orangehrm()
+
+        print("=== ผลลัพธ์รายภารกิจ ===", flush=True)
+        for r in report.results:
+            outcome = "สำเร็จ" if r.success else "ไม่สำเร็จ"
+            print(f"  [{r.name}] {outcome} — {r.steps} step, {r.total_tokens} token", flush=True)
+            print(f"      {'error: ' + r.error if r.error else 'message: ' + r.message}", flush=True)
+
+        n = len(report.results)
+        n_success = sum(1 for r in report.results if r.success)
+        print("\n=== สรุปรวม ===", flush=True)
+        print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
+        print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
+        print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+
+    asyncio.run(_run())
+
+
 ACTIONS = {
     "1": ("รัน API server", run_server),
     "2": ("รัน tests (pytest)", run_tests),
@@ -1312,6 +1378,8 @@ ACTIONS = {
     "17": ("W11[C]: Isolation Test - multi-tab ไม่แทรกแซงกัน (verify context isolation)", run_isolation_test),
     "18": ("รัน Agent Loop บน Chrome จริงของ user (CDP connect, มี login mail ค้างอยู่)", run_agent_real_browser),
     "19": ("W12[B]: Evaluation แนว WebVoyager (success rate / step / token ต่อ task)", run_evaluation_harness),
+    "20": ("MiniWoB++ Evaluation (Farama benchmark tasks)", run_miniwob_evaluation),
+    "21": ("OrangeHRM Evaluation (public demo, ชั่วคราวระหว่างรอ Docker)", run_orangehrm_evaluation),
 }
 
 ALIASES = {
@@ -1346,6 +1414,9 @@ ALIASES = {
     "eval": "19",
     "evaluation": "19",
     "w12": "19",
+    "miniwob": "20",
+    "miniwob++": "20",
+    "orangehrm": "21",
 }
 
 
