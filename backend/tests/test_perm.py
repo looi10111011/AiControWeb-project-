@@ -194,7 +194,7 @@ async def test_execute_blocks_goto_to_blocked_domain_without_asking_user():
     result = await execute(None, {"type": "goto", "url": "https://malicious.com"}, ask_user_func=ask_user_func)
 
     assert result.success is False
-    assert "บล็อก" in result.message
+    assert "blocked" in result.message
     ask_user_func.assert_not_awaited()  # BLOCKED ปฏิเสธทันที ไม่ต้องถามด้วยซ้ำ
 
 
@@ -222,7 +222,7 @@ async def test_execute_rejects_needs_confirmation_action_when_user_declines():
     result = await execute(None, {"type": "submit", "index": 3}, ask_user_func=ask_user_func)
 
     assert result.success is False
-    assert "ปฏิเสธ" in result.message
+    assert "refused" in result.message
 
 
 @pytest.mark.asyncio
@@ -238,7 +238,7 @@ async def test_execute_asks_user_for_plain_click_with_risky_label():
     # index) — cmd ต้นฉบับที่ dispatch จริงยังไม่ถูกแตะ (ดู actions.py::_confirm_action)
     ask_user_func.assert_awaited_once_with({**cmd, "element_label": "Remove"})
     assert result.success is False
-    assert "ปฏิเสธ" in result.message
+    assert "refused" in result.message
 
 
 @pytest.mark.asyncio
@@ -304,7 +304,7 @@ async def test_execute_asks_user_for_plain_click_when_manual_requires_approval()
 
     ask_user_func.assert_awaited_once_with({**cmd, "element_label": "Checkout"})
     assert result.success is False
-    assert "ปฏิเสธ" in result.message
+    assert "refused" in result.message
 
 
 @pytest.mark.asyncio
@@ -365,7 +365,7 @@ async def test_execute_forwards_allowed_domains_to_classify_action():
         allowed_domains={"www.saucedemo.com"},
     )
     assert result.success is False
-    assert "บล็อก" in result.message
+    assert "blocked" in result.message
 
 
 # --- Security 1.2 (SSRF): is_private_or_internal() + goto ไปยัง private/internal IP ---

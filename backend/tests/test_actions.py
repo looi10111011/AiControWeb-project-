@@ -94,7 +94,7 @@ async def test_execute_click_retries_on_transient_failure_then_succeeds(_no_real
     result = await execute(mock_page, {"type": "click", "index": 2})
 
     assert result.success is True
-    assert "ลองครั้งที่ 2/3" in result.message
+    assert "attempt 2/3" in result.message
     assert mock_page.click.await_count == 2
     _no_real_sleep.assert_awaited_once()  # หน่วงแค่ระหว่างครั้งที่ 1->2 ครั้งเดียว
 
@@ -107,7 +107,7 @@ async def test_execute_fill_gives_up_after_max_retries(_no_real_sleep):
     result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello"})
 
     assert result.success is False
-    assert "ลองแล้ว 3 ครั้ง" in result.message
+    assert "after 3 attempts" in result.message
     assert mock_page.fill.await_count == 3
     assert _no_real_sleep.await_count == 2  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
 
@@ -280,6 +280,31 @@ async def test_execute_click_chains_then_click_index_when_provided():
 
 
 @pytest.mark.asyncio
+async def test_execute_click_reports_success_when_only_the_chained_click_fails():
+    """W_chain_partial_success (บั๊กจริง live-reproduce บน OrangeHRM กับ provider openai):
+    primary คลิกสำเร็จและเปลี่ยนหน้าไปแล้วจริง แต่ chain ตัวที่สองพัง (index ค้างจาก snapshot
+    ก่อนหน้า เพราะหน้าเพิ่งเปลี่ยนไปนั่นแหละ) — เดิมคืน success=False ทั้งก้อน ทำให้โมเดลอ่านว่า
+    ล้มเหลวแล้ว "คลิก primary ซ้ำ" วนอยู่ 10 step ติดกันจนหมด max_steps ทั้งที่ไปถึงหน้า
+    เป้าหมายตั้งแต่ step แรก — ต้องคืนความจริง: primary สำเร็จ, บอกให้สั่งคลิกที่สองแยก step"""
+    mock_page = AsyncMock()
+    call_count = {"n": 0}
+
+    async def _click(selector, **kwargs):
+        call_count["n"] += 1
+        if selector == '[data-ai-index="5"]':
+            raise Exception("element not found")
+
+    mock_page.click = AsyncMock(side_effect=_click)
+
+    result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is True  # ความคืบหน้าจริงของ primary ต้องไม่หายไป
+    assert "chained click(5) failed" in result.message
+    assert "separate next step" in result.message
+    assert "do not repeat the first action" in result.message
+
+
+@pytest.mark.asyncio
 async def test_execute_click_does_not_chain_when_primary_action_fails():
     mock_page = AsyncMock()
     mock_page.click = AsyncMock(side_effect=Exception("boom"))
@@ -317,7 +342,7 @@ async def test_execute_click_chain_skipped_when_secondary_needs_confirmation_and
     )
 
     assert result.success is True  # primary (index 0) ยังสำเร็จอยู่
-    assert "ไม่ได้คลิกต่อ" in result.message
+    assert "did not go on to click" in result.message
     ask_user_func.assert_awaited_once()
     click_selectors = {c.args[0] for c in mock_page.click.await_args_list}
     assert '[data-ai-index="5"]' not in click_selectors  # ไม่เคยคลิกจริง
@@ -627,8 +652,8 @@ async def test_resolve_confirmation_modal_retries_then_succeeds_without_reload(_
     result = await resolve_confirmation_modal(mock_page)
 
     assert result is not None
-    assert "ไม่ตอบสนอง" not in result
-    assert "ลองครั้งที่ 2" in result
+    assert "was unresponsive" not in result
+    assert "attempt 2" in result
     assert yes_delete.click.await_count == 2
     mock_page.reload.assert_not_awaited()
 
@@ -662,7 +687,7 @@ async def test_resolve_confirmation_modal_reloads_page_after_button_unresponsive
     result = await resolve_confirmation_modal(mock_page)
 
     assert result is not None
-    assert "ไม่ตอบสนอง" in result
+    assert "was unresponsive" in result
     assert "navigate" in result or "กรองข้อมูลใหม่" in result
     assert yes_delete.click.await_count == _MODAL_CONFIRM_CLICK_RETRIES
     mock_page.reload.assert_awaited_once()
@@ -695,7 +720,7 @@ async def test_resolve_confirmation_modal_reload_does_not_throw_if_reload_itself
     result = await resolve_confirmation_modal(mock_page)  # ต้องไม่ throw
 
     assert result is not None
-    assert "ไม่ตอบสนอง" in result
+    assert "was unresponsive" in result
 
 
 @pytest.mark.asyncio
@@ -803,7 +828,7 @@ async def test_execute_click_checks_toast_when_label_matches_save():
         result = await execute(mock_page, {"type": "click", "index": 5}, label="Save")
 
     assert result.success is True
-    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+    assert 'Success confirmation found: "Successfully Saved"' in result.message
     assert result.toast_confirmed is True  # W64[7.2]
     mock_toast.assert_awaited_once()
 
@@ -816,7 +841,7 @@ async def test_execute_click_notes_missing_toast_when_label_matches_save():
         result = await execute(mock_page, {"type": "click", "index": 5}, label="บันทึก")
 
     assert result.success is True
-    assert "ไม่พบ toast" in result.message
+    assert "No toast/success confirmation appeared" in result.message
     assert result.toast_confirmed is False  # W64[7.2]
 
 
@@ -872,7 +897,7 @@ async def test_execute_submit_action_preserves_toast_confirmed():
 
     assert result.success is True
     assert result.toast_confirmed is True
-    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+    assert 'Success confirmation found: "Successfully Saved"' in result.message
 
 
 # W3[A] (ปิดจ็อบ 2026-07-15): switch_tab() implement ไว้แล้วตั้งแต่ก่อนหน้านี้ (dispatch
@@ -903,7 +928,7 @@ async def test_execute_switch_tab_fails_when_tab_index_out_of_range():
     result = await execute(mock_page, {"type": "switch_tab", "tab_index": 5})
 
     assert result.success is False
-    assert "มีแค่ 1 tab" in result.message
+    assert "there are only 1 tab" in result.message
 
 
 @pytest.mark.asyncio
@@ -916,7 +941,7 @@ async def test_execute_does_not_retry_switch_tab_on_failure():
     result = await execute(mock_page, {"type": "switch_tab", "tab_index": 0})
 
     assert result.success is False
-    assert "มีแค่ 0 tab" in result.message
+    assert "there are only 0 tab" in result.message
 
 
 # ---------------- W19: Deterministic State Filter short-circuits ก่อน dispatch จริง ----------------
@@ -935,7 +960,7 @@ async def test_execute_fill_skips_dispatch_when_already_redundant():
         result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.fill.assert_not_awaited()
 
 
@@ -949,7 +974,7 @@ async def test_execute_check_skips_dispatch_when_already_redundant():
         result = await execute(mock_page, {"type": "check", "index": 3})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.check.assert_not_awaited()
 
 
@@ -963,7 +988,7 @@ async def test_execute_scroll_skips_dispatch_when_already_at_edge():
         result = await execute(mock_page, {"type": "scroll", "direction": "down"})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.mouse.wheel.assert_not_awaited()
 
 
@@ -979,7 +1004,7 @@ async def test_execute_click_fails_without_dispatch_when_element_disabled():
         result = await execute(mock_page, {"type": "click", "index": 5})
 
     assert result.success is False
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.click.assert_not_awaited()
 
 
@@ -995,7 +1020,7 @@ async def test_execute_fill_dispatches_normally_when_not_redundant():
         result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
 
     assert result.success is True
-    assert "[ข้าม]" not in result.message
+    assert "[Skipped]" not in result.message
     mock_page.fill.assert_awaited_once()
 
 
@@ -1032,7 +1057,7 @@ async def test_fill_secret_fails_gracefully_when_no_credential_stored():
         result = await fill_secret(mock_page, 4, "current_password")
 
     assert result.success is False
-    assert "ไม่มี credential ที่บันทึกไว้" in result.message
+    assert "no credential saved for this site" in result.message
     mock_page.fill.assert_not_awaited()
 
 
@@ -1044,7 +1069,7 @@ async def test_fill_secret_rejects_unknown_secret_key():
         result = await fill_secret(mock_page, 4, "new_password")
 
     assert result.success is False
-    assert "ไม่รู้จัก secret_key" in result.message
+    assert "unknown secret_key" in result.message
     mock_load.assert_not_called()  # ไม่ต้องเสีย I/O เรียก vault เลยถ้า secret_key ไม่รู้จักตั้งแต่แรก
     mock_page.fill.assert_not_awaited()
 
@@ -1302,7 +1327,7 @@ async def test_execute_read_page_data_reports_failure_from_extract_table_data():
     mock_page = AsyncMock()
     with patch(
         "backend.app.core.actions.extract_table_data",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+        AsyncMock(return_value="[FAIL] no element matching '#missing'"),
     ):
         result = await execute(
             mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"}
@@ -1335,9 +1360,51 @@ async def test_execute_read_page_data_does_not_retry_on_failure(_no_real_sleep):
     mock_page = AsyncMock()
     with patch(
         "backend.app.core.actions.extract_table_data",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+        AsyncMock(return_value="[FAIL] no element matching '#missing'"),
     ) as mock_extract:
         await execute(mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"})
 
     assert mock_extract.await_count == 1
     _no_real_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_select_on_custom_dropdown_is_rejected_with_actionable_hint():
+    """W_custom_dropdown: OrangeHRM ทำ dropdown ด้วย div + role=combobox ไม่ใช่ <select> —
+    select_option() เดิมจะไล่หา <option> ไม่เจอแล้วคืน "no options found in this dropdown"
+    ซึ่งอ่านเหมือน "ตัวเลือกไม่มี" ทั้งที่ปัญหาคือ "ใช้ action ผิดชนิด" ต้องปฏิเสธก่อน dispatch
+    พร้อมชี้ทางไป protocol W50 (คลิกเปิดก่อน แล้วคลิกตัวเลือก)"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.check_select_target_is_native",
+        AsyncMock(return_value=(
+            "This element is a <div>, not a native <select> — the 'select' action only works "
+            "on a real <select>. This is a custom dropdown: use type 'click' on this same index "
+            "to OPEN it first, then look at the new indexed elements and 'click' the option whose "
+            "label matches exactly what you want."
+        )),
+    ):
+        result = await execute(mock_page, {"type": "select", "index": 22, "label": "ESS"})
+
+    assert result.success is False
+    assert "not a native <select>" in result.message
+    assert "click" in result.message
+    mock_page.select_option.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_select_on_real_native_select_still_dispatches():
+    """ต้องไม่ไปบล็อก <select> จริงที่ทำงานถูกอยู่แล้ว"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.check_select_target_is_native",
+        AsyncMock(return_value=None),
+    ), patch("backend.app.core.actions.select_option", AsyncMock(
+        return_value=ActionResult(True, "select(2)", "selected 'Price' succeeded"),
+    )) as mock_select:
+        result = await execute(mock_page, {"type": "select", "index": 2, "label": "Price"})
+
+    assert result.success is True
+    mock_select.assert_awaited_once()

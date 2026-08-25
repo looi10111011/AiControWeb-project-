@@ -2271,7 +2271,7 @@ async def test_run_task_aborts_after_exhausting_forced_loop_recoveries():
         )
 
     assert result["success"] is False
-    assert "ซ้ำ" in result["message"]
+    assert "the same action" in result["message"]
     assert "บังคับ" in result["message"]
     assert result["steps"] == 8
     assert mock_execute.await_count == 8
@@ -2364,7 +2364,7 @@ async def test_run_task_loop_guard_still_triggers_for_identical_repeated_read_pa
         )
 
     assert result["success"] is False
-    assert "ซ้ำ" in result["message"]
+    assert "the same action" in result["message"]
     assert "บังคับ" in result["message"]
 
 
@@ -2436,7 +2436,7 @@ async def test_run_task_stops_on_alternating_two_action_pattern():
         )
 
     assert result["success"] is False
-    assert "คาบ 2" in result["message"]
+    assert "period 2" in result["message"]
     assert "บังคับ" in result["message"]
     assert result["steps"] < 30  # ยอมแพ้ก่อนหมด max_steps จริง ไม่ใช่วนจนครบ budget
     forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
@@ -2477,7 +2477,7 @@ async def test_run_task_stops_on_repeating_three_action_cycle():
     # W31: trigger แล้วบังคับ recovery ก่อน (ดู test_run_task_stops_on_alternating_two_
     # action_pattern สำหรับเหตุผลที่ตรวจแบบ behavioral แทน exact count)
     assert result["success"] is False
-    assert "คาบ 3" in result["message"]
+    assert "period 3" in result["message"]
     assert "บังคับ" in result["message"]
     assert result["steps"] < 30
     forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
@@ -2516,7 +2516,7 @@ async def test_run_task_stops_on_repeating_four_action_cycle():
     # W31: ดูเหตุผลที่ตรวจแบบ behavioral ใน test_run_task_stops_on_alternating_two_
     # action_pattern
     assert result["success"] is False
-    assert "คาบ 4" in result["message"]
+    assert "period 4" in result["message"]
     assert "บังคับ" in result["message"]
     assert result["steps"] < 30
     forced_go_back_calls = [c for c in mock_execute.await_args_list if c.args[1] == {"type": "go_back"}]
@@ -2863,7 +2863,7 @@ async def test_run_task_flags_unexpected_navigation_after_non_navigational_actio
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
     assert len(captured_tool_results) == 1
-    assert "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" in captured_tool_results[0]
+    assert "The page changed by itself after this action" in captured_tool_results[0]
     assert "https://example.com/start" in captured_tool_results[0]
     assert "https://example.com/unexpected" in captured_tool_results[0]
 
@@ -2902,7 +2902,7 @@ async def test_run_task_does_not_flag_navigation_for_goto_action():
         await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
 
     assert len(captured_tool_results) == 1
-    assert "หน้าเว็บเปลี่ยนไปเองหลัง action นี้" not in captured_tool_results[0]
+    assert "The page changed by itself after this action" not in captured_tool_results[0]
 
 
 # --- W32: action_history_context ส่งเข้า next_action() ทุก step ---
@@ -3140,7 +3140,7 @@ async def test_run_task_premature_false_finish_nudge_uses_gemini_message_shape_f
     assert user_messages  # ต้องมี nudge จริงถูกฉีดเข้าไป ไม่ใช่ list ว่างเปล่า
     assert all("content" not in m for m in user_messages)  # ต้องไม่มี key แบบ Anthropic/Groq หลงเหลือ
     assert any(
-        "ถูกปฏิเสธ" in part.get("text", "") for m in user_messages for part in m.get("parts", [])
+        "rejected" in part.get("text", "") for m in user_messages for part in m.get("parts", [])
     )
 
 
@@ -3343,7 +3343,7 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
         if isinstance(part, dict)
     )
     assert "step 1" in all_text
-    assert "สรุป step ก่อนหน้า" in all_text
+    assert "Digest of earlier steps" in all_text
 
 
 @pytest.mark.asyncio
@@ -3406,7 +3406,7 @@ async def test_run_task_compacts_anthropic_history_once_step_count_exceeds_thres
         msg["content"] for msg in last_call_messages if isinstance(msg.get("content"), str)
     )
     assert "step 1" in all_text
-    assert "สรุป step ก่อนหน้า" in all_text
+    assert "Digest of earlier steps" in all_text
 
 
 @pytest.mark.asyncio
@@ -3469,7 +3469,7 @@ async def test_run_task_compacts_groq_history_and_preserves_leading_system_messa
         msg["content"] for msg in last_call_messages if isinstance(msg.get("content"), str)
     )
     assert "step 1" in all_text
-    assert "สรุป step ก่อนหน้า" in all_text
+    assert "Digest of earlier steps" in all_text
 
 
 # --- Permission layer connected to the real per-step loop ---
@@ -3538,7 +3538,7 @@ async def test_run_task_needs_confirmation_action_rejected_when_ask_user_func_de
 
     ask_user_func.assert_awaited_once_with({"type": "delete", "index": 5})
     assert "[FAIL]" in result["history"][1]["result"]
-    assert "ปฏิเสธ" in result["history"][1]["result"]
+    assert "refused" in result["history"][1]["result"]
 
 
 @pytest.mark.asyncio
@@ -3574,9 +3574,12 @@ async def test_run_task_stops_immediately_when_action_rejected_by_human():
 
     assert mock_next_action.await_count == 1  # ไม่มีการลองทางอื่นต่อหลังโดนปฏิเสธ
     assert result["success"] is False
+    # W_prompt_en: final_message ยังเป็นภาษาไทยโดยเจตนา — ข้อความนี้ส่งถึง "ผู้ใช้" ไม่ใช่ LLM
+    # (กฎเดียวกับที่ SYSTEM_PROMPT สั่งโมเดลไว้: ตอบเป็นภาษาที่ user ใช้) ต่างจาก
+    # REJECTED_BY_USER_MESSAGE ใน history ด้านล่างที่ไหลเข้า prompt จริงเลยต้องเป็นอังกฤษ
     assert "ปฏิเสธ" in result["message"]
     assert "[FAIL]" in result["history"][1]["result"]
-    assert "ผู้ใช้ปฏิเสธการทำ Action นี้" in result["history"][1]["result"]
+    assert "The user refused to perform this action" in result["history"][1]["result"]
 
 
 @pytest.mark.asyncio
@@ -3603,7 +3606,7 @@ async def test_run_task_blocked_domain_goto_never_calls_ask_user_func():
         )
 
     ask_user_func.assert_not_called()
-    assert "Blocklist" in result["history"][1]["result"]
+    assert "blocklist" in result["history"][1]["result"]
 
 
 @pytest.mark.asyncio
@@ -5326,3 +5329,529 @@ async def test_run_task_completion_verification_defaults_to_ok_without_errors():
 
     assert result["success"] is True
     assert result["completion_verification"] == "OK"
+
+
+# --- W_goal_scope ("Goal Boundary Gate") -------------------------------------------------
+# บั๊กจริงที่ live-reproduce บน opensource-demo.orangehrmlive.com กับ provider openai (goal
+# "login then goto adminmenu"): agent ไปถึงหน้า Admin สำเร็จตั้งแต่ step 1 แล้วยังทำงานต่อ
+# นอกเหนือที่ goal สั่ง — รอบหนึ่งกด Edit -> Save บนเรคอร์ดจริง อีกรอบ hover -> click ปุ่ม
+# Delete ดู docstring ของ _extract_simple_navigation_target/_navigation_target_reached
+# ใน orchestrator.py สำหรับเหตุผลเต็ม
+
+
+def _goal_scope_page(url: str):
+    """browser mock ที่ page.url ชี้ไปหน้าเป้าหมายแล้ว — _navigation_target_reached() เช็คจาก
+    URL path เท่านั้น (ไม่ใช่ page_text) จึงต้องตั้งค่านี้ให้ตรงกับ target keyword ของ goal"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_browser.new_page.return_value.url = url
+    return mock_async_playwright
+
+
+def test_extract_goal_navigation_target_handles_login_prefixed_compound_goals():
+    """W_goal_scope_compound_login: goal จริงของ user ("login then goto adminmenu") มี " then "
+    ซึ่งเป็น compound marker — ตัวเดิมคืน None ทำให้ gate ไม่เคยทำงานกับเคสนี้เลย แต่ต้องไม่
+    กว้างจนไปตัด goal ที่มีงานจริงเหลืออยู่ ("ไปหน้า Admin แล้วลบ user")"""
+    f = orchestrator_module._extract_goal_navigation_target
+
+    assert f("login then goto adminmenu") == "adminmenu"
+    assert f("เข้าสู่ระบบ แล้ว ไปหน้า Admin") == "Admin"
+    # พฤติกรรมเดิมของ _extract_simple_navigation_target() ต้องไม่เปลี่ยน
+    assert f("go to the Admin page") == "Admin"
+    assert f("ไปที่หน้า Admin") == "Admin"
+    # ยังมี objective จริงเหลืออยู่ -> ห้าม gate
+    assert f("ไปหน้า Admin แล้วลบ user ที่ Role=ESS") is None
+    assert f("login and delete the ESS user") is None
+    assert f("ลบ user ทั้งหมด") is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_blocks_out_of_scope_action_after_target_reached():
+    """ถึงหน้าเป้าหมายแล้ว (click สำเร็จ + path มี adminmenu) — action ที่ไม่ใช่ read-only
+    ต้องถูกปฏิเสธก่อน dispatch ไม่ใช่ปล่อยให้ไปคลิกปุ่ม Delete บนข้อมูลจริง"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/adminmenu/list")
+    click_result = ActionResult(True, "click", "สำเร็จ")
+    delete_click = {"type": "click", "index": 9}
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("browser_action", delete_click, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "login then goto adminmenu", provider="anthropic", max_steps=10,
+        )
+
+    assert result["success"] is True
+    dispatched = [c.args[1] for c in mock_execute.await_args_list]
+    assert delete_click not in dispatched
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_hard_stops_after_one_nudge():
+    """เตือนได้แค่ 1 ครั้ง (_MAX_PREMATURE_GOAL_SCOPE_RETRIES) — ยังดื้อสั่ง action นอก scope อีก
+    ต้องปิดงานเลย ไม่ใช่ escape valve แบบเกินโควตาแล้วปล่อยผ่านเหมือน guard อื่นในไฟล์นี้
+    เพราะการปล่อยผ่านคือ failure mode ที่ guard นี้ถูกสร้างมาแก้พอดี"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/adminmenu/list")
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    next_action_calls = itertools.cycle([
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+    ])
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "login then goto adminmenu", provider="anthropic", max_steps=30,
+        )
+
+    assert result["success"] is True
+    assert "already satisfied" in result["message"]
+    assert result["steps"] < 30
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_still_allows_read_only_actions():
+    """read_page_data/scroll/wait/hover ยังทำได้หลัง gate ติด — ต้องเหลือทางให้ agent ยืนยันผล
+    ก่อนตอบ finish_task ไม่ใช่ตัดทุกอย่างทิ้ง"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/adminmenu/list")
+    ok = ActionResult(True, "ok", "สำเร็จ")
+    read_action = {"type": "read_page_data", "query": "how many users", "target_hint": "table tbody tr"}
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("browser_action", read_action, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "login then goto adminmenu", provider="anthropic", max_steps=10,
+        )
+
+    assert result["success"] is True
+    assert read_action in [c.args[1] for c in mock_execute.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_counter_survives_interleaved_read_only_action():
+    """counter ต้องไม่ reset เพราะ action แบบ read-only — ไม่งั้นโมเดลแทรก read_page_data คั่น
+    ระหว่างการละเมิดแต่ละครั้งแล้วหนี hard-stop ได้ตลอดกาล (guard อื่นในไฟล์นี้ reset ได้
+    ปลอดภัยเพราะไม่มี action ประเภทผ่านฟรีแบบนี้ให้ใช้)"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/adminmenu/list")
+    ok = ActionResult(True, "ok", "สำเร็จ")
+
+    next_action_calls = itertools.cycle([
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "read_page_data", "query": "q", "target_hint": "h"}, "t2", [], llm.TokenUsage()),
+    ])
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "login then goto adminmenu", provider="anthropic", max_steps=30,
+        )
+
+    assert "already satisfied" in result["message"]
+    assert result["steps"] < 30
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_does_not_cut_short_a_genuine_compound_goal():
+    """กันไม่ให้ gate ตัดงานที่ user สั่งจริง — "ไปหน้า Admin แล้วลบ user" ยังมี objective ที่สอง
+    เหลืออยู่ _extract_goal_navigation_target() จึงต้องคืน None และ action ลบต้องถูก dispatch
+    ตามปกติแม้ path จะมี admin อยู่แล้วก็ตาม"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/admin/viewSystemUsers")
+    ok = ActionResult(True, "ok", "สำเร็จ")
+    # ใช้ click (ไม่ใช่ type "delete") เพราะ gate ตัดสินจาก "ชนิด action" ล้วนๆ — click ก็ไม่อยู่
+    # ใน _GOAL_SCOPE_ALLOWED_ACTION_TYPES เหมือนกัน จึงพิสูจน์ประเด็นเดียวกันได้ โดยไม่ต้องลาก
+    # permission prompt (delete = NEEDS_CONFIRMATION) เข้ามาปนในเทสต์ที่วัดคนละเรื่อง
+    delete_action = {"type": "click", "index": 9}
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("browser_action", delete_action, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ไปหน้า Admin แล้วลบ user ที่ Role=ESS",
+            provider="anthropic", max_steps=10,
+        )
+
+    assert result["success"] is True
+    assert delete_action in [c.args[1] for c in mock_execute.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_run_task_goal_scope_gate_does_not_lock_before_any_step_ran():
+    """steps_taken > 0 gate: goal นำทางล้วนที่ยังไม่ได้ทำอะไรเลย ต้อง dispatch action แรกได้ปกติ
+    แม้ URL เริ่มต้นจะบังเอิญมี target keyword อยู่แล้วก็ตาม (ไม่งั้น task จะล็อกตายตั้งแต่ต้น)"""
+    mock_async_playwright = _goal_scope_page("https://example.com/web/adminmenu/list")
+    ok = ActionResult(True, "ok", "สำเร็จ")
+    first_click = {"type": "click", "index": 3}
+
+    next_action_calls = [
+        ("browser_action", first_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goto adminmenu", provider="anthropic", max_steps=10,
+        )
+
+    assert result["success"] is True
+    assert first_click in [c.args[1] for c in mock_execute.await_args_list]
+
+
+# --- W_same_label_loop / W_custom_dropdown -----------------------------------------------
+# บั๊กจริงที่ user รายงาน live บน opensource-demo.orangehrmlive.com (goal "เปิดเว็ป แล้วไปที่
+# เมนูแอดมิน แล้วลบ user role=ess ออกให้หมด"): agent วนติ๊ก checkbox ของแถวไปเรื่อยๆ
+# (click(35) -> click(36) -> click(34) -> check(37) ...) label เดียวกันหมดว่า "Select row" แต่
+# index ต่างกันทุกครั้ง — guard คาบ 1 เทียบ cmd ทั้ง dict (รวม index) จึงไม่เข้าเงื่อนไขสักรอบ
+# และ cycle detector ก็ไม่เห็นเป็นคาบ ผลคือวนไม่จำกัดจน user ต้องกด Stop เอง
+#
+# ต้นเหตุที่ทำให้ไปถึงจุดนั้น: select(22) ใส่ dropdown "User Role" ของ OrangeHRM ซึ่งเป็น
+# custom div ไม่ใช่ <select> จริง -> "no options found in this dropdown" หลัง retry 3 รอบ
+# filter Role=ESS จึงไม่เคยถูกตั้ง task เลยไม่มีเงื่อนไขจบที่ชัดเจน
+
+
+@pytest.mark.asyncio
+async def test_run_task_same_label_loop_guard_catches_repeats_with_different_indexes():
+    """action ชนิดเดิม + label เดิม แต่ index ต่างกันทุกครั้ง — guard คาบ 1 (เทียบทั้ง dict)
+    มองไม่เห็น ต้องมี guard ที่เทียบ (type, label) มาจับแทน ไม่งั้นวนได้ไม่จำกัด"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    ok = ActionResult(True, "click", "สำเร็จ")
+
+    # index ไม่ซ้ำเลยสักรอบ (35, 36, 34, 37, 38, ...) แต่ label เดียวกันหมด
+    def _rows():
+        i = 30
+        while True:
+            i += 1
+            yield ("browser_action", {"type": "click", "index": i}, f"t{i}", [], llm.TokenUsage())
+
+    elements = [{"index": i, "tag": "input", "type": "checkbox", "label": "Select row",
+                 "in_viewport": True, "region": "main"} for i in range(31, 60)]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=_rows())):
+        result = await Orchestrator().run_task(
+            "https://example.com", "delete every ESS user", provider="anthropic", max_steps=40,
+        )
+
+    assert result["success"] is False
+    assert "same element kind" in result["message"]
+    assert result["steps"] < 40  # ต้องไม่ปล่อยให้วนจนหมด max_steps
+
+
+@pytest.mark.asyncio
+async def test_run_task_same_label_guard_ignores_actions_without_a_label():
+    """ไม่มี label ให้เทียบ (เช่น scroll/go_back) = ตัดสินไม่ได้ ต้องไม่ไปนับเป็นการวนซ้ำ
+    ไม่งั้น scroll หลายครั้งติดกันตามปกติจะโดนบล็อกโดยไม่มีเหตุผล"""
+    mock_async_playwright, _, _ = _patch_browser()
+    ok = ActionResult(True, "scroll", "สำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "scroll", "direction": "down"}, f"t{i}", [], llm.TokenUsage())
+        for i in range(6)
+    ] + [("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage())]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", max_steps=20,
+        )
+
+    # scroll ซ้ำๆ ยังโดน guard คาบ 1 เดิมได้ (cmd เดิมเป๊ะ) — ที่ต้องยืนยันคือ "ไม่ใช่เพราะ
+    # same-label guard" ซึ่งไม่มี label ให้เทียบตั้งแต่แรก
+    assert "same element kind" not in (result["message"] or "")
+
+
+# --- W_consent_banner / W_consent_banner_midtask -----------------------------------------
+# บั๊กจริงจากการรันสด 3 รอบบน opensource-demo.orangehrmlive.com: แบนเนอร์คุกกี้ของ Cookiebot
+# โผล่ไม่คงที่และ render ช้ากว่า wait_stable บางรอบโผล่ "กลางทาง" หลัง auto-login ด้วยซ้ำ
+# ผลที่เจอ: auto-login หาฟอร์ม login ไม่เจอเพราะโดนบัง, และ step 3 ของอีกรอบโมเดลกดปุ่ม
+# "Allow all" ของแบนเนอร์เอง (ให้ความยินยอม tracking cookie แทน user โดยไม่มีใครสั่ง) แล้ว
+# หลังจากนั้นหลุดไปคลิกลิงก์โฆษณาบนหน้าจนหมด max_steps
+#
+# markup ในเทสต์เลียนแบบ Cookiebot จริง (container id="CybotCookiebotDialog") — CMP รายใหญ่
+# เจ้าอื่น (OneTrust/Didomi/Usercentrics/CookieYes) ใช้โครงเดียวกัน จึงครอบคลุมไปด้วย
+
+_COOKIEBOT_HTML = """<html><body>
+<h1>App</h1><a href="#">Admin</a>
+<div id="CybotCookiebotDialog" role="dialog">
+  <div>This website uses cookies. We use cookies to improve your browsing experience.</div>
+  <button id="CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll">Allow all</button>
+  <button id="CybotCookiebotDialogBodyButtonDecline">Deny</button>
+  <button id="CybotCookiebotDialogBodyButtonAccept">Allow selection</button>
+</div>
+<div id="log"></div>
+<script>
+document.querySelectorAll('#CybotCookiebotDialog button').forEach(b => b.addEventListener('click', () => {
+  document.getElementById('log').textContent = b.textContent;
+  document.getElementById('CybotCookiebotDialog').remove();
+}));
+</script></body></html>"""
+
+
+def test_snapshot_shows_consent_banner_detects_only_real_banners():
+    """ตรวจจาก elements ที่ perceive มาแล้ว ไม่แตะ browser — ต้องไม่ false positive กับหน้าปกติ"""
+    banner = [
+        {"index": 0, "tag": "div", "label": "This website uses cookies We use cookies to improve"},
+        {"index": 7, "tag": "button", "label": "Allow all"},
+    ]
+    clean = [{"index": 3, "tag": "a", "label": "Admin"}, {"index": 4, "tag": "a", "label": "PIM"}]
+
+    assert orchestrator_module._snapshot_shows_consent_banner(banner) is True
+    assert orchestrator_module._snapshot_shows_consent_banner(clean) is False
+    assert orchestrator_module._snapshot_shows_consent_banner([]) is False
+
+
+@pytest.mark.asyncio
+async def test_dismiss_consent_banner_clicks_deny_never_allow_all(tmp_path):
+    """*** ข้อสำคัญที่สุดของเทสต์ชุดนี้ ***: ต้องกด "Deny" ไม่ใช่ "Allow all" — ค่า default ที่
+    เคารพความเป็นส่วนตัวของ user (ไม่เปิด tracking/marketing cookie ให้โดยเจ้าของงานไม่ได้สั่ง)
+    ถ้าวันหลังมีใครแก้ให้ไปกดปุ่มยอมรับเพราะ "ปิดง่ายกว่า" เทสต์นี้ต้องแดง"""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(_COOKIEBOT_HTML)
+
+        clicked = await orchestrator_module._dismiss_consent_banner(page)
+
+        assert clicked == "Deny"
+        assert (await page.locator("#log").text_content()) == "Deny"
+        assert await page.locator("#CybotCookiebotDialog").count() == 0
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_dismiss_consent_banner_is_a_noop_without_a_banner():
+    """หน้าไม่มีแบนเนอร์ต้องไม่ไปกดอะไรทั้งนั้น (เรียกทุก step ได้อย่างปลอดภัย)"""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(
+            '<html><body><button id="b">Deny</button><div id="log"></div>'
+            '<script>document.getElementById("b").onclick = () =>'
+            ' document.getElementById("log").textContent = "clicked";</script></body></html>'
+        )
+
+        # ปุ่มชื่อ "Deny" ที่ไม่ได้อยู่ในแบนเนอร์คุกกี้ (เช่นปุ่มปฏิเสธใบลาของแอปเอง) ต้องไม่โดนกด
+        clicked = await orchestrator_module._dismiss_consent_banner(page)
+
+        assert clicked is None
+        assert (await page.locator("#log").text_content()) == ""
+        await browser.close()
+
+
+# --- W_no_create_for_existing_goal / W_zero_records_done ---------------------------------
+# บั๊กจริงจากภาพหน้าจอที่ user ส่งมา (goal "...ลบ user role=ess ออกให้หมด"): กรองแล้วไม่เจอแถว
+# ESS เหลือ — agent กลับ navigate ไปหน้า Add User (/web/admin/saveSystemUser) แล้วกรอกฟอร์ม
+# สร้าง user ใหม่ จนระบบตอบ "Username: Already exists" แทนที่จะรายงานตรงๆ ว่าไม่พบเป้าหมาย
+
+
+def test_goal_targets_existing_records_only_scopes_narrowly():
+    f = orchestrator_module._goal_targets_existing_records_only
+
+    assert f("เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด") is True
+    assert f("delete every user with role ESS") is True
+    assert f("เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin") is True
+    # มีคำสั่งสร้างปนอยู่ -> ห้าม gate (goal ขอให้สร้างจริง)
+    assert f("สร้าง user ใหม่ แล้วลบคนเก่า") is False
+    assert f("add a new user then delete the old one") is False
+    # ไม่ใช่งานลบ/แก้ทั้งหมดเลย
+    assert f("ไปหน้า admin") is False
+
+
+def test_action_starts_create_flow_ignores_add_to_something():
+    """"Add to cart"/"Add to list" คือการเอา "ของที่มีอยู่" ไปใส่ที่ไหนสักแห่ง ไม่ใช่เปิดฟอร์ม
+    สร้าง record ใหม่ — ต้องไม่โดนบล็อก ไม่งั้น goal อย่าง "ลบสินค้าในตะกร้า" จะพังเพราะ agent
+    แตะปุ่มตะกร้าไม่ได้เลย"""
+    f = orchestrator_module._action_starts_create_flow
+    click = {"type": "click"}
+
+    assert f(click, "+ Add") is True
+    assert f(click, "Add User") is True
+    assert f(click, "Create") is True
+    assert f(click, "New Employee") is True
+    assert f(click, "เพิ่ม") is True
+    assert f(click, "สร้างผู้ใช้") is True
+
+    assert f(click, "Add to cart") is False
+    assert f(click, "Address") is False
+    assert f(click, "Save") is False
+
+    # URL ปลายทางของ goto ก็นับ (เคสจริงจากภาพหน้าจอ)
+    assert f({"type": "goto", "url": "https://x/web/admin/saveSystemUser"}, "") is True
+    assert f({"type": "goto", "url": "https://x/web/admin/viewSystemUsers"}, "") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_blocks_navigating_to_a_create_page_for_a_delete_goal():
+    """เคสจากภาพหน้าจอโดยตรง: goal สั่งลบ แต่โมเดลจะไปกด "Add" — ต้องไม่ถูก dispatch เลย"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_browser.new_page.return_value.url = "https://example.com/web/admin/viewSystemUsers"
+    ok = ActionResult(True, "click", "สำเร็จ")
+    add_click = {"type": "click", "index": 9}
+    elements = [
+        {"index": 3, "tag": "a", "label": "Admin", "in_viewport": True, "region": "navigation"},
+        {"index": 9, "tag": "button", "label": "+ Add", "in_viewport": True, "region": "main"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", add_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ไม่พบ user ที่ Role=ESS"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ลบ user ที่ role=ess ออกให้หมด", provider="anthropic", max_steps=10,
+        )
+
+    dispatched = [c.args[1] for c in mock_execute.await_args_list]
+    assert add_click not in dispatched
+    assert result["success"] is False  # รายงานตรงๆ ว่าไม่พบ ไม่ใช่สร้างของใหม่มาแทน
+
+
+@pytest.mark.asyncio
+async def test_run_task_does_not_block_create_when_the_goal_asked_for_it():
+    """goal ที่สั่งสร้างจริงต้องไม่โดน guard นี้แตะเลย"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_browser.new_page.return_value.url = "https://example.com/web/admin/viewSystemUsers"
+    ok = ActionResult(True, "click", "สำเร็จ")
+    add_click = {"type": "click", "index": 9}
+    elements = [{"index": 9, "tag": "button", "label": "+ Add", "in_viewport": True, "region": "main"}]
+
+    next_action_calls = [
+        ("browser_action", add_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "สร้าง user ใหม่ แล้วลบคนเก่า", provider="anthropic", max_steps=10,
+        )
+
+    assert add_click in [c.args[1] for c in mock_execute.await_args_list]
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_task_treats_zero_remaining_rows_as_goal_satisfied():
+    """W_zero_records_done: งานลบตามเงื่อนไข "เสร็จ" เมื่อตารางที่กรองแล้วไม่เหลือแถวที่ตรง —
+    หลังจากนั้น action ที่ไม่ใช่ read-only ต้องถูก Goal Boundary Gate ปฏิเสธ ไม่ใช่ปล่อยให้
+    วนคลิกต่อจนหมด max_steps (เคสจริง: เหลือ 0 แล้วโมเดลไปกด Reset ล้าง filter ทิ้งแล้วเริ่มใหม่)"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_browser.new_page.return_value.url = "https://example.com/web/admin/viewSystemUsers"
+    ok = ActionResult(True, "click", "สำเร็จ")
+    reset_click = {"type": "click", "index": 25}
+    elements = [{"index": 25, "tag": "button", "label": "Reset", "in_viewport": True, "region": "main"}]
+
+    next_action_calls = itertools.cycle([
+        ("browser_action", reset_click, "t1", [], llm.TokenUsage()),
+    ])
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch(
+             "backend.app.core.orchestrator._scan_remaining_target_records_once",
+             AsyncMock(return_value=(0, "No Records Found")),
+         ), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=ok)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "ลบ user ที่ role=ess ออกให้หมด", provider="anthropic", max_steps=25,
+        )
+
+    assert "no matching rows left" in result["message"]
+    assert result["steps"] < 25
+
+
+@pytest.mark.asyncio
+async def test_dismiss_consent_banner_reaches_a_banner_inside_an_iframe():
+    """W_consent_banner_iframe (บั๊กจริง live run): CMP หลายเจ้า (รวม Cookiebot) render
+    แบนเนอร์ใน iframe แยก — page.evaluate() เห็นแค่ main document ต่างจาก perception.py ที่
+    เดินเข้าทุก frame อยู่แล้ว เกิดสภาพ "โมเดลเห็นปุ่มแต่ระบบปิดให้ไม่ได้" แล้วโมเดลก็ไปกด
+    "Allow all" เอง (เห็นจริงที่ step 4 ของ live run) — ต้องไล่ยิงทุก frame"""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content('<html><body><h1>App</h1><iframe id="f"></iframe></body></html>')
+        await page.frames[1].set_content(_COOKIEBOT_HTML)
+
+        clicked = await orchestrator_module._dismiss_consent_banner(page)
+
+        assert clicked == "Deny"
+        assert (await page.frames[1].locator("#log").text_content()) == "Deny"
+        await browser.close()

@@ -36,7 +36,39 @@ async def check_fill_redundant(page: Page, index: int, text: str) -> Optional[st
     except Exception:
         return None
     if current == text:
-        return f"ช่องนี้มีข้อความ '{text}' อยู่แล้ว ไม่ต้องกรอกซ้ำ"
+        return f"This field already contains '{text}' — no need to fill it again"
+    return None
+
+
+async def check_select_target_is_native(page: Page, index: int) -> Optional[str]:
+    """W_custom_dropdown (บั๊กจริง live-reproduce บน OrangeHRM): action "select" ใช้ได้กับ
+    <select> จริงเท่านั้น — เว็บสมัยใหม่จำนวนมาก (รวม OrangeHRM) ทำ dropdown ด้วย div/button
+    + role=combobox แทน พอ LLM สั่ง select ใส่ element พวกนี้ select_option() จะไล่หา <option>
+    ไม่เจอสักตัวแล้วคืน "no option matching ... (no options found in this dropdown)" หลัง retry
+    ครบ 3 รอบ — ข้อความนั้นอ่านเหมือน "ตัวเลือกที่ขอไม่มีอยู่" ทั้งที่ปัญหาจริงคือ "ใช้ action
+    ผิดชนิด" ทำให้โมเดลไปหลงหาตัวเลือกอื่นแทนที่จะเปลี่ยนวิธีโต้ตอบ
+
+    ผลจริงที่เจอ: filter Role=ESS ไม่เคยถูกตั้งเลย task เลยไม่มีเงื่อนไขจบที่ชัดเจนแล้ววน
+    ติ๊ก checkbox ของแถวไปเรื่อยๆ จน user ต้องกด Stop เอง
+
+    คืนข้อความชี้ทางไป protocol W50 ใน SYSTEM_PROMPT (คลิกเปิด dropdown ก่อน แล้วค่อยคลิก
+    ตัวเลือกที่ label ตรงเป๊ะ) — fail-safe คืน None ถ้าอ่าน tag ไม่ได้จริงๆ (ปล่อยให้ dispatch
+    ตามเดิม ปลอดภัยกว่าบล็อก action ที่อาจถูกต้องอยู่แล้ว)"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        tag = await target.locator(selector).evaluate(
+            "el => el.tagName.toLowerCase()", timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+    if isinstance(tag, str) and tag and tag != "select":
+        return (
+            f"This element is a <{tag}>, not a native <select> — the 'select' action only works "
+            "on a real <select>. This is a custom dropdown: use type 'click' on this same index "
+            "to OPEN it first, then look at the new indexed elements and 'click' the option whose "
+            "label matches exactly what you want."
+        )
     return None
 
 
@@ -50,7 +82,7 @@ async def check_checkbox_redundant(page: Page, index: int) -> Optional[str]:
     except Exception:
         return None
     if already_checked is True:
-        return "checkbox/radio นี้ถูกติ๊กอยู่แล้ว"
+        return "This checkbox/radio is already ticked"
     return None
 
 
@@ -65,7 +97,7 @@ async def check_click_redundant(page: Page, index: int) -> Optional[str]:
     except Exception:
         return None
     if disabled is True:
-        return "element นี้อยู่ในสถานะ disabled แล้ว คลิกไม่ได้"
+        return "This element is already disabled — it cannot be clicked"
     return None
 
 
@@ -88,6 +120,6 @@ async def check_scroll_redundant(page: Page, direction: str) -> Optional[str]:
     except Exception:
         return None
     if at_edge is True:
-        edge_label = "ล่างสุด" if direction == "down" else "บนสุด"
-        return f"เลื่อนหน้าจอถึง{edge_label}อยู่แล้ว"
+        edge_label = "bottom" if direction == "down" else "top"
+        return f"Already scrolled to the {edge_label} of the page"
     return None

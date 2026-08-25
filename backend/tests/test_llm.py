@@ -144,7 +144,7 @@ def test_browser_action_schema_does_not_require_query_or_target_hint():
 def test_system_prompt_instructs_read_page_data_and_favors_counting():
     assert "read_page_data" in llm.SYSTEM_PROMPT
     assert "target_hint" in llm.SYSTEM_PROMPT
-    assert "favor การนับตรงๆ เสมอ" in llm.SYSTEM_PROMPT
+    assert "always favour a direct count" in llm.SYSTEM_PROMPT
 
 
 # --- W20 (Task12 follow-up, บั๊กจริงที่ user รายงาน): agent เผลอกรอกรหัสผ่านใหม่ซ้ำลงช่อง
@@ -153,8 +153,8 @@ def test_system_prompt_instructs_read_page_data_and_favors_counting():
 
 def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
     assert "Current Password ≠ New Password" in llm.SYSTEM_PROMPT
-    assert "ห้ามกรอกรหัสผ่านใหม่ลงช่อง\n    (ก) เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert 'ให้เรียก request_user_input (ดู W_resume ด้านล่าง' in llm.SYSTEM_PROMPT
+    assert "NEVER type the new password into field (a)" in llm.SYSTEM_PROMPT
+    assert 'call request_user_input (see W_resume below' in llm.SYSTEM_PROMPT
 
 
 # --- W65[1]/[3] ("Required-Field Validation" / "Vault Expansion") ---
@@ -163,8 +163,8 @@ def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
 def test_system_prompt_requires_asking_for_missing_required_field_value():
     assert 'W65[1] ("Required-Field Validation")' in llm.SYSTEM_PROMPT
     assert '"[required]"' in llm.SYSTEM_PROMPT
-    assert "ให้เรียก request_user_input (ดู W_resume ด้านล่างสำหรับรายละเอียดเต็ม)" in llm.SYSTEM_PROMPT
-    assert "ห้ามใช้\n  finish_task(success=false) กับกรณีนี้เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "call request_user_input (see W_resume below for full details)" in llm.SYSTEM_PROMPT
+    assert "*** NEVER use finish_task(success=false) for this case ***" in llm.SYSTEM_PROMPT
 
 
 # --- W_resume ("Mid-Task Input Request") — บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่
@@ -175,7 +175,7 @@ def test_system_prompt_requires_asking_for_missing_required_field_value():
 def test_system_prompt_documents_request_user_input_tool():
     assert 'W_resume ("Mid-Task Input Request")' in llm.SYSTEM_PROMPT
     assert "request_user_input(prompt, sensitive)" in llm.SYSTEM_PROMPT
-    assert "sensitive: true เมื่อค่าที่ถามเป็นรหัสผ่าน/ข้อมูลลับ" in llm.SYSTEM_PROMPT
+    assert "Set sensitive: true when the value you're asking for is a password/secret" in llm.SYSTEM_PROMPT
 
 
 def test_request_user_input_tool_registered_for_all_three_providers():
@@ -200,8 +200,8 @@ def test_system_prompt_prefers_fill_secret_for_current_password_field():
 
 
 def test_plan_prompt_template_asks_for_missing_required_value():
-    assert "Required-Field Check ก่อนร่างแผน" in llm._PLAN_PROMPT_TEMPLATE
-    assert "*จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
+    assert "Required-Field Check" in llm._PLAN_PROMPT_TEMPLATE
+    assert "Required-Field Check before drafting the plan" in llm._PLAN_PROMPT_TEMPLATE
 
 
 # --- W65[4] ("Structured Page-Grouped Plan Output") ---
@@ -209,22 +209,22 @@ def test_plan_prompt_template_asks_for_missing_required_value():
 
 def test_plan_prompt_template_instructs_page_grouped_format():
     assert "Page-Grouped Plan Format" in llm._PLAN_PROMPT_TEMPLATE
-    assert 'หน้า Login: กรอก Username, กรอก Password, กด Login' in llm._PLAN_PROMPT_TEMPLATE
-    assert "Current Password *จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
+    assert '1. Login page: fill in Username, fill in Password, click Login' in llm._PLAN_PROMPT_TEMPLATE
+    assert "Current Password" in llm._PLAN_PROMPT_TEMPLATE
 
 
 # --- ป้องกัน agent ยอมแพ้เร็วเกินไป: ต้องลองค้นหาก่อนสรุปว่า "ไม่พบ" ---
 
 
 def test_system_prompt_requires_trying_search_before_reporting_not_found():
-    assert "ก่อนเรียก finish_task พร้อมข้อความทำนอง" in llm.SYSTEM_PROMPT
-    assert "ต้องเรียก action ที่มีอยู่" in llm.SYSTEM_PROMPT
-    assert "อย่างน้อย 1 ครั้งก่อนเสมอ ถึงจะ finish_task ว่าไม่พบได้" in llm.SYSTEM_PROMPT
+    assert "before calling finish_task with a message along the lines of" in llm.SYSTEM_PROMPT
+    assert "you must invoke an available action" in llm.SYSTEM_PROMPT
+    assert "at least once before you may finish_task with \"not found\"" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
-    assert 'ห้ามตีความว่าเป็น' in llm.SYSTEM_PROMPT
-    assert "นับเป็นคำสั่งให้ค้นหาโดยปริยาย" in llm.SYSTEM_PROMPT
+    assert 'must NOT be read as' in llm.SYSTEM_PROMPT
+    assert "counts as an implicit instruction to search for it" in llm.SYSTEM_PROMPT
 
 
 # --- W19 ("Table Data Extractor & Presenter"): DOM order for multi-field rows, A-Z only
@@ -232,17 +232,17 @@ def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
 
 
 def test_system_prompt_preserves_dom_order_for_multi_field_table_rows():
-    assert "ห้ามเรียงลำดับใหม่เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert "รักษาลำดับแถวตามที่ปรากฏบนหน้าจอจริง" in llm.SYSTEM_PROMPT
+    assert "the OPPOSITE rule applies — NEVER re-sort" in llm.SYSTEM_PROMPT
+    assert "Always preserve the row order exactly as it appears on the real screen" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_still_sorts_single_field_lists_alphabetically():
-    assert "ลิสต์ธรรมดาที่มีแค่ field เดียว" in llm.SYSTEM_PROMPT
-    assert "เรียงลำดับตามตัวอักษร (A-Z) ก่อนตอบเสมอ" in llm.SYSTEM_PROMPT
+    assert "For a plain list with only one field per entry" in llm.SYSTEM_PROMPT
+    assert "always sort alphabetically (A-Z) before answering" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
-    assert "ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "Never split fields of the same row/entry into separate lists" in llm.SYSTEM_PROMPT
 
 
 # --- W20 (Task11, "Response Formatter"): readable bullet/card list by default, raw markdown
@@ -252,14 +252,14 @@ def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
 def test_system_prompt_shows_card_list_format_example_not_raw_table():
     assert "* **Admin**" in llm.SYSTEM_PROMPT
     assert "• Employee: Surya king" in llm.SYSTEM_PROMPT
-    assert "รวม N รายการ" in llm.SYSTEM_PROMPT
-    assert 'user พิมพ์ขอ "ตาราง"/"table" ตรงๆ ในคำถามเท่านั้น' in llm.SYSTEM_PROMPT
+    assert "N entries total" in llm.SYSTEM_PROMPT
+    assert 'ONLY when the user literally typed "table" in their question' in llm.SYSTEM_PROMPT
 
 
 def test_finish_task_schema_message_description_reflects_dom_order_rule():
     message_desc = llm.FINISH_TASK_TOOL["input_schema"]["properties"]["message"]["description"]
-    assert "ตารางหลาย field ต่อแถวห้ามเรียงใหม่เด็ดขาด" in message_desc
-    assert "ห้ามแยก field ของแถวเดียวกันออกจากกัน" in message_desc
+    assert "NEVER re-sort a table with multiple fields per row" in message_desc
+    assert "never split the fields of one row apart" in message_desc
 
 
 # --- hover: ปุ่ม hover-to-reveal ที่ perception.py ติด label marker ให้แล้ว ---
@@ -271,7 +271,7 @@ def test_browser_action_schema_includes_hover_type():
 
 
 def test_system_prompt_instructs_hover_before_clicking_hidden_reveal_elements():
-    assert "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" in llm.SYSTEM_PROMPT
+    assert "[hidden — may need to hover the row first]" in llm.SYSTEM_PROMPT
     assert '"hover"' in llm.SYSTEM_PROMPT
 
 
@@ -392,7 +392,7 @@ async def test_next_action_passes_manual_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "chunk one" in user_content
-    assert "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" in user_content
+    assert "Reference information from the relevant manual" in user_content
 
 
 @pytest.mark.asyncio
@@ -425,7 +425,7 @@ async def test_next_action_passes_memory_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "[FAIL] boom" in user_content
-    assert "Action ที่เคยลองแล้วล้มเหลว" in user_content
+    assert "Actions already tried that failed" in user_content
 
 
 @pytest.mark.asyncio
@@ -446,7 +446,7 @@ async def test_next_action_default_memory_context_omits_section():
 @pytest.mark.asyncio
 async def test_next_action_passes_plan_context_into_prompt():
     """W43: plan_context (แผนที่ user ยืนยันแล้ว) ต้องโผล่ในข้อความ user turn จริง เป็น
-    section แยก "แพลนปัจจุบัน" """
+    section แยก "Current plan confirmed by the user" """
     block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
     response = _fake_anthropic_response([block])
     client = MagicMock()
@@ -457,12 +457,12 @@ async def test_next_action_passes_plan_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "1. ทำ X" in user_content
-    assert "แพลนปัจจุบัน" in user_content
+    assert "Current plan confirmed by the user" in user_content
 
 
 @pytest.mark.asyncio
 async def test_next_action_default_plan_context_omits_section():
-    """W43: ad-hoc task (ไม่ผ่าน Confirm plan เลย) ไม่ควรมี section "แพลนปัจจุบัน" โผล่มา
+    """W43: ad-hoc task (ไม่ผ่าน Confirm plan เลย) ไม่ควรมี section "Current plan confirmed by the user" โผล่มา
     ปนใน prompt เลย — backward compatible กับ task ที่ไม่มีแผน"""
     block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
     response = _fake_anthropic_response([block])
@@ -473,7 +473,7 @@ async def test_next_action_default_plan_context_omits_section():
 
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
-    assert "แพลนปัจจุบัน" not in user_content
+    assert "Current plan confirmed by the user" not in user_content
 
 
 @pytest.mark.asyncio
@@ -964,9 +964,9 @@ async def test_describe_screenshot_returns_empty_string_on_error_without_throwin
 # กลุ่ม backward-compat ด้านล่างต้องรู้ค่าที่แน่นอนถึงจะ assert exact-match ได้ ใช้ fixture
 # นี้ freeze ค่าไว้แทนการเรียกเวลาจริงทุกเทสต์ (เทสต์เฉพาะของ datetime injection เองอยู่ใน
 # ท้ายไฟล์ — ตรงนั้น mock datetime.now() ตรงๆ แทน)
-_FIXED_TIME_TEXT = "วันศุกร์ที่ 31 กรกฎาคม 2569 เวลา 14:32 น."
-_TIME_LINE = f"\n\nเวลาปัจจุบัน (Asia/Bangkok): {_FIXED_TIME_TEXT}"
-_EXPECTED_PREFIX = f"Goal: goal{_TIME_LINE}\n\nหน้าเว็บปัจจุบัน:\npage"
+_FIXED_TIME_TEXT = "Friday, 31 July 2026 at 14:32"
+_TIME_LINE = f"\n\nCurrent time (Asia/Bangkok): {_FIXED_TIME_TEXT}"
+_EXPECTED_PREFIX = f"Goal: goal{_TIME_LINE}\n\nCurrent page:\npage"
 
 
 @pytest.fixture(autouse=True)
@@ -999,7 +999,7 @@ def test_build_user_turn_text_includes_memory_section_when_provided():
 
     assert result.startswith(_EXPECTED_PREFIX)
     assert "[FAIL] boom" in result
-    assert "Action ที่เคยลองแล้วล้มเหลว" in result
+    assert "Actions already tried that failed" in result
 
 
 def test_build_user_turn_text_includes_both_manual_and_memory_sections():
@@ -1036,7 +1036,7 @@ def test_build_user_turn_text_includes_current_url_before_page_text():
     result = llm._build_user_turn_text("goal", "page-text", current_url="https://example.com/cart")
 
     assert "https://example.com/cart" in result
-    assert result.index("https://example.com/cart") < result.index("หน้าเว็บปัจจุบัน:\npage-text")
+    assert result.index("https://example.com/cart") < result.index("Current page:\npage-text")
 
 
 def test_build_user_turn_text_omits_action_history_section_when_empty():
@@ -1052,10 +1052,10 @@ def test_build_user_turn_text_includes_action_history_section_when_provided():
 
     assert result.startswith(_EXPECTED_PREFIX)
     assert "step 3" in result
-    assert "Action ล่าสุดที่คุณเพิ่งทำไป" in result
+    assert "The most recent actions you just performed" in result
 
 
-# --- W43: plan_context ("แพลนปัจจุบัน") ---
+# --- W43: plan_context ("Current plan confirmed by the user") ---
 
 
 def test_build_user_turn_text_omits_plan_section_when_empty():
@@ -1069,10 +1069,10 @@ def test_build_user_turn_text_omits_plan_section_when_empty():
 def test_build_user_turn_text_includes_plan_section_when_provided():
     result = llm._build_user_turn_text("goal", "page", plan_context="1. ทำ X\n2. ทำ Y")
 
-    assert "แพลนปัจจุบัน" in result
+    assert "Current plan confirmed by the user" in result
     assert "1. ทำ X\n2. ทำ Y" in result
     # อยู่ก่อน "หน้าเว็บปัจจุบัน" (เป็นบริบทระดับ task เหมือน Goal ไม่ใช่ข้อมูลเฉพาะ step นี้)
-    assert result.index("แพลนปัจจุบัน") < result.index("หน้าเว็บปัจจุบัน")
+    assert result.index("Current plan confirmed by the user") < result.index("Current page")
 
 
 # --- เวลาปัจจุบันของเซิร์ฟเวอร์ ฉีดเข้า context ทุก turn (LLM ไม่มีการรับรู้เวลาจริงในตัว
@@ -1096,10 +1096,9 @@ def test_current_bangkok_time_text_formats_thai_buddhist_date(monkeypatch):
 
     result = llm._current_bangkok_time_text()
 
-    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
-    expected_month = llm._THAI_MONTHS[fixed.month - 1]
-    # ปี พ.ศ. = ค.ศ. + 543 (2026 -> 2569) เวลา 24 ชม. ตรงกับที่ mock ไว้เป๊ะ (14:32)
-    assert result == f"{expected_weekday}ที่ 31 {expected_month} 2569 เวลา 14:32 น."
+    # W_prompt_en: Gregorian year in English now, not the Buddhist Era year the Thai
+    # format used (2026, not 2569) — 24h clock still matches the mock exactly (14:32)
+    assert result == "Friday, 31 July 2026 at 14:32"
 
 
 def test_build_user_turn_text_injects_current_bangkok_time_from_mocked_now(monkeypatch):
@@ -1112,8 +1111,7 @@ def test_build_user_turn_text_injects_current_bangkok_time_from_mocked_now(monke
 
     result = llm._build_user_turn_text("goal", "page")
 
-    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
-    assert f"เวลาปัจจุบัน (Asia/Bangkok): {expected_weekday}ที่ 25 ธันวาคม 2569 เวลา 09:05 น." in result
+    assert "Current time (Asia/Bangkok): Friday, 25 December 2026 at 09:05" in result
 
 
 def test_build_user_turn_text_time_line_changes_across_calls_not_cached(monkeypatch):
@@ -1847,7 +1845,7 @@ async def test_answer_file_query_unknown_provider_returns_apology():
     result = await llm.answer_file_query(
         MagicMock(), "model", "goal", "text", "file.pdf", "unknown",
     )
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1859,7 +1857,7 @@ async def test_answer_file_query_swallows_provider_errors():
         client, "claude-x", "goal", "text", "file.pdf", "anthropic",
     )
 
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1876,8 +1874,11 @@ async def test_answer_file_query_truncates_long_file_text_and_notes_it():
     _, kwargs = client.messages.create.call_args
     sent_content = kwargs["messages"][0]["content"]
     # ตัดที่ _ANSWER_FILE_QUERY_MAX_CHARS ตัวอักษรของเนื้อหาไฟล์เท่านั้น (ไม่ใช่ทั้ง prompt)
-    assert sent_content.count("a") == llm._ANSWER_FILE_QUERY_MAX_CHARS
-    assert "ตัดแสดงแค่บางส่วน" in sent_content
+    # W_prompt_en: นับ "a" เฉพาะในส่วนเนื้อหาไฟล์ ไม่ใช่ทั้ง prompt — หลังแปล prompt เป็น
+    # อังกฤษ ตัว label รอบๆ ("File name:"/"Document content:") มี "a" ปนอยู่ด้วยแล้ว
+    file_section = sent_content.split("Document content:\n", 1)[1].split("\n\n[Note:", 1)[0]
+    assert file_section.count("a") == llm._ANSWER_FILE_QUERY_MAX_CHARS
+    assert "only part of it is shown above" in sent_content
 
 
 # --- pdf/xlsx (ต่อ): llm.answer_image_query() (Attached Image Query) ---
@@ -1952,7 +1953,7 @@ async def test_answer_image_query_unknown_provider_returns_apology():
     result = await llm.answer_image_query(
         MagicMock(), "model", "goal", _FAKE_PNG_BYTES, "file.png", "unknown",
     )
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1964,7 +1965,7 @@ async def test_answer_image_query_swallows_provider_errors():
         client, "claude-x", "goal", _FAKE_PNG_BYTES, "file.png", "anthropic",
     )
 
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 # --- W19-4: llm.route_multi_turn_strategy() (Orchestrator & Planner Agent, multi-turn) ---
@@ -2181,7 +2182,7 @@ async def test_generate_plan_shows_placeholder_when_current_url_not_provided():
 
     _, kwargs = client.messages.create.call_args
     prompt = kwargs["messages"][0]["content"]
-    assert "ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่" in prompt
+    assert "unknown — no page is open yet" in prompt
 
 
 # --- W20 ("Context-Aware Implicit Execution", บั๊กจริงที่ user รายงาน): llm.generate_plan()
@@ -2203,16 +2204,16 @@ async def test_generate_plan_includes_previous_turn_context_when_provided():
     prompt = kwargs["messages"][0]["content"]
     assert "ขอเพลงเศร้าๆหน่อย" in prompt
     assert "โปรดส่งใครมารักฉันที" in prompt
-    assert "บทสนทนาก่อนหน้า" in prompt
+    assert "Earlier conversation in this session" in prompt
     assert "Context-Aware Implicit Execution" in prompt
     assert "Complete Execution on Content Platforms" in prompt
 
 
 @pytest.mark.asyncio
 async def test_generate_plan_omits_previous_turn_section_when_not_provided():
-    """เทิร์นแรกของ session (ไม่มีเทิร์นก่อนหน้าจริงๆ) — ต้องไม่มี "บทสนทนาก่อนหน้า" ตัวจริง
+    """เทิร์นแรกของ session (ไม่มีเทิร์นก่อนหน้าจริงๆ) — ต้องไม่มี "Earlier conversation in this session" ตัวจริง
     (ที่กรอกข้อมูล User/Assistant มาให้) แทรกอยู่ในพรอมต์เลย (คงพฤติกรรมเดิมทุกประการก่อนมี
-    feature นี้) — instruction ทั่วไปที่ *พูดถึง* คำว่า "บทสนทนาก่อนหน้า" (บอกว่าให้ไปดูตรงนั้น
+    feature นี้) — instruction ทั่วไปที่ *พูดถึง* คำว่า "Earlier conversation in this session" (บอกว่าให้ไปดูตรงนั้น
     ถ้ามี) ยังคงอยู่เสมอ ไม่ใช่สิ่งที่เทสต์นี้เช็ค เช็คเฉพาะ header ของ block ข้อมูลจริงที่ควร
     หายไปเมื่อไม่มีเทิร์นก่อนหน้า"""
     client = MagicMock()

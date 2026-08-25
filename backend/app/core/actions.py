@@ -137,12 +137,12 @@ async def _dispatch_with_retry(action_func, *args) -> ActionResult:
         if result.success:
             if attempt > 1:
                 result = ActionResult(
-                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                    True, result.action, f"{result.message} (attempt {attempt}/{_ACTION_RETRIES})"
                 )
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
-    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+    return ActionResult(False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts)")
 
 
 # ------------------------------------------------------------
@@ -156,9 +156,9 @@ async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         target = await resolve_frame(page, selector)
         await target.click(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"click({index})", "คลิกสำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"click({index})", "click succeeded", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"click({index})", "หา element ไม่เจอ/คลิกไม่ได้ (timeout)")
+        return ActionResult(False, f"click({index})", "element not found / not clickable (timeout)")
     except Exception as e:
         return ActionResult(False, f"click({index})", f"error: {e}")
 
@@ -188,9 +188,9 @@ async def hover(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.hover(selector, timeout=timeout, force=True)
-        return ActionResult(True, f"hover({index})", "hover สำเร็จ")
+        return ActionResult(True, f"hover({index})", "hover succeeded")
     except PWTimeout:
-        return ActionResult(False, f"hover({index})", "หา element ไม่เจอ/hover ไม่ได้ (timeout)")
+        return ActionResult(False, f"hover({index})", "element not found / not hoverable (timeout)")
     except Exception as e:
         return ActionResult(False, f"hover({index})", f"error: {e}")
 
@@ -263,7 +263,7 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
         if result.success:
             if attempt > 1:
                 result = ActionResult(
-                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                    True, result.action, f"{result.message} (attempt {attempt}/{_ACTION_RETRIES})"
                 )
             if await _detect_confirmation_modal(page):
                 modal_note = await resolve_confirmation_modal(page)
@@ -279,10 +279,8 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
                 # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
                 toast_text = await _detect_success_toast(page)
                 toast_note = (
-                    f' [พบข้อความยืนยันสำเร็จ: "{toast_text}"]' if toast_text
-                    else " [ไม่พบ toast/ข้อความยืนยันสำเร็จภายในเวลาที่กำหนดหลังคลิก — "
-                         "ตรวจสอบ validation error หรือดูว่าหน้าเปลี่ยนกลับไปหน้ารายการเองแล้ว"
-                         "หรือยังก่อนถือว่าสำเร็จ]"
+                    f' [Success confirmation found: \"{toast_text}"]' if toast_text
+                    else " [No toast/success confirmation appeared within the time limit after the click — check for a validation error, or whether the page already navigated back to the list by itself, before treating it as successful]"
                 )
                 result = ActionResult(
                     result.success, result.action, f"{result.message}{toast_note}",
@@ -291,7 +289,7 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
-    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+    return ActionResult(False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts)")
 
 
 # W23 ("Confirmation Modal Handler" — บั๊กจริงที่ user รายงาน): agent คลิก "Delete Selected"/
@@ -407,8 +405,8 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
                 _DIALOG_CONTAINER_SELECTOR, state="detached", timeout=_MODAL_DETACH_TIMEOUT_MS,
             )
             await wait_stable(page)
-            retry_note = "" if attempt == 1 else f" (ลองครั้งที่ {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
-            return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector}){retry_note}]"
+            retry_note = "" if attempt == 1 else f" (attempt {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
+            return f" [Confirmation modal detected — confirmed automatically ({clicked_selector}){retry_note}]"
         except Exception:
             # detach-wait timeout: อาจเป็นเพราะโมดัลปิดจริงแล้วแค่ไม่ detach ออกจาก DOM (บาง
             # framework ซ่อนด้วย CSS อย่างเดียว ไม่ลบ element) หรืออาจเป็นเพราะยังเปิดค้างอยู่
@@ -416,7 +414,7 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
             # timeout = ปิดสำเร็จเหมือนพฤติกรรมเดิม (W23) อีกต่อไป
             if not await _is_modal_still_open(page):
                 await wait_stable(page)
-                return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector})]"
+                return f" [Confirmation modal detected — confirmed automatically ({clicked_selector})]"
             if attempt < _MODAL_CONFIRM_CLICK_RETRIES:
                 await asyncio.sleep(_MODAL_CONFIRM_RETRY_DELAY_SEC)
 
@@ -430,10 +428,7 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
     except Exception:
         pass
     return (
-        f" [ปุ่มยืนยัน confirmation modal ไม่ตอบสนองหลังลองแล้ว {_MODAL_CONFIRM_CLICK_RETRIES} "
-        f"ครั้ง — ระบบ reload หน้าเว็บอัตโนมัติเพื่อ sync สถานะใหม่ (เหมือนกด F5) ต้องตรวจสอบ "
-        f"indexed elements ล่าสุดหลังจากนี้แล้ว navigate/กรองข้อมูลใหม่ตามที่ goal ต้องการก่อน"
-        f"ทำงานต่อ เพราะ reload ล้าง state เดิม (เช่นคำค้นหาที่กรองไว้) ทิ้งไปแล้ว]"
+        f" [The confirmation modal's confirm button was unresponsive after {_MODAL_CONFIRM_CLICK_RETRIES} attempts — the system reloaded the page automatically to resync state (as if pressing F5). Check the indexed elements of this freshly reloaded page, then navigate/re-apply the filter the goal needs before continuing, because the reload wiped the previous state (e.g. the search term you had filtered by)]"
     )
 
 
@@ -451,9 +446,9 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.press(selector, key, timeout=timeout)
-        return ActionResult(True, f"press_key({index}, {key})", f"กดปุ่ม '{key}' สำเร็จ")
+        return ActionResult(True, f"press_key({index}, {key})", f"pressed key '{key}' succeeded")
     except PWTimeout:
-        return ActionResult(False, f"press_key({index}, {key})", "หา element ไม่เจอ/กดปุ่มไม่ได้ (timeout)")
+        return ActionResult(False, f"press_key({index}, {key})", "element not found / key press failed (timeout)")
     except Exception as e:
         return ActionResult(False, f"press_key({index}, {key})", f"error: {e}")
 
@@ -507,9 +502,9 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
         except Exception:
             pass
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"fill({index})", f"filled '{text}' succeeded", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
+        return ActionResult(False, f"fill({index})", "could not fill (timeout)")
     except Exception as e:
         return ActionResult(False, f"fill({index})", f"error: {e}")
 
@@ -534,7 +529,7 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
     บันทึกไว้/secret_key ที่ไม่รู้จัก) ให้ LLM fallback ไปถาม user เองตามกติกา W65[1] ปกติ
     แทนที่จะ throw หรือค้าง"""
     if secret_key not in _SUPPORTED_SECRET_KEYS:
-        return ActionResult(False, f"fill_secret({index})", f"ไม่รู้จัก secret_key '{secret_key}' — ต้องถาม user เอง")
+        return ActionResult(False, f"fill_secret({index})", f"unknown secret_key '{secret_key}' — you must ask the user yourself")
 
     # Lazy import กัน circular import (site_learning -> crawler.py -> orchestrator.py ->
     # fastpath_executor.py -> actions.py) — pattern เดียวกับ orchestrator.py::_maybe_auto_login()
@@ -543,7 +538,7 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
     domain = extract_domain(page.url)
     creds = site_storage.load_credentials(domain)  # sync call, pattern เดียวกับ _maybe_auto_login
     if not creds or not creds.get("password"):
-        return ActionResult(False, f"fill_secret({index})", "ไม่มี credential ที่บันทึกไว้สำหรับเว็บนี้ — ต้องถาม user เอง")
+        return ActionResult(False, f"fill_secret({index})", "no credential saved for this site — you must ask the user yourself")
 
     try:
         selector = _sel(index)
@@ -554,9 +549,9 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
         await target.fill(selector, creds["password"], timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
         # ***ห้าม echo ค่าจริงกลับใน message เด็ดขาด*** ต่างจาก fill() ปกติด้านบน
-        return ActionResult(True, f"fill_secret({index})", "กรอกรหัสผ่านที่บันทึกไว้สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"fill_secret({index})", "filled the saved password successfully", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"fill_secret({index})", "กรอกไม่ได้ (timeout)")
+        return ActionResult(False, f"fill_secret({index})", "could not fill (timeout)")
     except Exception as e:
         return ActionResult(False, f"fill_secret({index})", f"error: {e}")
 
@@ -595,11 +590,11 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
             await target.select_option(selector, value=matched["value"], timeout=timeout)
             descriptor = await compute_locator_descriptor(target, selector)
             return ActionResult(
-                True, f"select({index})", f"เลือก '{_normalize_option_text(matched['text'])}' สำเร็จ",
+                True, f"select({index})", f"selected '{_normalize_option_text(matched['text'])}' succeeded",
                 locator_descriptor=descriptor,
             )
         except PWTimeout:
-            return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
+            return ActionResult(False, f"select({index})", "could not select (timeout)")
         except Exception as e:
             return ActionResult(False, f"select({index})", f"error: {e}")
 
@@ -608,14 +603,13 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
     try:
         await target.select_option(selector, value=label, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"select({index})", f"selected (by value) '{label}' succeeded", locator_descriptor=descriptor)
     except Exception:
         options_repr = ", ".join(repr(_normalize_option_text(o["text"])) for o in options)
-        options_repr = options_repr or "(ไม่พบ option ใดๆ ใน dropdown นี้)"
+        options_repr = options_repr or "(no options found in this dropdown)"
         return ActionResult(
             False, f"select({index})",
-            f"ไม่พบตัวเลือกที่ตรงกับ '{label}' แม้ normalize whitespace แล้ว — "
-            f"ตัวเลือกที่มีจริง: {options_repr}",
+            f"no option matching '{label}' even after normalising whitespace — options actually available: {options_repr}",
         )
 
 
@@ -677,7 +671,7 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         target = await resolve_frame(page, selector)
         await target.check(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"check({index})", "checked successfully", locator_descriptor=descriptor)
     except Exception:
         pass
 
@@ -689,7 +683,7 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         await target.click(selector, timeout=timeout, force=True)
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
-            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (force click)", locator_descriptor=descriptor)
+            return ActionResult(True, f"check({index})", "checked successfully (force click)", locator_descriptor=descriptor)
     except Exception:
         pass
 
@@ -702,8 +696,8 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         await target.locator(selector).evaluate("el => el.click()")
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
-            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (JS click)", locator_descriptor=descriptor)
-        return ActionResult(False, f"check({index})", "คลิกแล้วแต่ยืนยันสถานะ checked ไม่ได้")
+            return ActionResult(True, f"check({index})", "checked successfully (JS click)", locator_descriptor=descriptor)
+        return ActionResult(False, f"check({index})", "clicked, but the checked state could not be confirmed")
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")
 
@@ -714,7 +708,7 @@ async def scroll(page: Page, direction: str = "down", amount: int = 600) -> Acti
         dy = amount if direction == "down" else -amount
         await page.mouse.wheel(0, dy)
         await page.wait_for_timeout(300)
-        return ActionResult(True, f"scroll({direction})", f"เลื่อน {dy}px")
+        return ActionResult(True, f"scroll({direction})", f"scrolled {dy}px")
     except Exception as e:
         return ActionResult(False, f"scroll({direction})", f"error: {e}")
 
@@ -723,7 +717,7 @@ async def goto(page: Page, url: str, timeout: int = 15000) -> ActionResult:
     """เปิด URL ใหม่"""
     try:
         await page.goto(url, timeout=timeout)
-        return ActionResult(True, "goto", f"ไปที่ {url}")
+        return ActionResult(True, "goto", f"navigated to {url}")
     except Exception as e:
         return ActionResult(False, "goto", f"error: {e}")
 
@@ -732,7 +726,7 @@ async def go_back(page: Page) -> ActionResult:
     """ย้อนกลับหน้าก่อนหน้า"""
     try:
         await page.go_back()
-        return ActionResult(True, "go_back", "ย้อนกลับสำเร็จ")
+        return ActionResult(True, "go_back", "went back successfully")
     except Exception as e:
         return ActionResult(False, "go_back", f"error: {e}")
 
@@ -742,9 +736,9 @@ async def switch_tab(page: Page, tab_index: int) -> ActionResult:
     try:
         pages = page.context.pages
         if tab_index >= len(pages):
-            return ActionResult(False, f"switch_tab({tab_index})", f"มีแค่ {len(pages)} tab")
+            return ActionResult(False, f"switch_tab({tab_index})", f"there are only {len(pages)} tab")
         await pages[tab_index].bring_to_front()
-        return ActionResult(True, f"switch_tab({tab_index})", "สลับ tab สำเร็จ")
+        return ActionResult(True, f"switch_tab({tab_index})", "switched tab successfully")
     except Exception as e:
         return ActionResult(False, f"switch_tab({tab_index})", f"error: {e}")
 
@@ -760,10 +754,10 @@ async def wait_stable(page: Page, timeout: int = 4000) -> ActionResult:
     """รอให้หน้าเว็บนิ่ง — เรียกหลังทุก action ที่ทำให้หน้าเปลี่ยน ก่อน snapshot รอบใหม่"""
     try:
         await page.wait_for_load_state("networkidle", timeout=timeout)
-        return ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
+        return ActionResult(True, "wait_stable", "the page is stable")
     except PWTimeout:
         # ไม่ถือเป็น fail ร้ายแรง — บางหน้ามี network ยิงตลอด
-        return ActionResult(True, "wait_stable", "timeout แต่เดินต่อได้")
+        return ActionResult(True, "wait_stable", "timed out, but it is safe to continue")
     except Exception as e:
         return ActionResult(False, "wait_stable", f"error: {e}")
 
@@ -796,7 +790,7 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
     เปล่า — wait_stable() timeout แล้วเดินต่อได้เสมอ (ไม่ throw) ไม่ทำให้ query ที่หน้านิ่ง
     อยู่แล้วช้าลงมาก"""
     if not target_hint:
-        return ActionResult(False, "read_page_data", "ต้องระบุ target_hint (CSS selector)")
+        return ActionResult(False, "read_page_data", "target_hint (a CSS selector) is required")
 
     await wait_stable(page)
 
@@ -804,7 +798,7 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
     try:
         if is_count_query:
             count = await count_elements(page, target_hint)
-            return ActionResult(True, "read_page_data", f"พบ {count} รายการที่ตรงกับ '{target_hint}'")
+            return ActionResult(True, "read_page_data", f"found {count} entries matching '{target_hint}'")
         data = await extract_table_data(page, target_hint, query)
         return ActionResult(not data.startswith("[FAIL]"), "read_page_data", data)
     except Exception as e:
@@ -821,7 +815,7 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
 # ทั่วไป เช่น timeout/index ผิด/BLOCKED) — ดึงเป็น constant แยกแทนที่จะ hardcode ข้อความ
 # ซ้ำในหลายที่ เพราะ memory.py::ShortTermMemory ต้องเช็คข้อความนี้เพื่อแยก "refusal"
 # ออกจาก failure อื่นๆ (ดู rejected_actions_summary())
-REJECTED_BY_USER_MESSAGE = "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)"
+REJECTED_BY_USER_MESSAGE = "The user refused to perform this action (human-in-the-loop)"
 
 
 async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label: str = "") -> bool:
@@ -834,12 +828,12 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label
     if ask_user_func is not None:
         confirm_cmd = dict(cmd, element_label=label) if label else cmd
         return bool(await ask_user_func(confirm_cmd))
-    print(f"\n[HUMAN-IN-THE-LOOP] Agent ต้องการเรียกใช้คำสั่งที่มีความเสี่ยง: {cmd}", flush=True)
+    print(f"\n[HUMAN-IN-THE-LOOP] The agent wants to run a risky command: {cmd}", flush=True)
     # ใช้ asyncio.to_thread เพื่อให้รับ input() ได้โดยไม่บล็อก async event loop หลัก
-    choice = await asyncio.to_thread(input, "คุณต้องการอนุญาตให้ทำ Action นี้หรือไม่? (y/n): ")
+    choice = await asyncio.to_thread(input, "Do you want to allow this action? (y/n): ")
     approved = choice.strip().lower() in ("y", "yes")
     if approved:
-        print("[APPROVED] อนุญาตให้ดำเนินการต่อ...", flush=True)
+        print("[APPROVED] proceeding...", flush=True)
     return approved
 
 
@@ -861,7 +855,7 @@ async def _check_permission(
         element_tag=element_tag, element_type=element_type,
     )
     if risk == ActionRisk.BLOCKED:
-        return "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)"
+        return "Action blocked by the security layer (blocklist)"
     if risk == ActionRisk.NEEDS_CONFIRMATION:
         approved = await _confirm_action(cmd, ask_user_func, label)
         if not approved:
@@ -898,7 +892,10 @@ async def _maybe_chain_click(
     feature นี้เอง) ยอมรับว่าอาจไม่ specific เท่าที่ควรสำหรับ target ที่สอง แต่ปลอดภัยกว่า
     ไม่มี guidance เลย"""
     then_index = cmd.get("then_click_index")
-    if then_index is None or not primary.success:
+    # W_chain_partial_success: index ติดลบไม่มีทางเป็น element จริง — บาง provider ส่ง -1 มาเป็น
+    # sentinel แทน "ไม่มี chain" (ดู llm._normalize_openai_args) กรองที่นี่อีกชั้นให้ทุก provider
+    # ไม่ใช่แค่ตัวที่รู้จัก ไม่งั้นเสีย retry ของ _dispatch_click_with_retry() 3 รอบเปล่าๆ ทุกครั้ง
+    if then_index is None or (isinstance(then_index, int) and then_index < 0) or not primary.success:
         return primary
 
     synthetic_cmd = {"type": "click", "index": then_index}
@@ -909,16 +906,36 @@ async def _maybe_chain_click(
         return ActionResult(
             primary.success,
             primary.action,
-            f"{primary.message} (ไม่ได้คลิกต่อที่ index {then_index}: {denial} — สั่ง click "
-            f"แยกเป็น step ถัดไปแทน)",
+            f"{primary.message} (did not go on to click index {then_index}: {denial} — issue that click as a separate next step instead)",
             locator_descriptor=primary.locator_descriptor, toast_confirmed=primary.toast_confirmed,
         )
 
     second = await _dispatch_click_with_retry(page, then_index, then_label)
+    if second.success:
+        return ActionResult(
+            True,
+            primary.action,
+            f"{primary.message} + then click({then_index}): {second.message}",
+            locator_descriptor=primary.locator_descriptor,
+            toast_confirmed=primary.toast_confirmed or second.toast_confirmed,
+        )
+    # W_chain_partial_success (บั๊กจริง live-reproduce บน OrangeHRM กับ provider openai):
+    # เดิมคืน primary.success and second.success — primary ที่ "สำเร็จจริงและเปลี่ยนหน้าไปแล้ว"
+    # ถูกรายงานรวมเป็น [FAIL] เพราะ chain ตัวที่สองพลาด โมเดลอ่านว่าล้มเหลวทั้งก้อนแล้ว "ลอง
+    # คลิก primary ซ้ำ" รอบแล้วรอบเล่า (เห็นจริง 10 step ติดกัน: click(3) สำเร็จทุกครั้ง แต่
+    # then_click_index ที่ค้างจาก snapshot ก่อนหน้าพังทุกครั้ง จน task หมด max_steps ทั้งที่
+    # ไปถึงหน้าเป้าหมายตั้งแต่ step แรก) — chain ตัวที่สองพลาดเป็นเรื่องปกติมากเพราะ primary
+    # มักทำให้หน้าเปลี่ยน แล้ว index ที่โมเดลจำมาจาก snapshot เดิมก็ค้างทันที
+    #
+    # ยึดหลักเดียวกับ branch permission-denial ด้านบนทุกประการ: ความคืบหน้าที่เกิดขึ้นจริงแล้ว
+    # ต้องไม่หายไป คืน primary.success ตามจริง แล้วบอกให้สั่งคลิกตัวที่สองแยกเป็น step ถัดไป
     return ActionResult(
-        primary.success and second.success,
+        primary.success,
         primary.action,
-        f"{primary.message} + then click({then_index}): {second.message}",
+        f"{primary.message} — but the chained click({then_index}) failed: {second.message}. "
+        "The first action DID succeed; the page has most likely changed, so that second index "
+        "is stale. Look at the new indexed elements and issue that click as a separate next "
+        "step (do not repeat the first action).",
         locator_descriptor=primary.locator_descriptor,
         toast_confirmed=primary.toast_confirmed or second.toast_confirmed,
     )
@@ -1000,7 +1017,7 @@ async def execute(
         if t == "click":
             redundant = await state_filter.check_click_redundant(page, cmd["index"])
             if redundant is not None:
-                return ActionResult(False, f"click({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {redundant}")
             result = await _dispatch_click_with_retry(page, cmd["index"], label)
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
@@ -1009,7 +1026,7 @@ async def execute(
         if t == "fill":
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
-                return ActionResult(True, f"fill({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"fill({cmd['index']})", f"[Skipped] {redundant}")
             result = await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
             # W_chain ("Compound Actions"): "key" (เดิมมีไว้ใช้กับ press_key เท่านั้น) ใช้
             # ร่วมกับ fill ได้ด้วย — กด key นี้ (ปกติ "Enter") ทันทีหลัง fill สำเร็จ รวม
@@ -1048,6 +1065,12 @@ async def execute(
             # DOM ไม่นิ่งได้ตามปกติ)
             return await _dispatch_with_retry(fill_secret, page, cmd["index"], cmd.get("secret", ""))
         if t == "select":
+            # W_custom_dropdown: ปฏิเสธก่อน dispatch ถ้า target ไม่ใช่ <select> จริง (ดู
+            # state_filter.check_select_target_is_native) — success=False เพราะนี่คือ "ใช้
+            # action ผิดชนิด" ไม่ใช่ "ทำไปแล้ว" pattern เดียวกับ click-on-disabled ด้านบน
+            wrong_kind = await state_filter.check_select_target_is_native(page, cmd["index"])
+            if wrong_kind is not None:
+                return ActionResult(False, f"select({cmd['index']})", f"[Skipped] {wrong_kind}")
             result = await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
@@ -1056,7 +1079,7 @@ async def execute(
         if t == "check":
             redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
             if redundant is not None:
-                return ActionResult(True, f"check({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"check({cmd['index']})", f"[Skipped] {redundant}")
             result = await _dispatch_with_retry(check, page, cmd["index"])
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
@@ -1066,7 +1089,7 @@ async def execute(
             direction = cmd.get("direction", "down")
             redundant = await state_filter.check_scroll_redundant(page, direction)
             if redundant is not None:
-                return ActionResult(True, f"scroll({direction})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"scroll({direction})", f"[Skipped] {redundant}")
             return await scroll(page, direction)
         if t == "goto":        return await goto(page, cmd["url"])
         if t == "go_back":     return await go_back(page)
@@ -1092,9 +1115,9 @@ async def execute(
                 result.success, f"{t}({cmd['index']})", result.message,
                 locator_descriptor=result.locator_descriptor, toast_confirmed=result.toast_confirmed,
             )
-        return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
+        return ActionResult(False, f"unknown({t})", "unknown action")
     except KeyError as e:
-        return ActionResult(False, f"{t}", f"ขาด parameter: {e}")
+        return ActionResult(False, f"{t}", f"missing parameter: {e}")
 
 
 # ------------------------------------------------------------

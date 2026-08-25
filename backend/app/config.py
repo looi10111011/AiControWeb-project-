@@ -11,12 +11,31 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
 
-    primary_llm_provider: str = "anthropic"
+    # W_openai_oauth: provider "openai" ไม่มี openai_api_key แบบ provider อื่นข้างบน — ตั้งใจ
+    # ใช้ OAuth login (reuse Codex CLI's public client_id) แทน API key ปกติ เพื่อดึงโควต้า
+    # ChatGPT Plus/Pro subscription ของ operator เองแทนจ่าย API credit แยก — ดู
+    # core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม (ToS gray area, ban risk,
+    # ตัดสินใจร่วมกับ user แล้วเมื่อ 2026-08-17, single-tenant เท่านั้น) token เก็บเป็น local
+    # credential ไฟล์เดียว เข้ารหัส Fernet (เหมือน site_learning/storage.py) ไม่ใช่ field
+    # ตรงนี้เลย — ไม่ต้องตั้งอะไรใน .env สำหรับ provider นี้ นอกจาก login ผ่าน UI ครั้งเดียว
+
+    # W_openai_oauth: ตั้ง "openai" เป็น default provider แทน "anthropic" เดิม — ต่างจาก
+    # decision เดิมตอนออกแบบฟีเจอร์นี้ครั้งแรก ("openai" ไม่ควรเป็น default เพราะต้อง login
+    # ก่อน) แต่ user ต้องการใช้ ChatGPT quota เป็นหลัก — ถ้า token หมดอายุ/ยังไม่ login,
+    # next_action_openai()/generate_text() จะ raise OAuthLoginRequired ที่แปลงเป็น task
+    # failure อ่านเข้าใจได้อยู่แล้ว (ไม่ต้องเพิ่ม fallback logic อัตโนมัติ) — เปลี่ยนกลับได้
+    # ผ่าน .env (LLM_PROVIDER=anthropic) หรือเลือก provider อื่นจาก dropdown ต่อ task ได้
+    # เสมอ ไม่กระทบ provider อื่นเลย
+    primary_llm_provider: str = "openai"
     fallback_llm_provider: str = "gemini"
-    llm_provider: str = "anthropic"
+    llm_provider: str = "openai"
     anthropic_model: str = "claude-haiku-4-5-20251001"
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-flash-lite-latest"
+    # W_openai_oauth: provider "openai" เรียกผ่าน chatgpt.com/backend-api/codex (Responses
+    # API, ไม่ใช่ api.openai.com ปกติ — endpoint นี้ผูกกับ OAuth token เท่านั้น) จึงใช้ได้
+    # เฉพาะชื่อ model ที่ endpoint นั้นรองรับ ไม่ใช่ทุกตัวใน OpenAI API ทั่วไป
+    openai_model: str = "gpt-5.4-mini"
 
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
@@ -40,6 +59,24 @@ class Settings(BaseSettings):
     # private/internal IP (cloud metadata, LAN ภายใน ฯลฯ) เสมอไม่ว่า config อื่นจะว่าไง —
     # เปิดตัวนี้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น (default ปิด ปลอดภัยสุด)
     allow_internal_navigation: bool = False
+
+    # W_openai_oauth: OAuth login/refresh config สำหรับ provider "openai" (ดู
+    # core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม) — client_id/endpoint เป็น
+    # public constant ตายตัวของ Codex CLI เอง ไม่ต้องตั้งผ่าน .env แต่ port/timeout/cadence
+    # ปรับได้เผื่อ 1455 ชนกับ process อื่นบนเครื่อง operator หรืออยาก tune cadence เอง
+    #
+    # port loopback callback server ชั่วคราว (มีอยู่แค่ระหว่าง login 1 ครั้ง) — ลอง port หลัก
+    # ก่อนเสมอ fallback ไปตัวถัดไปเฉพาะ bind ไม่สำเร็จจริงๆ (ดู openai_oauth.py::_bind_loopback_server)
+    openai_oauth_callback_port: int = 1455
+    openai_oauth_callback_port_fallback: int = 1457
+    # เวลาสูงสุดที่รอ human กด "Sign in with ChatGPT" แล้ว redirect กลับมาให้ loopback server
+    # ก่อนถือว่า login attempt นี้ timeout
+    openai_oauth_login_timeout_seconds: float = 300.0
+    # cadence การ refresh token — ตามที่ Codex CLI ใช้เอง (ดู openai_oauth.py::
+    # _refresh_if_needed): refresh ล่วงหน้าถ้าใกล้หมดอายุ (วินาทีก่อน exp) หรือถ้านานเกินไป
+    # ตั้งแต่ refresh ครั้งล่าสุด (วัน) แม้ยังไม่ใกล้หมดอายุเลยก็ตาม
+    openai_oauth_refresh_before_expiry_seconds: float = 300.0
+    openai_oauth_refresh_max_age_days: float = 8.0
 
     api_host: str = "127.0.0.1"
     api_port: int = 8000

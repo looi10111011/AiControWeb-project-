@@ -296,3 +296,33 @@ class RespondRequest(BaseModel):
     # ปฏิเสธ/ข้าม ดู TaskManager.resolve_approval()/orchestrator.py::_request_user_input()
     # สำหรับตำแหน่งที่ใช้ค่านี้จริง) เหมือน edited_plan ข้างบนทุกประการ แค่คนละ cmd type
     answer_text: Optional[str] = None
+
+
+class OpenAILoginStartResponse(BaseModel):
+    """W_openai_oauth: response ของ POST /api/auth/openai/login/start — frontend เปิด
+    authorize_url ในแท็บ/หน้าต่างใหม่ให้ user login เอง แล้ว poll GET .../login/status ด้วย
+    login_id นี้ต่อ (token exchange เกิดขึ้นใน background task ไม่ใช่ response นี้ — ดู
+    core/openai_oauth.py::start_login_flow())"""
+
+    authorize_url: str
+    login_id: str
+
+
+class OpenAILoginStatusResponse(BaseModel):
+    """W_openai_oauth: response ของ GET /api/auth/openai/login/status?login_id= —
+    status: "pending"|"linked"|"error" (ไม่มี login_id ที่รู้จัก = 404 ที่ route handler)"""
+
+    status: str
+    error: Optional[str] = None
+    email: Optional[str] = None
+    plan_type: Optional[str] = None
+
+
+class OpenAIAuthStatusResponse(BaseModel):
+    """W_openai_oauth: response ของ GET /api/auth/openai/status — สถานะ link ปัจจุบัน
+    (ไม่ผูกกับ login attempt ไหนเป็นพิเศษ) ใช้ตอนโหลดหน้าเพื่อรู้ว่าจะ enable provider
+    "openai" ใน dropdown ได้ไหม ไม่คืน token จริงออกไปเลย"""
+
+    linked: bool
+    email: Optional[str] = None
+    plan_type: Optional[str] = None

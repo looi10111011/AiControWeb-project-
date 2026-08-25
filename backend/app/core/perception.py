@@ -462,7 +462,7 @@ _COLLECT_JS = r"""
     // required field ให้ครบก่อน) เห็นแค่ว่าไม่มีตัวเลือกนี้ในหน้าเลย อาจไปเดากด element
     // ใกล้เคียงผิดตัวแทน หรือสรุปผิดว่าไม่มีทางทำ action นี้ได้เลยทั้งที่จริงๆ มีแค่ต้องทำ
     // อย่างอื่นให้ครบก่อน — ยังคงติด index ให้ปกติ แต่แปะ marker "[disabled]" ในป้ายแทน
-    // (ดู marker pattern อื่นในไฟล์นี้ เช่น [active อยู่แล้ว]/[ถูกบังอยู่])
+    // (ดู marker pattern อื่นในไฟล์นี้ เช่น [already active]/[obscured])
     const isDisabled = !!el.disabled;
 
     // W65[1] ("Required-Field Validation"): เดิม HTML `required`/`aria-required` attribute
@@ -601,16 +601,16 @@ _COLLECT_JS = r"""
     // สั่งให้หา (ดู "Account Security & Password Actions" ข้อ mandatory protocol) ไม่ต้องเดา
     // จาก username text เฉยๆ (ซึ่งเปลี่ยนไปตาม user ที่ login อยู่ ไม่ใช่ label คงที่)
     if (profileMenuNodes.has(el)) {
-      label = label ? `${label} [เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]` : '[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]';
+      label = label ? `${label} [Profile/Account Menu]` : '[Profile/Account Menu]';
     }
     if (obscured) {
-      label = label ? `${label} [ถูกบังอยู่]` : '[ถูกบังอยู่]';
+      label = label ? `${label} [obscured]` : '[obscured]';
     }
     // คนละเงื่อนไขกับ obscured ข้างบน (obscured = ถูก element อื่นวางทับ, นี่ = ซ่อนด้วย
     // CSS opacity/visibility ของตัวเอง/บรรพบุรุษ) — ทั้งสอง marker แปะซ้อนกันได้ถ้าเข้า
     // เงื่อนไขทั้งคู่พร้อมกัน (เคสหายากแต่ไม่ผิดอะไร)
     if (hoverRevealCandidate) {
-      label = label ? `${label} [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]` : '[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]';
+      label = label ? `${label} [hidden — may need to hover the row first]` : '[hidden — may need to hover the row first]';
     }
     // ACC-2: คนละเงื่อนไขกับ marker อื่นข้างบนทั้งหมด (obscured/hoverReveal คือเรื่อง
     // "มองเห็นไหม", นี่คือ "กดได้ไหม" — element ที่มองเห็นชัดเจนแต่ disabled ก็ต้องแปะ
@@ -648,7 +648,7 @@ _COLLECT_JS = r"""
     const isNavCandidate = region === 'navigation' || el.getAttribute('role') === 'tab';
     const alreadyActive = isNavCandidate && isElementAlreadyActive(el);
     if (alreadyActive) {
-      label = label ? `${label} [active อยู่แล้ว]` : '[active อยู่แล้ว]';
+      label = label ? `${label} [already active]` : '[already active]';
     }
 
     out.push({ index: idx, tag, type, label, in_viewport: inViewport, region });
@@ -706,7 +706,7 @@ async def get_snapshot(page: Page):
         # W19 ("Scoped Search Context"): แปะ "(navigation)" เฉพาะ element ที่อยู่ใน
         # nav/aside/sidepanel เท่านั้น (ไม่แปะ "(main)" ให้ทุกบรรทัดเปล่าๆ เพราะเป็น
         # ส่วนใหญ่ของหน้าอยู่แล้ว — แปะเฉพาะกรณีที่ต้อง disambiguate จริงถึงจะมีประโยชน์
-        # เหมือน marker อื่นในไฟล์นี้ เช่น [ถูกบังอยู่]/[ซ่อนอยู่])
+        # เหมือน marker อื่นในไฟล์นี้ เช่น [obscured]/[ซ่อนอยู่])
         region_marker = " (navigation)" if e.get("region") == "navigation" else ""
         lines.append(f"[{e['index']}] {kind}{label}{region_marker}")
 
@@ -972,7 +972,7 @@ async def _extract_table_data_once(page: Page, table_hint: str, query: str) -> s
             candidates = [cell for row in body for cell in row]
             annotation, found = _lookup_annotation(query, candidates)
             if not found:
-                return f"[FAIL] ไม่พบข้อมูลที่ตรงหรือใกล้เคียงกับ '{query}' ใน '{table_hint}'"
+                return f"[FAIL] nothing matching or close to '{query}' was found in '{table_hint}'"
             lines = [
                 "| " + " | ".join(header) + " |",
                 "| " + " | ".join("---" for _ in header) + " |",
@@ -983,10 +983,10 @@ async def _extract_table_data_once(page: Page, table_hint: str, query: str) -> s
         items = data["items"]
         annotation, found = _lookup_annotation(query, items)
         if not found:
-            return f"[FAIL] ไม่พบข้อมูลที่ตรงหรือใกล้เคียงกับ '{query}' ใน '{table_hint}'"
+            return f"[FAIL] nothing matching or close to '{query}' was found in '{table_hint}'"
         return annotation + json.dumps(items, ensure_ascii=False)
 
-    return f"[FAIL] ไม่พบ element ที่ตรงกับ '{table_hint}'"
+    return f"[FAIL] no element matching '{table_hint}' was found"
 
 
 # --- helper: ให้ agent สั่งงานกลับด้วย "หมายเลข" ที่ perception ให้มา ---

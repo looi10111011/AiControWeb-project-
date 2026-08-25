@@ -242,7 +242,7 @@ async def test_get_snapshot_finds_orangehrm_style_userdropdown_with_no_standard_
     labels = [e["label"] for e in elements]
     userdropdown_label = next((l for l in labels if "labubu user" in l), None)
     assert userdropdown_label is not None, f"userdropdown span never got indexed at all — labels: {labels}"
-    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in userdropdown_label
+    assert "[Profile/Account Menu]" in userdropdown_label
     # ปุ่ม "Help" ที่แท็กมาตรฐาน (<a>) ต้องยังติด index ปกติเหมือนเดิม แค่ไม่มี marker พิเศษ
     help_label = next((l for l in labels if "Help" in l), None)
     assert help_label is not None
@@ -296,7 +296,7 @@ async def test_get_snapshot_profile_menu_element_with_title_not_duplicated():
         await browser.close()
 
     assert len(elements) == 1
-    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in elements[0]["label"]
+    assert "[Profile/Account Menu]" in elements[0]["label"]
 
 
 # <img title="..." style="cursor:pointer"> ที่ซ้อนอยู่ใน <a> ที่คลิกได้จริงอยู่แล้ว —
@@ -401,7 +401,7 @@ _HTML_WITH_OVERLAY = """
 
 @pytest.mark.asyncio
 async def test_get_snapshot_marks_element_obscured_by_overlay():
-    """element ที่ถูกบังจริง (covered-btn) ต้องมี marker '[ถูกบังอยู่]' ในป้าย —
+    """element ที่ถูกบังจริง (covered-btn) ต้องมี marker '[obscured]' ในป้าย —
     element ที่ไม่ถูกบัง (free-btn) ต้องไม่มี marker นี้ปนมาด้วย"""
     async with async_playwright() as p:
         browser = await p.chromium.launch()
@@ -415,8 +415,8 @@ async def test_get_snapshot_marks_element_obscured_by_overlay():
     covered = next(e for e in elements if "Covered Button" in e["label"])
     free = next(e for e in elements if "Free Button" in e["label"])
 
-    assert "[ถูกบังอยู่]" in covered["label"]
-    assert "[ถูกบังอยู่]" not in free["label"]
+    assert "[obscured]" in covered["label"]
+    assert "[obscured]" not in free["label"]
 
 
 # บั๊กที่เจอจริงระหว่างต่อ W10[D] (แสดงชื่อ element แทน index ใน Log panel): เดิม
@@ -1061,7 +1061,7 @@ async def test_extract_table_data_does_not_retry_without_query():
     เช่น Playwright/pytest-asyncio เอง ทำให้ assert_not_awaited() ไม่น่าเชื่อถือ)"""
     with patch(
         "backend.app.core.perception._extract_table_data_once",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#users'"),
+        AsyncMock(return_value="[FAIL] no element matching '#users'"),
     ) as mock_once:
         result = await extract_table_data(AsyncMock(), "#users")
 
@@ -1103,7 +1103,7 @@ async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_opacity_zero()
 
     assert len(elements) == 1
     assert elements[0]["tag"] == "button"
-    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+    assert elements[0]["label"] == "Flag [hidden — may need to hover the row first]"
 
 
 _HTML_HOVER_REVEAL_VISIBILITY_HIDDEN = """
@@ -1133,7 +1133,7 @@ async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_visibility_hid
 
     assert len(elements) == 1
     assert elements[0]["tag"] == "button"
-    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+    assert elements[0]["label"] == "Flag [hidden — may need to hover the row first]"
 
 
 _HTML_DISPLAY_NONE_BUTTON = """
@@ -1185,7 +1185,7 @@ async def test_get_snapshot_does_not_relax_filter_for_hidden_input():
 
 @pytest.mark.asyncio
 async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal_marker():
-    """overlay detection ("[ถูกบังอยู่]" จาก W9[A]) เป็นคนละเงื่อนไขกับ hover-reveal marker
+    """overlay detection ("[obscured]" จาก W9[A]) เป็นคนละเงื่อนไขกับ hover-reveal marker
     ใหม่นี้เลย — element ที่ visible ปกติแต่ถูกอีก element บังไว้ ต้องยังได้ marker เดิม
     ไม่ใช่ hover-reveal marker (ซึ่งไม่เข้าเงื่อนไขเพราะ opacity/visibility ปกติ)"""
     html = """
@@ -1204,7 +1204,7 @@ async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal
         await browser.close()
 
     assert len(elements) == 1
-    assert elements[0]["label"] == "Covered Button [ถูกบังอยู่]"
+    assert elements[0]["label"] == "Covered Button [obscured]"
 
 
 # ---------------- W19 ("Scoped Search Context"): region tagging (main vs navigation) ----------------
@@ -1389,8 +1389,8 @@ async def test_get_snapshot_marks_active_nav_link_with_aria_current():
 
     admin = next(e for e in elements if "Admin" in e["label"])
     reports = next(e for e in elements if "Reports" in e["label"])
-    assert "[active อยู่แล้ว]" in admin["label"]
-    assert "[active อยู่แล้ว]" not in reports["label"]
+    assert "[already active]" in admin["label"]
+    assert "[already active]" not in reports["label"]
 
 
 @pytest.mark.asyncio
@@ -1412,8 +1412,8 @@ async def test_get_snapshot_marks_active_tab_with_active_class():
 
     system_users = next(e for e in elements if "System Users" in e["label"])
     job_titles = next(e for e in elements if "Job Titles" in e["label"])
-    assert "[active อยู่แล้ว]" in system_users["label"]
-    assert "[active อยู่แล้ว]" not in job_titles["label"]
+    assert "[already active]" in system_users["label"]
+    assert "[already active]" not in job_titles["label"]
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1437,7 @@ async def test_get_snapshot_does_not_mark_active_class_outside_nav_or_tab_role()
 
         await browser.close()
 
-    assert "[active อยู่แล้ว]" not in elements[0]["label"]
+    assert "[already active]" not in elements[0]["label"]
 
 
 @pytest.mark.asyncio
@@ -1452,7 +1452,7 @@ async def test_get_snapshot_does_not_mark_inactive_nav_link():
 
         await browser.close()
 
-    assert "[active อยู่แล้ว]" not in elements[0]["label"]
+    assert "[already active]" not in elements[0]["label"]
 
 
 # --- Perception fix (radio buttons) — บั๊กจริงที่ user รายงาน: agent มองไม่เห็นตัวเลือก

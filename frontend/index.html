@@ -309,6 +309,12 @@
   .check-row{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
   .check-row input{ width:auto; }
   .check-row .warn-hint{ color:var(--warning); font-size:10.5px; }
+  /* W_openai_oauth: unstyled <button> เดิมสืบทอด background/สีของ browser default (light gray
+     background + สี inherit จาก theme มืด = ตัวหนังสือกลืนกับพื้นหลังเกือบมองไม่เห็น — user
+     รายงานจริง) ใช้ accent/secondary pattern เดียวกับปุ่ม primary/secondary อื่นในแอปนี้ */
+  #btnOpenaiLogin, #btnOpenaiLogout{ border:none; border-radius:6px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+  #btnOpenaiLogin{ background:var(--accent); color:var(--accent-ink); }
+  #btnOpenaiLogout{ background:var(--surface-2); color:var(--ink); }
   .composer-error{ font-size:12px; color:var(--critical); }
 
   /* ---- Pill-shaped composer bar (chat-input style: + attach / textarea / stop) ---- */
@@ -429,7 +435,14 @@
                 <option value="anthropic">Anthropic</option>
                 <option value="gemini">Gemini</option>
                 <option value="groq">Groq</option>
+                <option value="openai" id="providerOpenaiOption" disabled>OpenAI (ChatGPT login required)</option>
               </select>
+            </div>
+            <div class="settings-row">
+              <label>OpenAI account</label>
+              <span id="openaiAuthStatus" class="warn-hint">Checking...</span>
+              <button type="button" id="btnOpenaiLogin" style="display:none;">Sign in with ChatGPT</button>
+              <button type="button" id="btnOpenaiLogout" style="display:none;">Sign out</button>
             </div>
             <div class="settings-row">
               <label for="maxSteps">Max steps</label>
@@ -935,6 +948,96 @@ async function refreshPool() {
 }
 
 // 🔥 แก้ไข: refreshTasks() — ใช้ deletedTaskIds Set ที่ sync กับ deletedConvs แล้ว
+// W_openai_oauth: "Sign in with ChatGPT" — status/login/logout ให้ provider "openai" (ดู
+// backend/app/core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม) — ค่า OPENAI_LOGIN_TIMEOUT_MS
+// ต้องสอดคล้องกับ settings.openai_oauth_login_timeout_seconds ฝั่ง backend (ไม่ผูก config
+// ข้ามฝั่งจริงๆ ได้ แค่ตั้งใกล้เคียงกัน กัน poll ค้างไม่รู้จบถ้า background task ฝั่ง
+// backend เงียบหายไปโดยไม่ update status)
+const OPENAI_LOGIN_TIMEOUT_MS = 300000;
+let openaiLoginPollTimer = null;
+
+function setOpenaiAuthUi(linked, label) {
+  $("openaiAuthStatus").textContent = label;
+  $("btnOpenaiLogin").style.display = linked ? "none" : "";
+  $("btnOpenaiLogout").style.display = linked ? "" : "none";
+  $("providerOpenaiOption").disabled = !linked;
+}
+
+async function refreshOpenaiAuthStatus() {
+  try {
+    const r = await apiFetch(API + "/api/auth/openai/status");
+    if (!r.ok) {
+      setOpenaiAuthUi(false, "Status unavailable");
+      return;
+    }
+    const s = await r.json();
+    if (s.linked) {
+      setOpenaiAuthUi(true, `Linked as ${s.email || "?"}${s.plan_type ? " (" + s.plan_type + ")" : ""}`);
+    } else {
+      setOpenaiAuthUi(false, "Not linked");
+    }
+  } catch (e) {
+    setOpenaiAuthUi(false, "Status unavailable");
+  }
+}
+
+function stopOpenaiLoginPoll() {
+  if (openaiLoginPollTimer) {
+    clearInterval(openaiLoginPollTimer);
+    openaiLoginPollTimer = null;
+  }
+}
+
+function pollOpenaiLoginStatus(loginId) {
+  stopOpenaiLoginPoll();
+  const deadline = Date.now() + OPENAI_LOGIN_TIMEOUT_MS;
+  openaiLoginPollTimer = setInterval(async () => {
+    if (Date.now() > deadline) {
+      stopOpenaiLoginPoll();
+      setOpenaiAuthUi(false, "Login timed out — try again");
+      return;
+    }
+    try {
+      const r = await apiFetch(API + `/api/auth/openai/login/status?login_id=${encodeURIComponent(loginId)}`);
+      if (!r.ok) return; // login_id ไม่รู้จัก (404) หรือ network สะดุดชั่วคราว — ลอง poll ต่อจนกว่าจะ timeout
+      const s = await r.json();
+      if (s.status === "pending") return;
+      stopOpenaiLoginPoll();
+      if (s.status === "linked") {
+        setOpenaiAuthUi(true, `Linked as ${s.email || "?"}${s.plan_type ? " (" + s.plan_type + ")" : ""}`);
+      } else {
+        setOpenaiAuthUi(false, `Login failed: ${s.error || "unknown error"}`);
+      }
+    } catch (e) {}
+  }, 2000);
+}
+
+async function startOpenaiLogin() {
+  setOpenaiAuthUi(false, "Opening ChatGPT sign-in...");
+  try {
+    const r = await apiFetch(API + "/api/auth/openai/login/start", { method: "POST" });
+    if (!r.ok) {
+      setOpenaiAuthUi(false, "Could not start login");
+      return;
+    }
+    const { authorize_url, login_id } = await r.json();
+    window.open(authorize_url, "_blank");
+    setOpenaiAuthUi(false, "Waiting for you to finish signing in...");
+    pollOpenaiLoginStatus(login_id);
+  } catch (e) {
+    setOpenaiAuthUi(false, "Could not start login");
+  }
+}
+
+async function logoutOpenai() {
+  stopOpenaiLoginPoll();
+  try {
+    await apiFetch(API + "/api/auth/openai/logout", { method: "POST" });
+  } catch (e) {}
+  if ($("provider").value === "openai") $("provider").value = "";
+  await refreshOpenaiAuthStatus();
+}
+
 async function refreshTasks() {
   try {
     const r = await apiFetch(API + "/tasks");
@@ -2439,6 +2542,10 @@ document.addEventListener("keydown", (e) => {
     approvePlan();
   }
 });
+
+$("btnOpenaiLogin").addEventListener("click", startOpenaiLogin);
+$("btnOpenaiLogout").addEventListener("click", logoutOpenai);
+refreshOpenaiAuthStatus();
 
 // ---------------- Attach-file menu (composer "+") ----------------
 // pdf/xlsx: reads the picked file client-side (FileReader -> base64), stores it in

@@ -115,7 +115,7 @@ async def test_scroll_down_redundant_at_bottom():
     reason = await check_scroll_redundant(mock_page, "down")
 
     assert reason is not None
-    assert "ล่างสุด" in reason
+    assert "bottom" in reason
 
 
 @pytest.mark.asyncio
@@ -126,7 +126,7 @@ async def test_scroll_up_redundant_at_top():
     reason = await check_scroll_redundant(mock_page, "up")
 
     assert reason is not None
-    assert "บนสุด" in reason
+    assert "top" in reason
 
 
 @pytest.mark.asyncio

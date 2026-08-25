@@ -15,6 +15,10 @@ credentials*.json
 # Security 1.4: local Fernet key ที่เข้ารหัส/ถอดรหัส credentials.json (ดู
 # site_learning/storage.py) — generate อัตโนมัติต่อเครื่อง ห้ามขึ้น repo เด็ดขาด
 data/.credential_key
+# OAuth token ของ "Sign in with ChatGPT" (ดู core/openai_oauth.py) — access/refresh
+# token จริงของบัญชี ChatGPT ที่ operator login ไว้ ผูกกับเครื่องนี้เครื่องเดียว
+# (single-tenant) เท่ากับ API key ใน .env ทุกประการ ห้ามขึ้น repo เด็ดขาด
+data/openai_oauth_token.json
 
 # ---- Python ----
 __pycache__/
@@ -62,6 +66,9 @@ tmp/
 
 # ---- บันทึกงานรายสัปดาห์ (local only ไม่ต้องขึ้น repo) ----
 Task/
+
+# ---- คำสั่ง/บริบทสำหรับ coding agent (local only) ----
+CLAUDE.md
 
 # ---- IDE / ระบบปฏิบัติการ ----
 .vscode/

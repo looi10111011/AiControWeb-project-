@@ -36,6 +36,9 @@ from backend.app.api.schemas import (
     LearnCreatedResponse,
     LearnCredentialsRequest,
     LearnSiteRequest,
+    OpenAIAuthStatusResponse,
+    OpenAILoginStartResponse,
+    OpenAILoginStatusResponse,
     PoolStatusResponse,
     RelearnPageRequest,
     RelearnPageResponse,
@@ -48,7 +51,7 @@ from backend.app.api.schemas import (
 )
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
-from backend.app.core import llm, plan_memory, procedural_memory
+from backend.app.core import llm, openai_oauth, plan_memory, procedural_memory
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.perception import get_snapshot
 from backend.app.core.session_registry import SessionOwnershipError
@@ -1281,3 +1284,49 @@ async def site_credentials_status(domain: str) -> CredentialsStatusResponse:
 async def delete_site_credentials(domain: str) -> None:
     """ลบ credential ที่เก็บไว้ของโดเมนนี้ทิ้ง — ไม่ error ถ้าไม่มีอยู่แล้ว (idempotent)"""
     delete_credentials(normalize_domain(domain))
+
+
+# --- W_openai_oauth: "Sign in with ChatGPT" สำหรับ provider "openai" (ดู core/openai_oauth.py
+# หัวไฟล์สำหรับ risk disclosure เต็ม) — routes เหล่านี้อยู่หลัง verify_api_key เดียวกับ route
+# อื่นทั้งหมดในไฟล์นี้ (router-level dependency ด้านบน) ไม่มี auth layer แยกเพิ่ม เพราะระบบนี้
+# เป็น single-tenant (operator คนเดียว, credential เดียวต่อ deployment เหมือน API key เดิม
+# ไม่ใช่ per-user account) ---
+
+@router.post("/api/auth/openai/login/start", response_model=OpenAILoginStartResponse)
+async def start_openai_login() -> OpenAILoginStartResponse:
+    """เริ่ม OAuth flow — เปิด loopback listener ก่อนเสมอแล้วคืน authorize_url ให้ frontend
+    เปิดในแท็บ/หน้าต่างใหม่ให้ user login เอง token exchange เกิดขึ้น "หลังบ้าน" ใน
+    background task ที่ผูกกับ loopback callback (ดู core/openai_oauth.py::start_login_flow())
+    ไม่ใช่ response ของ endpoint นี้ — frontend ต้อง poll GET .../login/status ต่อจนกว่าจะ
+    "linked" หรือ "error" """
+    result = await openai_oauth.start_login_flow()
+    return OpenAILoginStartResponse(authorize_url=result["authorize_url"], login_id=result["login_id"])
+
+
+@router.get("/api/auth/openai/login/status", response_model=OpenAILoginStatusResponse)
+async def openai_login_status(login_id: str = Query(...)) -> OpenAILoginStatusResponse:
+    """poll สถานะของ login attempt ที่ระบุ (login_id จาก POST .../login/start) —
+    status: "pending"|"linked"|"error" — login_id ที่ไม่รู้จัก (หมดอายุ process restart ไป
+    แล้ว หรือพิมพ์ผิด) คืน 404 ตรงๆ ไม่ใช่ "pending" ค้าง เพื่อไม่ให้ frontend poll ทิ้งไว้
+    ไม่รู้จบโดยไม่มีทางรู้ว่าจริงๆ แล้วไม่มี attempt นี้อยู่เลย"""
+    status = openai_oauth.get_login_status(login_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"ไม่พบ login attempt {login_id!r} (อาจหมดอายุ/server restart ไปแล้ว)")
+    return OpenAILoginStatusResponse(**status)
+
+
+@router.get("/api/auth/openai/status", response_model=OpenAIAuthStatusResponse)
+async def openai_auth_status() -> OpenAIAuthStatusResponse:
+    """สถานะ link ปัจจุบัน (ไม่ผูกกับ login attempt ไหนเป็นพิเศษ) — ดึงจาก token store
+    ตรงๆ (email/plan_type ที่ decode ไว้ตอน save, ไม่ decrypt access/refresh token มาโชว์
+    เลย) ใช้ตอน frontend โหลดหน้าเพื่อรู้ว่าจะ enable "openai" ใน provider dropdown ได้ไหม"""
+    status = openai_oauth.get_link_status()
+    return OpenAIAuthStatusResponse(**status)
+
+
+@router.post("/api/auth/openai/logout", status_code=204)
+async def openai_logout() -> None:
+    """ลบ token ในเครื่อง + best-effort revoke ที่ OpenAI (ดู
+    core/openai_oauth.py::revoke_token()) — ไม่ throw ถ้า revoke ทาง network ล้มเหลว (ลบ
+    local เสมอไม่ว่า network จะสำเร็จไหม)"""
+    await openai_oauth.revoke_token()
