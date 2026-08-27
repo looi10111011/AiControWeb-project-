@@ -3494,10 +3494,15 @@ class Orchestrator:
                 # retrieve()/recall() ด้านบน) นับรวมเข้าไปในระยะห่างนี้ด้วย ระยะห่างขั้นต่ำ
                 # ระหว่างการเรียก LLM 2 ครั้งยังเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก
                 # rate-limit) แค่ไม่ sleep ซ้ำกับเวลาที่ผ่านไปแล้วจริง
+                # W_timing_gap: การรอนี้ตั้งใจ (กัน rate limit) แต่ต้อง "เห็นได้" ในรายงาน
+                # ไม่ใช่หายไปในช่องว่างที่ไม่มีใครวัด — ตอนวิเคราะห์ทีหลังจะได้แยกออกจาก
+                # ความช้าที่แก้ได้จริง
+                step_pacing_seconds = 0.0
                 if last_llm_call_at is not None:
                     elapsed = time.monotonic() - last_llm_call_at
                     remaining = settings.step_pacing_delay_seconds - elapsed
                     if remaining > 0:
+                        step_pacing_seconds = remaining
                         await asyncio.sleep(remaining)
 
                 # W43: plan_text (ดู confirm_plan/approved_plan ด้านบน) เป็น None สำหรับ
@@ -4683,7 +4688,11 @@ class Orchestrator:
                 # ด้วย ให้ UI (Log panel) โชว์ชื่อจริงแทน index เปล่าๆ ที่มนุษย์อ่านไม่รู้
                 # เรื่องว่ากดอะไร/กรอกช่องไหน — ไม่มีผลกับ dispatch จริง (ยังใช้ tool_input
                 # เดิมเป๊ะ) แค่ข้อมูลเสริมไว้แสดงผล
-                self.memory.record({
+                # W_timing_gap: ถือ reference ของ dict ไว้ (ShortTermMemory.record เก็บ object
+                # ตัวเดียวกัน ไม่ได้ copy) เพื่อเติมเวลา wait_stable ลงไปทีหลังได้ — wait_stable
+                # เกิดหลังบันทึก step ไปแล้ว จะย้ายการบันทึกไปไว้ทีหลังไม่ได้เพราะ guard หลายตัว
+                # ด้านล่างอ่าน memory ของ step นี้
+                step_record = {
                     "step": steps_taken,
                     "cmd": tool_input,
                     "label": action_label,
@@ -4710,8 +4719,13 @@ class Orchestrator:
                         "snapshot": round(step_snapshot_seconds, 3),
                         "llm": round(step_llm_seconds, 3),
                         "action": round(step_action_seconds, 3),
+                        # W_timing_gap: pacing วัดได้ตั้งแต่ต้น step ส่วน wait เติมทีหลัง
+                        # (wait_stable เกิดหลังจุดนี้ — ดูด้านล่าง)
+                        "pacing": round(step_pacing_seconds, 3),
+                        "wait": 0.0,
                     },
-                })
+                }
+                self.memory.record(step_record)
                 if verbose:
                     print(f"  -> {result}", flush=True)
                 await _emit({
@@ -4900,7 +4914,10 @@ class Orchestrator:
                             )
 
                 if tool_input.get("type") in _PAGE_CHANGING_ACTIONS:
+                    _wait_started_at = time.monotonic()
                     await wait_stable(page)
+                    # W_timing_gap: เติมย้อนเข้า record ของ step นี้ (ดู step_record ด้านบน)
+                    step_record["timing"]["wait"] = round(time.monotonic() - _wait_started_at, 3)
 
                     # domain guard: classify_action() เช็ค allowlist แค่ตอน type=="goto"
                     # เท่านั้น — click ที่พาออกนอกโดเมน (เช่นลิงก์ "Sign in with Google"/

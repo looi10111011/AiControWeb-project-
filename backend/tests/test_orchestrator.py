@@ -1149,7 +1149,9 @@ async def test_run_task_executes_action_then_finishes():
             # orchestrator.py ตรงจุด memory.record) — timing เป็น 0.0 ทั้งหมดในเทสต์นี้เพราะ
             # ทุกอย่างถูก mock ไว้ ไม่ได้ใช้เวลาจริง
             "failure_class": "ok",
-            "timing": {"snapshot": 0.0, "llm": 0.0, "action": 0.0},
+            # W_timing_gap: pacing/wait เพิ่มเข้ามาทีหลัง — pacing เป็น 0 เพราะ step แรก
+            # ไม่มีการเรียก LLM ก่อนหน้าให้ต้องเว้นระยะ ส่วน wait มาจาก wait_stable ที่ถูก mock
+            "timing": {"snapshot": 0.0, "llm": 0.0, "action": 0.0, "pacing": 0.0, "wait": 0.0},
         },
     ]
     # ต้องรวม token ของทั้ง 2 รอบ next_action (browser_action + finish_task) ไม่ใช่แค่รอบสุดท้าย
