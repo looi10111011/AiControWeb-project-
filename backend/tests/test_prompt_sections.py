@@ -207,3 +207,52 @@ def test_detect_tab_switch_never_raises_when_the_context_is_gone():
 
     assert page is dead
     assert note == ""
+
+
+# ---------------- W_listbox_container: container ของรายการตัวเลือกต้องไม่ได้ index ----------------
+
+@pytest.mark.asyncio
+async def test_open_dropdown_exposes_each_option_but_not_the_container_that_wraps_them():
+    """บั๊กจริง live run 2026-08-27: role=listbox ที่ถูกเพิ่มเข้ามาใน W85 ได้ index เอง โดย label
+    เป็น innerText ของทุก option ต่อกัน ('-- Select -- Admin ESS') ซึ่งมีคำว่า ESS ที่ goal ต้องการ
+    อยู่ด้วย โมเดลจึงคลิกมันแล้วไปโดน option แรก (Admin) = กรองผิด role ทั้ง task
+
+    เทสต์นี้รัน chromium จริงเพราะ _COLLECT_JS เป็น JS ทั้งก้อน — mock DOM พิสูจน์อะไรไม่ได้เลย
+    """
+    from playwright.async_api import async_playwright
+
+    from backend.app.core.perception import get_snapshot
+
+    html = """
+      <body>
+        <label>User Role</label>
+        <div class="oxd-select-text" role="combobox" tabindex="0">-- Select --</div>
+        <div role="listbox" tabindex="-1">
+          <div role="option">-- Select --</div>
+          <div role="option">Admin</div>
+          <div role="option">ESS</div>
+        </div>
+        <div onclick="void 0">
+          <div role="option">Alpha</div>
+          <div role="option">Beta</div>
+        </div>
+      </body>
+    """
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(html)
+        elements, _ = await get_snapshot(page)
+        await browser.close()
+
+    labels = [e["label"] for e in elements]
+
+    # ตัวเลือกแต่ละตัวยังต้องมี index ของตัวเอง (ไม่งั้น agent เลือกอะไรไม่ได้เลย)
+    for option in ("Admin", "ESS", "Alpha", "Beta"):
+        assert any(l.strip() == option for l in labels), f"option {option!r} หายไปจาก snapshot"
+
+    # และต้องไม่มี element ไหนที่ label รวมหลาย option ไว้ด้วยกัน
+    assert not [l for l in labels if "Admin" in l and "ESS" in l]
+
+    # trigger ยังต้องอยู่ พร้อมชื่อ field นำหน้า (W_dropdown_field_label)
+    assert any("User Role" in l for l in labels)

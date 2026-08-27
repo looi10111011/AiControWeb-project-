@@ -4205,10 +4205,34 @@ class Orchestrator:
                             resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
                         ))
                         continue
+                    # W_goal_scope_false_success (บั๊กจริง live run 2026-08-27): เส้นทางนี้
+                    # ตั้ง success=True ตรงๆ แล้ว break — *ไม่ผ่าน finish_task เลย* guard กัน
+                    # false-completion ทั้งชุดของ W_delete_all_intent จึงไม่มีโอกาสได้ตรวจสัก
+                    # ตัว ผลจริง: agent กรอง Role ผิด (ได้ Admin แทน ESS) ไม่ได้ลบอะไรเลย
+                    # แต่ UI ขึ้น Done + success
+                    #
+                    # ใช้หลักฐาน deterministic ชุดเดียวกับที่ guard ของ finish_task ใช้อยู่แล้ว
+                    # (_scan_remaining_target_records) — ถ้า goal ระบุเงื่อนไขไว้ชัดและยังอ่าน
+                    # ได้ว่าเหลือแถวตรงเงื่อนไข ห้ามอ้างว่าสำเร็จ ให้รายงานตามความจริงแทน
+                    # fail-safe: อ่านไม่ได้/หน้านี้ไม่ใช่หน้าตาราง คืน None = ไม่มีหลักฐานขัดแย้ง
+                    # ก็คงพฤติกรรมเดิมทุกประการ
                     success = True
                     final_message = _GOAL_SCOPE_GATE_HARD_STOP_MESSAGE_TEMPLATE.format(
                         reason=goal_scope_satisfied_reason,
                     )
+                    if delete_all_condition_values:
+                        remaining = await _scan_remaining_target_records(page)
+                        if remaining is not None and remaining[0] > 0:
+                            success = False
+                            final_message = (
+                                f"Stopping task without completing it: the goal asked to delete "
+                                f"every record matching {delete_all_condition_values!r}, but the "
+                                f"table still reports {remaining[1]!r}. Nothing is being claimed "
+                                "as done — re-check that the filter was applied to the right "
+                                "column and that the rows were actually deleted."
+                            )
+                            if verbose:
+                                print(f"[goal-scope] ปฏิเสธการอ้างสำเร็จ: {final_message}", flush=True)
                     if verbose:
                         print(f"[goal-scope] {final_message}", flush=True)
                     break
@@ -4671,7 +4695,17 @@ class Orchestrator:
                     # สัญญาณให้ Goal Boundary Gate ด้านบน (sticky — ดู declaration) เงื่อนไข
                     # ผูกกับ result.success อยู่แล้วจาก if ด้านบน จึงไม่มีทางติดธงจาก action
                     # ที่ล้มเหลว หรือจาก completed_plan_step ที่ LLM ใส่มาทั้งที่ไม่มีแผนเลย
-                    if completed_plan_step >= _total_plan_steps(plan_text):
+                    # W_goal_scope_false_success: action แบบอ่านอย่างเดียวไม่ทำให้ step
+                    # สุดท้ายของแผน "เสร็จ" ได้ในทางปฏิบัติ — comment ด้านบนบอกว่าปลอดภัยเพราะ
+                    # ผูกกับ result.success แต่ read_page_data ที่ "สำเร็จ" คือการอ่านล้วนๆ
+                    # ไม่ได้พิสูจน์อะไรเกี่ยวกับงานที่ต้องทำเลย (บั๊กจริง live run 2026-08-27:
+                    # โมเดลส่ง completed_plan_step=5 มากับ read_page_data แล้ว Goal Boundary
+                    # Gate ก็หยุด task พร้อมอ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไร)
+                    # ใช้ชุด action เดียวกับ gate เองใช้ ไม่สร้างชุดใหม่ซ้อน
+                    if (
+                        completed_plan_step >= _total_plan_steps(plan_text)
+                        and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
+                    ):
                         plan_fully_completed = True
 
                 # W10[F]: human ปฏิเสธ action นี้ตรงๆ (กด Deny บน permission prompt) —

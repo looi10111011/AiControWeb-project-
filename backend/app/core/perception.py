@@ -74,7 +74,13 @@ _COLLECT_JS = r"""
     '[role=tab]', '[role=option]', '[role=menuitem]',
     '[role=menuitemradio]', '[role=menuitemcheckbox]', '[role=combobox]',
     '[role=radio]', '[role=slider]', '[role=spinbutton]', '[role=searchbox]',
-    '[role=textbox]', '[role=treeitem]', '[role=listbox]', '[role=switch]',
+    // W_listbox_container: ห้ามใส่ '[role=listbox]' กลับเข้ามาเด็ดขาด — listbox เป็น
+    // *container* ของรายการตัวเลือก ไม่ใช่ปุ่ม พอมันได้ index เอง label ของมันคือ innerText
+    // ของทุก option ต่อกัน ('-- Select -- Admin ESS') ซึ่งมีคำที่ goal ต้องการอยู่ด้วย โมเดล
+    // จึงคลิกมันแล้วไปโดน option แรกแทน (บั๊กจริง live run 2026-08-27: goal ขอ ESS แต่ได้
+    // Admin) — '[role=option]' ด้านบนให้ index กับตัวเลือกทีละตัวอยู่แล้ว container จึงไม่ได้
+    // เพิ่มอะไรเลย มีแต่สร้างเป้าปลอมที่ label ล่อให้คลิกผิด
+    '[role=textbox]', '[role=treeitem]', '[role=switch]',
     '[onclick]', '[tabindex]'
   ].join(',');
 
@@ -483,6 +489,15 @@ _COLLECT_JS = r"""
     if (el.hasAttribute('data-ai-index')) continue;
 
     if (isIrrelevant(el)) continue;
+
+    // W_listbox_container: ข้าม element ที่ "ห่อรายการตัวเลือกไว้" ไม่ว่ามันจะเข้ามาทางไหน
+    // — ลูปนี้ (nodes หลัก) ไม่มี guard `cand.querySelector(selectors)` แบบที่ pass เสริมทุก
+    // ตัวมี (checkbox/radio/switch/icon wrapper) container ของ dropdown จึงได้ index ได้ถ้า
+    // บังเอิญมี [tabindex]/[onclick] ติดมา ซึ่งเป็นช่องที่มีมาก่อนจะเพิ่ม role=listbox ด้วยซ้ำ
+    //
+    // เงื่อนไข ">= 2 option" แคบพอที่จะไม่โดน element ปกติ: รายการตัวเลือกที่มีให้เลือก
+    // มากกว่าหนึ่งตัวไม่มีทางเป็นเป้าคลิกเอง ส่วนตัว option เองมี 0 option ข้างในจึงไม่โดน
+    if (el.querySelectorAll('[role="option"]').length >= 2) continue;
 
     // เช็คว่ามองเห็นจริงไหม
     const rect = el.getBoundingClientRect();

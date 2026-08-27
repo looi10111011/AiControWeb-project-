@@ -4439,6 +4439,50 @@
            ด้วยเหตุผลเดียวกัน drag & drop และ download ยังไม่ทำ (ไม่มีหลักฐานจากการรันจริงว่า
            จำเป็น และ download แตะระบบไฟล์เหมือนกัน)
 
+  [x] W86  ("เลือก Admin แทน ESS + อ้างว่าสำเร็จทั้งที่ไม่ได้ลบ" — บั๊กจริงที่ user รายงานหลัง
+           commit 3efb2c1, 2026-08-27)
+           อาการที่ user เห็น: goal ขอลบ userrole=ess แต่ agent กรอง Role=Admin (41 records)
+           แล้วจบงานโดยไม่ลบอะไรเลย — UI ขึ้น Done และแผนติ๊กครบทั้ง 5 ข้อ
+           มี 2 บั๊กซ้อนกัน ตัวแรกเป็น regression ที่ผมทำเองใน W85 รอบก่อนหน้านี้เอง
+
+           (1) W_listbox_container — *** regression จาก W85 โดยตรง *** W85 ข้อ (2) เพิ่ม
+           '[role=listbox]' เข้า selector list พร้อม role อื่น แต่ listbox เป็น *container* ของ
+           รายการตัวเลือก ไม่ใช่ปุ่ม — OrangeHRM render dropdown เป็น <div role="listbox"> ที่ห่อ
+           <div role="option"> สามตัว พอ container ได้ index เอง label ของมันคือ innerText ของทุก
+           option ต่อกัน = "-- Select -- Admin ESS" ซึ่ง *มีคำว่า ESS ที่ goal ต้องการอยู่ด้วย*
+           โมเดลจึงคลิกมัน แล้วคลิกไปโดน option แรก (Admin)
+           '[role=option]' มีอยู่ในลิสต์ตั้งแต่เดิมและถูกต้องอยู่แล้ว — option แต่ละตัวได้ index
+           ของตัวเองอยู่แล้ว container จึงไม่ได้เพิ่มความสามารถอะไรเลย มีแต่สร้างเป้าปลอมที่ label
+           ล่อให้คลิกผิด
+           แก้ 2 ชั้น: (ก) เอา '[role=listbox]' ออก พร้อมคอมเมนต์ห้ามใส่กลับ (role อื่นที่ W85
+           เพิ่มมาเป็น leaf ทั้งหมด คลิก/กรอกได้จริง เก็บไว้) (ข) กันเคสทั่วไปด้วย — ลูปเก็บ nodes
+           หลักไม่มี guard `cand.querySelector(selectors)` แบบที่ pass เสริมทุกตัวมี (checkbox/
+           radio/switch/icon wrapper) container ของ dropdown จึงได้ index ได้ถ้าบังเอิญมี
+           [tabindex]/[onclick] ติดมา *ซึ่งเป็นช่องที่มีมาก่อนจะเพิ่ม role=listbox ด้วยซ้ำ* →
+           ข้าม element ที่มี [role="option"] เป็นลูกตั้งแต่ 2 ตัวขึ้นไป (รายการตัวเลือกที่มีให้
+           เลือกมากกว่าหนึ่งตัวไม่มีทางเป็นเป้าคลิกเอง ส่วนตัว option เองมี 0 option ข้างในจึงไม่โดน)
+           ยืนยันกับ chromium จริง (mock DOM พิสูจน์อะไรไม่ได้เพราะ _COLLECT_JS เป็น JS ทั้งก้อน):
+           option ทั้ง 4 ตัวยังได้ index ของตัวเอง, ไม่มี element ไหน label รวมหลาย option, และ
+           trigger ยังได้ 'User Role: -- Select --' ตาม W_dropdown_field_label เหมือนเดิม
+
+           (2) W_goal_scope_false_success — บั๊กที่อันตรายกว่าและไม่เกี่ยวกับข้อแรก: Goal Boundary
+           Gate ตั้ง success=True ตรงๆ แล้ว break โดย *ไม่ผ่าน finish_task เลย* guard กัน
+           false-completion ทั้งชุดของ W_delete_all_intent (ซึ่ง implement แล้วและทำงานถูก) จึงไม่
+           มีโอกาสได้ตรวจสักตัว — agent ที่กรองผิดคอลัมน์และไม่ได้ลบอะไรเลยจึงรายงานว่าสำเร็จ
+           ธงที่ทำให้ gate ทำงานคือ plan_fully_completed ซึ่งมาจาก completed_plan_step ที่ *โมเดล
+           ใส่มาเอง* — comment เดิมตรงนั้นบอกว่าปลอดภัยเพราะผูกกับ result.success แต่ในรันนี้
+           action ที่ "สำเร็จ" คือ read_page_data ซึ่งเป็นการอ่านล้วนๆ ไม่ได้พิสูจน์อะไรเกี่ยวกับ
+           การลบเลยสักนิด
+           แก้ 2 ชั้นที่อิสระจากกัน (ชั้นเดียวไม่พอ — ชั้นแรกกันการอ้างผลผิด ชั้นสองกันไม่ให้ไป
+           ถึงจุดนั้นตั้งแต่ต้น):
+             - ก่อนตั้ง success=True: ถ้า goal ระบุเงื่อนไข key=value ไว้ชัด (delete_all_condition_
+               values ที่คำนวณไว้แล้ว) ให้เรียก _scan_remaining_target_records — หลักฐานชุดเดียว
+               กับที่ guard ของ finish_task ใช้อยู่แล้ว ไม่สร้างกลไกใหม่ — ถ้ายังเหลือแถวตรงเงื่อนไข
+               ให้ success=False พร้อมข้อความตามความจริง fail-safe: อ่านไม่ได้/ไม่ใช่หน้าตาราง
+               คืน None = ไม่มีหลักฐานขัดแย้ง คงพฤติกรรมเดิมทุกประการ
+             - plan_fully_completed ไม่ติดจาก action แบบอ่านอย่างเดียวอีกต่อไป (ใช้
+               _GOAL_SCOPE_ALLOWED_ACTION_TYPES ชุดเดียวกับที่ gate เองใช้ ไม่สร้างชุดใหม่ซ้อน)
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------
