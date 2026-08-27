@@ -256,3 +256,88 @@ async def test_open_dropdown_exposes_each_option_but_not_the_container_that_wrap
 
     # trigger ยังต้องอยู่ พร้อมชื่อ field นำหน้า (W_dropdown_field_label)
     assert any("User Role" in l for l in labels)
+
+
+# ---------------- P3.9: ถอด hardcode OrangeHRM ออกจากทางเดินกลาง ----------------
+
+def _parse_record_count(text):
+    """เลียนแบบตรรกะใน _scan_remaining_target_records_once() ตรงส่วนที่แปลงข้อความเป็นตัวเลข"""
+    from backend.app.core.orchestrator import (
+        _RECORD_COUNT_PATTERNS,
+        _RECORD_COUNT_ZERO_TEXTS,
+    )
+
+    if any(zero in text.lower() for zero in _RECORD_COUNT_ZERO_TEXTS):
+        return 0
+    for pattern in _RECORD_COUNT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return int(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+    return None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("(41) Records Found", 41),          # OrangeHRM — ต้องไม่พัง
+    ("No Records Found", 0),
+    ("Showing 1-10 of 42", 42),          # pagination แบบมาตรฐาน
+    ("1 - 10 of 1,234 results", 1234),   # มีตัวคั่นหลักพัน
+    ("42 results found", 42),
+    ("7 items", 7),
+    ("ทั้งหมด 28 รายการ", 28),
+    ("ไม่พบข้อมูล", 0),
+    ("No results", 0),
+])
+def test_record_count_reads_common_result_summaries_not_just_orangehrm(text, expected):
+    """W_record_count_generic: guard กัน false-completion ตัวเรือธงเคยผูกกับข้อความ
+    '(N) Records Found' ของ OrangeHRM อย่างเดียว = ใช้ได้กับเว็บเดียวในโลก ที่เหลือคืน None
+    เงียบๆ แปลว่าไม่มี guard เลย"""
+    assert _parse_record_count(text) == expected
+
+
+def test_record_count_prefers_the_result_total_over_a_page_number():
+    """'of N' กว้างที่สุดจึงต้องอยู่ท้ายสุด — ไม่งั้นประโยคที่มีทั้งเลขหน้าและยอดรวมจะได้เลขหน้า"""
+    assert _parse_record_count("Showing page 2 of 5 - 42 results") == 42
+
+
+def test_record_count_returns_none_when_the_text_carries_no_count():
+    """fail-safe เดิม: อ่านไม่ได้ = None = ไม่บล็อกอะไร ดีกว่าบล็อก finish_task ที่อาจถูกอยู่แล้ว"""
+    assert _parse_record_count("Dashboard") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("html,expected_label", [
+    # OrangeHRM เดิม ต้องไม่พัง
+    ('<div class="oxd-dialog-container oxd-dialog-container-default">'
+     '<button class="oxd-button--secondary">No, Cancel</button>'
+     '<button class="oxd-button--label-danger">Yes, Delete</button></div>', "Yes, Delete"),
+    ('<div role="dialog"><button>Cancel</button><button>OK</button></div>', "OK"),
+    ('<div role="dialog"><button>No</button><button>Yes</button></div>', "Yes"),
+    ('<div role="dialog"><button>ยกเลิก</button><button>ตกลง</button></div>', "ตกลง"),
+    ('<div role="dialog"><button>Abbrechen</button><button>Löschen</button></div>', "Löschen"),
+    ('<div role="dialog"><button>Annuler</button><button>Confirmer</button></div>', "Confirmer"),
+    # ปุ่มที่ไม่ใช่ <button>
+    ('<div role="dialog"><div role="button">Cancel</div>'
+     '<div role="button">Confirm</div></div>', "Confirm"),
+    # ปุ่มลวง: คำว่า delete โผล่ในปุ่มที่ *ไม่ควร* กด — คำยืนยันกลางๆ ต้องชนะ
+    ('<div role="dialog"><button>Do not delete</button><button>Yes</button></div>', "Yes"),
+])
+async def test_modal_confirm_button_is_found_on_dialogs_that_are_not_orangehrm(html, expected_label):
+    """W_modal_confirm_generic: fallback เดิมกว้างแค่ button:has-text("Confirm") — dialog ที่
+    เขียนว่า Yes/OK/ตกลง/Löschen ไม่ match อะไรเลย แล้ว agent ค้างอยู่หน้าโมดัล ซึ่งเป็นบั๊ก
+    ที่ W23 เขียนมาแก้พอดี แต่แก้ได้เฉพาะเว็บภาษาอังกฤษที่ใช้คำว่า Confirm"""
+    from playwright.async_api import async_playwright
+
+    from backend.app.core.actions import _find_visible_modal_confirm_button
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(f"<body>{html}</body>")
+        _, locator = await _find_visible_modal_confirm_button(page)
+        label = (await locator.inner_text()).strip() if locator else None
+        await browser.close()
+
+    assert label == expected_label

@@ -189,7 +189,10 @@ async def test_execute_fill_dismisses_any_popup_opened_by_focus_after_success():
     result = await execute(mock_page, {"type": "fill", "index": 0, "text": "2026-15-05"})
 
     assert result.success is True
-    dismiss_locator.evaluate.assert_awaited_once_with(
+    # W_file_input_guard: mock page คืน locator ตัวเดียวกันให้ทุก query — guard ที่เช็คว่า
+    # เป้าหมายเป็น <input type=file> ไหม ก็เรียก evaluate() ผ่าน locator ตัวนี้ด้วย จำนวนครั้ง
+    # จึงไม่ใช่ 1 อีกต่อไป สิ่งที่เทสต์นี้สนใจจริงๆ คือ "blur+body click ถูกยิงจริงหลัง fill"
+    dismiss_locator.evaluate.assert_any_await(
         "el => { el.blur(); document.body.click(); }"
     )
     mock_page.wait_for_timeout.assert_awaited_once_with(200)

@@ -735,12 +735,48 @@ _TOAST_CONFIRMED_NO_RECREATE_SUFFIX = (
 # CSS มาตรฐาน) เป็นชั้นสำรองกว้างๆ เผื่อ layout เปลี่ยนไปในเวอร์ชันอื่นของ OrangeHRM ที่ยังคง
 # ข้อความนี้ไว้แต่ขยับ element/class ไป — ตั้งใจไม่ทำให้ generic ข้ามเว็บเหมือน
 # _VALIDATION_ERROR_SELECTOR เพราะ "Records Found" ไม่ใช่ข้อความมาตรฐานที่เว็บอื่นใช้ร่วมกันเลย
+# W_record_count_generic (P3.9): เดิม selector + regex ผูกกับข้อความ "(N) Records Found"
+# ของ OrangeHRM อย่างเดียว — guard กัน false-completion ตัวเรือธง (ยืนยันว่าลบ/แก้ครบจริง)
+# จึงทำงานได้กับเว็บเดียวในโลก ที่เหลือ _scan_remaining_target_records() คืน None เงียบๆ
+# = ไม่มี guard เลย
+#
+# เพิ่มชั้น generic ที่ครอบรูปแบบที่เว็บทั่วไปใช้จริง โดยยังคง fail-safe เดิมทุกประการ:
+# อ่านไม่ได้/ไม่เจอ = None = ไม่บล็อกอะไร (ดีกว่าบล็อก finish_task ที่อาจถูกต้องอยู่แล้ว)
 _RECORD_COUNT_SELECTOR = (
+    # OrangeHRM (เจาะจงที่สุด เก็บไว้ก่อนเสมอ)
     '.orangehrm-horizontal-padding span:has-text("Records Found"), '
-    'span:has-text("No Records Found")'
+    'span:has-text("No Records Found"), '
+    # generic — ข้อความสรุปผลลัพธ์ที่ framework/เว็บทั่วไปใช้ วางไว้ทีหลังเพื่อให้ของเจาะจง
+    # ชนะก่อนถ้ามีทั้งคู่บนหน้าเดียวกัน
+    ':is(span, div, p, h2, h3):has-text("Records Found"), '
+    ':is(span, div, p, h2, h3):has-text("results found"), '
+    ':is(span, div, p, h2, h3):has-text("No results"), '
+    ':is(span, div, p, h2, h3):has-text("รายการ")'
 )
 
-_RECORD_COUNT_RE = re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE)
+# รูปแบบตัวเลขที่ยอมรับ เรียงจากเจาะจงไปกว้าง — ตัวแรกที่ match ชนะ
+# ตั้งใจไม่รับ "ตัวเลขลอยๆ" ที่ไม่มีคำบอกบริบทกำกับเลย เพราะหน้าเว็บมีตัวเลขเต็มไปหมด
+# (ราคา/วันที่/เลขหน้า) การเดาผิดที่นี่แปลว่า guard ไปบล็อก finish_task ที่ถูกต้อง
+_RECORD_COUNT_PATTERNS = (
+    # OrangeHRM: "(41) Records Found"
+    re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE),
+    # "42 results found" / "42 results" / "42 items" — เจาะจงกว่า "of N" ด้านล่างจึงมาก่อน
+    re.compile(r"\b([\d,]+)\s+(?:results?|items?|records?|entries)\b", re.IGNORECASE),
+    # ไทย: "42 รายการ" / "ทั้งหมด 42 รายการ"
+    re.compile(r"([\d,]+)\s*รายการ"),
+    # "Showing 1-10 of 42" — เอาตัวหลัง "of" ซึ่งคือยอดรวมจริง ไว้ท้ายสุดเพราะกว้างที่สุด:
+    # ข้อความแบบ "page 2 of 5" ก็ match ได้ ถ้าเอาขึ้นก่อนจะแย่งเคสที่มีทั้งเลขหน้าและยอดรวม
+    # อยู่ในประโยคเดียวกัน (selector ด้านบนกรองแล้วว่าต้องเป็นข้อความสรุปผลลัพธ์ถึงจะมาถึงตรงนี้
+    # แต่ลำดับยังต้องถูกอยู่ดี)
+    re.compile(r"\bof\s+([\d,]+)\b", re.IGNORECASE),
+)
+
+# ข้อความที่แปลว่า "ไม่มีผลลัพธ์เลย" (= 0) — ต้องเช็คก่อน pattern ตัวเลขเสมอ เพราะบางอันมี
+# เลข 0 อยู่ในประโยคอยู่แล้ว บางอันไม่มีเลขเลย
+_RECORD_COUNT_ZERO_TEXTS = (
+    "no records found", "no results", "no matching records", "no data",
+    "ไม่พบข้อมูล", "ไม่พบรายการ", "ไม่มีข้อมูล",
+)
 
 # W68b (บั๊กจริงที่ user รายงานซ้ำหลัง W68: goal "เปลี่ยน Role ของทุกคนที่ไม่ใช่ Admin เป็น
 # Admin" — agent ยัง claim "ผลการค้นหาแสดง 0 รายการ" ทั้งที่ตารางจริงโชว์ "(16) Records Found"
@@ -774,11 +810,18 @@ async def _scan_remaining_target_records_once(page: Page) -> Optional[tuple[int,
         return None
     if not text:
         return None
-    if "no records found" in text.lower():
+    lowered = text.lower()
+    if any(zero_text in lowered for zero_text in _RECORD_COUNT_ZERO_TEXTS):
         return 0, text
-    match = _RECORD_COUNT_RE.search(text)
-    if match:
-        return int(match.group(1)), text
+    # W_record_count_generic: ไล่ pattern จากเจาะจงไปกว้าง ตัวแรกที่ match ชนะ — ตัวคั่นหลักพัน
+    # ต้องถอดก่อนแปลงเป็น int ("1,234 results")
+    for pattern in _RECORD_COUNT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return int(match.group(1).replace(",", "")), text
+            except ValueError:
+                continue
     return None
 
 

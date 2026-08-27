@@ -415,6 +415,33 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
 # ตัดสินใจใหม่ที่ต้องขออนุมัติเพิ่ม
 _DIALOG_CONTAINER_SELECTOR = '.oxd-dialog-container, [role="dialog"], .orangehrm-modal-header'
 
+# W_modal_confirm_generic (P3.9): ชั้น fallback เดิมกว้างแค่ 'button:has-text("Confirm")'
+# เท่านั้น — dialog ที่เขียนว่า "Yes" / "OK" / "ตกลง" / "Löschen" / "Supprimer" จึงไม่ match
+# อะไรเลยสักตัว แล้ว resolve_confirmation_modal() คืน None ทำให้ agent ค้างอยู่หน้าโมดัล
+# ซึ่งเป็นบั๊กที่ W23 เขียนมาแก้พอดี แต่แก้ได้เฉพาะเว็บภาษาอังกฤษที่ใช้คำว่า Confirm
+#
+# คำยืนยันด้านล่างครอบภาษาชุดเดียวกับ permission/rules.py::RISKY_LABEL_KEYWORDS (ไทย/ญี่ปุ่น/
+# จีน/เยอรมัน/ฝรั่งเศส/สเปน/โปรตุเกส) — ตั้งใจ *ไม่* import มาใช้ซ้ำ เพราะชุดนั้นตอบคำถามคนละ
+# ข้อ ("action นี้เสี่ยงไหม" ซึ่งรวม pay/purchase ที่ไม่ใช่ปุ่มยืนยันในโมดัล) การผูกสองชุดเข้า
+# ด้วยกันจะทำให้แก้ชุดหนึ่งแล้วอีกชุดเปลี่ยนพฤติกรรมตามโดยไม่ตั้งใจ
+#
+# *** ลำดับสำคัญมาก *** — คำยืนยันกลางๆ (yes/ok/confirm) มาก่อนคำทำลายข้อมูล (delete/remove)
+# เสมอ เพราะ has-text() เป็น substring match: dialog ที่มีปุ่ม "Do not delete" จะ match คำว่า
+# delete ด้วย ถ้าเอาคำทำลายขึ้นก่อนมีโอกาสกดผิดปุ่ม ส่วนคำปฏิเสธ (cancel/ยกเลิก/no) ไม่อยู่ใน
+# ลิสต์นี้เลยโดยตั้งใจ
+_MODAL_CONFIRM_TEXTS = (
+    # อังกฤษ — ยืนยันกลางๆ ก่อน
+    "Yes, Delete", "Yes", "OK", "Confirm", "Proceed", "Continue",
+    # ไทย
+    "ตกลง", "ยืนยัน", "ใช่",
+    # ญี่ปุ่น / จีน
+    "はい", "確認", "确定", "确认", "是",
+    # เยอรมัน / ฝรั่งเศส / สเปน / โปรตุเกส
+    "Ja", "Bestätigen", "Oui", "Confirmer", "Sí", "Si", "Confirmar", "Sim",
+    # คำทำลายข้อมูล — ท้ายสุดเสมอ (ดูเหตุผลเรื่องลำดับด้านบน)
+    "Delete", "Remove", "ลบ", "削除", "删除", "Löschen", "Supprimer", "Eliminar", "Excluir",
+)
+
 # เรียงจากเจาะจงที่สุด (OrangeHRM "Yes, Delete" ปุ่มสีแดง) ไปหากว้างที่สุด (fallback ทั่วไป
 # สำหรับ dialog framework อื่นที่ไม่ใช่ OrangeHRM) — ลองทีละตัวจนกว่าจะเจอปุ่มที่ visible จริง
 _MODAL_CONFIRM_BUTTON_SELECTORS = [
@@ -422,7 +449,20 @@ _MODAL_CONFIRM_BUTTON_SELECTORS = [
     ".oxd-button--label-danger",
     'button:has-text("Yes, Delete")',
     '[role="dialog"] button.oxd-button--secondary',
-    '[role="dialog"] button:has-text("Confirm")',
+    # W_modal_confirm_generic: ชั้น generic — จำกัดขอบเขตอยู่ใน dialog container เสมอ (ทั้ง
+    # [role=dialog] มาตรฐานและ container ของ framework ที่ไม่ได้ใส่ role ให้) กันไปโดนปุ่มชื่อ
+    # เดียวกันที่อยู่บนหน้าเว็บปกตินอกโมดัล
+    # รวม container x tag ของคำเดียวกันไว้ใน selector เดียว (comma-separated) — ไล่ทีละคำ
+    # ไม่ใช่ทีละ combination เพื่อคง "ลำดับความสำคัญของคำ" ไว้ครบโดยยิง locator แค่ 30 ครั้ง
+    # แทน 120 ครั้ง (ฟังก์ชันนี้ถูกเรียกทุกครั้งที่เจอโมดัล จะช้าไม่ได้)
+    *[
+        ", ".join(
+            f'{container} {tag}:has-text("{text}")'
+            for container in ('[role="dialog"]', ".oxd-dialog-container")
+            for tag in ("button", '[role="button"]')
+        )
+        for text in _MODAL_CONFIRM_TEXTS
+    ],
 ]
 
 _MODAL_DETACH_TIMEOUT_MS = 5000
