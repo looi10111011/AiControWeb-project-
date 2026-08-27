@@ -2146,7 +2146,8 @@ async def test_generate_plan_without_page_touches_no_browser():
 
     mock_get_snapshot.assert_not_called()
     mock_async_playwright.assert_not_called()
-    assert result == "1. Do X\n2. Do Y"
+    # generate_plan() คืน (plan_text, is_qa) — is_qa=False เพราะ intent ไม่ใช่ qa_summary
+    assert result == ("1. Do X\n2. Do Y", False)
     call_args = mock_generate_plan.await_args.args
     assert call_args[2] == "goal"
     assert call_args[3] == ""  # page_text ว่างเปล่า ไม่มี page ให้ perceive
@@ -2168,7 +2169,7 @@ async def test_generate_plan_with_page_perceives_current_state():
     mock_get_snapshot.assert_awaited_once_with(mock_page)
     call_args = mock_generate_plan.await_args.args
     assert call_args[3] == "[1] button 'Sign in'"
-    assert result == "1. Sign in"
+    assert result == ("1. Sign in", False)
 
 
 # W19 ("Navigation Deduplication"): generate_plan() ต้องส่ง current_url จริง (page.url ถ้ามี

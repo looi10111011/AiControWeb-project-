@@ -3286,6 +3286,21 @@ class Orchestrator:
             for _ in range(max_steps):
                 # W_step_budget: นับ "รอบ" แยกจาก steps_taken (ดูคำอธิบายที่จุดประกาศตัวแปร)
                 iterations_used += 1
+
+                # W_login_check_once (P4.7): _login_form_needs_password() ถูกเรียก 2 ครั้งต่อ
+                # รอบ (guard session-drift ก่อนเรียก LLM + guard login-form ก่อน dispatch) และ
+                # แต่ละครั้งรอได้ถึง _DOM_CHECK_TIMEOUT_MS ต่อช่อง password ที่มองเห็น
+                #
+                # ระหว่างสองจุดนั้นมีแค่การเรียก LLM คั่น ไม่มี action ใดแตะหน้าเว็บเลย DOM จึง
+                # เหมือนเดิมแน่นอน — อ่านซ้ำได้คำตอบเดิมเสมอ cache ต่อรอบจึงปลอดภัย (ไม่ cache
+                # ข้ามรอบเด็ดขาด: หลัง execute() หน้าเปลี่ยนได้ตลอด)
+                login_form_state: Optional[bool] = None
+
+                async def _login_form_needs_password_cached() -> bool:
+                    nonlocal login_form_state
+                    if login_form_state is None:
+                        login_form_state = await _login_form_needs_password(page)
+                    return login_form_state
                 # Speed 2.1: รอบแรกของ loop (steps_taken ยังเป็น 0) ใช้ snapshot ที่ cache
                 # ไว้ตอน intent classification แทน get_snapshot() ซ้ำ ถ้ายังไม่ถูก invalidate
                 # (ดู comment ตอนตั้งค่า cached_elements/cached_page_text ด้านบน) — รอบถัดๆ
@@ -3380,7 +3395,7 @@ class Orchestrator:
                 if (
                     steps_taken > 0
                     and mid_task_relogin_count < _MAX_MID_TASK_RELOGINS
-                    and await _login_form_needs_password(page)
+                    and await _login_form_needs_password_cached()
                 ):
                     mid_task_relogin_count += 1
                     if verbose:
@@ -3984,7 +3999,7 @@ class Orchestrator:
                 # ปล่อยผ่านทันทีเสมอไม่ว่า password จะว่างอยู่หรือไม่ ***
                 if (
                     tool_input.get("type") not in ("fill", "goto")
-                    and await _login_form_needs_password(page)
+                    and await _login_form_needs_password_cached()
                 ):
                     if premature_login_skip_count < _MAX_PREMATURE_LOGIN_SKIP_RETRIES:
                         premature_login_skip_count += 1
