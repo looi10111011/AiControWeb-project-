@@ -3794,6 +3794,43 @@ async def test_run_task_on_event_step_includes_element_label():
     assert action_step_event["label"] == "Checkout"
 
 
+@pytest.mark.asyncio
+async def test_run_task_survives_screenshot_emit_failure():
+    """W_screenshot_never_throws: live view เป็นของประดับ ไม่ใช่ส่วนหนึ่งของงาน — screenshot
+    ที่คืนค่าผิดชนิด (หรือ subscriber ที่พังตอน emit) ต้องไม่ทำให้ task ตายทั้งตัว
+
+    เคสนี้เคยทำเทสต์ล้มค้าง 4 เคสมาก่อน เพราะ page ที่เป็น mock คืน AsyncMock ให้
+    screenshot() แล้ว base64.b64encode() โยน TypeError ออกมานอก try เดิม"""
+    mock_async_playwright, _, _ = _patch_browser()
+    on_event = AsyncMock()
+
+    elements = [{"index": 3, "tag": "button", "type": "", "label": "Checkout"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t2", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch(\
+             "backend.app.core.orchestrator.execute",
+             AsyncMock(return_value=ActionResult(True, "click(3)", "สำเร็จ")),
+         ), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event
+        )
+
+    assert result["success"] is True
+    # ต้องล้มเงียบเฉพาะ screenshot — event อื่นยังต้องถูกส่งตามปกติ
+    kinds = {c.args[0].get("kind") for c in on_event.await_args_list}
+    assert "screenshot" not in kinds
+    assert kinds
+
 # --- W43: SSE event "plan_step_done" — ติ๊ก checkbox ของ plan step แบบ real-time ---
 
 

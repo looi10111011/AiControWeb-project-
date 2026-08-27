@@ -800,13 +800,15 @@ def test_create_task_with_session_id_reuses_same_page_across_calls(client):
         MockOrchestrator.return_value.run_task = mock_run_task
 
         resp1 = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-1"},
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-1",
+                  "session_owner_token": "tok-1"},
         )
         _poll_until(client, resp1.json()["task_id"])
         pool_after_first = client.get("/pool/status").json()
 
         resp2 = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-1"},
+            "/tasks", json={"url": "https://example.com", "goal": "sign in", "session_id": "sess-1",
+                  "session_owner_token": "tok-1"},
         )
         _poll_until(client, resp2.json()["task_id"])
         pool_after_second = client.get("/pool/status").json()
@@ -826,6 +828,11 @@ def test_create_task_with_session_id_reuses_same_page_across_calls(client):
 # เข้ากับ SessionRegistry.BrowserSession.extracted_memory จริง (อ่าน/เขียน/ใช้ตัดสินใจ)
 
 
+# SEC-4 follow-up: session_id เดิมจะถูก "ใช้ต่อ" ได้ก็ต่อเมื่อแนบ owner_token เดิมมาด้วย
+# (session_registry.py::BrowserSession.owner_token) — helper กับเทิร์นถัดไปจึงต้องใช้ค่าเดียวกัน
+_MEMORY_SESSION_TOKEN = "tok-mem"
+
+
 def _create_session_with_memory(client, session_id: str, memory: list[dict]) -> None:
     """สร้าง session ผ่าน POST /tasks จริง (mock run_task ธรรมดา) แล้ว inject
     extracted_memory เข้า session object ตรงๆ จำลองว่าเทิร์นก่อนหน้าเคย extract list ไว้
@@ -838,7 +845,8 @@ def _create_session_with_memory(client, session_id: str, memory: list[dict]) -> 
     unpack ไม่ได้ไปด้วยโดยไม่ตั้งใจ"""
     with patch.object(Orchestrator, "run_task", AsyncMock(return_value=_FAKE_RESULT)):
         resp = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": session_id},
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": session_id,
+                  "session_owner_token": _MEMORY_SESSION_TOKEN},
         )
         _poll_until(client, resp.json()["task_id"])
     session = client.app.state.session_registry.get(session_id)
@@ -866,7 +874,8 @@ def test_create_task_replies_from_memory_without_touching_run_task(client):
          patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)) as mock_route, \
          patch("backend.app.api.routes.llm.chat_response", AsyncMock(return_value="มีเพลงทั้งหมด 3 เพลงครับ")) as mock_chat:
         resp = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "มีเพลงกี่เพลง", "session_id": "sess-mem-reply"},
+            "/tasks", json={"url": "https://example.com", "goal": "มีเพลงกี่เพลง", "session_id": "sess-mem-reply",
+                  "session_owner_token": _MEMORY_SESSION_TOKEN},
         )
         final = _poll_until(client, resp.json()["task_id"])
 
@@ -893,7 +902,8 @@ def test_create_task_augments_goal_with_target_entity_for_ordinal_selection(clie
     with patch.object(Orchestrator, "run_task", mock_run_task), \
          patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)):
         resp = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "เล่นเพลงที่ 3", "session_id": "sess-mem-ordinal"},
+            "/tasks", json={"url": "https://example.com", "goal": "เล่นเพลงที่ 3", "session_id": "sess-mem-ordinal",
+                  "session_owner_token": _MEMORY_SESSION_TOKEN},
         )
         _poll_until(client, resp.json()["task_id"])
 
@@ -914,7 +924,8 @@ def test_create_task_clears_memory_on_new_navigation_decision(client):
     with patch.object(Orchestrator, "run_task", mock_run_task), \
          patch("backend.app.api.routes.llm.route_multi_turn_strategy", AsyncMock(return_value=decision)):
         resp = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "ไปหาเสื้อผ้าแทน", "session_id": "sess-mem-newnav"},
+            "/tasks", json={"url": "https://example.com", "goal": "ไปหาเสื้อผ้าแทน", "session_id": "sess-mem-newnav",
+                  "session_owner_token": _MEMORY_SESSION_TOKEN},
         )
         _poll_until(client, resp.json()["task_id"])
 
@@ -988,16 +999,18 @@ def test_close_session_then_reusing_id_creates_new_page(client):
         MockOrchestrator.return_value.run_task = mock_run_task
 
         resp1 = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-close"},
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดเว็บ", "session_id": "sess-close",
+                  "session_owner_token": "tok-close"},
         )
         _poll_until(client, resp1.json()["task_id"])
 
-        close_resp = client.post("/sessions/sess-close/close")
+        close_resp = client.post("/sessions/sess-close/close?session_owner_token=tok-close")
         assert close_resp.status_code == 200
         assert client.get("/pool/status").json()["available"] == 2  # คืน browser กลับ pool แล้ว
 
         resp2 = client.post(
-            "/tasks", json={"url": "https://example.com", "goal": "เปิดใหม่", "session_id": "sess-close"},
+            "/tasks", json={"url": "https://example.com", "goal": "เปิดใหม่", "session_id": "sess-close",
+                  "session_owner_token": "tok-close"},
         )
         _poll_until(client, resp2.json()["task_id"])
 

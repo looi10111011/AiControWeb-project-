@@ -2629,15 +2629,22 @@ class Orchestrator:
             เคสนี้ ไม่ต้อง stream screenshot ซ้ำซ้อนกับหน้าต่างจริงที่เปิดโชว์อยู่แล้ว"""
             if on_event is None or not is_headless:
                 return
+            # W_screenshot_never_throws: try เดิมครอบแค่ page.screenshot() ทั้งที่ docstring
+            # ด้านบนสัญญาว่า "ไม่ throw เด็ดขาด" — base64.b64encode() และ _emit() อยู่นอก try
+            # ทั้งคู่ ทำให้ค่าที่ screenshot คืนมาผิดชนิด หรือ subscriber ที่พังตอน emit สามารถ
+            # ฆ่า task ทั้งตัวได้ ทั้งที่ live view เป็นแค่ของประดับ ไม่ใช่ส่วนหนึ่งของงาน
+            # (พบจากเทสต์ 4 เคสที่ล้มค้างมานาน: mock คืน AsyncMock ให้ screenshot แล้ว
+            # b64encode โยน TypeError ออกมาจนทั้ง run ตาย — บนของจริงเกิดได้เหมือนกันเวลา
+            # page กำลังปิด/หน่วยความจำไม่พอ)
             try:
                 raw = await page.screenshot(type="jpeg", quality=55)
+                b64 = base64.b64encode(raw).decode("ascii")
+                await _emit({
+                    "kind": "screenshot", "step": step,
+                    "image": f"data:image/jpeg;base64,{b64}",
+                })
             except Exception:
                 return
-            b64 = base64.b64encode(raw).decode("ascii")
-            await _emit({
-                "kind": "screenshot", "step": step,
-                "image": f"data:image/jpeg;base64,{b64}",
-            })
 
         async def _force_loop_recovery(
             reason: str, forced_cmd: Optional[dict] = None, forced_target: Optional[dict] = None,
