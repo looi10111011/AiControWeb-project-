@@ -1,4 +1,6 @@
-from backend.app.permission.rules import extract_domain, normalize_domain
+import pytest
+
+from backend.app.permission.rules import ActionRisk, classify_action, extract_domain, normalize_domain
 from backend.app.site_learning import storage
 
 
@@ -66,3 +68,25 @@ def test_credentials_saved_via_www_domain_are_found_via_non_www_domain(tmp_path,
     creds = storage.load_credentials(lookup_domain)
 
     assert creds == {"username": "alice", "password": "s3cr3t"}
+
+
+# --- W_risky_multilingual: ปุ่มทำลายข้อมูลที่ไม่ได้เขียนเป็นภาษาอังกฤษต้องถูกยกระดับด้วย ---
+# เดิม RISKY_LABEL_KEYWORDS เป็นอังกฤษล้วน ขณะที่ SAFE_ACTION_LABEL_KEYWORDS เป็นสองภาษา
+# อยู่แล้ว — human-in-the-loop จึงไม่เคยทำงานกับปุ่มลบบนเว็บภาษาอื่นเลย
+
+
+@pytest.mark.parametrize("label", ["ลบ", "Löschen", "削除", "删除", "Supprimer", "Eliminar", "ชำระเงิน"])
+def test_destructive_label_in_any_language_needs_confirmation(label):
+    assert classify_action({"type": "click", "index": 1}, label=label) == ActionRisk.NEEDS_CONFIRMATION
+
+
+@pytest.mark.parametrize("label", ["ค้นหา", "Search", "ถัดไป", "ดูรายละเอียด"])
+def test_safe_labels_are_still_safe_after_adding_multilingual_risky_keywords(label):
+    """2 เคส false-positive เดิมที่ W_search แก้ไว้ (ปุ่มค้นหา/กรอง, การ์ดผลการค้นหา) ต้องยัง
+    เป็น SAFE เหมือนเดิมทุกประการ — การเพิ่มคำเสี่ยงภาษาอื่นต้องไม่ไปกวนของเดิม"""
+    assert classify_action({"type": "click", "index": 1}, label=label) == ActionRisk.SAFE
+
+
+def test_english_risky_keywords_still_work():
+    for label in ("Delete", "Remove", "Place Order", "Pay now"):
+        assert classify_action({"type": "click", "index": 1}, label=label) == ActionRisk.NEEDS_CONFIRMATION

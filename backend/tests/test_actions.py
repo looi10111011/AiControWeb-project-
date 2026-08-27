@@ -12,8 +12,12 @@ from backend.app.core.actions import (
     _MODAL_DETACH_TIMEOUT_MS,
     _MODAL_RELOAD_TIMEOUT_MS,
     _SUCCESS_TOAST_SELECTOR,
+    _deterministic_count_note,
+    system_counted_conditions,
+    _dispatch_click_with_retry,
     _detect_confirmation_modal,
     _detect_success_toast,
+    _extracted_entries,
     execute,
     fill_secret,
     resolve_confirmation_modal,
@@ -1354,18 +1358,49 @@ async def test_execute_read_page_data_waits_for_page_to_settle_before_reading():
 
 
 @pytest.mark.asyncio
-async def test_execute_read_page_data_does_not_retry_on_failure(_no_real_sleep):
+async def test_execute_read_page_data_does_not_retry_the_same_call_on_failure(_no_real_sleep):
     """read_page_data ไม่ผ่าน _dispatch_with_retry เหมือน click/fill — target_hint ที่หา
-    ไม่เจอเป็น deterministic mismatch ไม่ใช่ DOM-timing issue ที่ retry แล้วจะเปลี่ยนผล"""
+    ไม่เจอเป็น deterministic mismatch ไม่ใช่ DOM-timing issue ที่ retry แล้วจะเปลี่ยนผล
+
+    W_query_is_a_question: มีการเรียก extract_table_data ครั้งที่สองจริง แต่ไม่ใช่ "retry"
+    (ยิงคำถามเดิมซ้ำเผื่อฟลุก) — เป็นคำถามคนละข้อ คือ "ที่ hint นี้มีข้อมูลอะไรอยู่บ้างไหม
+    ถ้าไม่เอา query ไปกรอง" ซึ่งตอบได้ต่างจากเดิมโดยไม่ต้องรอ DOM เปลี่ยน เหตุผลเดิมในชื่อ
+    เทสต์ยังคงอยู่ครบ: argument ชุดเดิมเป๊ะไม่เคยถูกยิงซ้ำ และไม่มีการ sleep รออะไรทั้งสิ้น"""
     mock_page = AsyncMock()
     with patch(
         "backend.app.core.actions.extract_table_data",
         AsyncMock(return_value="[FAIL] no element matching '#missing'"),
     ) as mock_extract:
-        await execute(mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"})
+        result = await execute(
+            mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"},
+        )
 
-    assert mock_extract.await_count == 1
+    assert result.success is False
+    called_queries = [call.args[2] for call in mock_extract.await_args_list]
+    assert called_queries == ["สรุปให้หน่อย", ""]  # คนละ argument ไม่ใช่การยิงซ้ำ
     _no_real_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_returns_the_data_when_the_query_is_a_question(_no_real_sleep):
+    """W_query_is_a_question (เจอจาก step trace): query ที่เป็นคำถามภาษาธรรมชาติไม่มีวัน
+    ปรากฏเป็นข้อความในตาราง extract_table_data จึงคืน [FAIL] แล้วทิ้งข้อมูลที่อ่านมาได้ทั้งหมด
+    — live run เสีย 3 step ติดกันกับเรื่องนี้ ต้องคืนข้อมูลให้โมเดลตอบเอง พร้อมบอกตรงๆ ว่า
+    ไม่เจอข้อความนั้นแบบตรงตัว (ห้ามแกล้งทำเป็นเจอ ตามเจตนาเดิมของ W46)"""
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.extract_table_data",
+        AsyncMock(side_effect=["[FAIL] nothing matching or close to 'first product name'",
+                               '["Sauce Labs Onesie", "Sauce Labs Bike Light"]']),
+    ):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "first product name", "target_hint": ".inventory_item_name"},
+        )
+
+    assert result.success is True
+    assert "verbatim" in result.message
+    assert "Sauce Labs Onesie" in result.message
 
 
 @pytest.mark.asyncio
@@ -1408,3 +1443,393 @@ async def test_execute_select_on_real_native_select_still_dispatches():
 
     assert result.success is True
     mock_select.assert_awaited_once()
+
+
+# --- W_chain_stale_index -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_click_drops_the_chained_click_when_it_opens_a_dropdown():
+    """เคสจาก live run โดยตรง: click เปิด dropdown แล้ว chain ต่อทันที — คลิกที่สองต้องไม่ถูก
+    dispatch เลย เพราะ index ของมันมาจาก snapshot ตอนที่ตัวเลือกยังไม่มีอยู่"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="trigger"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 22, "then_click_index": 26})
+
+    # คลิกหลักสำเร็จจริง (เปิด dropdown ได้ตามต้องการ) — ไม่ใช่ failure
+    assert result.success is True
+    assert "dropdown" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="22"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_click_still_chains_on_an_ordinary_button():
+    """guard ต้องไม่แตะ compound action ปกติที่ทำงานถูกอยู่แล้ว (ปุ่ม Submit ที่เห็นในหน้าเดิม)"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value=None),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is True
+    assert "then click(5)" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="5"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_click_without_a_chain_does_not_ask_for_a_chain_hint():
+    """W_dropdown_sets_filter_dirty: การจำแนก dropdown ย้ายมาอยู่กับ *ทุก* click แล้ว (เพราะ
+    orchestrator ต้องรู้ด้วยว่าคลิกนี้เลือกค่าใน filter หรือเปล่า — ดู ActionResult.
+    dropdown_option_selected) แต่ click ที่ไม่มี then_click_index ต้องไม่ไปสร้างข้อความ
+    "ไม่ chain ต่อเพราะ..." ติดมาในผลลัพธ์ ซึ่งไม่มีความหมายเลยเมื่อไม่มี chain ตั้งแต่ต้น"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="trigger"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 0})
+
+    assert "chained click" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_click_marks_a_dropdown_option_selection():
+    """W_dropdown_sets_filter_dirty: คลิกที่เป็นการ "เลือกตัวเลือกใน dropdown" ต้องติดธงบน
+    ActionResult ให้ orchestrator ยก filter_dirty_since_search ได้ — เดิมธงนั้นยกเฉพาะ
+    fill/select ซึ่งไม่มีทางเกิดกับ custom dropdown เลย ทำให้ guard "ห้ามคลิก row action
+    ก่อนกด Search" ตายสนิทบนเว็บ SPA"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="option"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    assert result.dropdown_option_selected is True
+
+
+@pytest.mark.asyncio
+async def test_execute_click_on_an_ordinary_button_is_not_a_dropdown_selection():
+    """กระจกบานตรงข้ามของเทสต์ด้านบน — click ทั่วไปต้องไม่ติดธงนี้ ไม่งั้น guard จะยิงมั่ว"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value=None),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.dropdown_option_selected is False
+
+
+# ---------------- W_confident_zero: count=0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ ----------------
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_zero_count_falls_back_to_extraction_instead_of_answering_zero():
+    """W_confident_zero (บั๊กจริงบน OrangeHRM): selector ที่ไม่ตรงอะไรเลยทำให้ count_elements()
+    คืน 0 ซึ่งเดิมถูกรายงานเป็น "found 0 entries" (success=True) — โมเดลจึงตอบว่า "เจอ 0
+    รายการ" อย่างมั่นใจทั้งที่ความจริงมีอยู่ 5 ต้องลองอ่านข้อมูลจริงด้วย hint เดิมก่อนเสมอ"""
+    mock_page = AsyncMock()
+    table = "| Username | User Role |\n| --- | --- |\n| a | ESS |"
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=table)) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is True
+    assert "0 entries" not in result.message
+    assert table in result.message
+    mock_extract.assert_awaited_once_with(mock_page, "table tbody tr", "")
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_zero_count_with_nothing_readable_refuses_to_answer_zero():
+    """ไม่มีอะไรอ่านได้เลย = selector ผิด ไม่ใช่ "คำตอบคือศูนย์" — ต้องคืน success=False และ
+    บอกตรงๆ ว่าห้ามรายงาน 0 เป็นคำตอบ"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value="[FAIL] nope")):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is False
+    assert "does NOT mean the answer is zero" in result.message
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_nonzero_count_still_answers_directly():
+    """ทางเร็วเดิมต้องไม่เปลี่ยน: นับได้ > 0 ตอบตรงๆ ไม่ต้องแตะ extract_table_data เลย"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=6)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock()) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": '[role="row"]'},
+        )
+
+    assert result.success is True
+    assert "6" in result.message
+    mock_extract.assert_not_awaited()
+
+
+# ---------------- W_deterministic_count: โค้ดนับให้ ไม่ปล่อยให้โมเดลนับด้วยตา ----------------
+
+_USERS_TABLE = """|  | Username | User Role | Status |
+| --- | --- | --- | --- |
+|  | Admin | Admin | Enabled |
+|  | DemoNonAdminPH | ESS | Disabled |
+|  | ess.irhrg0 | ESS | Enabled |
+|  | kabir | Admin | Enabled |"""
+
+
+def test_extracted_entries_parses_markdown_table_without_header_or_separator():
+    entries = _extracted_entries(_USERS_TABLE)
+
+    assert len(entries) == 4
+    assert all("---" not in e for e in entries)
+    assert not any("Username" in e for e in entries)
+
+
+def test_extracted_entries_parses_json_list():
+    assert len(_extracted_entries('["Sauce Labs Backpack", "Sauce Labs Onesie"]')) == 2
+
+
+def test_extracted_entries_returns_empty_when_it_cannot_parse():
+    """นับไม่ได้ต้องไม่เดา — ไม่มีตัวเลขดีกว่าตัวเลขผิด"""
+    assert _extracted_entries("just some prose from the page") == []
+
+
+def test_deterministic_count_note_reports_total_entries():
+    note = _deterministic_count_note(_USERS_TABLE, "how many users are there")
+
+    assert "exactly 4 entries" in note
+    assert "do not recount" in note
+
+
+def test_deterministic_count_note_also_counts_a_key_value_condition_from_the_goal():
+    """W_deterministic_count (บั๊กจริง): goal จริงของ user เขียนว่า "userrole=ess" — ดึงค่า
+    ฝั่งขวาของ = มานับให้เลย แทนที่จะปล่อยให้โมเดลไล่นับแถวเอง (ซึ่งตอบผิด 6 จาก 7 จริง)"""
+    note = _deterministic_count_note(_USERS_TABLE, "ลบ userrole=ess ออกให้หมด เจอกี่รายการ")
+
+    assert "exactly 4 entries" in note
+    assert "2 of those 4 entries contain 'ess'" in note
+
+
+def test_deterministic_count_note_is_empty_when_data_cannot_be_parsed():
+    assert _deterministic_count_note("just some prose", "how many") == ""
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_attaches_the_system_computed_count_to_extracted_data():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=_USERS_TABLE)):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many have userrole=ess",
+             "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is True
+    assert "exactly 4 entries" in result.message
+    assert "2 of those 4 entries contain 'ess'" in result.message
+    assert _USERS_TABLE in result.message
+
+
+# ---------------- W_click_navigated (P0 F1): click ที่พาไป navigate ไม่ใช่ failure ----------------
+
+
+@pytest.mark.asyncio
+async def test_click_that_times_out_but_navigates_is_reported_as_success():
+    """บั๊กจริงบน OrangeHRM: คลิก "Admin" สำเร็จและหน้าเปลี่ยนไปแล้ว แต่ attempt 2/3 ไปหา
+    data-ai-index เดิมบนหน้าใหม่ (ซึ่งไม่มีทางมี) จน timeout แล้วข้อความของรอบสุดท้ายชนะ —
+    รายงานเป็น [FAIL] ทั้งที่คลิกได้ผลจริง"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+
+    async def _click_then_navigate(selector, timeout=None):
+        mock_page.url = "https://app.example.com/admin/users"
+        raise PWTimeout("Timeout 3000ms exceeded")
+
+    mock_page.click.side_effect = _click_then_navigate
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is True
+    assert "https://app.example.com/admin/users" in result.message
+    # ต้องเลิก retry ทันทีที่รู้ว่า URL เปลี่ยนแล้ว — retry ต่อไม่มีทางสำเร็จและกินเวลาเปล่า
+    assert mock_page.click.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_click_that_navigates_only_by_hash_route_still_counts_as_navigation():
+    """SPA จำนวนมากใช้ hash router (#/admin/users) — ห้าม normalize fragment ทิ้งเหมือนที่
+    crawler._normalize_url() ทำ (คนละหน้าที่กันสิ้นเชิง) ไม่งั้นจะเป็น false FAIL เหมือนเดิม"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/#/admin/list"
+
+    async def _click_then_navigate(selector, timeout=None):
+        mock_page.url = "https://app.example.com/#/admin/users"
+        raise PWTimeout("Timeout 3000ms exceeded")
+
+    mock_page.click.side_effect = _click_then_navigate
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_click_that_fails_without_navigating_still_fails_but_reports_dom_change():
+    """สัญญาณสำรองสำหรับ SPA ที่เปลี่ยนแค่ state ภายใน — ห้ามพลิกเป็น success จาก DOM signature
+    เพราะ DOM อาจเปลี่ยนจาก toast/spinner ที่ไม่เกี่ยวเลย แต่ต้องแนบหลักฐานไปให้โมเดลเห็น"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+    mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
+    mock_page.evaluate.side_effect = [1000, 4200]
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is False
+    assert "DOM did change" in result.message
+
+
+@pytest.mark.asyncio
+async def test_click_that_fails_with_no_change_at_all_reports_a_plain_failure():
+    """กันการ regress: การล้มเหลวจริงๆ ต้องยังรายงานตรงไปตรงมาเหมือนเดิม ไม่มีโน้ตเสริมมั่ว"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+    mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
+    mock_page.evaluate.side_effect = [1000, 1000]
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is False
+    assert "DOM did change" not in result.message
+    assert "after 3 attempts" in result.message
+
+
+# ---------------- W_conditional_count / W_count_answer_check (P1.1) ----------------
+
+
+def test_deterministic_count_note_reports_a_zero_match_instead_of_staying_silent():
+    """W_conditional_count: เดิมเงียบไปเลยตอนไม่มีแถวไหนตรงเงื่อนไข เหลือแต่บรรทัด "exactly N
+    entries" ให้โมเดลอ่านแล้วรายงาน N เป็นคำตอบของคำถามที่มีเงื่อนไข ซึ่งตอบคนละคำถามกัน"""
+    note = _deterministic_count_note(_USERS_TABLE, "มี userrole=manager กี่คน")
+
+    assert "0 of those 4 entries contain 'manager'" in note
+    # ต้องคงเจตนาของ W_confident_zero ไว้ด้วย — 0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ว่าอ่านถูกตาราง
+    assert "not the right table" in note
+
+
+def test_system_counted_conditions_reads_back_what_the_note_wrote():
+    """W_count_answer_check: ตัวเขียนกับตัวอ่าน format เดียวกันต้องตรงกันเสมอ (วางไว้ติดกันใน
+    ไฟล์เดียวกันด้วยเหตุผลนี้) — เทสต์นี้คือสิ่งที่จะพังทันทีถ้ามีใครแก้ข้อความฝั่งเดียว"""
+    note = _deterministic_count_note(_USERS_TABLE, "มี userrole=ess กี่คน")
+
+    assert system_counted_conditions(note) == {"ess": 2}
+    assert system_counted_conditions("[OK] click(3) -> click succeeded") == {}
+
+
+@pytest.mark.asyncio
+async def test_count_query_with_a_condition_never_answers_with_a_raw_selector_count():
+    """W_conditional_count (บั๊กจริง พิสูจน์ซ้ำได้ 2026-08-26): เส้นทางหลักของคำถามเชิงนับ
+    (count_elements คืนค่ามากกว่า 0) ไม่รู้จักเงื่อนไขใน query เลย — "มี user ที่ userrole=ess
+    กี่คน" + '[role=row]' คืน "found 21 entries" ทั้งที่คำตอบจริงคือ 2 และคืน success=True ด้วย
+    จึงไม่มีสัญญาณให้ใครจับได้ว่าตอบผิด"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=21)) as mock_count, \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=_USERS_TABLE)), \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "มี user ที่ userrole=ess กี่คน",
+             "target_hint": '[role="row"]'},
+        )
+
+    assert result.success is True
+    assert "2 of those 4 entries contain 'ess'" in result.message
+    assert "found 21 entries" not in result.message
+    # อ่านแถวจริงได้แล้ว ไม่ต้องเสีย round-trip ไปนับ selector ดิบอีก
+    mock_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_count_query_with_a_condition_refuses_to_offer_the_raw_count_when_rows_are_unreadable():
+    """อ่านแถวจริงไม่ได้แต่ selector ยังนับได้ — ต้องรายงานตามความจริงว่านี่คือจำนวน element
+    ไม่ใช่จำนวนรายการที่ตรงเงื่อนไข (ธีมเดียวกับ W_click_native_select/W_confident_zero)"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=21)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value="[FAIL] nothing")), \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "มี user ที่ userrole=ess กี่คน",
+             "target_hint": '[role="row"]'},
+        )
+
+    assert "Do NOT report 21 as the answer" in result.message
+
+
+@pytest.mark.asyncio
+async def test_count_query_without_any_condition_still_uses_the_cheap_selector_count():
+    """กันการ regress: คำถามเชิงนับที่ไม่มีเงื่อนไขต้องยังนับด้วย selector ตรงๆ เหมือนเดิม
+    (ถูกกว่าและถูกต้องอยู่แล้ว ไม่มีเหตุผลให้ไปอ่านตารางทั้งก้อนมา)"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=6)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock()) as mock_extract, \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many products are there",
+             "target_hint": ".inventory_item"},
+        )
+
+    assert result.message == "found 6 entries matching '.inventory_item'"
+    mock_extract.assert_not_awaited()
+
+
+_MIXED_COLUMN_TABLE = """| Username | User Role | Status |
+| --- | --- | --- |
+| ess.irhrg0 | Admin | Enabled |
+| jane | ESS | Enabled |"""
+
+
+def test_count_uses_the_column_named_on_the_left_of_the_equals_sign():
+    """W_column_aware_count: "userrole=ess" หมายถึงคอลัมน์ User Role ไม่ใช่ "แถวไหนก็ได้ที่มี
+    คำว่า ess" — username "ess.irhrg0" ที่ Role เป็น Admin เคยถูกนับเป็น ESS ด้วย ทำให้ตอบ 2
+    ทั้งที่ความจริงคือ 1 (ฝั่งซ้ายของ = ถูกทิ้งไปทั้งหมดในเวอร์ชันก่อน)"""
+    note = _deterministic_count_note(_MIXED_COLUMN_TABLE, "มี userrole=ess กี่คน")
+
+    assert "1 of those 2 entries contain 'ess' in the 'User Role' column" in note
+
+
+def test_count_falls_back_to_the_whole_row_when_the_column_name_does_not_match():
+    """ตารางที่ไม่มีคอลัมน์ชื่อนั้น (หรือ JSON list ที่ไม่มีคอลัมน์เลย) ต้องยังนับได้เหมือนเดิม
+    — fallback ต้องไม่หายไปพร้อมกับการเพิ่มความแม่นยำ"""
+    note = _deterministic_count_note('["Sauce Labs Backpack", "Sauce Labs Onesie"]', "how many name=Sauce")
+
+    assert "2 of those 2 entries contain 'Sauce' anywhere in the row" in note
+
+
+def test_column_matching_ignores_spacing_and_case_in_the_header():
+    """user พิมพ์ชื่อคอลัมน์รูปแบบไหนก็ได้ ("userrole"/"user_role"/"User Role") ต้องเทียบติดหมด"""
+    note = _deterministic_count_note(_MIXED_COLUMN_TABLE, "how many user_role=admin")
+
+    assert "1 of those 2 entries contain 'admin' in the 'User Role' column" in note

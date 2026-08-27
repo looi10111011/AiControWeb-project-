@@ -149,7 +149,7 @@ async def test_run_one_task_raises_runtime_error_when_package_not_installed():
 
 @pytest.mark.asyncio
 async def test_run_miniwob_evaluation_continues_after_one_task_errors():
-    async def _fake_run_one_task(task_name, max_steps, provider, headless):
+    async def _fake_run_one_task(task_name, max_steps, provider, headless, **kwargs):
         if task_name == "broken-task":
             raise RuntimeError("browser launch failed")
         return MiniWobResult(
@@ -171,7 +171,7 @@ async def test_run_miniwob_evaluation_continues_after_one_task_errors():
 
 @pytest.mark.asyncio
 async def test_run_miniwob_evaluation_defaults_to_default_tasks():
-    async def _fake_run_one_task(task_name, max_steps, provider, headless):
+    async def _fake_run_one_task(task_name, max_steps, provider, headless, **kwargs):
         return MiniWobResult(
             task=task_name, utterance="u", success=True, reward=1.0,
             steps=1, total_tokens=1, message="ok",

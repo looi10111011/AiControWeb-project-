@@ -42,8 +42,9 @@ text จริงจาก DOM มาก่อน (target.locator(selector).loca
 """
 
 import asyncio
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Optional, Union
 from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 
@@ -91,6 +92,15 @@ class ActionResult:
     # matching ข้อความ toast โดยตรงเปราะบางกว่า (ต้องคง format ให้ตรงกันข้าม 2 ไฟล์) จึงใช้
     # field ที่ type-checked แทน (pattern เดียวกับ locator_descriptor ด้านบน)
     toast_confirmed: bool = False
+    # W_dropdown_sets_filter_dirty: True เฉพาะตอน click นี้คือการ "เลือกตัวเลือกใน custom
+    # dropdown ที่เปิดอยู่" จริง (ตรวจจาก DOM ก่อน dispatch — ดู state_filter.
+    # classify_click_index_disturbance) — orchestrator ใช้ยกธง filter_dirty_since_search
+    # เหมือนที่ fill/select ยกอยู่แล้ว เพราะ W50 + check_select_target_is_native() บังคับให้
+    # โมเดลใช้ "click" กับ custom dropdown ทุกกรณี ธงจึงไม่เคยถูกยกเลยบนเว็บ SPA สมัยใหม่
+    # (= เว็บแทบทั้งหมด) ทำให้ guard "ห้ามคลิก row action ก่อนกด Search" ตายสนิทในเคสที่
+    # ต้องการมันที่สุด — ส่งสัญญาณผ่าน field ที่ type-checked แทน string matching ข้อความ
+    # ผลลัพธ์ (pattern เดียวกับ toast_confirmed/locator_descriptor ด้านบน)
+    dropdown_option_selected: bool = False
 
     def __str__(self):
         mark = "OK" if self.success else "FAIL"
@@ -237,6 +247,54 @@ async def _detect_success_toast(page: Page) -> Optional[str]:
         return None
 
 
+# W_click_navigated (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26 ผ่าน step trace: agent
+# คลิก "Admin" สำเร็จจริง หน้าเปลี่ยนไปแล้ว แต่ log รายงาน [FAIL] "element not found /
+# not clickable (timeout)" ทำให้รวนทั้ง run): _dispatch_click_with_retry() วน 3 รอบโดยเขียนทับ
+# `result` ทุกรอบ ข้อความของรอบสุดท้ายจึงชนะเสมอ — พอ attempt 1 คลิกสำเร็จและ SPA router
+# เปลี่ยนหน้า node เดิมหลุดจาก DOM แล้ว attempt 2/3 ไปหา [data-ai-index="N"] ที่ *ไม่มีทาง*
+# มีอยู่บนหน้าใหม่ (perception.py ล้างและแปะ index ใหม่ทุก snapshot) จึง timeout แน่นอน 100%
+# แล้วรายงานว่า FAIL ทั้งที่คลิกได้ผลจริง (เสียเวลา retry เปล่าอีก ~10 วินาทีด้วย)
+#
+# เป็นบั๊กคลาสเดียวกับที่ crawler.py W34 (_explore_buttons) เจอและแก้ไปแล้ว: "error ถือว่าเป็น
+# error จริงก็ต่อเมื่อ URL ไม่เปลี่ยน" — ยก pattern นั้นมาใช้ แต่ *ห้าม* ใช้
+# crawler._normalize_url() ตัวนั้นซ้ำเด็ดขาด เพราะมันตัด fragment (#...) ทิ้งโดยตั้งใจ (หน้าที่
+# ของมันคือ dedup ตอน crawl: "URL ต่างกันแค่ #section ไม่ควรถือว่าเป็นคนละหน้า") ซึ่งเป็น
+# semantics *ตรงข้าม* กับที่ตรงนี้ต้องการ — SPA จำนวนมากใช้ hash router (#/admin/users) หรือ
+# เปลี่ยนแค่ query param ถ้าใช้ฟังก์ชันนั้นตรงๆ การ navigate แบบนั้นจะยังถูกมองว่า "URL ไม่
+# เปลี่ยน" แล้วเป็น false FAIL เหมือนเดิมทุกประการ จึงเทียบ URL เต็ม (รวม query + fragment)
+# normalize แค่ trailing slash เท่านั้น
+def _normalize_click_url(url: str) -> str:
+    """W_click_navigated: normalize เบาที่สุดเท่าที่จำเป็น — ตัดแค่ trailing slash ท้าย URL
+    (https://x/a/ กับ https://x/a คือหน้าเดียวกันจริง) คง query + fragment ไว้ครบเสมอ
+
+    รับค่าที่ไม่ใช่ str ได้ด้วย (คืน "" ไปเลย) — Page.url จริงเป็น str property เสมอ แต่ page
+    ที่ถูก mock ในเทสต์คืน mock object ให้แทน ซึ่งไม่ควรทำให้ click พังทั้งฟังก์ชัน และการที่
+    ทั้งก่อน/หลังคืน "" เท่ากันแปลว่า "ไม่ได้ navigate" ซึ่งเป็น default ที่ปลอดภัยอยู่แล้ว"""
+    text = url.strip() if isinstance(url, str) else ""
+    return text[:-1] if len(text) > 1 and text.endswith("/") else text
+
+
+# W_click_navigated: SPA router บางตัว transition ช้ากว่า attempt แรกของ click (พบใน W34 ว่า
+# navigate จริงมาดีเลย์ได้หลายวินาที) — เผื่อเวลา poll สั้นๆ อีกครั้งหลัง retry หมดโควตา ก่อน
+# สรุปว่าคลิกไม่สำเร็จจริง ตั้งสั้นกว่า W34 (5 วินาที) มากเพราะคนละ budget: crawler รันแบบ
+# offline ครั้งเดียวต่อเว็บ แต่ตรงนี้อยู่ใน agent loop ที่ user รออยู่จริง และ click ที่ล้มจริงๆ
+# (index หลุด/element หาย) ก็เจอบ่อยพอๆ กัน — 2 วินาทีพอสำหรับ router transition ที่ค้างอยู่
+_CLICK_NAV_POLL_ATTEMPTS = 10
+_CLICK_NAV_POLL_INTERVAL_SEC = 0.2
+
+
+async def _dom_signature(page: Page) -> Optional[int]:
+    """W_click_navigated: ความยาวของ document.body.innerHTML — สัญญาณสำรองสำหรับ SPA ที่
+    เปลี่ยนแค่ state ภายในโดยไม่แตะ URL เลย (วิธีเดียวกับที่ crawler.py::_wait_for_dom_stable
+    ใช้อยู่แล้ว) คืน None ถ้าอ่านไม่ได้ (หน้าปิดไปแล้ว/execution context ถูกทำลายกลาง
+    navigation) — ห้าม throw ออกไปทำให้ click พังเด็ดขาด"""
+    try:
+        value = await page.evaluate("document.body ? document.body.innerHTML.length : 0")
+        return int(value)
+    except Exception:
+        return None
+
+
 async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") -> ActionResult:
     """เหมือน _dispatch_with_retry() ทั่วไป (ครั้งแรก + retry อีก _ACTION_RETRIES-1 ครั้ง)
     แต่เฉพาะ click(): ตั้งแต่รอบ retry ที่ 2 เป็นต้นไป hover() บน element เป้าหมายก่อนคลิก
@@ -255,6 +313,11 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
     confirmation modal ("Are you Sure?") ที่อาจเพิ่งเปิดขึ้นมาจาก click นี้ ก่อนคืนผลลัพธ์
     กลับไปให้ LLM ตัดสินใจ action ถัดไป (ดู _detect_confirmation_modal()/
     resolve_confirmation_modal() ด้านล่าง สำหรับเหตุผลเต็ม)"""
+    # W_click_navigated: อ่านสถานะ "ก่อนคลิก" ไว้ก่อนเสมอ ทั้ง URL และ DOM signature — ใช้
+    # ตัดสินตอนท้ายว่า timeout ที่ได้เป็น failure จริงหรือแค่ผลข้างเคียงของ navigation ที่
+    # สำเร็จไปแล้ว (ดู docstring ของ _normalize_click_url ด้านบนสำหรับบั๊กจริงเต็มๆ)
+    url_before = _normalize_click_url(page.url)
+    dom_before = await _dom_signature(page)
     result: ActionResult = None
     for attempt in range(1, _ACTION_RETRIES + 1):
         if attempt > 1:
@@ -287,9 +350,52 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
                     locator_descriptor=result.locator_descriptor, toast_confirmed=bool(toast_text),
                 )
             return result
+        # W_click_navigated: attempt นี้ล้มเหลว แต่ถ้า URL เปลี่ยนไปแล้ว = attempt ก่อนหน้า
+        # คลิกโดนจริงและพาไปหน้าใหม่แล้ว — retry ต่อไม่มีทางสำเร็จได้เลย (index ชุดเดิมไม่มี
+        # อยู่บนหน้าใหม่) ออกจากลูปทันที ประหยัดเวลารอ timeout ที่รู้ผลล่วงหน้าอยู่แล้ว
+        if _normalize_click_url(page.url) != url_before:
+            break
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
-    return ActionResult(False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts)")
+
+    # W_click_navigated: หมดโควตา retry (หรือ break ออกมาเพราะ URL เปลี่ยนแล้ว) — เผื่อเวลา
+    # ให้ SPA router ที่ transition มาช้าอีกครั้งก่อนสรุปว่าล้มเหลวจริง (W34 พบว่า navigate
+    # จริงมาดีเลย์ได้หลายวินาทีหลัง retry ครบแล้ว) — poll เฉพาะตอนที่ URL ยังไม่เปลี่ยนเท่านั้น
+    # ไม่หน่วงเพิ่มเลยในเคสที่รู้ผลแล้ว
+    navigated = _normalize_click_url(page.url) != url_before
+    if not navigated:
+        for _ in range(_CLICK_NAV_POLL_ATTEMPTS):
+            await asyncio.sleep(_CLICK_NAV_POLL_INTERVAL_SEC)
+            if _normalize_click_url(page.url) != url_before:
+                navigated = True
+                break
+    if navigated:
+        # รายงานตามความจริงทั้งสองส่วน: Playwright บอกว่า timeout จริง *และ* หน้าเปลี่ยนไป
+        # จริง — ไม่กลบข้อความเดิมทิ้ง (หลักการเดียวกับ W_click_native_select/W_confident_zero
+        # ที่ผลลัพธ์ต้องสะท้อนสิ่งที่เกิดขึ้นจริง ไม่ใช่สิ่งที่โค้ดอยากให้เป็น)
+        return ActionResult(
+            True, result.action,
+            f"the click reported a timeout, but the page navigated from {url_before} to "
+            f"{_normalize_click_url(page.url)} — the click DID take effect. Read the new page's "
+            f"indexed elements before deciding your next action (original error: {result.message})",
+        )
+
+    # W_click_navigated: สัญญาณสำรองสำหรับ SPA ที่เปลี่ยนแค่ state ภายในโดย URL คงเดิม —
+    # *ไม่* พลิกเป็น success จากสัญญาณนี้เด็ดขาด เพราะ DOM อาจเปลี่ยนจาก toast/spinner/
+    # lazy-load ที่ไม่เกี่ยวกับคลิกนี้เลย — ยังคืน fail ตามเดิม แต่แนบหลักฐานไปด้วยให้โมเดล
+    # ตัดสินใจบนข้อมูลจริง แทนที่จะเข้าใจว่า "ไม่มีอะไรเกิดขึ้นเลย" แล้วคลิกซ้ำจนโดน loop guard
+    dom_after = await _dom_signature(page)
+    dom_note = ""
+    if dom_before is not None and dom_after is not None and dom_after != dom_before:
+        dom_note = (
+            " [The page did not navigate, but its DOM did change after this click "
+            f"({dom_before} -> {dom_after} characters) — this click may already have taken "
+            "effect (a panel, dropdown or dialog may have opened). Look at the page's current "
+            "indexed elements before repeating the same action]"
+        )
+    return ActionResult(
+        False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts){dom_note}"
+    )
 
 
 # W23 ("Confirmation Modal Handler" — บั๊กจริงที่ user รายงาน): agent คลิก "Delete Selected"/
@@ -703,9 +809,34 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
 
 
 async def scroll(page: Page, direction: str = "down", amount: int = 600) -> ActionResult:
-    """เลื่อนหน้าจอ ('down'/'up') — ใช้ตอน element ที่ต้องการอยู่นอกจอ"""
+    """เลื่อนหน้าจอ ('down'/'up') — ใช้ตอน element ที่ต้องการอยู่นอกจอ
+
+    W_inner_scroll (ดูเหตุผลเต็มที่ state_filter.py::_FIND_SCROLLER_FN_JS): เดิมใช้
+    page.mouse.wheel() ซึ่งเลื่อน "อะไรก็ตามที่อยู่ใต้ตำแหน่งเมาส์ปัจจุบัน" — ตำแหน่งนั้นไม่มี
+    ใครคุมเลยในระบบนี้ (ไม่เคย move mouse ไปไหนโดยตั้งใจ) บน layout ที่ pane ข้างในเป็นตัว
+    scroll ผลจึงขึ้นกับความบังเอิญล้วนๆ
+
+    เลื่อน element ตัวเดียวกับที่ check_scroll_redundant() ใช้ตัดสินว่า "ถึงขอบหรือยัง" แทน
+    แล้วรายงานระยะที่เลื่อนได้จริง — ถ้าเลื่อนไม่ได้เลยต้องบอกตามตรง (success=False) ไม่ใช่
+    คืน [OK] ลอยๆ ให้โมเดลเข้าใจผิดว่าเลื่อนแล้ว (ธีมเดียวกับ W_click_native_select)
+
+    ถ้า evaluate ล้มเหลว (หน้าแปลก/CSP) ยัง fallback ไป mouse.wheel แบบเดิมทุกประการ"""
+    dy = amount if direction == "down" else -amount
     try:
-        dy = amount if direction == "down" else -amount
+        moved = await page.evaluate(state_filter.SCROLL_BY_JS, dy)
+        await page.wait_for_timeout(300)
+        delta = int(moved["after"]) - int(moved["before"])
+        if delta == 0:
+            return ActionResult(
+                False, f"scroll({direction})",
+                "nothing scrolled — the scrollable area is already at that end, or this page "
+                "does not scroll at all. Do not repeat this scroll; act on what is already "
+                "visible, or open the item you need directly.",
+            )
+        return ActionResult(True, f"scroll({direction})", f"scrolled {delta}px")
+    except Exception:
+        pass
+    try:
         await page.mouse.wheel(0, dy)
         await page.wait_for_timeout(300)
         return ActionResult(True, f"scroll({direction})", f"scrolled {dy}px")
@@ -772,6 +903,155 @@ async def wait_stable(page: Page, timeout: int = 4000) -> ActionResult:
 # pattern อื่นในไฟล์นี้ เช่น RISKY_LABEL_KEYWORDS — ไม่พึ่ง LLM เลือกถูกเพียงอย่างเดียว)
 _COUNT_QUERY_KEYWORDS = ("กี่", "จำนวน", "นับ", "how many", "count", "number of")
 
+# W_deterministic_count (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26, ต่อจาก
+# W_confident_zero): หลังแก้ให้ read_page_data คืน "ข้อมูลจริง" แทน "0 ที่ฟังดูน่าเชื่อถือ"
+# แล้ว โมเดลอ่านตารางถูกต้องแต่ยัง "นับด้วยตา" ผิด — ตารางมี 7 แถวที่เป็น ESS แต่ตอบ 6
+# ไม่มี guard ตัวไหนในระบบจับได้เลย เพราะทุก guard ที่มีตรวจ "ทำ action สำเร็จไหม" ไม่ใช่
+# "ตัวเลขในคำตอบถูกไหม"
+#
+# การนับเป็นงาน deterministic 100% ไม่มีเหตุผลให้โมเดลทำเอง — เมื่อ query เป็นคำถามเชิงนับ
+# ให้โค้ดนับจากข้อมูลที่ดึงมาได้จริงแล้วแนบตัวเลขไปด้วย (pattern เดียวกับ guard อื่นในไฟล์นี้:
+# ไม่พึ่ง LLM compliance เพียงอย่างเดียว)
+#
+# ตั้งใจ conservative เรื่อง "นับเฉพาะที่ตรงเงื่อนไข": ดึงเงื่อนไขจาก query เฉพาะรูปแบบ
+# "key=value"/"key = value" ที่ชัดเจนเท่านั้น (ตรงกับที่ user พิมพ์จริง เช่น "userrole=ess",
+# "Role = ESS") ไม่พยายามเดาจากคำทั่วไปในประโยค เพราะคำอย่าง "user"/"role" โผล่ในทุกแถว
+# อยู่แล้ว จะได้ตัวเลขที่ไม่มีความหมายแล้วทำให้โมเดลสับสนหนักกว่าเดิม
+# W_column_aware_count: จับ *ทั้งสองฝั่ง* ของ "=" (เดิมทิ้งฝั่งซ้ายไปเลย เก็บแต่ค่า) — ฝั่ง
+# ซ้ายคือชื่อคอลัมน์ที่ user ตั้งใจกรอง ("userrole=ess" = คอลัมน์ User Role ไม่ใช่ "แถวไหนก็ได้
+# ที่มีคำว่า ess") ทิ้งไปแล้วนับผิดจริง: ตารางที่มี username "ess.irhrg0" ซึ่ง Role เป็น Admin
+# จะถูกนับเป็น ESS ด้วย ทั้งที่ไม่ใช่ — ดู _matching_entry_count() ด้านล่าง
+_KEY_VALUE_IN_QUERY_RE = re.compile(r"([\w฀-๿]+)\s*=\s*([\w.\-@]+)")
+_MARKDOWN_SEPARATOR_CELL_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def _extracted_entries(data: str) -> list[str]:
+    """แปลงผลลัพธ์ของ extract_table_data() กลับเป็น "รายการต่อ entry" เพื่อนับ
+
+    รองรับ 2 รูปแบบที่ extract_table_data() คืนได้จริง — markdown table (`| a | b |`) และ
+    JSON list (`["x", "y"]` ซึ่งอาจมีบรรทัด annotation นำหน้าตอน fuzzy match) — คืน [] ถ้า
+    parse ไม่ได้ ผู้เรียกจะข้ามการนับไปเฉยๆ (ไม่มีตัวเลขดีกว่าตัวเลขผิด)"""
+    table_lines = [ln.strip() for ln in data.splitlines() if ln.strip().startswith("|")]
+    if table_lines:
+        rows = []
+        for line in table_lines:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if cells and all(_MARKDOWN_SEPARATOR_CELL_RE.match(c) for c in cells if c):
+                continue  # บรรทัดคั่น header ของ markdown
+            rows.append(line)
+        return rows[1:] if len(rows) > 1 else []  # แถวแรกคือ header
+
+    start = data.find("[")
+    if start == -1:
+        return []
+    try:
+        parsed = json.loads(data[start:])
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+# W_count_answer_check: อ่านตัวเลขที่ _deterministic_count_note() ด้านล่างเพิ่งเขียนลงใน
+# ข้อความผลลัพธ์กลับออกมา — ตั้งใจวางไว้ *ติดกัน* กับฟังก์ชันที่สร้างข้อความนั้น เพราะทั้งสอง
+# ต้องเปลี่ยนพร้อมกันเสมอถ้ารูปแบบข้อความเปลี่ยน (กับดักเดียวกับที่ dom_locator.py/
+# site_learning/extractor.py เตือนไว้ว่า "แก้ทั้งคู่หรือไม่แก้เลย" — ที่นี่แก้ด้วยการวางชิดกัน
+# แทนที่จะให้ orchestrator ไปเดา format เอาเองอีกไฟล์หนึ่ง)
+_SYSTEM_COUNT_IN_RESULT_RE = re.compile(
+    r"\[counted by the system\] (\d+) of those \d+ entries contain '([^']+)'"
+)
+
+
+def system_counted_conditions(message: str) -> dict[str, int]:
+    """W_count_answer_check: คืน {ค่าเงื่อนไข: จำนวนที่โค้ดนับได้} จากข้อความผลลัพธ์ของ
+    read_page_data — {} ถ้าไม่มีบรรทัดที่โค้ดนับเองอยู่เลย (action อื่นทั้งหมด)"""
+    return {
+        value.strip().lower(): int(count)
+        for count, value in _SYSTEM_COUNT_IN_RESULT_RE.findall(message or "")
+    }
+
+
+def _extracted_table_cells(data: str) -> tuple[list[str], list[list[str]]]:
+    """W_column_aware_count: แยก markdown table ที่ extract_table_data() คืนมาเป็น
+    (เซลล์หัวตาราง, แถวข้อมูลแบบแยกเซลล์) — คืน ([], []) ถ้าไม่ใช่ตาราง (เช่น JSON list ของ
+    รายการสินค้า ซึ่งไม่มีคอลัมน์ให้เล็งอยู่แล้ว) ผู้เรียกจะ fallback ไปนับทั้งแถวแทน"""
+    table_lines = [ln.strip() for ln in data.splitlines() if ln.strip().startswith("|")]
+    parsed = []
+    for line in table_lines:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if cells and all(_MARKDOWN_SEPARATOR_CELL_RE.match(c) for c in cells if c):
+            continue
+        parsed.append(cells)
+    if len(parsed) < 2:
+        return [], []
+    return parsed[0], parsed[1:]
+
+
+def _normalize_column_name(text: str) -> str:
+    """W_column_aware_count: "User Role" / "user_role" / "userrole" ต้องเทียบกันติด — ตัด
+    อักขระที่ไม่ใช่ตัวอักษร/ตัวเลขทิ้งทั้งหมดแล้ว lowercase (user พิมพ์ชื่อคอลัมน์ในรูปแบบไหน
+    ก็ได้ ไม่มีทางบังคับให้ตรงกับหัวตารางเป๊ะๆ)"""
+    return re.sub(r"[^a-z0-9ก-๙]", "", (text or "").lower())
+
+
+def _matching_entry_count(
+    entries: list[str], header: list[str], rows: list[list[str]], key: str, value: str,
+) -> tuple[int, str]:
+    """W_column_aware_count: คืน (จำนวนแถวที่ตรงเงื่อนไข, คำอธิบายว่านับจากตรงไหน)
+
+    ถ้าหัวตารางมีคอลัมน์ที่ชื่อตรงกับฝั่งซ้ายของ "=" ให้เทียบเฉพาะเซลล์ในคอลัมน์นั้น — ไม่งั้น
+    fallback ไปเทียบทั้งแถวแบบเดิม (ตารางที่ไม่มีหัว/JSON list/ชื่อคอลัมน์ที่เดาไม่ตรง)
+
+    ตัวอย่างที่ fallback เดิมนับผิดจริง: แถว "| ess.irhrg0 | Admin | Enabled |" ถูกนับเป็น
+    userrole=ess ด้วย เพราะคำว่า ess อยู่ในคอลัมน์ Username ไม่ใช่ User Role"""
+    needle = value.lower()
+    target = _normalize_column_name(key)
+    if target and rows:
+        for column, name in enumerate(header):
+            if _normalize_column_name(name) != target:
+                continue
+            matching = sum(
+                1 for row in rows if column < len(row) and needle in row[column].lower()
+            )
+            return matching, f"in the '{name.strip()}' column"
+    return sum(1 for entry in entries if needle in entry.lower()), "anywhere in the row"
+
+
+def _deterministic_count_note(data: str, query: str) -> str:
+    """คืนบรรทัดสรุปจำนวนที่โค้ดนับเองจาก data — คืน "" ถ้านับไม่ได้ (ดู _extracted_entries)"""
+    entries = _extracted_entries(data)
+    if not entries:
+        return ""
+    total = len(entries)
+    notes = [
+        f"[counted by the system, not by you] the data below contains exactly {total} entries. "
+        "Use this number — do not recount the rows yourself."
+    ]
+    header, rows = _extracted_table_cells(data)
+    seen: set[str] = set()
+    for key, value in _KEY_VALUE_IN_QUERY_RE.findall(query):
+        needle = value.strip().lower()
+        if not needle or needle in seen:
+            continue
+        seen.add(needle)
+        matching, where = _matching_entry_count(entries, header, rows, key, value.strip())
+        if matching:
+            notes.append(
+                f"[counted by the system] {matching} of those {total} entries contain "
+                f"'{value.strip()}' {where}."
+            )
+        else:
+            # W_conditional_count: เดิมเงียบไปเลยตอน matching เป็น 0 ซึ่งทิ้งให้โมเดลเห็นแต่
+            # บรรทัด "exactly N entries" แล้วรายงาน N เป็นคำตอบของคำถามที่มีเงื่อนไข — ผิด
+            # คนละเรื่องกันเลย ต้องบอกตามจริงว่านับได้ 0 แต่ต้องพ่วงเงื่อนไขของ W_confident_zero
+            # ไว้ด้วยเสมอ (0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ว่าอ่านตารางถูกตัว)
+            notes.append(
+                f"[counted by the system] 0 of those {total} entries contain "
+                f"'{value.strip()}' {where}. If that contradicts what you can see on the page, the data "
+                "below is not the right table — read it again with a different target_hint "
+                "instead of reporting 0."
+            )
+    return "\n".join(notes) + "\n"
+
 
 async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResult:
     """query: คำถามที่ต้องการคำตอบ — ใช้ตัดสินใจเลือก lane ด้านล่าง (นับ vs อ่านตาราง) และ
@@ -797,10 +1077,102 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
     is_count_query = any(kw in query.lower() for kw in _COUNT_QUERY_KEYWORDS)
     try:
         if is_count_query:
+            # W_conditional_count (ช่องที่ W_deterministic_count ยังปิดไม่ถึง — พิสูจน์ซ้ำได้
+            # 2026-08-26): W_deterministic_count แนบตัวเลขที่โค้ดนับให้เฉพาะ "เส้นทางสำรอง"
+            # (count_elements คืน 0 หรือ extract คืน [FAIL]) เท่านั้น ส่วนเส้นทางหลักของคำถาม
+            # เชิงนับ — count_elements คืนค่ามากกว่า 0 — คืน "found N entries matching
+            # '<selector>'" ดิบๆ โดยไม่รู้จักเงื่อนไขใน query เลยสักนิด
+            #
+            # ผลคือคำถาม "มี user ที่ userrole=ess กี่คน" + target_hint '[role="row"]' คืน
+            # "found 21 entries" (ทุกแถวรวมหัวตาราง) ทั้งที่คำตอบจริงคือ 4 — success=True
+            # ด้วย จึงไม่มีสัญญาณอะไรให้ใครจับได้เลย เป็น "ตอบผิดแบบมั่นใจ" บนเส้นทางที่ใช้
+            # บ่อยที่สุดของ lane นี้ (คำถามเชิงนับเกือบทั้งหมดเข้าทางนี้)
+            #
+            # เมื่อ query มีเงื่อนไขแบบ key=value ชัดเจน การนับ element ดิบๆ ตอบคำถามนั้นไม่ได้
+            # ตามนิยาม — ต้องอ่านแถวจริงแล้วนับเฉพาะที่ตรงเงื่อนไข (ตัวนับเดียวกับ
+            # _deterministic_count_note ไม่ได้เขียนตรรกะการนับขึ้นใหม่)
+            condition_values = [v.strip() for _, v in _KEY_VALUE_IN_QUERY_RE.findall(query) if v.strip()]
+            if condition_values:
+                rows = await extract_table_data(page, target_hint, "")
+                if not rows.startswith("[FAIL]"):
+                    note = _deterministic_count_note(rows, query)
+                    if note:
+                        return ActionResult(True, "read_page_data", f"{note}{rows}")
+
             count = await count_elements(page, target_hint)
-            return ActionResult(True, "read_page_data", f"found {count} entries matching '{target_hint}'")
+            if count > 0:
+                if condition_values:
+                    # อ่านแถวจริงไม่ได้ (ไม่มีตาราง/parse ไม่ออก) แต่ selector ยังนับได้ —
+                    # รายงานตามความจริงว่านี่คือ "จำนวน element ที่ตรง selector" ไม่ใช่
+                    # "จำนวนรายการที่ตรงเงื่อนไข" แทนที่จะปล่อยตัวเลขที่ตอบคนละคำถามออกไป
+                    # เฉยๆ (ธีมเดียวกับ W_click_native_select/W_confident_zero)
+                    condition_text = " + ".join(repr(v) for v in condition_values)
+                    return ActionResult(
+                        True, "read_page_data",
+                        f"the selector '{target_hint}' matches {count} elements, but that is the "
+                        f"raw element count — it is NOT the number of entries matching "
+                        f"{condition_text}, and the rows themselves could not be read to check. "
+                        f"Do NOT report {count} as the answer. Read the table with a different "
+                        "target_hint (for sites that build tables out of <div>, try "
+                        "role=row) so the matching rows can actually be counted.",
+                    )
+                return ActionResult(True, "read_page_data", f"found {count} entries matching '{target_hint}'")
+            # W_confident_zero (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26): count_elements()
+            # คืน 0 ทั้งกรณี "มีศูนย์รายการจริง" และกรณี "selector ไม่ตรงอะไรเลยบนหน้านี้" —
+            # เดิมทั้งสองกรณีคืน success=True พร้อมข้อความ "found 0 entries" ซึ่งอ่านเหมือน
+            # ข้อเท็จจริงที่ยืนยันแล้ว โมเดลจึงปิดงานด้วยคำตอบ "0 รายการ" อย่างมั่นใจ
+            #
+            # เหตุการณ์จริง: goal ถามจำนวน user ที่ Role=ESS บน OrangeHRM โมเดลเดา
+            # target_hint="table tbody tr" แต่ OrangeHRM ไม่มี <table> จริงเลย (เป็น ARIA grid
+            # ด้วย div[role=row]) -> count=0 -> ตอบว่า "เจอ 0 รายการ" ทั้งที่ความจริงมี 5 —
+            # ตอบผิดแบบมั่นใจ อันตรายกว่าตอบว่าทำไม่ได้มาก เพราะไม่มีสัญญาณให้ใครจับได้เลย
+            #
+            # แก้: 0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ — ลอง extract_table_data() ด้วย hint เดิมก่อน
+            # (ตัวนั้นมี fallback ครบ: querySelectorAll หลายตัว, ARIA grid, <table>/<ul> ทั้งหน้า)
+            # ถ้ามันอ่านข้อมูลได้จริง แปลว่า count=0 มาจาก selector ผิด ไม่ใช่ของจริง
+            fallback = await extract_table_data(page, target_hint, "")
+            if not fallback.startswith("[FAIL]"):
+                # W_deterministic_count: แนบตัวเลขที่โค้ดนับเองไปด้วยเสมอ — เดิมบอกให้โมเดล
+                # "นับเอาเองจากข้อมูลข้างล่าง" ซึ่งมันนับผิดจริง (7 แถว ESS ตอบ 6)
+                return ActionResult(
+                    True, "read_page_data",
+                    f"the selector '{target_hint}' matched 0 elements directly, so counting it "
+                    "would have been wrong. Here is the data actually found on this page "
+                    f"instead:\n{_deterministic_count_note(fallback, query)}{fallback}",
+                )
+            return ActionResult(
+                False, "read_page_data",
+                f"the selector '{target_hint}' matched 0 elements on this page, and no table or "
+                "list could be read from it either. This means the selector is wrong — it does "
+                "NOT mean the answer is zero. Do not report 0 as the answer. Pick a different "
+                "target_hint based on what you can see on the page (for sites that build tables "
+                "out of <div> instead of <table>, try '[role=\"row\"]').",
+            )
         data = await extract_table_data(page, target_hint, query)
-        return ActionResult(not data.startswith("[FAIL]"), "read_page_data", data)
+        if data.startswith("[FAIL]"):
+            # W_query_is_a_question (เจอจาก step trace ตัวใหม่: read_page_data ล้มติดกัน 3 step
+            # บน saucedemo ก่อนจะบังเอิญสำเร็จ): extract_table_data() ตีความ query ว่าเป็น
+            # "ค่าที่ต้องหาให้เจอในตาราง" (เช่นชื่อคน) แล้วคืน [FAIL] ถ้าหาไม่เจอ — แต่โมเดล
+            # ส่งคำถามภาษาธรรมชาติมาเป็นปกติ ("first product name", "how many rows...") ซึ่ง
+            # ไม่มีวันปรากฏเป็นข้อความในตารางอยู่แล้ว ผลคือ [FAIL] ทั้งที่ดึงข้อมูลมาได้ครบ
+            # แล้วจริงๆ แล้วทิ้งข้อมูลนั้นไปเปล่าๆ โมเดลก็เดา target_hint ใหม่วนไปเรื่อยๆ
+            #
+            # ลองอีกรอบแบบไม่ส่ง query (= ขอข้อมูลเฉยๆ) ถ้าได้ข้อมูลจริงก็คืนไปให้ตอบเอง
+            # พร้อมบอกตรงๆ ว่าไม่เจอข้อความนั้นแบบตรงตัว — รักษาเจตนาเดิมของ W46 (ห้ามแกล้ง
+            # ทำเป็นเจอ) ไว้ครบ แค่ไม่ทิ้งข้อมูลที่อ่านมาได้แล้ว
+            without_query = await extract_table_data(page, target_hint, "")
+            if without_query.startswith("[FAIL]"):
+                return ActionResult(False, "read_page_data", data)
+            return ActionResult(
+                True, "read_page_data",
+                f"no cell matched '{query}' verbatim, so treat that as a question to answer "
+                "from the data below rather than as a value that exists on the page. If the "
+                f"answer genuinely is not in here, say so.\n"
+                f"{_deterministic_count_note(without_query, query)}{without_query}",
+            )
+        # W_deterministic_count: goal ที่ถามจำนวนแต่ hint ตรงพอดี (count lane ไม่ทำงาน เพราะ
+        # query ไม่มีคำเชิงนับ) ยังต้องได้ตัวเลขที่นับด้วยโค้ดเหมือนกัน — แนบเฉพาะตอนนับได้จริง
+        return ActionResult(True, "read_page_data", f"{_deterministic_count_note(data, query)}{data}")
     except Exception as e:
         return ActionResult(False, "read_page_data", f"error: {e}")
 
@@ -1018,12 +1390,55 @@ async def execute(
             redundant = await state_filter.check_click_redundant(page, cmd["index"])
             if redundant is not None:
                 return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {redundant}")
+            # W_click_native_select: คลิก <select> จริงคือ no-op ที่คืน [OK] (ดู docstring ของ
+            # check_click_target_is_native_select สำหรับ task ที่ตายเพราะเรื่องนี้จริง) —
+            # ต้องเช็คก่อน dispatch เพราะหลังคลิกไปแล้วแยกไม่ออกจากคลิกที่ได้ผลจริง
+            wrong_kind = await state_filter.check_click_target_is_native_select(page, cmd["index"])
+            if wrong_kind is not None:
+                return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {wrong_kind}")
+            # W_chain_stale_index: ตัด then_click_index ทิ้งถ้าคลิกนี้ทำให้ index ชุดเดิมใช้
+            # ไม่ได้ — ทั้ง "เปิด" dropdown (ตัวเลือกเพิ่งเกิด ไม่มี index เดิม) และ "เลือก
+            # ตัวเลือก" (ตัวเลือกทั้งชุดหายไป index ที่เหลือเลื่อนหมด) ดู docstring ของ
+            # state_filter.check_click_invalidates_indexes สำหรับบั๊กจริงทั้งสองเคส ต้องเช็ค
+            # *ก่อน* dispatch เพราะหลังคลิกแล้วสถานะที่ใช้แยกสองเคสนี้ออกจากกันหายไปแล้ว
+            #
+            # W_dropdown_sets_filter_dirty: เรียกกับ *ทุก* click แล้ว (เดิมเฉพาะตอนมี
+            # then_click_index) เพราะ orchestrator ต้องรู้ด้วยว่าคลิกนี้เป็นการเลือกค่าใน
+            # dropdown หรือไม่ ไม่ใช่แค่ตอนจะ chain — ผลของ evaluate() ครั้งเดียวใช้ได้ทั้ง
+            # สองงาน (timeout สั้น 500ms + fail-safe คืน None อยู่แล้ว)
+            disturb_kind = await state_filter.classify_click_index_disturbance(page, cmd["index"])
+            stale_chain_note = (
+                state_filter.chain_hint_for_kind(disturb_kind)
+                if cmd.get("then_click_index") is not None else None
+            )
             result = await _dispatch_click_with_retry(page, cmd["index"], label)
+            if result.success and disturb_kind == "option":
+                result = replace(result, dropdown_option_selected=True)
+            if stale_chain_note is not None:
+                # คลิกหลักสำเร็จจริง (เปิด dropdown/เลือกตัวเลือกได้ตามต้องการ) — รายงานตาม
+                # ความจริง แล้วบอก
+                # เหตุผลที่ไม่ chain ต่อ pattern เดียวกับ W_chain_partial_success
+                return replace(
+                    result,
+                    message=f"{result.message} (did not go on to the chained click: {stale_chain_note})",
+                )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,
             )
         if t == "fill":
+            # W_empty_fill_noop: เช็คก่อน check_fill_redundant() เพราะเคส "ว่าง -> ว่าง"
+            # เข้าเงื่อนไข redundant ด้วย (current == text == "") แต่ต้องตอบเป็น failure
+            # ไม่ใช่ success — ดู docstring ของ check_fill_is_empty_noop()
+            # W_file_input_guard (P3.10): เช็คก่อนทุกอย่าง — fill ลง <input type=file> ไม่มี
+            # ทางสำเร็จ ต่อให้ข้อความว่าง/ซ้ำหรือไม่ก็ตาม (ดู state_filter สำหรับเหตุผลที่ไม่
+            # เพิ่ม action อัปโหลดไฟล์ให้ agent)
+            file_input = await state_filter.check_fill_target_is_file_input(page, cmd["index"])
+            if file_input is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {file_input}")
+            empty_noop = await state_filter.check_fill_is_empty_noop(page, cmd["index"], cmd["text"])
+            if empty_noop is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Rejected] {empty_noop}")
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
                 return ActionResult(True, f"fill({cmd['index']})", f"[Skipped] {redundant}")

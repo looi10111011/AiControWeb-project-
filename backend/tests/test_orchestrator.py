@@ -832,6 +832,97 @@ async def test_run_task_user_browser_mode_passes_explicit_allowed_domains_to_exe
     )
 
 
+# --- W_domain_guard_default -----------------------------------------------------------
+# บั๊กจริง (live reproduce 3 รอบด้วย goal ของ user เอง "...ไปที่เมนูแอดมิน แล้วลบ user role=ess"):
+# default-deny เดิมตั้งอยู่ข้างใน branch ของ connect_to_user_browser เท่านั้น เส้นทาง BrowserPool
+# ที่ POST /tasks ใช้จริงทุก task ปล่อย effective_allowed_domains ค้างเป็น None และ domain guard
+# ท้ายลูปทำงานเฉพาะตอนไม่ใช่ None → guard ตายสนิทกับทุก task ที่ยิงผ่าน API ผลจริงคือ agent คลิก
+# ลิงก์โปรโมทบนหน้า login หลุดไป orangehrm.com แล้วเสีย step ที่เหลือทั้งหมดบนเว็บการตลาด
+
+
+@pytest.mark.asyncio
+async def test_run_task_default_denies_other_domains_on_the_pool_path_too():
+    """เส้นทางปกติ (ไม่ใช่ CDP) ต้องได้ allowlist = โดเมนของ url เอง ไม่ใช่ None"""
+    mock_async_playwright, mock_browser, mock_page = _patch_browser()
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "tool_1", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m2"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click(1)", "คลิกสำเร็จ"))) as mock_execute,          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://opensource-demo.orangehrmlive.com/web/auth/login", "goal", provider="anthropic",
+        )
+
+    assert mock_execute.await_args.kwargs["allowed_domains"] == {"opensource-demo.orangehrmlive.com"}
+
+
+@pytest.mark.asyncio
+async def test_run_task_explicit_allowed_domains_still_win_over_the_default():
+    """caller ที่ต้องการข้ามโดเมนจริง (SSO/OAuth redirect) ยังส่งเองได้เหมือนเดิมทุกประการ —
+    default นี้มีผลเฉพาะตอนไม่ได้ระบุ"""
+    mock_async_playwright, mock_browser, mock_page = _patch_browser()
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "tool_1", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m2"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click(1)", "คลิกสำเร็จ"))) as mock_execute,          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://a.example.com", "goal", provider="anthropic",
+            allowed_domains={"a.example.com", "login.idp.example"},
+        )
+
+    assert mock_execute.await_args.kwargs["allowed_domains"] == {"a.example.com", "login.idp.example"}
+
+
+@pytest.mark.asyncio
+async def test_run_task_leaves_the_guard_off_when_the_url_has_no_domain():
+    """url ว่าง/ผิดรูป -> extract_domain() คืน "" ห้ามตั้ง allowlist เป็น {""} (= บล็อกทุกอย่าง
+    รวมทั้งโดเมนของตัวเอง) ต้องคงเป็น None เหมือนพฤติกรรมเดิม"""
+    mock_page = AsyncMock()
+    mock_page.on = MagicMock()
+    mock_page.url = "https://example.com/dashboard"
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "tool_1", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m2"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click(1)", "คลิกสำเร็จ"))) as mock_execute,          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("", "goal", provider="anthropic", page=mock_page)
+
+    assert mock_execute.await_args.kwargs["allowed_domains"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_reverts_a_click_that_lands_on_another_domain():
+    """เคสจริงเป๊ะๆ: คลิกลิงก์บนหน้า login แล้วหลุดออกไปเว็บการตลาดคนละโดเมน — click ไม่เคย
+    ผ่าน branch goto ของ classify_action() เลย ต้องถูกจับด้วย guard หลัง action จบ แล้วดึงกลับ
+    ด้วย go_back ทันทีก่อน perceive รอบถัดไป"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://opensource-demo.orangehrmlive.com/web/auth/login"
+
+    async def _drift(*args, **kwargs):
+        mock_page.url = "https://www.orangehrm.com/pricing/"
+        return ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "tool_1", ["m1"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "", ["m2"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_drift)),          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://opensource-demo.orangehrmlive.com/web/auth/login", "goal", provider="anthropic",
+        )
+
+    mock_page.go_back.assert_awaited()
+
+
 def _mock_session_page(url: str) -> AsyncMock:
     """page ที่ "resolve มาแล้ว" โดย caller ภายนอก (จำลอง core/session_registry.py::
     SessionRegistry) — ส่งเข้า run_task(page=...) ตรงๆ"""
@@ -1034,7 +1125,7 @@ async def test_run_task_executes_action_then_finishes():
     assert result["message"] == "เพิ่มลงตะกร้าแล้ว"
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 2},
-        ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
+        ask_user_func=None, label="", manual_guidance="", allowed_domains={"example.com"}, element_tag="", element_type="",
         then_label="", then_tag="", then_type="",
     )
     assert result["history"] == [
@@ -1054,6 +1145,11 @@ async def test_run_task_executes_action_then_finishes():
             # W_procmem: click_result เป็น ActionResult ที่สร้างขึ้นตรงๆ ในเทสต์นี้ (ไม่ผ่าน
             # actions.py จริง) เลยไม่มี locator_descriptor แนบมา (default None)
             "locator_descriptor": None,
+            # W_step_trace: 2 field วินิจฉัยที่ทุก step ที่ dispatch จริงต้องมีเสมอ (ดู
+            # orchestrator.py ตรงจุด memory.record) — timing เป็น 0.0 ทั้งหมดในเทสต์นี้เพราะ
+            # ทุกอย่างถูก mock ไว้ ไม่ได้ใช้เวลาจริง
+            "failure_class": "ok",
+            "timing": {"snapshot": 0.0, "llm": 0.0, "action": 0.0},
         },
     ]
     # ต้องรวม token ของทั้ง 2 รอบ next_action (browser_action + finish_task) ไม่ใช่แค่รอบสุดท้าย
@@ -1096,7 +1192,7 @@ async def test_run_task_resolves_label_tag_type_for_then_click_index():
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value,
         {"type": "select", "index": 1, "label": "Carolynn", "then_click_index": 5},
-        ask_user_func=None, label="Carolynn", manual_guidance="", allowed_domains=None,
+        ask_user_func=None, label="Carolynn", manual_guidance="", allowed_domains={"example.com"},  # W_domain_guard_default: default-deny ทุกเส้นทาง
         element_tag="li", element_type="",
         then_label="Submit", then_tag="button", then_type="",
     )
@@ -1296,7 +1392,7 @@ async def test_run_task_qa_summary_calls_read_page_data_via_execute_then_answers
     assert result["message"] == "เห็นชื่อ Cierra ในตารางค่ะ"
     mock_execute.assert_awaited_once_with(
         mock_page, {"type": "read_page_data", "query": "มีชื่อ Cierra ไหม", "target_hint": "table tbody tr"},
-        ask_user_func=None, label="", manual_guidance="", allowed_domains=None,
+        ask_user_func=None, label="", manual_guidance="", allowed_domains={"example.com"},  # W_domain_guard_default: default-deny ทุกเส้นทาง
     )
     mock_summarize.assert_not_awaited()
     assert result["tokens"] == {"input": 85, "output": 17, "cache_read": 0, "cache_creation": 0}
@@ -1441,15 +1537,29 @@ async def test_run_task_stops_at_max_steps_without_finish_task():
 
 
 @pytest.mark.asyncio
-async def test_run_task_closes_browser_even_if_action_raises():
+async def test_run_task_reports_a_crash_instead_of_propagating_it_and_still_closes_browser():
+    """W_loop_crash: เดิม exception จากในลูป (get_snapshot/next_action/execute/wait_stable)
+    ทะลุออกจาก run_task() ทั้งดุ้น — return dict ไม่เคยถูกรัน history/token/final_page_state
+    ที่สะสมมาหายหมด ผู้ใช้เห็นแค่ข้อความ Python ดิบจาก task_manager.py
+
+    ตอนนี้ต้องคืน dict ปกติที่รายงานความจริง (success=False + ชื่อ exception + step ที่พัง)
+    โดย browser ยังถูกปิดเหมือนเดิมทุกประการ (นั่นคือสิ่งที่เทสต์นี้เช็คมาแต่แรก)"""
     mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(side_effect=RuntimeError("boom"))):
-        with pytest.raises(RuntimeError):
-            await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+        result = await Orchestrator().run_task("https://example.com", "goal", provider="anthropic")
+
+    assert result["success"] is False
+    assert "RuntimeError" in result["message"]
+    assert "boom" in result["message"]
+    assert result["completion_verification"] == "EXECUTION_FAILED_NEEDS_REPAIR"
+    # dict ต้องครบทุก key เหมือน path ปกติ — caller (routes/task_manager/evaluation) ไม่ต้อง
+    # รู้จักเส้นทางพิเศษอะไรใหม่เลย
+    for key in ("steps", "history", "tokens", "plan", "final_page_state"):
+        assert key in result
 
     mock_browser.close.assert_awaited_once()
     mock_playwright_ctx.stop.assert_awaited_once()
@@ -1484,7 +1594,7 @@ async def test_run_task_overrides_premature_finish_task_false_then_succeeds():
     assert result["steps"] == 1
     mock_execute.assert_awaited_once_with(
         mock_browser.new_page.return_value, {"type": "click", "index": 5},
-        ask_user_func=None, label="", manual_guidance="", allowed_domains=None, element_tag="", element_type="",
+        ask_user_func=None, label="", manual_guidance="", allowed_domains={"example.com"}, element_tag="", element_type="",
         then_label="", then_tag="", then_type="",
     )
     # ต้องเตือนกลับเข้า tool_f1 (finish_task call ที่ถูกปฏิเสธ) ก่อนลองต่อ
@@ -3300,7 +3410,7 @@ async def test_run_task_compacts_gemini_history_once_step_count_exceeds_threshol
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
-        verification_context="",
+        verification_context="", allow_fill_secret=True, prompt_sections=None,
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -3366,7 +3476,7 @@ async def test_run_task_compacts_anthropic_history_once_step_count_exceeds_thres
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
-        verification_context="",
+        verification_context="", allow_fill_secret=True, prompt_sections=None,
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -3430,7 +3540,7 @@ async def test_run_task_compacts_groq_history_and_preserves_leading_system_messa
         client, model, goal, page_text, messages, manual_context="", memory_context="",
         long_term_context="", vision_context="", site_manual_context="",
         current_url="", action_history_context="", plan_context="",
-        verification_context="",
+        verification_context="", allow_fill_secret=True, prompt_sections=None,
     ):
         captured_messages_per_call.append(messages)
         i = len(captured_messages_per_call) - 1
@@ -5855,3 +5965,521 @@ async def test_dismiss_consent_banner_reaches_a_banner_inside_an_iframe():
         assert clicked == "Deny"
         assert (await page.frames[1].locator("#log").text_content()) == "Deny"
         await browser.close()
+
+
+# --- W_no_credential_flow ----------------------------------------------------------------
+# บั๊กจริงจาก live run ของ goal user เอง ("...ไปที่เมนูแอดมิน แล้วลบ user role=ess ออกให้หมด"):
+# หลังลบไป 2 ราย agent หลงทางแล้วคลิก "Demo Source [Profile/Account Menu]" -> "Change Password"
+# แล้วพยายามกรอกช่องรหัสผ่านจนระบบตอบ "Invalid" — task จบด้วยการขอให้ user ป้อนรหัสผ่านใหม่
+# ทั้งที่ goal ไม่เคยพูดถึงรหัสผ่านเลย (เกิดซ้ำ 2 รอบใน run เดียว: step 9-13 และ 17-18)
+
+
+def test_action_enters_credential_flow_matches_only_real_password_flows():
+    f = orchestrator_module._action_enters_credential_flow
+    click = {"type": "click"}
+
+    assert f(click, "Change Password [Profile/Account Menu]") is True
+    assert f(click, "Reset Password") is True
+    assert f(click, "Forgot your password?") is True
+    assert f(click, "เปลี่ยนรหัสผ่าน") is True
+
+    # "Password Policy"/"Passwords" เป็นหน้าตั้งค่า/รายงานของระบบ ไม่ใช่การเปลี่ยนรหัสของตัวเอง
+    assert f(click, "Password Policy") is False
+    assert f(click, "Passwords") is False
+    assert f(click, "Admin") is False
+
+    assert f({"type": "goto", "url": "https://x/web/pim/updatePassword"}, "") is True
+    assert f({"type": "goto", "url": "https://x/web/admin/viewSystemUsers"}, "") is False
+
+
+def test_goal_mentions_credentials_turns_the_guard_off_for_password_goals():
+    f = orchestrator_module._goal_mentions_credentials
+    assert f("เปลี่ยนรหัสผ่านของ admin เป็น 1234") is True
+    assert f("change my password") is True
+    # goal ที่ให้ credential มาสำหรับ login ก็ปิด guard — ยอมกว้างไว้ ดีกว่าบล็อกงานที่สั่งจริง
+    assert f("login with username admin password admin123") is True
+    assert f("ลบ user ที่ role=ess ออกให้หมด") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_blocks_clicking_change_password_when_the_goal_never_mentions_it():
+    """เคสจาก live run โดยตรง — ต้องไม่ถูก dispatch เลย ไม่ใช่แค่ขออนุมัติ"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/web/admin/viewSystemUsers"
+    change_pw_click = {"type": "click", "index": 19}
+    elements = [
+        {"index": 3, "tag": "a", "label": "Admin", "in_viewport": True, "region": "navigation"},
+        {"index": 19, "tag": "a", "label": "Change Password [Profile/Account Menu]",
+         "in_viewport": True, "region": "navigation"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", change_pw_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ไม่พบ user ที่ Role=ESS"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://example.com", "ลบ user ที่ role=ess ออกให้หมด", provider="anthropic", max_steps=10,
+        )
+
+    assert change_pw_click not in [c.args[1] for c in mock_execute.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_run_task_allows_change_password_when_that_is_what_the_goal_asked_for():
+    """goal ที่สั่งเปลี่ยนรหัสผ่านจริงต้องไม่โดน guard นี้แตะเลย"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/web/pim/viewMyDetails"
+    change_pw_click = {"type": "click", "index": 19}
+    elements = [
+        {"index": 19, "tag": "a", "label": "Change Password [Profile/Account Menu]",
+         "in_viewport": True, "region": "navigation"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", change_pw_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "เปลี่ยนรหัสผ่านของฉันเป็น NewPass123", provider="anthropic", max_steps=10,
+        )
+
+    assert change_pw_click in [c.args[1] for c in mock_execute.await_args_list]
+    assert result["success"] is True
+
+
+# --- W_no_record_edit_for_delete_goal ----------------------------------------------------
+# บั๊กจริงจาก live run 227b771e (goal ของ user เอง "...ลบ user role=ess ออกให้หมด"): agent เข้า
+# flow Edit -> Save แล้วเขียนทับ user record จริง 2 ครั้ง ระบบตอบ "Successfully Updated" ทั้งคู่
+# ทั้งที่ goal ไม่มีคำว่าแก้ไข/อัปเดตเลย — หนักกว่าบั๊ก Add User ที่ W_no_create แก้ไว้ เพราะ
+# Add User ยังโดนระบบปฏิเสธเอง แต่ Save สำเร็จจริงและ go_back() กู้ไม่ได้
+
+
+def test_action_commits_a_record_edit_matches_only_real_commit_buttons():
+    f = orchestrator_module._action_commits_a_record_edit
+    click = {"type": "click"}
+
+    assert f(click, "Save") is True
+    assert f(click, "Save Changes") is True
+    assert f(click, "Update") is True
+    assert f(click, "บันทึก") is True
+    assert f(click, "อัปเดต") is True
+
+    # "ขึ้นต้นด้วย + word boundary" ไม่ใช่ substring — สองตัวนี้คือเหตุผลที่ต้องใช้ regex
+    assert f(click, "Saved Searches") is False
+    assert f(click, "Updated on") is False
+
+    # ห้ามโดนเด็ดขาด: label ของ dialog ยืนยันการลบ + ปุ่มบนหน้า list — ถ้า guard นี้จับพวกนี้
+    # จะทำให้ "งานลบ" ทำไม่สำเร็จเลย ซึ่งตรงข้ามกับเจตนาของ guard เอง
+    for label in ("Yes, Delete", "Confirm", "ยืนยัน", "Delete Selected", "Search", "Reset",
+                  "Edit", "แก้ไข", "Cancel"):
+        assert f(click, label) is False, label
+
+
+def test_goal_is_deletion_only_excludes_goals_that_really_ask_for_an_edit():
+    f = orchestrator_module._goal_is_deletion_only
+
+    assert f("เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด") is True
+    assert f("delete every user with role ESS") is True
+
+    # แคบกว่า _goal_targets_existing_records_only() โดยเจตนา — goal แก้ไขจริงต้องไม่โดน guard
+    assert f("เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin") is False
+    assert f("สร้าง user ใหม่ แล้วลบคนเก่า") is False
+    assert f("ไปหน้า admin") is False
+
+
+@pytest.mark.asyncio
+async def test_run_task_blocks_saving_an_edit_form_when_the_goal_only_asks_to_delete():
+    """เคสจาก live run โดยตรง — ปุ่ม Save ต้องไม่ถูก dispatch เลย ไม่ใช่แค่ขออนุมัติ"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/web/admin/saveSystemUser/1"
+    save_click = {"type": "click", "index": 25}
+    elements = [
+        {"index": 25, "tag": "button", "label": "Save", "in_viewport": True, "region": "main"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", save_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ไม่พบ user ที่ Role=ESS"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://example.com", "ลบ user ที่ role=ess ออกให้หมด", provider="anthropic", max_steps=10,
+        )
+
+    assert save_click not in [c.args[1] for c in mock_execute.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_run_task_still_saves_when_the_goal_actually_asked_for_an_edit():
+    """goal ที่สั่งแก้ไขจริงต้องไม่โดน guard นี้แตะเลย"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/web/admin/saveSystemUser/1"
+    save_click = {"type": "click", "index": 25}
+    elements = [
+        {"index": 25, "tag": "button", "label": "Save", "in_viewport": True, "region": "main"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", save_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin",
+            provider="anthropic", max_steps=10,
+        )
+
+    assert save_click in [c.args[1] for c in mock_execute.await_args_list]
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_task_never_blocks_the_delete_confirmation_button():
+    """regression guard ที่สำคัญที่สุดของ W_no_record_edit_for_delete_goal: ถ้า label matcher
+    กว้างเกินไปจนจับปุ่มยืนยันการลบ guard นี้จะทำให้ "งานลบ" ทำไม่สำเร็จเลย ตรงข้ามกับเจตนา"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://example.com/web/admin/viewSystemUsers"
+    confirm_click = {"type": "click", "index": 42}
+    elements = [
+        {"index": 42, "tag": "button", "label": "Yes, Delete", "in_viewport": True, "region": "main"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", confirm_click, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ลบแล้ว"}, "", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "สำเร็จ"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://example.com", "ลบ user ที่ role=ess ออกให้หมด", provider="anthropic", max_steps=10,
+        )
+
+    assert confirm_click in [c.args[1] for c in mock_execute.await_args_list]
+
+
+# ============================================================
+# P0: งาน "ลบ userrole=ess ออกให้หมด" — F1.3 / F3 / F5
+# ============================================================
+
+
+def _p0_elements(*pairs):
+    return [{"index": i, "label": label, "tag": "button", "type": ""} for i, label in pairs]
+
+
+@pytest.mark.asyncio
+async def test_failed_action_that_changed_the_page_keeps_that_note_in_memory():
+    """W_click_navigated (ฝั่ง memory poisoning): เดิม ShortTermMemory เก็บแค่ str(result) ทิ้ง
+    โน้ต W30 "หน้าเปลี่ยนไปเอง" ที่คำนวณไว้แล้ว — failed_actions_summary() จึงยัด "[FAIL]
+    click(3)" เปล่าๆ เข้า prompt ทุก step ที่เหลือของ task ทั้งที่ action นั้นได้ผลจริง"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+    mock_page = mock_browser.new_page.return_value
+    mock_page.url = "https://app.example.com/admin/list"
+
+    async def _execute_and_navigate(*args, **kwargs):
+        mock_page.url = "https://app.example.com/admin/users"
+        return ActionResult(False, "click(3)", "element not found / not clickable (timeout)")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3}, "tool_1", ["m1"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": True, "message": "ok"}, "", ["m2"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(_p0_elements((3, "Admin")), "[3] Admin"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute_and_navigate)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task("https://app.example.com", "open the admin page", provider="anthropic")
+
+    click_record = next(r for r in result["history"] if r["cmd"].get("index") == 3)
+    assert "The page changed by itself after this action" in click_record["result"]
+    assert "https://app.example.com/admin/users" in click_record["result"]
+
+
+@pytest.mark.asyncio
+async def test_row_action_right_after_a_dropdown_option_click_is_nudged():
+    """W_dropdown_sets_filter_dirty: W50 บังคับให้โมเดลใช้ click กับ custom dropdown ธง
+    filter_dirty_since_search จึงไม่เคยถูกยกเลยบนเว็บ SPA ทำให้ guard ห้ามคลิก row action ก่อน
+    กด Search ตายสนิท — trace ยืนยัน: click ESS -> click Edit ผ่านฉลุยไม่เคยถูกเตือน"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    async def _execute(page, cmd, **kwargs):
+        return ActionResult(
+            True, f"click({cmd['index']})", "click succeeded",
+            dropdown_option_selected=(cmd["index"] == 7),
+        )
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 7}, "t1", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("browser_action", {"type": "click", "index": 9}, "t2", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": True, "message": "ok"}, "", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot",
+               AsyncMock(return_value=(_p0_elements((7, "ESS"), (9, "Edit")), "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute)) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task("https://app.example.com", "filter the user list then open a record", provider="anthropic")
+
+    dispatched = [c.args[1]["index"] for c in mock_execute.await_args_list]
+    assert dispatched == [7]
+
+
+@pytest.mark.asyncio
+async def test_delete_all_goal_cannot_finish_successfully_without_ever_pressing_search():
+    """W_delete_all_intent: run จริงที่ claim success=True ไม่เคยกดปุ่ม Search เลยสักครั้ง —
+    ตัวเลข (N) Records Found ที่ guard เดิมอ่านจึงเป็นของตารางที่ยังไม่ถูกกรอง"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    async def _execute(page, cmd, **kwargs):
+        return ActionResult(True, f"click({cmd['index']})", "click succeeded", dropdown_option_selected=True)
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 7}, "t1", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": True, "message": "ลบครบแล้ว"}, "t2", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": False, "message": "ยังกรองไม่เสร็จ"}, "t3", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot",
+               AsyncMock(return_value=(_p0_elements((7, "ESS")), "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator._count_rows_matching_condition", AsyncMock(return_value=(0, 4))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_delete_all_goal_blocks_deleting_from_a_table_that_is_not_filtered_yet():
+    """W_delete_all_intent safety gate: ตารางที่เห็นมี 7 แถวแต่ตรงเงื่อนไขแค่ 2 = ยังไม่ได้กรอง
+    การลบตอนนี้เสี่ยงทำลายข้อมูลที่ goal ไม่เคยสั่งให้แตะ (เกิดขึ้นจริงไปแล้ว 1 ครั้ง)"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 4}, "t1", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": False, "message": "หยุดก่อน"}, "t2", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot",
+               AsyncMock(return_value=(_p0_elements((4, "Delete")), "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._count_rows_matching_condition", AsyncMock(return_value=(2, 7))), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock()) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    mock_execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_all_goal_allows_deleting_once_the_visible_table_matches_the_condition():
+    """กระจกบานตรงข้าม — ตารางกรองตรงเงื่อนไขครบแล้ว (7 จาก 7 แถว) ต้องลบได้ตามปกติ ไม่ว่าจะ
+    เลือกใช้ Select All หรือลบทีละแถว (บังคับลำดับ ไม่บังคับวิธี ตามที่ตกลงกับ user)"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 4}, "t1", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": False, "message": "พอแค่นี้"}, "t2", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot",
+               AsyncMock(return_value=(_p0_elements((4, "Delete")), "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._count_rows_matching_condition", AsyncMock(return_value=(7, 7))), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click(4)", "click succeeded"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    mock_execute.assert_awaited_once()
+
+
+# ---------------- W_count_answer_check (P1.1): คำตอบต้องใช้ตัวเลขที่โค้ดนับไว้ ----------------
+
+_COUNTED_RESULT = ActionResult(
+    True, "read_page_data",
+    "[counted by the system, not by you] the data below contains exactly 20 entries. "
+    "Use this number — do not recount the rows yourself.\n"
+    "[counted by the system] 4 of those 20 entries contain 'ess'.\n"
+    "| Username | User Role |\n| --- | --- |\n| jane | ESS |",
+)
+
+
+async def _run_count_goal(final_messages, intent="qa_summary"):
+    """รัน run_task ด้วย goal เชิงนับที่ read_page_data นับให้แล้วว่าตรงเงื่อนไข 4 รายการ —
+    final_messages คือข้อความที่โมเดลจะใส่ใน finish_task ตามลำดับ
+
+    ตรึง intent ไว้เสมอ ไม่ปล่อยให้ classify_intent() ตัดสินเอง — ของจริงมันยิง LLM (หรือ
+    fallback ตอน key ใช้ไม่ได้) ทำให้เทสต์วิ่งเข้าคนละลูปกันในแต่ละรอบโดยไม่ตั้งใจ ทั้งที่
+    guard ตัวนี้ต้องทำงานได้ทั้งสองลูป (qa_summary mini-loop คือที่ที่บั๊กจริงเกิด ส่วน
+    action_task main loop คือ goal ที่มีคำถามปนคำสั่ง)"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    next_action_calls = [(
+        "browser_action",
+        {"type": "read_page_data", "query": "มี userrole=ess กี่คน", "target_hint": '[role="row"]'},
+        "t0", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1),
+    )] + [
+        ("finish_task", {"success": True, "message": msg}, f"t{i + 1}", ["m"],
+         llm.TokenUsage(input_tokens=1, output_tokens=1))
+        for i, msg in enumerate(final_messages)
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=_COUNTED_RESULT)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.classify_intent", AsyncMock(return_value=intent)),          patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock(return_value="")),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next:
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "มี user ที่ userrole=ess กี่คน", provider="anthropic",
+        )
+    return result, mock_next
+
+
+@pytest.mark.asyncio
+async def test_count_answer_that_contradicts_the_system_count_is_sent_back():
+    """W_count_answer_check (บั๊กจริงที่ user เจอสด: ตารางมี 7 แถวที่เป็น ESS แต่ agent ตอบ 6):
+    โค้ดนับให้แล้วและแนบตัวเลขไปกับผลลัพธ์ก็จริง แต่ไม่มีอะไรตรวจว่าโมเดล "ใช้" ตัวเลขนั้นจริง
+    — การแนบตัวเลขเป็นแค่คำแนะนำใน prompt ที่โมเดลเพิกเฉยได้"""
+    result, mock_next = await _run_count_goal(
+        ["พบผู้ใช้ที่เป็น ESS จำนวน 6 คน", "พบผู้ใช้ที่เป็น ESS จำนวน 4 คน"], intent="qa_summary",
+    )
+
+    # คำตอบแรก (6) ถูกตีกลับ โมเดลจึงถูกถามใหม่แล้วตอบด้วยตัวเลขที่โค้ดนับไว้จริง
+    assert mock_next.await_count == 3
+    assert result["success"] is True
+    assert "4" in result["message"]
+    assert "6" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_count_answer_is_also_checked_in_the_main_action_loop():
+    """guard ตัวเดียวกันต้องทำงานใน main loop ด้วย — goal ที่มีทั้งคำถามและคำสั่งปนกันจะถูก
+    classify_intent() ส่งมาทางนี้แทน mini-loop"""
+    result, mock_next = await _run_count_goal(
+        ["พบผู้ใช้ที่เป็น ESS จำนวน 6 คน", "พบผู้ใช้ที่เป็น ESS จำนวน 4 คน"], intent="action_task",
+    )
+
+    assert mock_next.await_count == 3
+    assert result["success"] is True
+    assert "4" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_count_answer_that_matches_the_system_count_passes_straight_through():
+    """กระจกบานตรงข้าม — ตอบตรงกับที่โค้ดนับไว้ต้องไม่ถูกรบกวนเลยสักครั้ง"""
+    result, mock_next = await _run_count_goal(["พบผู้ใช้ที่เป็น ESS จำนวน 4 คน"], intent="qa_summary")
+
+    assert mock_next.await_count == 2
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_goal_that_is_not_a_counting_question_is_never_checked_for_numbers():
+    """guard นี้ต้องไม่ยิงกับ goal ทั่วไปที่บังเอิญมีเงื่อนไข key=value อยู่ด้วย — เงื่อนไข
+    เปิดใช้คือ "goal เป็นคำถามเชิงนับ" เท่านั้น (ไม่งั้นงานลบ/แก้ไขจะโดนตีกลับเปล่าๆ)"""
+    mock_async_playwright, mock_browser, _ = _patch_browser()
+
+    next_action_calls = [
+        ("browser_action",
+         {"type": "read_page_data", "query": "userrole=ess", "target_hint": '[role="row"]'},
+         "t0", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": True, "message": "ดูรายชื่อเรียบร้อยแล้ว"}, "t1", ["m"],
+         llm.TokenUsage(input_tokens=1, output_tokens=1)),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=_COUNTED_RESULT)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.classify_intent", AsyncMock(return_value="qa_summary")),          patch("backend.app.core.orchestrator.llm.summarize_page", AsyncMock(return_value="")),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_next:
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "แสดงรายชื่อ user ที่ userrole=ess", provider="anthropic",
+        )
+
+    assert mock_next.await_count == 2
+    assert result["success"] is True

@@ -40,8 +40,29 @@ ALLOWED_DOMAINS: set[str] = set()
 # <button>Remove</button> ธรรมดา ไม่มี type พิเศษอะไรให้สังเกตเลยนอกจากป้ายข้อความ) —
 # ไม่ควรพึ่งแค่ LLM เลือก type (submit/delete/purchase/pay) ให้ถูกต้องเพียงอย่างเดียว
 # เพราะเป็นเรื่อง model compliance ที่ไม่การันตี — เช็คจากคำในป้าย element ประกอบด้วย
+# W_risky_multilingual (ช่องความปลอดภัย ไม่ใช่แค่ความสะดวก): เดิมชุดนี้เป็นภาษาอังกฤษล้วน
+# ขณะที่ SAFE_ACTION_LABEL_KEYWORDS ด้านล่างเป็นสองภาษามาตั้งแต่แรก — ความไม่สมมาตรนี้แปลว่า
+# ปุ่ม "ลบ" / "削除" / "Löschen" / "Supprimer" **ไม่ถูกยกระดับความเสี่ยงเลย** ชั้น
+# defense-in-depth ที่ตั้งใจไว้ว่า "ไม่พึ่ง LLM เลือก action type ให้ถูกอย่างเดียว" จึงป้องกัน
+# ได้เฉพาะเว็บภาษาอังกฤษ ส่วนเว็บภาษาอื่น human-in-the-loop ไม่ทำงานกับ action ทำลายข้อมูล
+# เลยนอกจากโมเดลจะบังเอิญเลือก type delete/purchase/pay ให้เอง
+#
+# เรื่อง false positive: การ match เป็น substring และภาษาที่ไม่มีการเว้นวรรค (ไทย/ญี่ปุ่น/จีน)
+# มีโอกาสชนคำอื่นได้จริง — ยอมรับได้และตั้งใจเลือกทางนี้ เพราะผลของ false positive คือ "ถาม
+# ผู้ใช้เกินจำเป็น 1 ครั้ง" ส่วนผลของ false negative คือ "ลบข้อมูลจริงโดยไม่มีใครเห็น"
+# (RISKY ชนะ SAFE เสมออยู่แล้วตามลำดับใน classify_action ด้านล่าง จึงไม่ทำให้ปุ่มค้นหา/ดู
+# เนื้อหาที่ SAFE_ACTION_LABEL_KEYWORDS ครอบไว้เปลี่ยนพฤติกรรม ตราบใดที่ไม่มีคำเสี่ยงปนอยู่)
 RISKY_LABEL_KEYWORDS = {
+    # อังกฤษ (ชุดเดิม ห้ามตัดออก)
     "remove", "delete", "place order", "finish", "pay", "purchase", "confirm",
+    # ไทย
+    "ลบ", "ล้างข้อมูล", "นำออก", "สั่งซื้อ", "ชำระเงิน", "จ่ายเงิน", "ยืนยัน", "เสร็จสิ้น",
+    # ญี่ปุ่น / จีน
+    "削除", "購入", "支払", "確認", "删除", "购买", "支付", "确认",
+    # เยอรมัน / ฝรั่งเศส / สเปน / โปรตุเกส
+    "löschen", "loschen", "entfernen", "bezahlen", "kaufen", "bestätigen", "bestatigen",
+    "supprimer", "payer", "acheter", "confirmer",
+    "eliminar", "borrar", "pagar", "comprar", "confirmar", "excluir",
 }
 
 # W_search: บั๊กจริงที่ user รายงาน — action ที่ย้อนกลับได้ง่ายมากและไม่มีผลถาวรใดๆ เลย

@@ -680,6 +680,23 @@ def test_normalize_openai_args_keeps_params_each_action_type_really_uses():
     }
 
 
+def test_normalize_openai_args_drops_then_click_index_zero_as_the_null_sentinel():
+    """W_openai_args (3): live run รอบล่าสุด 18 จาก 22 action มี then_click_index=0 ติดมา
+    ทุกครั้ง (ค่า default ของ integer ที่โมเดลเติมเพราะรู้สึกต้องกรอกทุก property) — chain ไป
+    index 0 ล้มเหลวแล้วเสีย retry 3 รอบต่อ step เปล่าๆ ค่าจริงที่โมเดลตั้งใจ chain ส่งเลขจริง
+    มาเสมอ (เช่น 3/28) จึงยังรอดตามเทสต์ด้านบน"""
+    for junk in (0, -1, 7):
+        out = llm._normalize_openai_args(
+            "browser_action", {"type": "click", "index": 7, "then_click_index": junk},
+        )
+        assert "then_click_index" not in out, junk
+
+    kept = llm._normalize_openai_args(
+        "browser_action", {"type": "click", "index": 7, "then_click_index": 28},
+    )
+    assert kept["then_click_index"] == 28
+
+
 def test_normalize_openai_args_passes_through_other_tools_and_unknown_types():
     """finish_task/request_user_input มีสคีมาเล็กและทุก field มีความหมายจริง — normaliser
     ต้องไม่แตะเลย (กันตัด field จำเป็นทิ้งถ้ามีการเพิ่ม tool ใหม่ในอนาคต) เช่นเดียวกับ action

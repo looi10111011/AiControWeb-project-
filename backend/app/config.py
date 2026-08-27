@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     # เฉพาะชื่อ model ที่ endpoint นั้นรองรับ ไม่ใช่ทุกตัวใน OpenAI API ทั่วไป
     openai_model: str = "gpt-5.4-mini"
 
+    # W_eval: release gate (ดู core/release_gate.py) — รวมผล eval suite ทั้งหมด (SauceDemo/
+    # OrangeHRM/MiniWoB) เขียนเป็น JSON ต่อ run ไว้ที่ dir นี้ tag ด้วย git commit + model
+    # แล้วเทียบกับผลรันล่าสุดก่อนหน้า
+    release_gate_results_dir: str = "./data/eval_results"
+    # เปอร์เซ็นต์การ regress สูงสุดที่ยอมรับได้ต่อ metric ก่อนถือว่า "ไม่ผ่าน gate" (higher-
+    # is-better metric เช่น success_rate ลดลงเกินนี้ = fail, lower-is-better metric เช่น
+    # latency เพิ่มขึ้นเกินนี้ = fail) ค่า default กลางๆ ยอมรับความผันผวนปกติของ LLM
+    # (stochastic) ได้ระดับหนึ่งโดยไม่ false-positive บ่อยเกินไป ปรับได้ถ้าพบว่าเข้ม/หลวมไป
+    release_gate_max_regression_pct: float = 10.0
+
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
     chroma_long_term_collection_name: str = "long_term_memory"
@@ -46,6 +56,37 @@ class Settings(BaseSettings):
     # (ดู api/task_manager.py::_log_token_usage()) แยกจาก long_term_memory เพราะอันนั้น
     # เก็บไว้ให้ agent recall เอง ไม่ใช่ไว้ให้ developer วิเคราะห์ cost
     token_usage_log_path: str = "./data/token_usage.jsonl"
+
+    # W_step_trace: token_usage.jsonl ด้านบนบันทึกแค่ "1 บรรทัดต่อ task" (steps เป็นตัวเลขเฉยๆ)
+    # — task ที่ล้มด้วย 23 step / 693 วินาที / 1M token คืนข้อมูลได้บรรทัดเดียวว่า success:false
+    # ตอบไม่ได้เลยว่าพังที่ step ไหน เพราะอะไร และเวลาหมดไปกับ LLM / snapshot / action อย่างละ
+    # เท่าไหร่ (ก่อนหน้านี้ทั้งระบบไม่มี instrumentation เวลาสักจุดเดียว)
+    #
+    # ไฟล์นี้เก็บ 1 บรรทัดต่อ "step" พร้อม failure taxonomy — เขียนครั้งเดียวตอน task จบ
+    # (ไม่ใช่ทุก step) เพื่อไม่ให้ disk I/O แทรกกลาง agent loop
+    step_trace_log_path: str = "./data/step_trace.jsonl"
+
+    # W_extract_row_cap (P4.5): read_page_data คืน "ทั้งตาราง" กลับเข้า messages แล้วค้างอยู่
+    # จนกว่า context compaction จะกวาดออก (_COMPACT_AFTER_STEPS=6) — วัดจาก step trace ของ
+    # release gate จริง: task "search_no_results" โต 11.5k -> 43.5k input token ภายใน 8 step
+    # โดยตัว snapshot แทบไม่โตเลย ตัวโตคือผลลัพธ์ตารางที่สะสมทับกันหลายรอบ
+    #
+    # ตัดจำนวนแถวได้อย่างปลอดภัยเพราะ W_deterministic_count นับจำนวนจริงด้วยโค้ดและแนบตัวเลข
+    # ไปกับผลลัพธ์อยู่แล้ว — โมเดลจึงยังตอบคำถามเชิงนับได้ถูกโดยไม่ต้องเห็นครบทุกแถว และข้อความ
+    # ตัดจะบอกตรงๆ ว่าถูกตัดไปกี่แถว ไม่ใช่เงียบๆ (ห้ามให้โมเดลเข้าใจว่านี่คือข้อมูลทั้งหมด)
+    read_page_data_max_rows: int = 60
+
+    # W_snapshot_cap (P3.3): get_snapshot() ต่อทุก element ที่เจอเข้า text_repr โดยไม่มีเพดาน
+    # เลย — หน้า e-commerce/ข่าวทั่วไปมี element ที่ตรง selector 400-1500 ตัว = 4k-15k token
+    # ต่อ step และมี snapshot ค้างใน context พร้อมกันราว 3 ชุด (_COMPACT_AFTER_STEPS=6)
+    #
+    # ไม่ตัดจาก "elements" ที่คืนให้โค้ด — guard หลายตัวใน orchestrator (หา nav element ที่ตรง
+    # goal, ตรวจแบนเนอร์คุกกี้, ตัดสิน prompt sections) ต้องเห็นหน้าเว็บครบถึงจะทำงานถูก
+    # ตัดเฉพาะ text_repr ที่ส่งให้ LLM เท่านั้น แล้วบอกตรงๆ ว่าเหลืออีกกี่ตัว
+    #
+    # เรียง in_viewport ขึ้นก่อนอยู่แล้ว (W50) การตัดท้ายจึงตัด element ที่ต้อง scroll ไปหา
+    # ก่อนเสมอ ไม่ใช่ตัดของที่อยู่ตรงหน้า
+    snapshot_max_elements: int = 150
 
     browser_headless: bool = True
 
@@ -104,6 +145,15 @@ class Settings(BaseSettings):
     # synchronous request-response เดียว (ไม่มี SSE progress ระหว่างรอ) ต้อง fail เร็ว
     # พอให้ user รู้ว่ามีปัญหาแล้วลองใหม่ได้ ไม่ใช่ปล่อยให้ composer ดูค้างตลอดไป
     plan_generation_timeout_seconds: float = 45.0
+
+    # W_steptimeout: next_action() ใน agent loop หลัก (orchestrator.py::run_task) เป็น await
+    # ตัวเดียวในระบบที่ไม่มีขอบเขตเวลาเลย ทั้งที่ generate_plan ข้างบนมี timeout ไปแล้ว —
+    # เส้นทาง OpenAI OAuth เป็น SSE stream ที่ไม่มี read timeout และไม่มี retry ถ้า stream
+    # ค้างกลางคัน task จะค้างตลอดไป กินสล็อตของ BrowserPool ไว้จนกว่า user จะกด Stop เอง
+    # (ทางเดียวที่กู้ได้ตอนนี้) — ตั้งสูงกว่า plan_generation มากเพราะ prompt ต่อ step ใหญ่
+    # กว่ามาก (page snapshot + memory + manual) และ timeout ที่นี่ไม่ได้แปลว่า task ตาย:
+    # run_task จับเป็น step ที่ล้มเหลวแล้วรายงานตามจริง (ดู W_loop_crash ใน orchestrator.py)
+    llm_step_timeout_seconds: float = 180.0
 
     # Real-user-browser mode (CDP connect, ดู core/user_browser.py): user เปิด Chrome
     # เองล่วงหน้าด้วย --remote-debugging-port ก่อนรัน agent ในโหมดนี้ — agent ไม่ launch

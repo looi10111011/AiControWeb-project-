@@ -1358,6 +1358,57 @@ def run_orangehrm_evaluation():
     asyncio.run(_run())
 
 
+def run_release_gate_cmd():
+    """W_eval: รวมผล 3 eval suite (SauceDemo/OrangeHRM/MiniWoB) เป็น release gate เดียว
+    (ดู core/release_gate.py) — เขียนสรุป JSON tag ด้วย git commit + model ไว้ที่
+    settings.release_gate_results_dir แล้วเทียบกับผลรันล่าสุดก่อนหน้าในโฟลเดอร์เดียวกัน
+    (ครั้งแรกที่รัน ไม่มี baseline ให้เทียบ = ผ่านอัตโนมัติ) พิมพ์ตาราง pass/fail ต่อ metric
+    แล้ว sys.exit(1) ถ้ามี metric ไหน regress เกิน settings.release_gate_max_regression_pct
+    (exit code นี้พร้อมต่อ CI ทันทีที่ต้องการผูก แต่ตอนนี้ยังเป็น manual gate — รันเองก่อน
+    merge/deploy)"""
+    print("=== W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.release_gate import run_release_gate
+
+    print(f"Provider: {settings.llm_provider}", flush=True)
+    print(f"ผลลัพธ์จะถูกเก็บไว้ที่: {settings.release_gate_results_dir}\n", flush=True)
+
+    async def _run():
+        outcome = await run_release_gate()
+
+        summary = outcome["summary"]
+        print("=== Summary ===", flush=True)
+        print(f"  git_commit : {summary['git_commit']}", flush=True)
+        print(f"  model      : {summary['model']}", flush=True)
+        print(f"  task_count : {summary['task_count']}", flush=True)
+        for metric, value in summary["aggregate"].items():
+            print(f"  {metric:<24}: {value:.3f}", flush=True)
+        print(f"\nบันทึกไว้ที่: {outcome['saved_path']}", flush=True)
+
+        if outcome["baseline"] is None:
+            print("\n(ไม่มีผลรันก่อนหน้าให้เทียบ — run นี้จะกลายเป็น baseline ของ run ถัดไป)", flush=True)
+        else:
+            print(f"\n=== เทียบกับ baseline (commit={outcome['baseline'].get('git_commit', '?')}) ===", flush=True)
+            for c in outcome["comparisons"]:
+                mark = "PASS" if c.passed else "FAIL"
+                sign = "+" if c.pct_change >= 0 else ""
+                print(
+                    f"  [{mark}] {c.metric:<24} current={c.current:.3f} baseline={c.baseline:.3f}"
+                    f" ({sign}{c.pct_change:.1f}%)",
+                    flush=True,
+                )
+
+        if outcome["passed"]:
+            print("\n=== ผ่าน release gate ===", flush=True)
+        else:
+            print("\n=== ไม่ผ่าน release gate — มี metric regress เกินเกณฑ์ ===", flush=True)
+        return outcome["passed"]
+
+    passed = asyncio.run(_run())
+    if not passed:
+        sys.exit(1)
+
+
 ACTIONS = {
     "1": ("รัน API server", run_server),
     "2": ("รัน tests (pytest)", run_tests),
@@ -1380,6 +1431,7 @@ ACTIONS = {
     "19": ("W12[B]: Evaluation แนว WebVoyager (success rate / step / token ต่อ task)", run_evaluation_harness),
     "20": ("MiniWoB++ Evaluation (Farama benchmark tasks)", run_miniwob_evaluation),
     "21": ("OrangeHRM Evaluation (public demo, ชั่วคราวระหว่างรอ Docker)", run_orangehrm_evaluation),
+    "22": ("W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน, เทียบ baseline)", run_release_gate_cmd),
 }
 
 ALIASES = {
@@ -1417,6 +1469,8 @@ ALIASES = {
     "miniwob": "20",
     "miniwob++": "20",
     "orangehrm": "21",
+    "release-gate": "22",
+    "gate": "22",
 }
 
 

@@ -371,12 +371,43 @@ async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
     client = MagicMock()
     client.messages.create = AsyncMock(return_value=response)
 
-    tool_name, tool_input, tool_use_id, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+    tool_name, tool_input, tool_use_id, messages, usage = await llm.next_action(client, "model", "goal", "page", [])
 
+    # W_notoolcall: ไม่ยอมแพ้ตั้งแต่ครั้งแรกอีกต่อไป — เตือนแล้วลองใหม่จนครบโควตาก่อน
+    assert client.messages.create.await_count == llm._NO_TOOL_CALL_RETRIES
     assert tool_name == "finish_task"
     assert tool_input["success"] is False
+    assert str(llm._NO_TOOL_CALL_RETRIES) in tool_input["message"]
     assert tool_use_id == ""
-    assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3)
+    # usage ของทุกรอบต้องถูกรวม ไม่ใช่รายงานแค่รอบสุดท้าย
+    assert usage == llm.TokenUsage(
+        input_tokens=5 * llm._NO_TOOL_CALL_RETRIES, output_tokens=3 * llm._NO_TOOL_CALL_RETRIES,
+    )
+    assert any(
+        m.get("content") == llm._NO_TOOL_CALL_NUDGE for m in messages if isinstance(m, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_action_retries_after_no_tool_call_then_accepts_second_attempt():
+    """W_notoolcall: การตอบเป็นข้อความธรรมดา 1 ครั้งต้องไม่ฆ่า task — รอบถัดไปที่เรียก tool
+    จริงต้องถูกใช้งานตามปกติ (นี่คือเหตุผลหลักที่ retry นี้มีอยู่)"""
+    text_block = MagicMock()
+    text_block.type = "text"
+    bad = _fake_anthropic_response([text_block], input_tokens=5, output_tokens=3)
+    good = _fake_anthropic_response(
+        [_fake_anthropic_tool_use_block("browser_action", {"type": "wait"})],
+        input_tokens=7, output_tokens=2,
+    )
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=[bad, good])
+
+    tool_name, tool_input, _, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert client.messages.create.await_count == 2
+    assert tool_name == "browser_action"
+    assert tool_input == {"type": "wait"}
+    assert usage == llm.TokenUsage(input_tokens=12, output_tokens=5)
 
 
 @pytest.mark.asyncio
@@ -787,10 +818,14 @@ async def test_next_action_gemini_falls_back_to_finish_task_when_no_function_cal
         client, "model", "goal", "page", []
     )
 
+    # W_notoolcall: เตือนแล้วลองใหม่จนครบโควตาก่อนยอมแพ้ (เหมือนทุก provider)
     assert tool_name == "finish_task"
     assert tool_input["success"] is False
+    assert str(llm._NO_TOOL_CALL_RETRIES) in tool_input["message"]
     assert tool_use_id == ""
-    assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
+    assert usage == llm.TokenUsage(
+        input_tokens=10 * llm._NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._NO_TOOL_CALL_RETRIES,
+    )
 
 
 @pytest.mark.asyncio

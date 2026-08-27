@@ -76,9 +76,15 @@ ORANGEHRM_TASKS: list[dict] = [
 ]
 
 
-async def run_orangehrm_evaluation(provider: Optional[str] = None) -> EvaluationReport:
+async def run_orangehrm_evaluation(
+    provider: Optional[str] = None, run_id: Optional[str] = None,
+) -> EvaluationReport:
     """รัน ORANGEHRM_TASKS + add_candidate (goal สร้างใหม่ทุกครั้ง) ผ่าน run_evaluation()
     ตัวเดียวกับ SauceDemo เป๊ะ (evaluation.py) แค่เปลี่ยน url — ดู docstring หัวไฟล์สำหรับ
     ข้อจำกัดของการทดสอบบน shared public demo instance นี้"""
     tasks = [*ORANGEHRM_TASKS, _add_candidate_task()]
-    return await run_evaluation(tasks=tasks, provider=provider, url=_ORANGEHRM_URL)
+    # W_eval_trace: ส่ง run_id ต่อให้ run_evaluation() เฉยๆ — suite นี้ reuse harness เดิม
+    # ทั้งก้อนอยู่แล้ว ไม่มี loop ของตัวเองให้ต้องเขียน telemetry ซ้ำ
+    return await run_evaluation(
+        tasks=tasks, provider=provider, url=_ORANGEHRM_URL, run_id=run_id,
+    )

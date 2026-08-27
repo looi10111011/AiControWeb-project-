@@ -13,12 +13,32 @@ checkout), กลาง (RAG-based permission gate, บูรณาการ 3 �
 3 ชิ้น + ลบ 1 ชิ้น + checkout เต็ม flow)
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from backend.app.core.orchestrator import Orchestrator
+from backend.app.core.telemetry import (
+    SOURCE_EVAL, new_run_id, write_step_trace, write_token_usage,
+)
 
 _SAUCEDEMO_URL = "https://www.saucedemo.com/"
+
+
+def _make_counting_auto_approve():
+    """W_eval (release-gate follow-up): เหมือน _auto_approve() เดิมทุกประการ (auto-approve
+    ทุก action ที่ต้องขอยืนยัน) แค่นับจำนวนครั้งที่ถูกเรียกไปด้วย — ใช้เป็น approval_count
+    ใน TaskEvalResult ด้านล่าง (วัด "ต้องขออนุมัติกี่ครั้ง" ต่อ task จริง ไม่ใช่เดา) คืน
+    (ask_user_func, get_count) คู่กัน — get_count เป็น closure อ่านค่า ณ ตอนนั้น ไม่ใช่
+    ค่า snapshot ตอนสร้าง"""
+    count = 0
+
+    async def _counting_auto_approve(cmd: dict) -> bool:
+        nonlocal count
+        count += 1
+        return True
+
+    return _counting_auto_approve, lambda: count
 
 
 async def _auto_approve(cmd: dict) -> bool:
@@ -74,6 +94,19 @@ class TaskEvalResult:
     total_tokens: int
     message: str
     error: Optional[str] = None
+    # W_eval (release-gate follow-up, ดู core/release_gate.py): 5 field ใหม่ต่อจากนี้
+    latency_seconds: float = 0.0
+    # llm_calls เป็นค่าประมาณ ไม่ใช่ตัวนับจริงทีละ LLM API call (run_task() ไม่มี counter
+    # แบบนั้นให้ดึงตรงๆ) — fastpath task ที่ไม่ต้อง repair เลยไม่มี LLM call จริงสักครั้ง (ใช้
+    # repairs แทน steps เพราะ steps ของ fastpath คือ "จำนวน step ที่ replay" ไม่ใช่ LLM call)
+    # ส่วน slow-path (execution_mode ว่างเปล่า/ไม่ใช่ fastpath*) ใช้ steps ตรงๆ (แต่ละ step
+    # ผูกกับ next_action() หนึ่งครั้งโดยประมาณ — คลาดเคลื่อนได้บ้างจาก nudge/retry guard ที่
+    # เรียก next_action() ซ้ำโดยไม่เพิ่ม steps_taken เสมอไป แต่เป็นค่าประมาณที่ดีที่สุดที่ทำ
+    # ได้โดยไม่ต้องเพิ่ม instrumentation ใหม่ใน orchestrator.py's main loop)
+    llm_calls: int = 0
+    approval_count: int = 0
+    fastpath: bool = False
+    recoveries: int = 0
 
 
 @dataclass
@@ -98,11 +131,65 @@ class EvaluationReport:
             return 0.0
         return sum(r.total_tokens for r in self.results) / len(self.results)
 
+    # W_eval (release-gate follow-up) — 5 property ใหม่ต่อจากนี้ ทุกอันคืน 0.0 เงียบๆ ถ้า
+    # ไม่มี results เลย (เหมือน property เดิมด้านบนทุกประการ)
+
+    def _latency_percentile(self, pct: float) -> float:
+        """percentile คำนวณแบบ nearest-rank ธรรมดา (ไม่ interpolate) — พอสำหรับจำนวน task
+        ต่อ batch ที่มีจริง (ระดับสิบ ไม่ใช่ระดับพัน ที่การ interpolate จะมีผลชัดเจนกว่านี้)"""
+        if not self.results:
+            return 0.0
+        latencies = sorted(r.latency_seconds for r in self.results)
+        idx = min(int(len(latencies) * pct) if pct < 1.0 else len(latencies) - 1, len(latencies) - 1)
+        return latencies[idx]
+
+    @property
+    def p50_latency_seconds(self) -> float:
+        return self._latency_percentile(0.5)
+
+    @property
+    def p95_latency_seconds(self) -> float:
+        return self._latency_percentile(0.95)
+
+    @property
+    def avg_llm_calls(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(r.llm_calls for r in self.results) / len(self.results)
+
+    @property
+    def approval_rate(self) -> float:
+        """approval_count เฉลี่ยต่อ task (ไม่ใช่ "สัดส่วน task ที่ต้องขออนุมัติ") — ชื่อ
+        "_rate" ตามชื่อ metric ในสเปคเดิม (roadmap: "จำนวนครั้งที่ต้องขออนุมัติ") แต่ความ
+        หมายจริงคือค่าเฉลี่ยจำนวนครั้ง"""
+        if not self.results:
+            return 0.0
+        return sum(r.approval_count for r in self.results) / len(self.results)
+
+    @property
+    def fastpath_hit_rate(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(1 for r in self.results if r.fastpath) / len(self.results)
+
+    @property
+    def recovery_rate(self) -> float:
+        """ในบรรดา task ที่ผ่าน fast-path จริง (fastpath=True) — สัดส่วนที่ "ต้องพึ่ง
+        Repair อย่างน้อย 1 ครั้ง" (recoveries>0) แล้ว "ยังสำเร็จอยู่ดี" เทียบกับ task
+        fast-path ที่ต้องพึ่ง Repair ทั้งหมด (ไม่ว่าจะสำเร็จหรือ escalate ไปสุดท้าย) — วัด
+        "เมื่อ self-heal จำเป็น มันช่วยรอด task ได้บ่อยแค่ไหนจริงๆ" คืน 0.0 ถ้าไม่มี task
+        ไหนต้องพึ่ง Repair เลย (ไม่มีอะไรให้วัด ไม่ใช่ "recovery ล้มเหลว 100%")"""
+        needed_recovery = [r for r in self.results if r.fastpath and r.recoveries > 0]
+        if not needed_recovery:
+            return 0.0
+        return sum(1 for r in needed_recovery if r.success) / len(needed_recovery)
+
 
 async def run_evaluation(
     tasks: Optional[list[dict]] = None,
     provider: Optional[str] = None,
     url: str = _SAUCEDEMO_URL,
+    run_id: Optional[str] = None,
 ) -> EvaluationReport:
     """รัน task ทีละตัวตามลำดับ (ไม่ concurrent ผ่าน pool) เพราะอยากวัด step/token ต่อ task
     ให้ตรงไปตรงมา ไม่ปนกับ rate-limit/คิวรอ browser ว่างที่จะทำให้ตัวเลขต่อ task เพี้ยน —
@@ -125,23 +212,60 @@ async def run_evaluation(
     พังตาม — อยากได้ผลลัพธ์ของ task ที่เหลือครบเท่าที่ทำได้)"""
     tasks = tasks if tasks is not None else BENCHMARK_TASKS
     report = EvaluationReport()
+    # W_eval_trace: id ที่ผูกทุก task ของการรันครั้งนี้เข้าด้วยกัน — release_gate.py ส่งของมันเอง
+    # ลงมาเพื่อให้ 3 suite ใช้ id เดียวกัน ส่วนการรัน suite เดี่ยวๆ (run.py eval/orangehrm)
+    # สร้างเอง trace จึง group ได้เสมอไม่ว่าจะเรียกจากทางไหน
+    resolved_run_id = run_id or new_run_id("eval")
     for task in tasks:
+        counting_ask_user_func, get_approval_count = _make_counting_auto_approve()
+        started_at = time.monotonic()
+        task_id = f"{resolved_run_id}-{task['name']}"
         try:
             result = await Orchestrator().run_task(
                 url, task["goal"],
                 max_steps=task.get("max_steps", 20),
                 headless=True, confirm_plan=False, provider=provider,
-                ask_user_func=_auto_approve,
+                ask_user_func=counting_ask_user_func,
             )
+            latency = time.monotonic() - started_at
             tokens = result["tokens"]
             total_tokens = tokens["input"] + tokens["output"] + tokens["cache_read"] + tokens["cache_creation"]
+            execution_mode = result.get("execution_mode", "")
+            is_fastpath = execution_mode.startswith("fastpath")
             report.results.append(TaskEvalResult(
                 name=task["name"], goal=task["goal"], success=result["success"],
                 steps=result["steps"], total_tokens=total_tokens, message=result["message"],
+                latency_seconds=latency,
+                llm_calls=result.get("repairs", 0) if is_fastpath else result["steps"],
+                approval_count=get_approval_count(),
+                fastpath=is_fastpath,
+                recoveries=result.get("repairs", 0),
             ))
+            # W_eval_trace: เส้นทาง eval ไม่ผ่าน TaskManager จึงต้องเรียก writer เองตรงนี้
+            # (ดู core/telemetry.py หัวไฟล์สำหรับบั๊กจริงที่ทำให้ต้องทำ) — เขียนหลังบันทึกผลลง
+            # report แล้ว เพื่อให้ปัญหาการเขียน log ไม่มีทางทำให้ผล eval ที่วัดได้จริงหายไป
+            write_step_trace(
+                result.get("history"), task_id=task_id, provider=provider,
+                run_id=resolved_run_id,
+            )
+            write_token_usage(
+                task_id=task_id, url=url, goal=task["goal"], provider=provider,
+                result=result, status="done", error=None, duration_seconds=latency,
+                source=SOURCE_EVAL, run_id=resolved_run_id,
+            )
         except Exception as e:
             report.results.append(TaskEvalResult(
                 name=task["name"], goal=task["goal"], success=False, steps=0,
                 total_tokens=0, message="", error=f"{type(e).__name__}: {e}",
+                latency_seconds=time.monotonic() - started_at, approval_count=get_approval_count(),
             ))
+            # W_eval_trace: ไม่มี result dict ให้ดึง history จึงไม่มี trace ให้เขียน แต่ยังบันทึก
+            # แถว token_usage ไว้ด้วย status="error" — เหตุผลเดียวกับ W_step_trace ในฝั่ง API:
+            # task ที่พังต้องปรากฏในไฟล์ ไม่งั้น success rate ที่คำนวณจากไฟล์นี้เป็นเพดานบน
+            write_token_usage(
+                task_id=task_id, url=url, goal=task["goal"], provider=provider,
+                result=None, status="error", error=f"{type(e).__name__}: {e}",
+                duration_seconds=time.monotonic() - started_at,
+                source=SOURCE_EVAL, run_id=resolved_run_id,
+            )
     return report

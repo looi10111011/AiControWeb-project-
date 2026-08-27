@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import async_playwright
 
-from backend.app.core.perception import count_elements, extract_table_data, fuzzy_find, get_snapshot, resolve_frame
+from backend.app.core.perception import _cap_rows, count_elements, extract_table_data, fuzzy_find, get_snapshot, resolve_frame
 
 # เทสต์กลุ่มนี้เปิด chromium จริง (ไม่ mock) เพราะ get_snapshot() พึ่ง page.evaluate()
 # รัน JS จริงบน DOM จริง — mock DOM API ยากกว่าเปิด browser เปล่าตรงๆ
@@ -1744,3 +1744,132 @@ async def test_get_snapshot_marks_disabled_and_required_together():
 
     assert "[disabled]" in elements[0]["label"]
     assert "[required]" in elements[0]["label"]
+
+
+# ---------------- W_dropdown_field_label / W_select_all_aria_grid (P0 F2 + F4) ----------------
+
+# DOM ย่อจาก OrangeHRM 5.x Admin > User Management จริง: dropdown สองตัวติดกันที่ trigger เป็น
+# <div class="oxd-select-text"> (ไม่ใช่ form field เลย) และตารางผลลัพธ์เป็น ARIA grid ล้วนๆ
+# ไม่มี <table> สักตัว — สองอย่างนี้คือรากของบั๊ก P0 ทั้งคู่
+_HTML_ORANGEHRM_LIKE_FILTERS = """
+<html><body><main>
+  <div class="oxd-input-group">
+    <div class="oxd-input-group__label-wrapper"><label class="oxd-label">User Role</label></div>
+    <div class="oxd-select-wrapper">
+      <div class="oxd-select-text" tabindex="0"><div class="oxd-select-text-input">-- Select --</div></div>
+    </div>
+  </div>
+  <div class="oxd-input-group">
+    <div class="oxd-input-group__label-wrapper"><label class="oxd-label">Status</label></div>
+    <div class="oxd-select-wrapper">
+      <div class="oxd-select-text" tabindex="0"><div class="oxd-select-text-input">-- Select --</div></div>
+    </div>
+  </div>
+</main></body></html>
+"""
+
+_HTML_ARIA_GRID_WITH_SELECT_ALL = """
+<html><body><main>
+  <div role="table">
+    <div role="rowgroup">
+      <div role="row">
+        <div role="columnheader"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="columnheader">Username</div>
+      </div>
+    </div>
+    <div role="rowgroup">
+      <div role="row">
+        <div role="cell"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="cell">alice</div>
+      </div>
+      <div role="row">
+        <div role="cell"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="cell">bob</div>
+      </div>
+    </div>
+  </div>
+</main></body></html>
+"""
+
+
+async def _labels_for(html: str) -> list[str]:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+        elements, _ = await get_snapshot(page)
+        await browser.close()
+    return [e["label"] for e in elements]
+
+
+@pytest.mark.asyncio
+async def test_custom_dropdown_triggers_are_labelled_with_their_field_name():
+    """W_dropdown_field_label: เดิม dropdown ทั้งสองตัวได้ label เป็น '-- Select --' เหมือนกัน
+    เป๊ะ โมเดลจึงต้องเดาจากลำดับ DOM ว่าอันไหนคือ User Role — รากของบั๊ก W_filter_safety ที่เคย
+    กรอง/ลบผิดกลุ่มมาแล้วจริง"""
+    labels = await _labels_for(_HTML_ORANGEHRM_LIKE_FILTERS)
+
+    assert "User Role: -- Select --" in labels
+    assert "Status: -- Select --" in labels
+    # ค่าที่เลือกอยู่ต้องยังอยู่ในป้าย ไม่ถูกชื่อ field ทับทิ้ง (โมเดลต้องรู้ว่ายังไม่ได้ตั้งค่า)
+    assert "-- Select --" not in labels
+
+
+@pytest.mark.asyncio
+async def test_select_all_checkbox_is_found_on_an_aria_grid_without_any_table_tag():
+    """W_select_all_aria_grid: กฎเดิมใช้ el.closest('th, thead') ซึ่งไม่มีทางตรงบน data grid ที่
+    ทำด้วย div[role=...] ล้วน — checkbox หัวตารางจึงถูกตั้งชื่อ 'Select row' เหมือนทุกแถว ทำให้
+    element ที่ W21 สั่งโมเดลให้ไปหา ไม่มีอยู่ใน snapshot เลยสักตัว"""
+    labels = await _labels_for(_HTML_ARIA_GRID_WITH_SELECT_ALL)
+
+    assert labels.count("Select All") == 1
+    assert labels.count("Select row") == 2
+
+
+@pytest.mark.asyncio
+async def test_plain_html_table_header_checkbox_still_reads_as_select_all():
+    """กันการ regress ของพฤติกรรมเดิม (<thead>/<th>) ตอนขยายเงื่อนไขไปรองรับ ARIA"""
+    labels = await _labels_for("""
+      <html><body><main><table>
+        <thead><tr><th><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></th><th>Name</th></tr></thead>
+        <tbody><tr><td><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></td><td>alice</td></tr></tbody>
+      </table></main></body></html>
+    """)
+
+    assert labels.count("Select All") == 1
+    assert labels.count("Select row") == 1
+
+
+# ---------------- W_extract_row_cap (P4.5): ตัดขนาดผลลัพธ์ read_page_data ----------------
+
+def test_cap_rows_leaves_small_results_untouched():
+    rows = [["a"], ["b"]]
+    capped, note = _cap_rows(rows, len(rows))
+    assert capped == rows
+    assert note == ""
+
+
+def test_cap_rows_truncates_and_says_so_out_loud():
+    """ห้ามตัดแบบเงียบๆ — โมเดลต้องรู้ว่ายังมีแถวที่ไม่ได้เห็น ไม่งั้นมันจะสรุปจากข้อมูลบางส่วน
+    ราวกับเป็นข้อมูลทั้งหมด (failure mode เดียวกับ W_confident_zero)"""
+    from backend.app.config import settings
+
+    rows = [[str(i)] for i in range(settings.read_page_data_max_rows + 40)]
+    capped, note = _cap_rows(rows, len(rows))
+
+    assert len(capped) == settings.read_page_data_max_rows
+    assert str(len(rows)) in note
+    assert str(settings.read_page_data_max_rows) in note
+    assert "computed by the system from ALL" in note
+
+
+def test_cap_rows_can_be_disabled_with_a_non_positive_limit():
+    from unittest.mock import patch
+
+    rows = [[str(i)] for i in range(500)]
+    with patch("backend.app.core.perception.settings") as mock_settings:
+        mock_settings.read_page_data_max_rows = 0
+        capped, note = _cap_rows(rows, len(rows))
+
+    assert len(capped) == 500
+    assert note == ""
