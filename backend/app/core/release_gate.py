@@ -18,6 +18,7 @@ list เดียวกันแล้วสร้าง EvaluationReport(result
 คำนวณเดิมเลยสักบรรทัด"""
 
 import json
+import statistics
 import subprocess
 import time
 from dataclasses import dataclass
@@ -159,6 +160,64 @@ def load_latest_summary(results_dir: Optional[str] = None, *, exclude_path: Opti
     return candidates[-1][1]
 
 
+def load_recent_summaries(
+    results_dir: Optional[str] = None, *, limit: int = 5, exclude_path: Optional[Path] = None,
+) -> list[dict]:
+    """คืน summary JSON ล่าสุดไม่เกิน limit ไฟล์ เรียงเก่า->ใหม่ (เกณฑ์เดียวกับ
+    load_latest_summary: เรียงตาม field "timestamp" ข้างในไฟล์ ไม่ใช่ mtime)"""
+    directory = Path(results_dir or settings.release_gate_results_dir)
+    if not directory.is_dir():
+        return []
+    candidates = []
+    for path in directory.glob("*.json"):
+        if exclude_path is not None and path.resolve() == exclude_path.resolve():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            candidates.append((data.get("timestamp", 0), data))
+        except Exception:
+            continue
+    candidates.sort(key=lambda pair: pair[0])
+    return [data for _, data in candidates[-limit:]] if limit > 0 else []
+
+
+def build_noise_baseline(summaries: list[dict]) -> tuple[dict, dict[str, float]]:
+    """W_gate_noise_floor: ยุบ summary หลายรันเป็น baseline เดียว + วัด noise ของ harness เอง
+
+    baseline ต่อ metric = median (ไม่ใช่ mean — รันเดียวที่ timeout/ดวงดีไม่ควรลาก baseline
+    ทั้งก้อน) และ spread = (max-min)/|median|*100 = "ตัวเลขนี้แกว่งได้เองแค่ไหนโดยไม่ต้องมี
+    ใครแก้โค้ดเลย" ซึ่งเป็นตัวตัดสินว่า metric นั้นเอามา gate ได้จริงไหม
+
+    summaries เดียว: spread=0.0 ทุกตัว (วัด noise ไม่ได้จากจุดข้อมูลเดียว) — จงใจให้ผลลัพธ์
+    เท่ากับพฤติกรรมเดิมทุกประการ ไม่ใช่ให้ "ผ่านหมด" เพราะข้อมูลไม่พอ
+    """
+    aggregate: dict[str, float] = {}
+    spread: dict[str, float] = {}
+    for metric in METRIC_NAMES:
+        values = [
+            float(summary.get("aggregate", {}).get(metric, 0.0)) for summary in summaries
+        ]
+        if not values:
+            aggregate[metric], spread[metric] = 0.0, 0.0
+            continue
+        median = statistics.median(values)
+        aggregate[metric] = median
+        spread[metric] = (
+            (max(values) - min(values)) / abs(median) * 100.0 if median else 0.0
+        )
+    newest = summaries[-1] if summaries else {}
+    baseline = {
+        "git_commit": newest.get("git_commit", "unknown"),
+        "model": newest.get("model", "unknown"),
+        "provider": newest.get("provider"),
+        "timestamp": newest.get("timestamp", 0),
+        "aggregate": aggregate,
+        "baseline_run_count": len(summaries),
+        "baseline_run_ids": [s.get("run_id") for s in summaries],
+    }
+    return baseline, spread
+
+
 @dataclass
 class MetricComparison:
     metric: str
@@ -166,10 +225,17 @@ class MetricComparison:
     baseline: float
     pct_change: float
     passed: bool
+    # W_gate_noise_floor: gating=False แปลว่า metric นี้ "รายงานได้ แต่ตัดสินไม่ได้" —
+    # spread ของมันเองระหว่างรันที่ไม่มีอะไรเปลี่ยนเลย กว้างกว่าเกณฑ์ regression ที่ตั้งไว้
+    # ปล่อยให้มัน fail gate = สร้าง false alarm ประจำจนคนเลิกเชื่อ gate ทั้งตัว
+    # (ค่า default ทั้งคู่ทำให้ caller เดิมที่ไม่ส่ง history เข้ามาได้พฤติกรรมเหมือนเดิมเป๊ะ)
+    gating: bool = True
+    spread_pct: Optional[float] = None
 
 
 def compare_against_baseline(
     current: dict, baseline: dict, max_regression_pct: Optional[float] = None,
+    *, noise_pct: Optional[dict[str, float]] = None,
 ) -> list[MetricComparison]:
     """เทียบ current["aggregate"] กับ baseline["aggregate"] ทีละ metric — pct_change เป็น
     "ทิศทางจริง" เสมอ (บวก = ตัวเลขเพิ่มขึ้น, ลบ = ลดลง ไม่ว่า metric นั้นจะเป็น higher-
@@ -194,9 +260,14 @@ def compare_against_baseline(
             # regression = เพิ่มขึ้นเกิน threshold
             passed = pct_change <= threshold
 
+        # W_gate_noise_floor: metric ที่ noise ของตัวเองกว้างกว่าเกณฑ์ ตัดสิน pass/fail
+        # ไม่ได้ — ยังคำนวณ passed ตามปกติเพื่อให้รายงานเห็นทิศทาง แต่ไม่ให้ถ่วง gate
+        metric_spread = None if noise_pct is None else float(noise_pct.get(metric, 0.0))
         comparisons.append(MetricComparison(
             metric=metric, current=current_value, baseline=baseline_value,
             pct_change=pct_change, passed=passed,
+            gating=metric_spread is None or metric_spread <= threshold,
+            spread_pct=metric_spread,
         ))
     return comparisons
 
@@ -240,10 +311,17 @@ async def run_release_gate(
     )
     saved_path = save_summary(summary, results_dir)
 
+    # W_gate_noise_floor: baseline_path ที่ระบุเองยังหมายถึง "ไฟล์เดียวนี้เท่านั้น" เหมือนเดิม
+    # (ผู้เรียกจงใจปักหมุดไว้แล้ว ห้ามไปเฉลี่ยกับไฟล์อื่นให้) — เฉพาะเส้นทาง auto เท่านั้นที่
+    # เปลี่ยนไปใช้ median ของหลายรัน
+    noise_pct: Optional[dict[str, float]] = None
     if baseline_path:
         baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
     else:
-        baseline = load_latest_summary(results_dir, exclude_path=saved_path)
+        history = load_recent_summaries(
+            results_dir, limit=settings.release_gate_baseline_runs, exclude_path=saved_path,
+        )
+        baseline, noise_pct = (None, None) if not history else build_noise_baseline(history)
 
     if baseline is None:
         return {
@@ -251,8 +329,11 @@ async def run_release_gate(
             "comparisons": [], "passed": True,
         }
 
-    comparisons = compare_against_baseline(summary, baseline, max_regression_pct)
+    comparisons = compare_against_baseline(
+        summary, baseline, max_regression_pct, noise_pct=noise_pct,
+    )
     return {
         "summary": summary, "saved_path": str(saved_path), "baseline": baseline,
-        "comparisons": comparisons, "passed": all(c.passed for c in comparisons),
+        "comparisons": comparisons,
+        "passed": all(c.passed for c in comparisons if c.gating),
     }

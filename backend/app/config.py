@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # (stochastic) ได้ระดับหนึ่งโดยไม่ false-positive บ่อยเกินไป ปรับได้ถ้าพบว่าเข้ม/หลวมไป
     release_gate_max_regression_pct: float = 10.0
 
+    # W_gate_noise_floor: baseline ที่ใช้เทียบต้องเป็น median ของ N รันหลังสุด ไม่ใช่รัน
+    # เดียวก่อนหน้า — วัดจริงแล้วพบว่า gate รันซ้ำบน commit เดิมไม่มีอะไรเปลี่ยนเลย ยัง
+    # swing เกินเกณฑ์ 10% ด้วยตัวมันเอง (success_rate -14.3%, p95 +49.5%, avg_tokens
+    # กระจาย 124k-211k = 70%) การเทียบกับรันเดียวจึงเท่ากับจับ "ดวง" ไม่ใช่ regression
+    # 5 = พอให้ median ทนรันดวงดี/ดวงร้ายได้ 2 ตัว โดยไม่ต้องรอสะสมนานเกินจะใช้งานจริง
+    release_gate_baseline_runs: int = 5
+
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
     chroma_long_term_collection_name: str = "long_term_memory"

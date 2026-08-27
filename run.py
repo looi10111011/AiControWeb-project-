@@ -1388,13 +1388,24 @@ def run_release_gate_cmd():
         if outcome["baseline"] is None:
             print("\n(ไม่มีผลรันก่อนหน้าให้เทียบ — run นี้จะกลายเป็น baseline ของ run ถัดไป)", flush=True)
         else:
-            print(f"\n=== เทียบกับ baseline (commit={outcome['baseline'].get('git_commit', '?')}) ===", flush=True)
+            runs = outcome["baseline"].get("baseline_run_count")
+            source = f"median ของ {runs} รันหลังสุด" if runs else "baseline ที่ระบุเอง"
+            print(
+                f"\n=== เทียบกับ baseline ({source}, "
+                f"commit={outcome['baseline'].get('git_commit', '?')}) ===",
+                flush=True,
+            )
             for c in outcome["comparisons"]:
+                # W_gate_noise_floor: NOISE = metric ที่แกว่งเองกว้างกว่าเกณฑ์ รายงานได้
+                # แต่ไม่ถ่วง gate (อธิบายเต็มที่ core/release_gate.py::MetricComparison)
                 mark = "PASS" if c.passed else "FAIL"
+                if not c.gating:
+                    mark = "NOISE"
                 sign = "+" if c.pct_change >= 0 else ""
+                spread = "" if c.spread_pct is None else f" [แกว่งเอง ±{c.spread_pct:.0f}%]"
                 print(
                     f"  [{mark}] {c.metric:<24} current={c.current:.3f} baseline={c.baseline:.3f}"
-                    f" ({sign}{c.pct_change:.1f}%)",
+                    f" ({sign}{c.pct_change:.1f}%){spread}",
                     flush=True,
                 )
 

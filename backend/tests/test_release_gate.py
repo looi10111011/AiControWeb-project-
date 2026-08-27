@@ -13,6 +13,9 @@ from backend.app.core.release_gate import (
     save_summary,
     _git_commit_short,
     _sanitize_for_filename,
+    build_noise_baseline,
+    load_recent_summaries,
+    METRIC_NAMES,
 )
 
 # ทุกเทสต์ mock subprocess/filesystem/eval suite ตรงๆ (ไม่รัน browser/LLM จริง) เหมือน
@@ -372,3 +375,99 @@ def test_build_summary_reads_miniwob_results_through_the_same_duck_typed_row():
 
     assert row["name"] == "click-test"
     assert row["approval_count"] == 2
+
+
+# --- W_gate_noise_floor (W91): baseline = median ของหลายรัน + metric ที่แกว่งเองเกินเกณฑ์
+# ต้อง "รายงานได้ แต่ตัดสินไม่ได้" — เกิดจากการวัดจริงว่า gate รันซ้ำบน commit เดิมโดยไม่มี
+# อะไรเปลี่ยนเลย ยัง swing เกิน 10% ด้วยตัวมันเอง (success_rate -14.3%, p95 +49.5%) ---
+
+
+def _summary_with(**aggregate) -> dict:
+    base = {m: 0.0 for m in METRIC_NAMES}
+    base.update(aggregate)
+    return {"git_commit": "abc1234", "model": "m", "provider": "p",
+            "timestamp": 1.0, "aggregate": base}
+
+
+def test_build_noise_baseline_uses_median_not_mean():
+    """รันเดียวที่ดวงดี/ดวงร้ายต้องไม่ลาก baseline ทั้งก้อน — 124k/161k/174k/211k
+    ต้องได้ median 167.5k ไม่ใช่ mean"""
+    summaries = [_summary_with(avg_tokens=v) for v in (124_000.0, 161_000.0, 174_000.0, 211_000.0)]
+    baseline, spread = build_noise_baseline(summaries)
+
+    assert baseline["aggregate"]["avg_tokens"] == 167_500.0
+    assert baseline["baseline_run_count"] == 4
+    # spread = (max-min)/median*100 = "ตัวเลขนี้แกว่งได้เองแค่ไหนโดยไม่มีใครแก้โค้ด"
+    assert round(spread["avg_tokens"], 1) == 51.9
+
+
+def test_build_noise_baseline_single_run_reports_zero_spread():
+    """จุดข้อมูลเดียววัด noise ไม่ได้ — ต้องได้ spread 0.0 (= เทียบแบบเดิมทุกประการ)
+    ไม่ใช่ปล่อยผ่านทุก metric เพราะข้อมูลไม่พอ"""
+    baseline, spread = build_noise_baseline([_summary_with(avg_tokens=100.0, success_rate=0.9)])
+
+    assert baseline["aggregate"]["avg_tokens"] == 100.0
+    assert spread["avg_tokens"] == 0.0
+    assert spread["success_rate"] == 0.0
+
+
+def test_compare_marks_metric_non_gating_when_its_own_spread_exceeds_threshold():
+    """avg_tokens ที่แกว่งเอง 52% แล้ว current ต่างจาก baseline 30% — ตัดสินไม่ได้
+    ส่วน avg_llm_calls ที่แกว่งเองแค่ 8% แล้ว regress 26% ตัดสินได้และต้อง fail"""
+    current = _summary_with(avg_tokens=130.0, avg_llm_calls=7.3)
+    baseline = _summary_with(avg_tokens=100.0, avg_llm_calls=5.8)
+    noise = {m: 0.0 for m in METRIC_NAMES}
+    noise["avg_tokens"] = 52.0
+    noise["avg_llm_calls"] = 8.0
+
+    by_metric = {
+        c.metric: c
+        for c in compare_against_baseline(current, baseline, 10.0, noise_pct=noise)
+    }
+
+    assert by_metric["avg_tokens"].gating is False
+    assert by_metric["avg_tokens"].spread_pct == 52.0
+    assert by_metric["avg_llm_calls"].gating is True
+    assert by_metric["avg_llm_calls"].passed is False
+
+
+def test_compare_without_noise_pct_keeps_every_metric_gating():
+    """ผู้เรียกเดิมที่ไม่ส่ง noise_pct (เช่น baseline_path ที่ปักหมุดเอง) ต้องได้พฤติกรรม
+    เหมือนเดิมเป๊ะ — ทุก metric ยัง gate ได้ตามปกติ"""
+    current = _summary_with(avg_tokens=200.0)
+    baseline = _summary_with(avg_tokens=100.0)
+
+    comparisons = compare_against_baseline(current, baseline, 10.0)
+
+    assert all(c.gating for c in comparisons)
+    assert all(c.spread_pct is None for c in comparisons)
+
+
+def test_load_recent_summaries_returns_last_n_oldest_first(tmp_path):
+    """เรียงตาม field timestamp ข้างในไฟล์ (ไม่ใช่ mtime) และตัดเหลือ limit ตัวหลังสุด"""
+    import json as _json
+
+    for ts in (5.0, 1.0, 3.0, 4.0, 2.0):
+        (tmp_path / f"run_{ts}.json").write_text(
+            _json.dumps({"timestamp": ts, "aggregate": {m: ts for m in METRIC_NAMES}}),
+            encoding="utf-8",
+        )
+
+    recent = load_recent_summaries(str(tmp_path), limit=3)
+
+    assert [r["timestamp"] for r in recent] == [3.0, 4.0, 5.0]
+
+
+def test_load_recent_summaries_excludes_the_run_just_saved(tmp_path):
+    """gate เพิ่ง save run ของตัวเองไปก่อนหน้า — ห้ามเอามาเป็น baseline ของตัวเอง"""
+    import json as _json
+    from pathlib import Path as _Path
+
+    own = tmp_path / "own.json"
+    own.write_text(_json.dumps({"timestamp": 9.0, "aggregate": {}}), encoding="utf-8")
+    (tmp_path / "prev.json").write_text(
+        _json.dumps({"timestamp": 1.0, "aggregate": {}}), encoding="utf-8")
+
+    recent = load_recent_summaries(str(tmp_path), limit=5, exclude_path=_Path(own))
+
+    assert [r["timestamp"] for r in recent] == [1.0]
