@@ -14,6 +14,7 @@ from backend.app.core.orchestrator import (
     _KEEP_RECENT_STEPS,
     _LONG_TERM_MEMORY_CHUNKS_PER_STEP,
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
+    _MAX_DELETE_ALL_UNVERIFIED_RETRIES,
     _MAX_PREMATURE_ALL_FAILED_RETRIES,
     _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
@@ -21,6 +22,7 @@ from backend.app.core.orchestrator import (
     _MAX_PREMATURE_TRUE_FINISH_RETRIES,
     _MAX_PREMATURE_VALIDATION_ERROR_RETRIES,
     _MAX_REQUEST_USER_INPUT_CALLS,
+    _DELETE_ALL_NO_SEARCH_NUDGE,
     _PREMATURE_ALL_FAILED_NUDGE,
     _PREMATURE_FALSE_FINISH_NUDGE,
     _PREMATURE_TRUE_FINISH_NUDGE,
@@ -6325,16 +6327,30 @@ async def test_row_action_right_after_a_dropdown_option_click_is_nudged():
 @pytest.mark.asyncio
 async def test_delete_all_goal_cannot_finish_successfully_without_ever_pressing_search():
     """W_delete_all_intent: run จริงที่ claim success=True ไม่เคยกดปุ่ม Search เลยสักครั้ง —
-    ตัวเลข (N) Records Found ที่ guard เดิมอ่านจึงเป็นของตารางที่ยังไม่ถูกกรอง"""
+    ตัวเลข (N) Records Found ที่ guard เดิมอ่านจึงเป็นของตารางที่ยังไม่ถูกกรอง
+
+    W_undefined_quota: เทสต์นี้เคย assert แค่ success is False ซึ่ง "ผ่าน" ได้ทั้งตอน guard
+    ทำงานถูกและตอน guard โยน NameError แล้ว task ตายทั้งตัว — บั๊กจริงจึงซ่อนอยู่ใต้เทสต์ที่
+    เขียวมาตลอด ต้องยืนยันว่า *ข้อความ nudge ตัวจริง* ถูกส่งกลับไปให้โมเดลด้วยเสมอ"""
     mock_async_playwright, mock_browser, _ = _patch_browser()
 
     async def _execute(page, cmd, **kwargs):
         return ActionResult(True, f"click({cmd['index']})", "click succeeded", dropdown_option_selected=True)
 
+    tool_results: list[str] = []
+
+    def _record_tool_result(messages, tool_use_id, result_text):
+        tool_results.append(result_text)
+        return messages + [result_text]
+
     next_action_calls = [
         ("browser_action", {"type": "click", "index": 7}, "t1", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
         ("finish_task", {"success": True, "message": "ลบครบแล้ว"}, "t2", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        # guard ที่ทำงานจริงกินเทิร์นเพิ่ม (นี่คือหลักฐานว่ามัน nudge จริง ไม่ได้ตายกลางทาง)
+        # และ finish_task(false) เองก็โดน _PREMATURE_FALSE_FINISH_NUDGE ซ้อนอีกชั้น
         ("finish_task", {"success": False, "message": "ยังกรองไม่เสร็จ"}, "t3", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": False, "message": "ยังกรองไม่เสร็จ"}, "t4", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
+        ("finish_task", {"success": False, "message": "ยังกรองไม่เสร็จ"}, "t5", ["m"], llm.TokenUsage(input_tokens=1, output_tokens=1)),
     ]
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
@@ -6346,13 +6362,18 @@ async def test_delete_all_goal_cannot_finish_successfully_without_ever_pressing_
          patch("backend.app.core.orchestrator._scan_remaining_target_records", AsyncMock(return_value=None)), \
          patch("backend.app.core.orchestrator._count_rows_matching_condition", AsyncMock(return_value=(0, 4))), \
          patch("backend.app.core.orchestrator.execute", AsyncMock(side_effect=_execute)), \
-         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record_tool_result), \
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         result = await Orchestrator().run_task(
             "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
         )
 
     assert result["success"] is False
+    assert _DELETE_ALL_NO_SEARCH_NUDGE in tool_results
+    # guard ต้อง "ปฏิเสธแล้วให้ไปต่อ" ไม่ใช่ทำให้ทั้ง task ตาย — W_loop_crash กลบ NameError
+    # ให้กลายเป็น success=False เหมือนกันเป๊ะ ข้อความจึงเป็นตัวเดียวที่แยกสองกรณีนี้ออกจากกัน
+    assert "unexpected error" not in (result["message"] or "")
+    assert _MAX_DELETE_ALL_UNVERIFIED_RETRIES >= 1
 
 
 @pytest.mark.asyncio

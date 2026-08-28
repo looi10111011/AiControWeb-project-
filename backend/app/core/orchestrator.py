@@ -634,6 +634,19 @@ _DELETE_ALL_UNVERIFIED_NUDGE_TEMPLATE = (
     "finish_task(success=true) once that list is genuinely empty."
 )
 
+# W_undefined_quota: โควตาของ guard 2 ตัวข้างบน (_DELETE_ALL_NO_SEARCH_NUDGE และ
+# _DELETE_ALL_UNVERIFIED_NUDGE_TEMPLATE) — ชื่อนี้ถูก "ใช้" มาตั้งแต่ W80 ที่จุดตรวจ
+# finish_task แต่ไม่เคยถูก "ประกาศ" เลยสักที่ ทั้งสอง guard จึงโยน NameError ทันทีที่ควรจะ
+# ทำงาน คือตอน agent อ้างว่าลบครบทั้งที่ยังไม่เคยกด Search ซึ่งเป็นเคสที่ W80 สร้างมาเพื่อจับ
+# โดยเฉพาะ — แล้ว W_loop_crash (W77) รับ NameError ไว้เงียบๆ แปลงเป็น success=False ทั้ง task
+# guard ชุด W80 จึงไม่เคยได้ทำงานจริงสักครั้งนับตั้งแต่เขียนมา
+#
+# เทสต์มองไม่เห็นเพราะ assert แค่ result["success"] is False ซึ่งเป็นจริงทั้งตอน guard ทำงาน
+# ถูกและตอน task crash — เทสต์ของ guard พวกนี้ต้อง assert "ข้อความ nudge" เสมอ ไม่ใช่แค่ผลลัพธ์
+# 2 = เท่ากับ _MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES ด้านบน (guard ตระกูลเดียวกัน ให้โมเดลแก้ตัว
+# ได้ 2 ครั้งแล้วยอมรับคำตอบของมัน ไม่ขังไว้จนหมด step budget)
+_MAX_DELETE_ALL_UNVERIFIED_RETRIES = 2
+
 _ROW_ACTION_LABEL_RE = re.compile(r"\b(edit|view details|delete|download|pencil)\b", re.IGNORECASE)
 
 # W64[7.1]: ใช้เช็คว่า click ที่เพิ่งสำเร็จคือการกด Search จริงหรือไม่ (ถ้าใช่ ล้าง
