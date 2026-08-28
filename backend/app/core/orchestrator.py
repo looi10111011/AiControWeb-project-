@@ -566,20 +566,37 @@ def _normalized_field_name(text: str) -> str:
     return re.sub(r"[^0-9a-z\u0e00-\u0e7f]+", "", (text or "").lower())
 
 
-def _goal_condition_fields(goal: str) -> list[str]:
-    """W_filter_scope_guard: ฝั่งซ้ายของ "key=value" ใน goal = field ที่ user "อนุญาต" ให้กรอง
-    ("userrole=ess" -> ["userrole"]) — คู่กับ _goal_condition_values() ด้านล่างที่ใช้ฝั่งขวา
-    ใช้ regex ตัวเดียวกัน (actions._KEY_VALUE_IN_QUERY_RE) ไม่เขียนใหม่ซ้อน
+def _goal_condition_pairs(goal: str) -> list[tuple[str, str]]:
+    """W_column_aware_rows: (ชื่อ field ที่ normalize แล้ว, ค่าที่ต้องการ) ทุกคู่ที่ user เขียนไว้
+    ใน goal แบบ "key=value" — เป็น **แหล่งความจริงเดียว** ของทั้ง _goal_condition_fields()
+    และ _goal_condition_values() ด้านล่าง (เดิมสองตัวนั้นวน regex เองคนละรอบ ซึ่งแปลว่ากฎการ
+    ตัดURL/กันค่าซ้ำต้องแก้สองที่พร้อมกันตลอด)
 
-    คืน [] ถ้า goal ไม่ได้ระบุเงื่อนไขแบบนี้ = ไม่เปิด guard เลย ตามหลักการเดียวกับ
-    _goal_condition_values: ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ"""
+    ตัด URL ทิ้งก่อนเสมอ — goal จริงมักมี URL ปนอยู่ด้วย ("ไปที่ https://x/?id=9 แล้วลบ user
+    ที่ userrole=ess ให้หมด") ซึ่ง query string ของมันเข้าเงื่อนไข key=value เป๊ะๆ ทั้งที่ไม่ใช่
+    เงื่อนไขของงานเลย ถ้าไม่ตัดจะได้เงื่อนไข AND ที่ไม่มีแถวไหนตรงได้เลย แล้ว guard จะบล็อก
+    การลบที่ถูกต้องทิ้งไปเปล่าๆ
+
+    คืน [] ถ้า goal ไม่ได้ระบุเงื่อนไขแบบนี้ = ไม่เปิด guard ที่พึ่งมันเลยสักตัว (ไม่เดาเงื่อนไข
+    เองจากภาษาธรรมชาติ)"""
     goal_without_urls = _URL_IN_GOAL_RE.sub(" ", goal or "")
-    fields: list[str] = []
+    pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for raw, _ in _KEY_VALUE_IN_QUERY_RE.findall(goal_without_urls):
-        field = _normalized_field_name(raw)
-        if field and field not in seen:
-            seen.add(field)
+    for raw_field, raw_value in _KEY_VALUE_IN_QUERY_RE.findall(goal_without_urls):
+        value = raw_value.strip()
+        if not value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        pairs.append((_normalized_field_name(raw_field), value))
+    return pairs
+
+
+def _goal_condition_fields(goal: str) -> list[str]:
+    """W_filter_scope_guard: ฝั่งซ้ายของ "key=value" = field ที่ user "อนุญาต" ให้กรอง
+    ("userrole=ess" -> ["userrole"])"""
+    fields: list[str] = []
+    for field, _ in _goal_condition_pairs(goal):
+        if field and field not in fields:
             fields.append(field)
     return fields
 
@@ -683,15 +700,14 @@ def _goal_condition_values(goal: str) -> list[str]:
     # ที่ userrole=ess ให้หมด") ซึ่ง query string ของมันเข้าเงื่อนไข key=value เป๊ะๆ ทั้งที่
     # ไม่ใช่เงื่อนไขของงานเลย ถ้าไม่ตัดจะได้เงื่อนไข AND ที่ไม่มีแถวไหนตรงได้เลย แล้ว guard
     # จะบล็อกการลบที่ถูกต้องทิ้งไปเปล่าๆ
-    goal_without_urls = _URL_IN_GOAL_RE.sub(" ", goal or "")
     values: list[str] = []
     seen: set[str] = set()
-    # W_column_aware_count: regex จับทั้ง key และ value แล้ว — ที่นี่ใช้แค่ฝั่ง value เพราะ
-    # safety gate เทียบกับ "ข้อความทั้งแถว" ที่อ่านมาจาก DOM ดิบๆ (ไม่ได้แยกคอลัมน์เหมือน
-    # markdown table ที่ read_page_data ได้) การเล็งคอลัมน์จึงยังทำไม่ได้ตรงนี้
-    for _, raw in _KEY_VALUE_IN_QUERY_RE.findall(goal_without_urls):
-        value = raw.strip()
-        if value and value.lower() not in seen:
+    # W_column_aware_rows: ข้อจำกัดเดิมที่เขียนไว้ตรงนี้ ("แยกคอลัมน์ไม่ได้ จึงเล็งคอลัมน์
+    # ไม่ได้") **หมดไปแล้ว** — _scan_visible_table_rows() คืนเซลล์แยกคอลัมน์พร้อมหัวตารางแล้ว
+    # ฟังก์ชันนี้เหลือหน้าที่แค่ "ค่าที่ user ขอ" สำหรับข้อความรายงาน ส่วนการตัดสินว่าแถวไหน
+    # ตรงเงื่อนไขย้ายไปที่ _row_matches_condition() ซึ่งใช้ทั้ง field และ value
+    for _, value in _goal_condition_pairs(goal):
+        if value.lower() not in seen:
             seen.add(value.lower())
             values.append(value)
     return values
@@ -702,6 +718,12 @@ def _goal_condition_values(goal: str) -> list[str]:
 # [role=row]) ตาม pattern เดียวกับ perception._EXTRACT_TABLE_JS ที่พิสูจน์แล้วว่าถูกต้อง —
 # ตัดแถวหัวตารางทิ้งเสมอ (แถวที่มี th/[role=columnheader] อยู่ข้างใน) เพราะหัวตารางมีคำว่า
 # "User Role" อยู่ด้วยจะทำให้นับ match เกินจริง
+# W_column_aware_rows: คืน "เซลล์แยกคอลัมน์ + ชื่อหัวตาราง" ไม่ใช่ innerText ทั้งแถวก้อนเดียว
+# เหมือนเดิม — เพราะการเทียบเงื่อนไขกับข้อความทั้งแถวทำให้ค่าอย่าง "ess" ไปตรงกับชื่อคน
+# ("Jessica"), username ("ess.irhrg0") หรือสถานะ ("Assessed") ได้หมด ซึ่งเป็นเคสที่ comment
+# ของ _KEY_VALUE_IN_QUERY_RE (W_column_aware_count) เตือนไว้ตรงตัวแล้วแต่ยังไม่เคยถูกแก้จริง
+# ผลของการนับผิดคือของที่กู้คืนไม่ได้ทั้งสองทิศ: นับเกิน -> ปล่อยให้ลบจากตารางที่ยังไม่กรอง /
+# นับเกินตอนตรวจงานที่เสร็จแล้ว -> task ที่จบแล้วจบไม่ได้
 _VISIBLE_TABLE_ROWS_JS = r"""
 () => {
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -709,41 +731,102 @@ _VISIBLE_TABLE_ROWS_JS = r"""
   for (const t of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
     let rowEls = Array.from(t.querySelectorAll('tr'));
     if (rowEls.length === 0) rowEls = Array.from(t.querySelectorAll('[role="row"]'));
-    const rows = rowEls
-      .filter((r) => !r.querySelector('th, [role="columnheader"]'))
-      .map((r) => clean(r.innerText))
-      .filter(Boolean);
-    if (rows.length > 0 && (!best || rows.length > best.length)) best = rows;
+    const headerEl = rowEls.find((r) => r.querySelector('th, [role="columnheader"]'));
+    const headers = headerEl
+      ? Array.from(headerEl.querySelectorAll('th, [role="columnheader"]')).map((h) => clean(h.innerText))
+      : [];
+    const rows = [];
+    for (const r of rowEls) {
+      if (r.querySelector('th, [role="columnheader"]')) continue;
+      let cellEls = Array.from(r.querySelectorAll('td, [role="cell"], [role="gridcell"]'));
+      // ตารางที่ไม่ได้ใช้ td/[role=cell] เลย (div ล้วน) — ถอยไปใช้ทั้งแถวเป็นเซลล์เดียว
+      // ซึ่งให้พฤติกรรมเท่าเดิมกับก่อน W_column_aware_rows ไม่ใช่คืนแถวว่าง
+      const cells = cellEls.length > 0
+        ? cellEls.map((c) => clean(c.innerText))
+        : [clean(r.innerText)];
+      if (cells.some(Boolean)) rows.push(cells);
+    }
+    if (rows.length > 0 && (!best || rows.length > best.rows.length)) best = { headers, rows };
   }
   return best;
 }
 """
 
 
-async def _scan_visible_table_rows(page: Page) -> Optional[list[str]]:
-    """W_delete_all_intent: คืนข้อความของแถวข้อมูลที่แสดงอยู่จริงตอนนี้ หรือ None ถ้าหน้านี้ไม่มี
-    ตาราง/อ่านไม่ได้ — ห้าม throw ออกไปพัง loop เด็ดขาด (หลักการเดียวกับ guard อื่นในไฟล์นี้)"""
+async def _scan_visible_table_rows(page: Page) -> Optional[tuple[list[str], list[list[str]]]]:
+    """W_delete_all_intent / W_column_aware_rows: คืน (ชื่อหัวตาราง, แถวข้อมูลแยกเป็นเซลล์) ของ
+    ตารางที่ใหญ่ที่สุดบนหน้า หรือ None ถ้าหน้านี้ไม่มีตาราง/อ่านไม่ได้ — ห้าม throw ออกไปพัง loop
+    เด็ดขาด (หลักการเดียวกับ guard อื่นในไฟล์นี้) หัวตารางว่างได้ (ตารางที่ไม่มี header จริง)
+    ซึ่งจะทำให้ผู้เรียกถอยไปเทียบทั้งแถวเองตามเดิม"""
     try:
-        rows = await page.evaluate(_VISIBLE_TABLE_ROWS_JS)
+        table = await page.evaluate(_VISIBLE_TABLE_ROWS_JS)
     except Exception:
         return None
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(table, dict) or not table.get("rows"):
         return None
-    return [str(r) for r in rows]
+    headers = [str(h) for h in (table.get("headers") or [])]
+    rows = [[str(c) for c in row] for row in table["rows"] if isinstance(row, list)]
+    return (headers, rows) if rows else None
+
+
+def _column_index_for_field(headers: list[str], field: str) -> Optional[int]:
+    """W_column_aware_rows: index ของคอลัมน์ที่ชื่อตรงกับ field ที่ user เขียนใน goal —
+    ใช้ตัวเทียบชื่อตัวเดียวกับ W_filter_scope_guard (_field_names_match) ที่ทนการพิมพ์ผิด/
+    คำไทยติดหน้าอยู่แล้ว ไม่สร้างกฎการเทียบชุดที่สอง
+
+    None = หาไม่เจอ ซึ่งแปลว่า "ตัดสินไม่ได้" ไม่ใช่ "ไม่ตรง" — ผู้เรียกต้อง fail-open"""
+    if not field:
+        return None
+    for index, header in enumerate(headers):
+        if _field_names_match(field, _normalized_field_name(header)):
+            return index
+    return None
+
+
+def _cell_matches_value(cell: str, value: str) -> bool:
+    """W_column_aware_rows: เซลล์นี้มีค่าที่ user ขอไหม — ยอมรับ 2 แบบเท่านั้น: ตรงทั้งเซลล์
+    หรือเป็น "คำเต็มคำหนึ่ง" ที่คั่นด้วยช่องว่างในเซลล์ (เช่นเซลล์ "Senior ESS" กับค่า "ess")
+
+    จงใจใช้การตัดด้วยช่องว่าง ไม่ใช่ word boundary ของ regex — `` ถือว่า "." เป็นตัวคั่นด้วย
+    ทำให้ username "ess.irhrg0" ยังตรงกับค่า "ess" อยู่ดี ซึ่งเป็นเคสตัวอย่างที่ comment ของ
+    _KEY_VALUE_IN_QUERY_RE (W_column_aware_count) ยกไว้ตรงตัวว่าเคยนับผิดมาแล้วจริง
+    ที่ตัดทิ้งไปพร้อมกัน: "Jessica" / "Assessed" (ค่าอยู่กลางคำ)"""
+    cell_norm = (cell or "").strip().lower()
+    value_norm = (value or "").strip().lower()
+    if not value_norm:
+        return False
+    return cell_norm == value_norm or value_norm in cell_norm.split()
+
+
+def _row_matches_condition(
+    headers: list[str], cells: list[str], pairs: list[tuple[str, str]],
+) -> bool:
+    """W_column_aware_rows: ทุกคู่ field=value ต้องตรงในแถวเดียวกัน (AND) ตรงกับความหมายของ
+    "userrole=ess status=enabled" ที่ user เขียนจริง — เล็งคอลัมน์ได้ก็เทียบเฉพาะเซลล์นั้น
+    เล็งไม่ได้ (ตารางไม่มีหัว/ชื่อหัวไม่ตรงอะไรเลย) ถึงค่อยถอยไปเทียบทั้งแถวแบบเดิม"""
+    row_text = " ".join(cells)
+    for field, value in pairs:
+        index = _column_index_for_field(headers, field)
+        if index is not None and index < len(cells):
+            if not _cell_matches_value(cells[index], value):
+                return False
+        elif not _cell_matches_value(row_text, value):
+            return False
+    return True
 
 
 async def _count_rows_matching_condition(
-    page: Page, values: list[str],
+    page: Page, pairs: list[tuple[str, str]],
 ) -> Optional[tuple[int, int]]:
-    """W_delete_all_intent: คืน (จำนวนแถวที่ตรงเงื่อนไขทุกค่า, จำนวนแถวทั้งหมดที่เห็น) ของตาราง
-    ที่แสดงอยู่ หรือ None ถ้าเช็คไม่ได้ — เงื่อนไขหลายค่าตีความเป็น AND (ทุกค่าต้องอยู่ในแถว
-    เดียวกัน) ตรงกับความหมายของ "userrole=ess status=enabled" ที่ user เขียนจริง"""
-    if not values:
+    """W_delete_all_intent: คืน (จำนวนแถวที่ตรงเงื่อนไขทุกคู่, จำนวนแถวทั้งหมดที่เห็น) ของตาราง
+    ที่แสดงอยู่ หรือ None ถ้าเช็คไม่ได้"""
+    if not pairs:
         return None
-    rows = await _scan_visible_table_rows(page)
-    if rows is None:
+    scanned = await _scan_visible_table_rows(page)
+    if scanned is None:
         return None
-    matching = sum(1 for row in rows if all(v.lower() in row.lower() for v in values))
+    headers, rows = scanned
+    matching = sum(1 for cells in rows if _row_matches_condition(headers, cells, pairs))
     return matching, len(rows)
 
 
@@ -3040,6 +3123,11 @@ class Orchestrator:
         delete_all_condition_values = (
             _goal_condition_values(goal) if _is_delete_all_intent_goal(goal) else []
         )
+        # W_column_aware_rows: guard ที่ต้องตัดสินว่า "แถวไหนตรงเงื่อนไข" ต้องรู้ทั้งชื่อคอลัมน์
+        # และค่า ไม่ใช่ค่าอย่างเดียว — ส่วน *_values ด้านบนเหลือไว้ใช้กับข้อความรายงานเท่านั้น
+        delete_all_condition_pairs = (
+            _goal_condition_pairs(goal) if _is_delete_all_intent_goal(goal) else []
+        )
         # W_delete_all_intent: sticky ต่อ task — True หลังยืนยันแล้วครั้งแรกว่าตารางที่เห็น
         # กรองตรงเงื่อนไขจริง (หรือหลังหมดโควตา nudge) ไม่ต้องอ่าน DOM ซ้ำทุกครั้งที่ลบแถวถัดไป
         destructive_filter_verified = False
@@ -4079,7 +4167,7 @@ class Orchestrator:
                         condition_text = " + ".join(repr(v) for v in delete_all_condition_values)
                         row_match = (
                             None if remaining_records is not None
-                            else await _count_rows_matching_condition(page, delete_all_condition_values)
+                            else await _count_rows_matching_condition(page, delete_all_condition_pairs)
                         )
                         blocking_nudge = None
                         if filter_changed_without_search:
@@ -4563,7 +4651,7 @@ class Orchestrator:
                             # แข็งกว่าข้อความสรุปอยู่แล้ว ใช้ helper ตัวเดียวกับ guard ของ
                             # finish_task ไม่เขียนตัวนับใหม่
                             row_match = await _count_rows_matching_condition(
-                                page, delete_all_condition_values,
+                                page, delete_all_condition_pairs,
                             )
                             if row_match is not None and row_match[0] > 0:
                                 evidence = (
@@ -4845,7 +4933,7 @@ class Orchestrator:
                         )
                     )
                 ):
-                    row_match = await _count_rows_matching_condition(page, delete_all_condition_values)
+                    row_match = await _count_rows_matching_condition(page, delete_all_condition_pairs)
                     condition_text = " + ".join(repr(v) for v in delete_all_condition_values)
                     if (
                         row_match is not None and row_match[0] < row_match[1]

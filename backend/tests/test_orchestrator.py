@@ -35,6 +35,11 @@ from backend.app.core.orchestrator import (
     _field_names_match,
     _filter_field_from_label,
     _goal_condition_fields,
+    _goal_condition_pairs,
+    _goal_condition_values,
+    _cell_matches_value,
+    _column_index_for_field,
+    _row_matches_condition,
     _plan_drops_goal_operation,
     _build_nudge_message,
     _compact_anthropic_messages,
@@ -4290,6 +4295,66 @@ async def test_hard_stop_counts_table_rows_when_the_count_text_is_unrecognised()
 
     assert result["success"] is False
     assert "still match" in result["message"]
+
+
+# --- W_column_aware_rows (C1): เทียบเฉพาะคอลัมน์ที่ user ระบุ ไม่ใช่ข้อความทั้งแถว ---
+
+
+def test_cell_matches_value_rejects_a_value_buried_inside_a_word():
+    """ต้นเหตุเดิม: ค่า "ess" ไปตรงกับ "Jessica"/"Assessed"/"ess.irhrg0" ได้หมด
+    เพราะเทียบแบบ substring ล้วน — ยอมรับได้แค่ทั้งเซลล์ หรือเป็นคำหนึ่งในเซลล์"""
+    assert _cell_matches_value("ESS", "ess") is True
+    assert _cell_matches_value("Senior ESS", "ess") is True
+    assert _cell_matches_value("Jessica", "ess") is False
+    assert _cell_matches_value("Assessed", "ess") is False
+    assert _cell_matches_value("ess.irhrg0", "ess") is False
+
+
+def test_column_index_reuses_the_field_name_matcher():
+    """ชื่อคอลัมน์บนหน้าเว็บ ("User Role") กับที่ user พิมพ์ ("userole" ติดคำไทยข้างหน้า)
+    ต้องจับคู่กันได้ด้วยตัวเทียบตัวเดียวกับ W_filter_scope_guard ไม่ใช่กฎชุดที่สอง"""
+    headers = ["", "Username", "User Role", "Employee Name", "Status", "Actions"]
+
+    assert _column_index_for_field(headers, "userrole") == 2
+    assert _column_index_for_field(headers, "แล้บลบuserole") == 2
+    assert _column_index_for_field(headers, "department") is None
+
+
+def test_row_matches_condition_only_looks_at_the_named_column():
+    """บั๊กจริงที่ comment ของ W_column_aware_count เตือนไว้แต่ยังไม่เคยถูกแก้:
+    แถวที่ Role เป็น Admin แต่ username/ชื่อคนมีตัวอักษร ess อยู่ ต้องไม่ถูกนับเป็น ESS
+
+    ผลของการนับผิดคือของที่กู้คืนไม่ได้ทั้งสองทิศ — นับเกินแล้วปล่อยให้ลบจากตารางที่ยัง
+    ไม่ได้กรอง หรือนับเกินตอนตรวจงานที่เสร็จแล้วจน task ที่จบแล้วจบไม่ได้"""
+    headers = ["", "Username", "User Role", "Employee Name", "Status", "Actions"]
+    pairs = _goal_condition_pairs("ลบ user ที่ userrole=ess ออกให้หมด")
+
+    ess_row = ["", "Jettie_Langosh", "ESS", "Jettie Langosh", "Disabled", ""]
+    admin_with_ess_username = ["", "ess.irhrg0", "Admin", "Somchai", "Enabled", ""]
+    admin_named_jessica = ["", "jsmith", "Admin", "Jessica Smith", "Enabled", ""]
+
+    assert _row_matches_condition(headers, ess_row, pairs) is True
+    assert _row_matches_condition(headers, admin_with_ess_username, pairs) is False
+    assert _row_matches_condition(headers, admin_named_jessica, pairs) is False
+
+
+def test_row_matches_condition_falls_back_to_the_whole_row_without_headers():
+    """ตารางที่ไม่มีหัวตาราง/ชื่อหัวไม่ตรงอะไรเลย = ตัดสินไม่ได้ว่าคอลัมน์ไหน ต้องถอยไป
+    เทียบทั้งแถวแบบเดิม (fail-open) ไม่ใช่ตอบว่า "ไม่ตรง" แล้วทำให้ guard เงียบ"""
+    pairs = _goal_condition_pairs("ลบ userrole=ess ออกให้หมด")
+
+    assert _row_matches_condition([], ["Jettie", "ESS", "Disabled"], pairs) is True
+    assert _row_matches_condition([], ["Jettie", "Admin", "Disabled"], pairs) is False
+
+
+def test_goal_condition_pairs_is_the_single_source_for_fields_and_values():
+    """_goal_condition_fields()/_goal_condition_values() ต้องอ่านจากตัวเดียวกัน ไม่วน regex
+    เองคนละรอบ (ไม่งั้นกฎตัด URL/กันค่าซ้ำต้องแก้สองที่พร้อมกันตลอด)"""
+    goal = "ไปที่ https://x.test/?id=9 แล้วลบ user ที่ userrole=ess ออกให้หมด"
+
+    assert _goal_condition_pairs(goal) == [("userrole", "ess")]
+    assert _goal_condition_fields(goal) == ["userrole"]
+    assert _goal_condition_values(goal) == ["ess"]
 
 
 @pytest.mark.asyncio
