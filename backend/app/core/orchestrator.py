@@ -619,6 +619,9 @@ def _filter_field_from_label(label: str) -> str:
 # "User Role" การเทียบแบบตรงตัวจึงไม่ match แล้ว guard จะไปบล็อก *การกดที่ถูกต้อง* ซึ่งแย่กว่า
 # ไม่มี guard เลย — เทียบ 3 ชั้นจากเข้มไปหลวม และ fail-open เสมอเมื่อตัดสินไม่ได้
 _FIELD_NAME_SIMILARITY_THRESHOLD = 0.8
+# ดู W_field_match_min_length ใน _field_names_match() — ชื่อ field ที่สั้นกว่านี้ห้ามตัดสินด้วย
+# กฎ "ครอบกันอยู่" เพราะมันเป็นส่วนประกอบของชื่ออื่นได้ง่ายเกินไป
+_MIN_FIELD_NAME_CONTAINMENT_LENGTH = 5
 
 
 def _field_names_match(goal_field: str, page_field: str) -> bool:
@@ -629,11 +632,28 @@ def _field_names_match(goal_field: str, page_field: str) -> bool:
     if goal_field == page_field:
         return True
     # "แล้บลบuserole" ครอบ "userole" อยู่ — คำไทยที่ติดมาหน้า key ไม่ควรทำให้ไม่ match
-    if page_field in goal_field or goal_field in page_field:
+    #
+    # W_field_match_min_length (MR3 จาก audit): กฎ "ครอบกันอยู่" หลวมเกินไปสำหรับชื่อสั้น —
+    # goal "name=john" จะทำให้ "name" ครอบอยู่ใน "employeename"/"username"/"nationality"
+    # ทั้งหมด แล้ว guard ก็ปล่อยให้ตั้งค่าช่องผิดผ่านไปได้ (false negative เงียบๆ)
+    # ชื่อ field จริงที่สั้นกว่า 5 ตัวอักษรมีน้อยมาก (id/tel/url/name/type) แต่ชื่อที่ *มี*
+    # คำสั้นพวกนี้เป็นส่วนประกอบมีเยอะมาก — ต่ำกว่านี้ให้ตัดสินด้วยกฎที่เข้มกว่าเท่านั้น
+    shorter = min(len(goal_field), len(page_field))
+    if shorter >= _MIN_FIELD_NAME_CONTAINMENT_LENGTH and (
+        page_field in goal_field or goal_field in page_field
+    ):
         return True
     # ตัดส่วนที่ไม่ใช่ ASCII ทิ้งแล้วลองใหม่ ("แล้บลบuserole" -> "userole")
+    # W_field_match_min_length: ชั้นนี้ก็ใช้ containment เหมือนกัน จึงต้องมีเพดานความสั้น
+    # เดียวกัน ไม่งั้น "name" ก็ยังรั่วไปตรงกับ "employeename" ผ่านทางนี้อยู่ดี
     ascii_goal = re.sub(r"[^0-9a-z]+", "", goal_field)
-    if ascii_goal and (ascii_goal == page_field or ascii_goal in page_field or page_field in ascii_goal):
+    if ascii_goal == page_field:
+        return True
+    if (
+        ascii_goal
+        and min(len(ascii_goal), len(page_field)) >= _MIN_FIELD_NAME_CONTAINMENT_LENGTH
+        and (ascii_goal in page_field or page_field in ascii_goal)
+    ):
         return True
     # เหลือแค่พิมพ์ผิดจริงๆ ("userole" vs "userrole") — ใช้ ASCII ฝั่ง goal เทียบ ไม่งั้น
     # คำไทยที่ติดมาจะถ่วง ratio ให้ต่ำจนไม่ match
@@ -683,9 +703,13 @@ _PREFER_ROW_DELETE_NUDGE_TEMPLATE = (
 # คลิกที่ "โมเดลเลือกเอง" ไม่เคยถูกกันเลย ทั้งที่เป็นทางเดินออกนอกงานที่เห็นซ้ำๆ (live run
 # 2026-08-27: กด "William Little [Profile/Account Menu]" กลางงานลบ user)
 _PROFILE_MENU_LABEL_MARKER = "[Profile/Account Menu]"
+# W_account_keyword_scope (MR4 จาก audit): "setting"/"ตั้งค่า" เดี่ยวๆ กว้างเกินไป — goal ที่
+# พูดถึง settings *ของระบบ* ("ไปที่หน้า Configuration แล้วตั้งค่า...") จะปิด guard นี้ทิ้งฟรีๆ
+# ทั้งที่ไม่ได้เกี่ยวกับบัญชีของผู้ใช้ที่ล็อกอินอยู่เลย — ใช้เฉพาะรูปที่ระบุว่าเป็นของตัวผู้ใช้เอง
 _ACCOUNT_GOAL_KEYWORDS = (
-    "profile", "account", "logout", "log out", "sign out", "password", "setting",
-    "โปรไฟล์", "บัญชี", "ออกจากระบบ", "รหัสผ่าน", "ตั้งค่า",
+    "profile", "account", "logout", "log out", "sign out", "password",
+    "my settings", "account settings", "personal settings",
+    "โปรไฟล์", "บัญชี", "ออกจากระบบ", "รหัสผ่าน", "ตั้งค่าบัญชี", "ตั้งค่าส่วนตัว",
 )
 _MAX_PROFILE_MENU_RETRIES = 2
 

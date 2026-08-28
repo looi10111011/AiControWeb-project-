@@ -33,6 +33,7 @@ from backend.app.core.orchestrator import (
     _build_history_digest,
     _focused_plan_context,
     _field_names_match,
+    _goal_is_about_the_signed_in_account,
     _filter_field_from_label,
     _goal_condition_fields,
     _goal_condition_pairs,
@@ -4295,6 +4296,42 @@ async def test_hard_stop_counts_table_rows_when_the_count_text_is_unrecognised()
 
     assert result["success"] is False
     assert "still match" in result["message"]
+
+
+# --- W_field_match_min_length / W_account_keyword_scope (MR3/MR4 จาก audit) ---
+
+
+def test_short_field_names_are_not_matched_by_containment_alone():
+    """กฎ "ครอบกันอยู่" มีไว้รับมือกับคำไทยที่ติดหน้า key ("แล้บลบuserole") และการพิมพ์ผิด
+    ("userole" vs "userrole") — แต่กับชื่อสั้นมันหลวมเกินไป: "name" ครอบอยู่ใน
+    "employeename"/"username"/"nationality" ทั้งหมด แล้ว guard ก็ปล่อยให้ตั้งค่าช่องผิด
+    ผ่านไปได้เงียบๆ"""
+    # เคสที่กฎนี้ถูกสร้างมารับมือ ต้องยังผ่านเหมือนเดิม
+    assert _field_names_match("userole", "userrole") is True
+    assert _field_names_match("แล้บลบuserole", "userrole") is True
+
+    # ชื่อสั้นที่บังเอิญเป็นส่วนประกอบของชื่ออื่น ต้องไม่ match
+    assert _field_names_match("name", "employeename") is False
+    assert _field_names_match("name", "username") is False
+    assert _field_names_match("name", "nationality") is False
+    assert _field_names_match("id", "employeeid") is False
+
+    # ตรงกันเป๊ะยังต้อง match เสมอ ไม่ว่าจะสั้นแค่ไหน
+    assert _field_names_match("name", "name") is True
+    assert _field_names_match("id", "id") is True
+
+
+def test_account_goal_keywords_do_not_swallow_system_settings_goals():
+    """MR4: "setting"/"ตั้งค่า" เดี่ยวๆ กว้างเกินไป — goal ที่พูดถึง settings *ของระบบ*
+    จะปิด guard กันเมนูโปรไฟล์ทิ้งฟรีๆ ทั้งที่ไม่ได้เกี่ยวกับบัญชีผู้ใช้ที่ล็อกอินอยู่เลย"""
+    # goal ที่เกี่ยวกับบัญชีของผู้ใช้เองจริงๆ -> ปิด guard ถูกต้อง
+    assert _goal_is_about_the_signed_in_account("เปลี่ยนรหัสผ่านของฉัน") is True
+    assert _goal_is_about_the_signed_in_account("open my profile") is True
+    assert _goal_is_about_the_signed_in_account("log out") is True
+
+    # goal ที่พูดถึงการตั้งค่าของระบบ -> guard ต้องยังทำงาน
+    assert _goal_is_about_the_signed_in_account("ไปที่หน้า Configuration แล้วตั้งค่าอีเมล") is False
+    assert _goal_is_about_the_signed_in_account("change the system settings for leave") is False
 
 
 # --- W_column_aware_rows (C1): เทียบเฉพาะคอลัมน์ที่ user ระบุ ไม่ใช่ข้อความทั้งแถว ---
