@@ -1717,8 +1717,45 @@ async def _request_user_input(
 
 
 
+def _plan_step_lines(plan_text: Optional[str]) -> list[str]:
+    """W_plan_step_cursor: บรรทัดที่ไม่ว่างของแผน = 1 step ต่อ 1 บรรทัด (นิยามเดียวกับที่
+    _total_plan_steps ใช้มาตลอด แยกออกมาเพื่อให้ทั้งการนับและการแสดงผลอ่านจากที่เดียวกัน)"""
+    return [line.strip() for line in (plan_text or "").splitlines() if line.strip()]
+
+
 def _total_plan_steps(plan_text: str) -> int:
-    return len([line for line in (plan_text or "").splitlines() if line.strip()])
+    return len(_plan_step_lines(plan_text))
+
+
+def _focused_plan_context(plan_text: Optional[str], cursor: int) -> str:
+    """W_plan_step_cursor: แผนที่ส่งให้โมเดลทุก step ต้องบอกด้วยว่า "ตอนนี้อยู่ข้อไหน"
+
+    เดิมส่งแผนทั้งก้อนดิบๆ ซ้ำทุก step โดยไม่มีอะไรบอกลำดับเลย โมเดลเล็กจึงกระโดดไปทำข้อ
+    ท้ายๆ หรือรายงานว่าข้อ 5 เสร็จตั้งแต่ action แรกได้ (บั๊กจริง live run 2026-08-27:
+    read_page_data มากับ completed_plan_step=5 แล้ว Goal Boundary Gate หยุด task พร้อม
+    อ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไรเลย)
+
+    ทำเครื่องหมายตามความจริงเท่านั้น: ข้อก่อน cursor = เสร็จแล้ว, ข้อที่ cursor = กำลังทำ,
+    ที่เหลือ = ยังไม่ถึง — ไม่ตัดข้อที่ยังไม่ถึงทิ้ง เพราะโมเดลต้องเห็นปลายทางถึงจะเลือก
+    วิธีของข้อปัจจุบันได้ถูก (บังคับ "ลำดับ" ไม่บังคับ "วิธี")
+
+    cursor เกินจำนวนข้อ = แผนจบครบแล้ว ยังคืนแผนเต็มพร้อมหมายเหตุ ไม่คืนค่าว่าง เพราะ
+    guard ที่ตามมายังต้องเห็นว่ามีแผนอยู่จริง"""
+    steps = _plan_step_lines(plan_text)
+    if not steps:
+        return ""
+    total = len(steps)
+    lines = []
+    for number, text in enumerate(steps, start=1):
+        if number < cursor:
+            lines.append(f"[done] {text}")
+        elif number == cursor:
+            lines.append(f">>> CURRENT STEP ({number}/{total}): {text}")
+        else:
+            lines.append(f"[not yet] {text}")
+    if cursor > total:
+        lines.append("(every step above is already complete)")
+    return "\n".join(lines)
 
 
 # W_goal_scope ("Goal Boundary Gate" — hard-enforcement companion to W_stop_when_done above:
@@ -2911,6 +2948,10 @@ class Orchestrator:
         # self.memory.recent(1) จะกลายเป็น read_page_data ไม่ใช่ click/goto อีกต่อไป ทำให้
         # _navigation_target_reached() คืน False ทั้งที่ยังอยู่หน้าเป้าหมายอยู่
         plan_fully_completed = False
+        # W_plan_step_cursor: "ตอนนี้อยู่ข้อไหนของแผน" ต้องเป็นของโค้ด ไม่ใช่ตัวเลขที่โมเดล
+        # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
+        # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
+        plan_cursor = 1
         nav_target_reached_confirmed = False
         # W_goal_scope: จำนวนครั้งติดกันที่ action ถูกปฏิเสธเพราะ goal ถือว่าสำเร็จแล้ว — เงื่อนไข
         # reset ไม่เหมือน counter อื่นในไฟล์นี้ (ดู comment ตรงจุดใช้งานจริง)
@@ -3572,7 +3613,9 @@ class Orchestrator:
                     next_action(
                         client, model, effective_goal, page_text, messages,
                         manual_context, memory_context, long_term_context, vision_context,
-                        site_manual_context, page.url, action_history_context, plan_text or "",
+                        site_manual_context, page.url, action_history_context,
+                        # W_plan_step_cursor: ส่งแผนพร้อมเครื่องหมายว่าอยู่ข้อไหน แทนแผนดิบ
+                        _focused_plan_context(plan_text, plan_cursor),
                         verification_context=verification_context,
                         allow_fill_secret=allow_fill_secret,
                         prompt_sections=prompt_sections,
@@ -4781,8 +4824,22 @@ class Orchestrator:
                 # None/ว่างเปล่า — ad-hoc task ไม่มีแผนไม่ควรยิง event นี้เลยแม้ LLM จะใส่
                 # completed_plan_step มาผิดๆ ก็ตาม เพราะไม่มี checkbox ให้ติ๊กอยู่แล้วฝั่ง UI)
                 completed_plan_step = tool_input.get("completed_plan_step")
+                # W_plan_step_cursor: การที่โมเดลรายงานเลขมา = หลักฐานว่า *หนึ่ง* step จบ
+                # ไม่ใช่ว่าทุกข้อจนถึงเลขนั้นจบ — cursor จึงเดินหน้าได้ทีละ 1 เสมอ ต่อให้
+                # โมเดลส่ง 5 มาตอนที่ยังอยู่ข้อ 1 (และไม่ถอยหลังเด็ดขาด) เลขที่ยิงออก SSE
+                # จึงเป็น cursor จริง ไม่ใช่เลขที่โมเดลอ้าง — Test Console จะติ๊กช้าลงแต่ตรง
+                # กับงานที่ทำจริง
+                # เงื่อนไข action type ใช้ชุดเดียวกับ W_goal_scope_false_success ด้านล่าง
+                # ไม่สร้างชุดใหม่ซ้อน (อ่านอย่างเดียวไม่ทำให้ step ไหน "เสร็จ" ได้จริง)
+                if (
+                    plan_text
+                    and result.success
+                    and completed_plan_step is not None
+                    and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
+                ):
+                    plan_cursor = min(plan_cursor + 1, _total_plan_steps(plan_text) + 1)
                 if plan_text and result.success and completed_plan_step is not None:
-                    await _emit({"kind": "plan_step_done", "step": completed_plan_step})
+                    await _emit({"kind": "plan_step_done", "step": min(plan_cursor - 1, _total_plan_steps(plan_text))})
                     # W_goal_scope: step สุดท้ายของแผนเสร็จแล้ว = goal ถือว่าสำเร็จ ใช้เป็น
                     # สัญญาณให้ Goal Boundary Gate ด้านบน (sticky — ดู declaration) เงื่อนไข
                     # ผูกกับ result.success อยู่แล้วจาก if ด้านบน จึงไม่มีทางติดธงจาก action
@@ -4794,10 +4851,9 @@ class Orchestrator:
                     # โมเดลส่ง completed_plan_step=5 มากับ read_page_data แล้ว Goal Boundary
                     # Gate ก็หยุด task พร้อมอ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไร)
                     # ใช้ชุด action เดียวกับ gate เองใช้ ไม่สร้างชุดใหม่ซ้อน
-                    if (
-                        completed_plan_step >= _total_plan_steps(plan_text)
-                        and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
-                    ):
+                    # W_plan_step_cursor: ผูกกับ cursor ของโค้ด ไม่ใช่ตัวเลขดิบจากโมเดล —
+                    # เดิมโมเดลส่งเลขข้อสุดท้ายมาเป็น action แรกก็ทำให้ธงนี้ติดได้ทันที
+                    if plan_cursor > _total_plan_steps(plan_text):
                         plan_fully_completed = True
 
                 # W10[F]: human ปฏิเสธ action นี้ตรงๆ (กด Deny บน permission prompt) —

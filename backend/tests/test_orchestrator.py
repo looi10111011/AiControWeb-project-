@@ -31,6 +31,7 @@ from backend.app.core.orchestrator import (
     _QA_SUMMARY_MAX_STEPS,
     _RAG_CHUNKS_PER_STEP,
     _build_history_digest,
+    _focused_plan_context,
     _build_nudge_message,
     _compact_anthropic_messages,
     _compact_gemini_messages,
@@ -3866,6 +3867,100 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     plan_step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "plan_step_done"]
     assert len(plan_step_events) == 1
     assert plan_step_events[0]["step"] == 1
+
+
+# --- W_plan_step_cursor (P7 ขั้น 2): ความคืบหน้าของแผนเป็นของโค้ด ไม่ใช่ตัวเลขที่โมเดลอ้าง ---
+
+
+def test_focused_plan_context_marks_done_current_and_upcoming_steps():
+    """โมเดลต้องเห็นทั้งแผน (จะได้เลือกวิธีของข้อปัจจุบันได้ถูก) แต่ต้องรู้ว่าตอนนี้อยู่ข้อไหน"""
+    text = _focused_plan_context("1. ไป Admin\n2. เลือก ESS\n3. กด Search", 2)
+
+    assert text.splitlines() == [
+        "[done] 1. ไป Admin",
+        ">>> CURRENT STEP (2/3): 2. เลือก ESS",
+        "[not yet] 3. กด Search",
+    ]
+
+
+def test_focused_plan_context_is_empty_for_a_task_without_a_plan():
+    """ad-hoc task ที่ไม่มีแผนต้องไม่มี plan_context เลย (พฤติกรรมเดิม)"""
+    assert _focused_plan_context(None, 1) == ""
+    assert _focused_plan_context("", 1) == ""
+
+
+@pytest.mark.asyncio
+async def test_plan_cursor_advances_one_step_even_when_the_model_reports_the_last_step():
+    """บั๊กจริง live run 2026-08-27: โมเดลส่ง completed_plan_step=5 มากับ action แรก
+    แผนจึงติ๊กครบทั้ง 5 ข้อ และ Goal Boundary Gate หยุด task พร้อมอ้างว่าสำเร็จ
+
+    cursor ต้องเดินหน้าทีละ 1 ข้อเสมอ — การรายงานคือหลักฐานว่า *หนึ่ง* step จบ
+    ไม่ใช่ว่าทุกข้อจนถึงเลขนั้นจบ"""
+    mock_async_playwright, _, _ = _patch_browser()
+    on_event = AsyncMock()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 3, "completed_plan_step": 5}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t3", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click(3)", "สำเร็จ"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_na:
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+            approved_plan="1. ไป Admin\n2. เลือก ESS\n3. กด Search\n4. เลือกแถว\n5. ลบ",
+        )
+
+    # ติ๊กแค่ข้อ 1 ไม่ใช่ข้อ 5 ตามที่โมเดลอ้าง
+    steps = [c.args[0]["step"] for c in on_event.await_args_list
+             if c.args[0].get("kind") == "plan_step_done"]
+    assert steps == [1]
+
+    # step ถัดไปโมเดลต้องเห็นว่าตัวเองอยู่ข้อ 2 ไม่ใช่จบแผนแล้ว
+    plan_contexts = [c.args[12] for c in mock_na.await_args_list]  # arg 12 = plan_context
+    assert ">>> CURRENT STEP (1/5)" in plan_contexts[0]
+    assert ">>> CURRENT STEP (2/5)" in plan_contexts[1]
+
+
+@pytest.mark.asyncio
+async def test_plan_cursor_does_not_advance_on_a_read_only_action():
+    """read_page_data ที่ "สำเร็จ" คือการอ่านล้วนๆ ไม่ได้พิสูจน์อะไรเกี่ยวกับงานที่ต้องทำ
+    — ใช้ชุด action เดียวกับ Goal Boundary Gate ไม่สร้างชุดใหม่ซ้อน"""
+    mock_async_playwright, _, _ = _patch_browser()
+    on_event = AsyncMock()
+
+    next_action_calls = [
+        ("browser_action", {"type": "read_page_data", "query": "กี่แถว", "completed_plan_step": 2},
+         "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t3", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "read_page_data", "อ่านได้"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_na:
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+            approved_plan="1. ไป Admin\n2. อ่านตาราง",
+        )
+
+    plan_contexts = [c.args[12] for c in mock_na.await_args_list]  # arg 12 = plan_context
+    assert ">>> CURRENT STEP (1/2)" in plan_contexts[0]
+    assert ">>> CURRENT STEP (1/2)" in plan_contexts[1]
 
 
 @pytest.mark.asyncio
