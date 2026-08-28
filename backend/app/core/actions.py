@@ -413,7 +413,27 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
 # dispatch action เดิมอยู่แล้ว ก่อนจะมาถึง _dispatch_click_with_retry() นี้เลยด้วยซ้ำ) ปุ่ม
 # ยืนยันในโมดัลเป็นแค่ UX ของเว็บที่ถาม "ซ้ำ" สำหรับ action เดียวกันที่อนุมัติไปแล้ว ไม่ใช่การ
 # ตัดสินใจใหม่ที่ต้องขออนุมัติเพิ่ม
-_DIALOG_CONTAINER_SELECTOR = '.oxd-dialog-container, [role="dialog"], .orangehrm-modal-header'
+# W_dialog_generic (C3 จาก audit ของ P7/P8): ของเดิมมี 3 ตัวและ 2 ใน 3 เป็นของ OrangeHRM ล้วน
+# (.oxd-dialog-container, .orangehrm-modal-header) เหลือของมาตรฐานแค่ [role="dialog"] ตัวเดียว
+# — dialog ที่พบบ่อยที่สุดในโลกจริงจึงตรวจไม่เจอเลยสักตัว: <dialog> ของ HTML เอง, aria-modal,
+# Bootstrap, MUI, antd, Radix, SweetAlert ทั้งหมดนี้กระทบทุกอย่างที่ยืนอยู่บน "รู้ไหมว่ามี
+# dialog เปิดอยู่" ไม่ใช่แค่ auto-confirm
+#
+# เรียง generic ก่อน framework เสมอ (หลักการเดียวกับ _MODAL_CONFIRM_BUTTON_SELECTORS ที่เรียง
+# เจาะจง->กว้าง แต่คนละเจตนา: ตัวนั้นเลือก "ปุ่มไหน" จึงต้องเจาะจงก่อน ตัวนี้แค่ตอบว่า "มีไหม")
+_DIALOG_CONTAINER_SELECTORS = (
+    "dialog[open]",
+    '[role="dialog"]',
+    '[role="alertdialog"]',
+    '[aria-modal="true"]',
+    ".modal.show",           # Bootstrap
+    ".MuiDialog-root",       # MUI
+    ".ant-modal-wrap",       # Ant Design
+    ".swal2-container",      # SweetAlert2
+    ".oxd-dialog-container", # OrangeHRM
+    ".orangehrm-modal-header",
+)
+_DIALOG_CONTAINER_SELECTOR = ", ".join(_DIALOG_CONTAINER_SELECTORS)
 
 # W_modal_confirm_generic (P3.9): ชั้น fallback เดิมกว้างแค่ 'button:has-text("Confirm")'
 # เท่านั้น — dialog ที่เขียนว่า "Yes" / "OK" / "ตกลง" / "Löschen" / "Supprimer" จึงไม่ match
@@ -458,12 +478,20 @@ _MODAL_CONFIRM_BUTTON_SELECTORS = [
     *[
         ", ".join(
             f'{container} {tag}:has-text("{text}")'
-            for container in ('[role="dialog"]', ".oxd-dialog-container")
+            # W_dialog_generic: ใช้ชุด container เดียวกับ _DIALOG_CONTAINER_SELECTORS
+            # ด้านบน ไม่ hardcode ซ้ำ — ไม่งั้นเพิ่ม framework ใหม่แล้วตรวจ "เจอ dialog" ได้
+            # แต่หาปุ่มยืนยันในนั้นไม่เจอ ซึ่งแย่กว่าไม่ตรวจเจอตั้งแต่แรก
+            for container in _DIALOG_CONTAINER_SELECTORS
             for tag in ("button", '[role="button"]')
         )
         for text in _MODAL_CONFIRM_TEXTS
     ],
 ]
+
+# W_modal_appear_race: เวลารอ dialog ที่กำลัง animate เข้ามา (ดู _detect_confirmation_modal)
+# 600ms พอสำหรับ transition ของ UI framework ทั่วไป (ส่วนใหญ่ 150-300ms) และถ้าสะสมทุก click
+# ของ task หนึ่งก็ยังน้อยกว่าการคลิกพลาดเพราะโดน modal บังแค่ครั้งเดียว
+_MODAL_APPEAR_TIMEOUT_MS = 600
 
 _MODAL_DETACH_TIMEOUT_MS = 5000
 
@@ -483,8 +511,30 @@ _MODAL_RELOAD_TIMEOUT_MS = 15000
 async def _detect_confirmation_modal(page: Page) -> bool:
     """W23: True ถ้ามี dialog/modal container ปรากฏอยู่จริงบนหน้าตอนนี้ (มองเห็นได้) — ไม่
     throw ออกไปพัง (เหมือนหลักการเดียวกับ orchestrator.py::_scan_validation_errors: เช็ค
-    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)"""
-    return await _is_modal_still_open(page)
+    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)
+
+    W_modal_appear_race (C2 จาก audit ของ P7/P8): ฟังก์ชันนี้ถูกเรียก *ทันที* หลัง click สำเร็จ
+    แต่ dialog ส่วนใหญ่ animate เข้ามา — ตอนเช็ค node ยังไม่อยู่ใน DOM จึงได้ count()==0 แล้ว
+    สรุปว่า "ไม่มีโมดัล" ทั้งที่อีกเสี้ยววินาทีมันจะโผล่ขึ้นมาบังทั้งหน้า
+    นี่คือสาเหตุที่ user เจอ agent ติด loop: modal เปิดค้าง -> ทุก click ถัดไป fail -> ไม่มี
+    ทางกลับมาถึงบรรทัดที่เรียกฟังก์ชันนี้อีกเลย (จุดเรียกเดียวอยู่ใต้ `if result.success:`)
+    = dead-end ที่ออกเองไม่ได้
+
+    จึงรอสั้นๆ ก่อนสรุปว่าไม่มี — เจตนา *ไม่* ใช้ _dom_signature() มากรองว่า "ควรรอไหม" ตามที่
+    เคยร่างไว้ เพราะมันคือความยาว body.innerHTML: modal ที่ markup อยู่ใน DOM อยู่แล้วและเปิด
+    ด้วยการสลับ class (display:none -> block, .modal.show, MUI keepMounted) ความยาวไม่เปลี่ยน
+    เลยสักตัวอักษร ตัวกรองนั้นจึงพลาด modal ทั้งตระกูล
+    ราคาที่จ่าย: click ที่ไม่เปิดอะไรเลยเสียเพิ่ม _MODAL_APPEAR_TIMEOUT_MS — ตั้งไว้สั้นพอที่
+    สะสมทั้ง task แล้วยังน้อยกว่า *การคลิกพลาดครั้งเดียว* ที่กินสูงสุด ~18 วินาที"""
+    if await _is_modal_still_open(page):
+        return True
+    try:
+        await page.locator(_DIALOG_CONTAINER_SELECTOR).first.wait_for(
+            state="visible", timeout=_MODAL_APPEAR_TIMEOUT_MS,
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _is_modal_still_open(page: Page) -> bool:

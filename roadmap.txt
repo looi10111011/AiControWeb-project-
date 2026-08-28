@@ -4783,6 +4783,45 @@
              - `_goal_condition_pairs()` เป็นแหล่งความจริงเดียวของทั้ง fields/values (เดิมวน regex เอง
                คนละรอบ แปลว่ากฎตัด URL/กันค่าซ้ำต้องแก้สองที่พร้อมกันตลอด)
 
+  [x] W98  ("modal เปิดค้างแล้ว agent ตาย" — C2+C3 จาก audit, W_dialog_generic + W_modal_appear_race)
+           user รัน goal เดิมผ่าน Test Console แล้ว **ติด loop จนต้องกด Stop** — บนจอมี dialog
+           "Are you Sure? / No, Cancel / Yes, Delete" เปิดค้างชัดเจน แต่ agent ไม่เคยกด
+           "Yes, Delete" เลย กลับไล่คลิกของที่อยู่ *หลัง* dialog แล้ว timeout ทุกครั้ง
+           (`Click "Search [obscured]"` -> `[FAIL] ... (after 3 attempts)` ซ้ำๆ)
+
+           **กลไกกดปุ่มยืนยันมีอยู่แล้วและเขียนไว้ดี แต่เข้าไม่ถึง** — `resolve_confirmation_modal()`
+           หาปุ่มจาก `_MODAL_CONFIRM_BUTTON_SELECTORS` ซึ่งตัวแรกสุดคือปุ่ม "Yes, Delete" ของ
+           OrangeHRM เป๊ะ แต่มีจุดเรียกเดียวในโปรเจกต์ และซ้อนอยู่ **ใต้ `if result.success:`**
+           มันจึงเป็นกลไก "ปิด modal ที่ click เมื่อกี้เพิ่งเปิด" ไม่ใช่ "หน้าถูกบล็อกอยู่ จัดการซะ"
+           orchestrator ไม่เคยเรียกมันเลยสักครั้ง
+
+           สาเหตุที่รอบนี้ไม่ทำงานทั้งที่ click สำเร็จ (W_modal_appear_race):
+           `_detect_confirmation_modal()` เรียก `count()` **ทันที** หลัง click โดยไม่รอเลย —
+           dialog animate เข้ามา ตอนเช็ค node ยังไม่อยู่ใน DOM จึงได้ 0 -> False พอ dialog โผล่
+           ทีหลังก็บล็อกทั้งหน้า แล้วทุก click ถัดไป `success=False` = **เข้าไม่ถึงจุดเช็คอีกเลย
+           ตลอดกาล** เป็น dead-end ที่ออกเองไม่ได้ (ราคาแต่ละคลิกที่เสียเปล่า ~12-18 วินาที)
+
+           แนวคิดที่ร่างไว้ตอนแรกว่าจะกรองด้วย `_dom_signature()` (ความยาว body.innerHTML) ก่อน
+           ค่อยรอ — **ตรวจแล้วพบว่าใช้ไม่ได้** modal ที่ markup อยู่ใน DOM อยู่แล้วและเปิดด้วยการ
+           สลับ class (Bootstrap `.modal.show`, MUI keepMounted, Radix) ความยาวไม่เปลี่ยนสัก
+           ตัวอักษร ตัวกรองนั้นจะพลาด modal ทั้งตระกูล -> ตัดทิ้ง ใช้การรอสั้นๆ ตรงๆ แทน
+           (`_MODAL_APPEAR_TIMEOUT_MS = 600`) ราคาที่จ่ายคือ click ที่ไม่เปิดอะไรเลยเสียเพิ่ม
+           600ms ซึ่งสะสมทั้ง task แล้วยังน้อยกว่าการคลิกพลาดเพราะโดน modal บังแค่ครั้งเดียว
+
+           W_dialog_generic (C3): `_DIALOG_CONTAINER_SELECTOR` เดิมมี 3 ตัวและ **2 ใน 3 เป็นของ
+           OrangeHRM ล้วน** เหลือของมาตรฐานแค่ `[role="dialog"]` ตัวเดียว — dialog ที่พบบ่อยที่สุด
+           ในโลกจริงจึงตรวจไม่เจอเลย เพิ่ม `<dialog open>`, `[role=alertdialog]`,
+           `[aria-modal=true]`, Bootstrap, MUI, antd, SweetAlert และให้ชั้น generic ของ
+           `_MODAL_CONFIRM_BUTTON_SELECTORS` scope ด้วยชุด container เดียวกัน ไม่ hardcode ซ้ำ
+           (ตรวจเจอ dialog ได้แต่หาปุ่มยืนยันในนั้นไม่เจอ = ยังค้างเหมือนเดิม แย่กว่าไม่ตรวจเจอ)
+
+           **ยืนยันด้วย Chromium จริง ไม่ใช่ mock** — mock ที่ตอบว่าเจอจะเจอเสมอไม่ว่า selector
+           จะผิดแค่ไหน สิ่งที่ต้องพิสูจน์คือ selector ตรงกับ DOM จริงไหม:
+             bootstrap class-toggle / <dialog> native / aria-modal ล้วน -> ตรวจเจอครบ 3
+             และกดปุ่มยืนยันปิด dialog ได้จริงทั้ง 3 (ของเดิมพลาดทั้งหมด)
+             หน้าที่ไม่มี dialog เลย -> ยังคืน False (ไม่มี false positive จากการรอ)
+           เทสต์ทั้งชุดอยู่ใน test_actions.py ซึ่ง import async_playwright ไว้อยู่แล้ว
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,

@@ -6,6 +6,7 @@ from playwright.async_api import TimeoutError as PWTimeout, async_playwright
 from backend.app.core.actions import (
     ActionResult,
     _DIALOG_CONTAINER_SELECTOR,
+    _DIALOG_CONTAINER_SELECTORS,
     _ELEMENT_ACTION_TIMEOUT_MS,
     _MODAL_CONFIRM_BUTTON_SELECTORS,
     _MODAL_CONFIRM_CLICK_RETRIES,
@@ -536,6 +537,81 @@ async def test_detect_confirmation_modal_fails_safe_on_bare_mock_page():
 
     assert result is False
 
+
+# --- W_dialog_generic / W_modal_appear_race (C2+C3 จาก audit ของ P7/P8) ---
+# เทสต์กลุ่มนี้ใช้ Chromium จริง (ไฟล์นี้ import async_playwright ไว้แล้ว) เพราะสิ่งที่ต้อง
+# พิสูจน์คือ "selector ตรงกับ DOM จริงไหม" ซึ่ง mock พิสูจน์ไม่ได้เลย — mock ที่ตอบว่าเจอ
+# ก็จะเจอเสมอไม่ว่า selector จะผิดแค่ไหน
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_finds_dialogs_that_appear_after_a_delay():
+    """บั๊กจริงที่ user เจอ: dialog animate เข้ามาหลัง click ตอนเช็คยังไม่อยู่ใน DOM
+    -> สรุปว่า "ไม่มีโมดัล" -> โมดัลโผล่มาบังทั้งหน้า -> ทุก click ถัดไป fail -> ไม่มีทาง
+    กลับมาถึงจุดเช็คอีกเลย (จุดเรียกเดียวอยู่ใต้ if result.success) = ติด loop จนต้องกด Stop
+
+    3 เคสนี้คือ modal ที่ selector ชุดเดิมตรวจไม่เจอเลยสักตัว — โดยเฉพาะ Bootstrap ที่
+    markup อยู่ใน DOM อยู่แล้วและเปิดด้วยการสลับ class ซึ่งทำให้แนวคิดเดิมที่จะกรองด้วย
+    ความยาว body.innerHTML ใช้ไม่ได้เลย (ความยาวไม่เปลี่ยนสักตัวอักษร)"""
+    cases = {
+        "bootstrap class toggle": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').classList.add('show'),120)\">Delete</button>"
+            "<style>.modal{display:none}.modal.show{display:block}</style>"
+            "<div id='m' class='modal'><button>No, Cancel</button>"
+            "<button>Yes, Delete</button></div>"
+        ),
+        "native <dialog>": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').showModal(),120)\">Delete</button>"
+            "<dialog id='m'><button>No, Cancel</button>"
+            "<button>Yes, Delete</button></dialog>"
+        ),
+        "aria-modal without role": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').hidden=false,120)\">Delete</button>"
+            "<div id='m' aria-modal='true' hidden><button>ตกลง</button></div>"
+        ),
+    }
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            for name, html in cases.items():
+                await page.set_content(html)
+                await page.click("#go")
+                assert await _detect_confirmation_modal(page) is True, name
+                # เจอแล้วต้องกดปุ่มยืนยันในนั้นได้จริงด้วย — ตรวจเจอแต่หาปุ่มไม่เจอ
+                # แย่กว่าไม่ตรวจเจอตั้งแต่แรก เพราะ agent จะค้างอยู่หน้าโมดัลเหมือนเดิม
+                assert await resolve_confirmation_modal(page) is not None, name
+                assert await page.locator("#m").is_visible() is False, name
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_stays_false_on_a_page_with_no_dialog():
+    """ราคาที่จ่ายจากการรอต้องไม่แลกมาด้วย false positive — หน้าที่ไม่มี dialog เลยต้อง
+    ตอบ False เสมอ ไม่ว่าจะรอนานแค่ไหน"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content("<button>Just a button</button><div>Are you sure?</div>")
+            assert await _detect_confirmation_modal(page) is False
+        finally:
+            await browser.close()
+
+
+def test_generic_confirm_button_selectors_are_scoped_to_every_known_container():
+    """ตรวจเจอ dialog ของ framework ใหม่ได้ แต่หาปุ่มยืนยันในนั้นไม่เจอ = ยังค้างเหมือนเดิม
+    ทั้งสองลิสต์จึงต้องมาจากชุด container เดียวกันเสมอ ไม่ hardcode แยกกัน"""
+    joined = " ".join(_MODAL_CONFIRM_BUTTON_SELECTORS)
+
+    for container in _DIALOG_CONTAINER_SELECTORS:
+        assert container in _DIALOG_CONTAINER_SELECTOR, container
+        assert f'{container} button:has-text(' in joined, container
 
 @pytest.mark.asyncio
 async def test_resolve_confirmation_modal_clicks_most_specific_selector_first():
