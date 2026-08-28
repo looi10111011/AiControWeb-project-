@@ -158,10 +158,20 @@ _COLLECT_JS = r"""
   // ไม่ใช่ error แค่ไม่มีข้อมูลให้ disambiguate เพิ่ม)
   const NAVIGATION_REGION_SELECTOR = 'aside, nav, [role="navigation"], .oxd-sidepanel';
   const MAIN_REGION_SELECTOR = 'main, [role="main"], .oxd-layout-context';
+  // W_dialog_in_snapshot: dialog ที่เปิดค้างอยู่ไม่ใช่ทั้ง navigation และ main — ของเดิมจึงได้
+  // region='' ไม่มี marker อะไรเลย ปุ่ม "Yes, Delete" เลยปนอยู่กลางลิสต์ร่วมกับแถวข้อมูลที่อยู่
+  // *หลัง* dialog ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ (บั๊กจริง live run 2026-08-28: agent ไล่
+  // คลิกของหลัง dialog จน timeout ซ้ำๆ โดยไม่เคยแตะปุ่มใน dialog เลย)
+  // ชุดเดียวกับ actions.py::_DIALOG_CONTAINER_SELECTORS โดยเจตนา — generic ก่อน framework
+  const DIALOG_REGION_SELECTOR = 'dialog[open], [role="dialog"], [role="alertdialog"], ' +
+    '[aria-modal="true"], .modal.show, .MuiDialog-root, .ant-modal-wrap, .swal2-container, ' +
+    '.oxd-dialog-container';
 
   const getRegion = (node) => {
     let cur = node;
     while (cur && cur.nodeType === 1) {
+      // dialog ตรวจก่อนเสมอ: dialog ที่ render อยู่ข้างใน <main> ต้องยังนับเป็น dialog
+      if (cur.matches && cur.matches(DIALOG_REGION_SELECTOR)) return 'dialog';
       if (cur.matches && cur.matches(NAVIGATION_REGION_SELECTOR)) return 'navigation';
       if (cur.matches && cur.matches(MAIN_REGION_SELECTOR)) return 'main';
       cur = cur.parentElement;
@@ -721,6 +731,12 @@ _COLLECT_JS = r"""
     // PROFILE_MENU_CLASS_RE ด้านบน — ให้ LLM มั่นใจได้ 100% ว่านี่คือ target ที่ SYSTEM_PROMPT
     // สั่งให้หา (ดู "Account Security & Password Actions" ข้อ mandatory protocol) ไม่ต้องเดา
     // จาก username text เฉยๆ (ซึ่งเปลี่ยนไปตาม user ที่ login อยู่ ไม่ใช่ label คงที่)
+    // W_dialog_in_snapshot: ป้ายบอกว่า element นี้อยู่ในกล่องโต้ตอบที่เปิดค้างอยู่ — pattern
+    // เดียวกับ marker อื่นในไฟล์นี้ ([obscured]/[already active]/[Profile/Account Menu])
+    // (เช็คด้วย closest() ตรงนี้ ไม่ใช้ตัวแปร region เพราะ region ถูกคำนวณหลังจุดนี้)
+    if (el.closest && el.closest(DIALOG_REGION_SELECTOR)) {
+      label = label ? `${label} [in open dialog]` : '[in open dialog]';
+    }
     if (profileMenuNodes.has(el)) {
       label = label ? `${label} [Profile/Account Menu]` : '[Profile/Account Menu]';
     }
@@ -818,7 +834,11 @@ async def get_snapshot(page: Page):
     #
     # หมายเหตุ: สำหรับ element ใน <iframe> ค่า in_viewport อ้างอิงตำแหน่ง scroll ของ frame
     # นั้นเอง ไม่ใช่ของหน้าหลัก — เป็นข้อจำกัดที่ยอมรับได้ (ยังสื่อความหมายอยู่ ไม่ใช่ bug)
-    elements.sort(key=lambda e: not e.get("in_viewport", True))
+    # W_dialog_in_snapshot: dialog ที่เปิดค้างบล็อกทุกอย่างที่อยู่ข้างหลังมันจริงๆ — ของใน
+    # dialog จึงเป็นสิ่งเดียวที่กดได้ ณ ตอนนั้น ต้องมาก่อน in_viewport ด้วยซ้ำ (แถวข้อมูลหลัง
+    # dialog ก็ in_viewport เหมือนกันหมด การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออกเลย)
+    # ต่อยอด sort เดิม ไม่เขียนใหม่ — tuple key เรียงตามลำดับความสำคัญจากซ้ายไปขวา
+    elements.sort(key=lambda e: (e.get("region") != "dialog", not e.get("in_viewport", True)))
 
     # W_snapshot_cap (P3.3): ตัดเฉพาะรายการที่ส่งให้ LLM ไม่แตะ elements ที่คืนให้โค้ด
     # (ดู config.py::snapshot_max_elements สำหรับเหตุผลเต็ม) — เรียง in_viewport ขึ้นก่อนไปแล้ว

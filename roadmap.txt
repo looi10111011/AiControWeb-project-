@@ -4822,6 +4822,48 @@
              หน้าที่ไม่มี dialog เลย -> ยังคืน False (ไม่มี false positive จากการรอ)
            เทสต์ทั้งชุดอยู่ใน test_actions.py ซึ่ง import async_playwright ไว้อยู่แล้ว
 
+  [x] W99  ("dialog ต้องมองเห็นได้จาก snapshot และห้ามคลิกของที่มันบัง" — P8 M2/M3/M4)
+
+           (1) W_dialog_in_snapshot (M2) — dialog ไม่ใช่ทั้ง navigation และ main
+           (`getRegion()` มีแค่สองอย่างนี้) ปุ่มใน dialog จึงได้ `region=''` ไม่มี marker อะไรเลย
+           ปนอยู่กลางลิสต์ร่วมกับของที่อยู่ *หลัง* dialog ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ
+           และ in_viewport เหมือนกันด้วย การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออกเลย
+           แก้: เพิ่ม `region='dialog'` (ตรวจก่อน navigation/main เสมอ — dialog ที่ render อยู่
+           ข้างใน `<main>` ต้องยังนับเป็น dialog) + ป้าย `[in open dialog]` + เรียงของใน dialog
+           ขึ้นก่อน **ก่อน in_viewport ด้วยซ้ำ** เพราะมันคือสิ่งเดียวที่กดได้จริง ณ ตอนนั้น
+           ใช้ชุด selector เดียวกับ actions.py::_DIALOG_CONTAINER_SELECTORS โดยเจตนา
+
+           (2) W_reject_obscured_click (M3) — `[obscured]` ถูกติดป้ายมาตั้งแต่ต้น แต่ค้นทั้ง
+           backend/ แล้ว **ไม่มีโค้ดส่วนไหนอ่านมันเลยสักบรรทัด** (มีแต่ตัวสร้างป้าย + comment
+           1 บรรทัด + เทสต์ที่ assert ว่าป้ายมีอยู่) prompt ก็ไม่เคยพูดถึง ต่างจากป้ายพี่น้อง
+           (`[already active]`/`[disabled]`/`[hidden — may need to hover]`) ที่มีกฎรองรับครบ
+           แก้: ปฏิเสธคลิกเมื่อ **มีครบทั้งสองอย่าง** คือเป้ามี `[obscured]` และมี element ที่
+           ติด `[in open dialog]` อยู่ใน snapshot เดียวกัน — ใช้ `[obscured]` เป็นเงื่อนไขเดียว
+           ไม่ได้ เพราะ comment ที่ perception เขียนไว้ถูกต้องว่าจงใจเก็บของที่ถูกบังไว้ในลิสต์
+           (overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง เช่น dropdown/tooltip) การมี dialog เปิดค้าง
+           ต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็นถาวรจนคลิกไม่ได้แน่ๆ
+           อ่านสถานะ dialog จาก snapshot ที่เพิ่งดึงมาแล้ว ไม่ยิง DOM query เพิ่มต่อ action
+           ประหยัด ~12-18 วินาทีต่อคลิกที่รู้ล่วงหน้าอยู่แล้วว่าจะ timeout
+
+           (3) W_modal_check_on_failure (M4) — จุดเช็ค modal ทั้งหมดอยู่ใต้ `if result.success:`
+           พอ modal บล็อกจนคลิกไม่สำเร็จ ระบบก็ไม่มีทางรู้ว่ามี modal อยู่ = dead-end ที่ป้อน
+           ตัวเอง (คลิกไม่ได้ -> ไม่เช็ค -> ไม่รู้ -> คลิกไม่ได้อีก)
+           แก้แบบจำกัดขอบเขต: click ที่ล้มเหลวครบ retry แล้วให้เช็ค dialog แล้ว **แนบข้อความ
+           บอกความจริง** ไปกับผลลัพธ์ — *ไม่* กดปุ่มยืนยันให้เอง ตามระดับที่ user เลือกไว้
+           (การกดปุ่มใน dialog ที่ agent ไม่ได้เปิดเองคือการตัดสินใจทำลายข้อมูลโดยโค้ด)
+           pattern เดียวกับ W_click_native_select/W_confident_zero: รายงานตามความจริงให้โมเดล
+           ตัดสินใจบนข้อมูลจริง ดีกว่าปล่อยให้เข้าใจว่า "element หาไม่เจอ" แล้วไล่คลิกตัวอื่นต่อ
+
+           (4) กฎใน `_PROMPT_CORE` ข้าง marker พี่น้องที่มีกฎอยู่แล้ว — อธิบายว่า
+           `[in open dialog]` แปลว่ามี dialog เปิดอยู่ตอนนี้ และ `[obscured]` คือของที่อยู่หลังมัน
+           ซึ่งคลิกไปก็ได้แค่รอจน timeout
+
+           ยืนยันด้วย Chromium จริงด้วยเคสของ user เป๊ะ (Search/Select All อยู่หลัง dialog):
+             idx=2 region=dialog 'No, Cancel [in open dialog]'   <- ขึ้นก่อน
+             idx=3 region=dialog 'Yes, Delete [in open dialog]'
+             idx=0 region=''     'Search [obscured]'             <- ยังอยู่ในลิสต์ แต่คลิกไม่ได้
+             idx=1 region=''     'Select All [obscured]'
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,

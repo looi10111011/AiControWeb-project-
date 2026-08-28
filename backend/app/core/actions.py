@@ -393,8 +393,24 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
             "effect (a panel, dropdown or dialog may have opened). Look at the page's current "
             "indexed elements before repeating the same action]"
         )
+    # W_modal_check_on_failure (P8/M4): จุดเช็ค modal ทั้งหมดอยู่ใต้ `if result.success:` —
+    # พอ modal บล็อกจนคลิกไม่สำเร็จ ระบบก็ไม่มีทางรู้ว่ามี modal อยู่ กลายเป็น dead-end ที่
+    # ป้อนตัวเอง: คลิกไม่ได้ -> ไม่เช็ค -> ไม่รู้ -> คลิกที่เดิมไม่ได้อีก
+    # เจตนาจำกัดไว้แค่ "บอกความจริง" ไม่กดปุ่มยืนยันให้เอง — การกดปุ่มใน dialog ที่ agent
+    # ไม่ได้เปิดเองคือการตัดสินใจทำลายข้อมูลโดยโค้ด ซึ่งเกินขอบเขตที่ตกลงกันไว้
+    # pattern เดียวกับ W_click_native_select/W_confident_zero: รายงานตามความจริงให้โมเดล
+    # ตัดสินใจบนข้อมูลจริง ดีกว่าปล่อยให้เข้าใจว่า "element หาไม่เจอ" แล้วไล่คลิกตัวอื่นต่อ
+    blocked_note = ""
+    if await _detect_confirmation_modal(page):
+        blocked_note = (
+            " [A dialog is open on top of the page and is blocking this element — nothing "
+            "behind it can be clicked. Act on the dialog first: choose one of its own buttons "
+            "(confirm or cancel) to close it, then continue.]"
+        )
     return ActionResult(
-        False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts){dom_note}"
+        False,
+        result.action,
+        f"{result.message} (after {_ACTION_RETRIES} attempts){dom_note}{blocked_note}",
     )
 
 

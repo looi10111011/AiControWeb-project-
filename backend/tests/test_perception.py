@@ -1826,6 +1826,46 @@ async def test_select_all_checkbox_is_found_on_an_aria_grid_without_any_table_ta
     assert labels.count("Select row") == 2
 
 
+# --- W_dialog_in_snapshot (P8/M2): dialog ที่เปิดค้างต้องมองเห็นได้จาก snapshot ---
+
+
+@pytest.mark.asyncio
+async def test_snapshot_marks_dialog_contents_and_lists_them_first():
+    """บั๊กจริง live run 2026-08-28: dialog "Are you Sure?" เปิดค้างอยู่ แต่ agent ไล่คลิก
+    ปุ่มที่อยู่ *หลัง* dialog จน timeout ซ้ำๆ โดยไม่เคยแตะปุ่มใน dialog เลย
+
+    dialog ไม่ใช่ทั้ง navigation และ main ของเดิมจึงได้ region='' ไม่มี marker อะไรเลย —
+    ปุ่มใน dialog ปนอยู่กลางลิสต์ร่วมกับของที่อยู่หลังมัน ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ
+    (ทั้งคู่ in_viewport ด้วย การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออก)"""
+    html = (
+        "<button id='behind'>Search</button><button id='behind2'>Select All</button>"
+        "<div role='dialog' style='position:fixed;inset:0;background:#fff;z-index:9'>"
+        "<button>No, Cancel</button><button>Yes, Delete</button></div>"
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            elements, _ = await get_snapshot(page)
+        finally:
+            await browser.close()
+
+    labels = [e["label"] for e in elements]
+    # ของใน dialog มาก่อนเสมอ — มันคือสิ่งเดียวที่กดได้จริงตอนนี้
+    assert labels[0].startswith("No, Cancel")
+    assert labels[1].startswith("Yes, Delete")
+    assert all("[in open dialog]" in l for l in labels[:2])
+    assert all(e["region"] == "dialog" for e in elements[:2])
+
+    # ของที่อยู่หลัง dialog ต้องยังอยู่ในลิสต์ (overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง)
+    # แต่ต้องติดป้ายบอกว่าถูกบังอยู่
+    behind = [l for l in labels if "[in open dialog]" not in l]
+    assert len(behind) == 2
+    assert all("[obscured]" in l for l in behind)
+
+
 @pytest.mark.asyncio
 async def test_plain_html_table_header_checkbox_still_reads_as_select_all():
     """กันการ regress ของพฤติกรรมเดิม (<thead>/<th>) ตอนขยายเงื่อนไขไปรองรับ ARIA"""

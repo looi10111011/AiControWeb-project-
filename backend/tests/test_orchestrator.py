@@ -4357,6 +4357,72 @@ def test_goal_condition_pairs_is_the_single_source_for_fields_and_values():
     assert _goal_condition_values(goal) == ["ess"]
 
 
+# --- W_reject_obscured_click (P8/M3): ไม่คลิกของที่ dialog บังอยู่ ---
+
+
+@pytest.mark.asyncio
+async def test_click_on_an_obscured_element_is_rejected_while_a_dialog_is_open():
+    """คลิกของที่ถูก dialog บังอยู่กิน ~12-18 วินาทีต่อครั้งโดยรู้ล่วงหน้าอยู่แล้วว่าจะ
+    timeout — perception ติดป้าย [obscured] ให้มาตั้งแต่ต้นแต่ไม่มีโค้ดส่วนไหนอ่านมันเลย
+    (ต่างจากป้ายพี่น้องอย่าง [already active]/[disabled] ที่มีกฎรองรับครบ)"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "button", "type": "", "label": "Yes, Delete [in open dialog]"},
+        {"index": 2, "tag": "button", "type": "", "label": "Search [obscured]"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 1}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "กดค้นหา", provider="anthropic",
+        )
+
+    # ของที่ถูกบังโดนปฏิเสธ ส่วนปุ่มใน dialog กดได้ตามปกติ
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [1]
+
+
+@pytest.mark.asyncio
+async def test_obscured_click_is_allowed_when_no_dialog_is_open():
+    """comment ที่ perception อธิบายไว้ถูกแล้วว่าจงใจเก็บ element ที่ถูกบังไว้ใน snapshot
+    เพราะ overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง (dropdown/tooltip ที่ปิดตัวเอง) —
+    การมี dialog เปิดค้างต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็นถาวร"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 2, "tag": "button", "type": "", "label": "Search [obscured]"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "กดค้นหา", provider="anthropic",
+        )
+
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
+
+
 @pytest.mark.asyncio
 async def test_run_task_does_not_emit_plan_step_done_when_execute_fails():
     """LLM ใส่ completed_plan_step มา แต่ action นั้น execute() ล้มเหลวจริง — ห้ามยิง

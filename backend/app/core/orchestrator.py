@@ -646,6 +646,29 @@ def _field_names_match(goal_field: str, page_field: str) -> bool:
 # หน้า Edit ก็ไม่ใช่ "ทางผ่านที่จำเป็น" อีกต่อไป มันคือการเดินผิดทางเฉยๆ — และเดินผิดทางบน goal
 # ที่สั่งลบเคยจบลงด้วยการเปลี่ยน Role ของ user จริงมาแล้ว (live run 2026-08-27)
 # ไม่มีปุ่มลบในหน้า = ปล่อยผ่านเหมือนเดิม ห้ามบล็อก
+# W_reject_obscured_click (P8/M3): perception ติดป้าย [obscured] ให้ element ที่ถูกของอื่นวางทับ
+# มาตั้งแต่ต้น แต่ค้นทั้ง backend/ แล้ว **ไม่มีโค้ดส่วนไหนอ่านป้ายนี้เลยสักบรรทัด** (มีแต่ตัวที่
+# สร้างป้าย + เทสต์ที่ assert ว่าป้ายมีอยู่) โมเดลจึงคลิกของที่ถูกบังได้เรื่อยๆ ครั้งละ ~12-18
+# วินาทีที่รู้ล่วงหน้าอยู่แล้วว่าจะ timeout — ต่างจากป้ายพี่น้อง ([already active]/[disabled]/
+# [hidden — may need to hover]) ที่มีกฎรองรับครบ
+#
+# *** ต้องมี dialog เปิดอยู่ด้วยถึงจะปฏิเสธ *** — comment ที่ perception.py อธิบายไว้ถูกต้องแล้ว
+# ว่าจงใจเก็บ element ที่ถูกบังไว้ใน snapshot เพราะ overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง
+# (dropdown/tooltip ที่ปิดตัวเอง) การมี dialog เปิดค้างต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็น
+# ถาวรจนคลิกไม่ได้แน่ๆ
+_OBSCURED_LABEL_MARKER = "[obscured]"
+# ป้ายที่ perception ติดให้ element ที่อยู่ในกล่องโต้ตอบที่เปิดค้าง (W_dialog_in_snapshot)
+_DIALOG_LABEL_MARKER = "[in open dialog]"
+_MAX_OBSCURED_CLICK_RETRIES = 2
+
+_OBSCURED_CLICK_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' is behind a dialog that is currently open, so clicking it cannot "
+    "work — it would only wait and time out. Deal with the dialog first: pick one of its own "
+    "buttons to close it{dialog_hint}. Everything behind the dialog becomes clickable again "
+    "once it is closed."
+)
+
+
 _MAX_PREFER_ROW_DELETE_RETRIES = 2
 
 _PREFER_ROW_DELETE_NUDGE_TEMPLATE = (
@@ -3200,6 +3223,7 @@ class Orchestrator:
         filter_scope_reject_count = 0
         prefer_row_delete_reject_count = 0
         profile_menu_reject_count = 0
+        obscured_click_reject_count = 0
         # W_prefer_row_delete: goal นี้เกี่ยวกับบัญชีของผู้ใช้เองหรือเปล่า (คำนวณครั้งเดียว)
         goal_is_about_account = _goal_is_about_the_signed_in_account(goal)
         nav_target_reached_confirmed = False
@@ -4697,6 +4721,43 @@ class Orchestrator:
                         resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
                     ))
                     continue
+
+                # W_reject_obscured_click (P8/M3, ดูเหตุผลเต็มที่จุดประกาศค่าคงที่): เป้าที่ถูก
+                # บังอยู่ + มี dialog เปิดค้าง = คลิกไปก็ timeout แน่นอน ไม่ต้องเสียเวลาไปพิสูจน์
+                # อ่าน "มี dialog ไหม" จาก snapshot ที่เพิ่งดึงมาแล้ว (W_dialog_in_snapshot ติด
+                # ป้าย [in open dialog] ให้) ไม่ยิง DOM query เพิ่มต่อ action
+                if (
+                    _OBSCURED_LABEL_MARKER in (action_label or "")
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and obscured_click_reject_count < _MAX_OBSCURED_CLICK_RETRIES
+                ):
+                    dialog_labels = [
+                        str(el.get("label") or "")
+                        for el in (elements or [])
+                        if _DIALOG_LABEL_MARKER in str(el.get("label") or "")
+                    ]
+                    if dialog_labels:
+                        obscured_click_reject_count += 1
+                        nudge_text = _OBSCURED_CLICK_NUDGE_TEMPLATE.format(
+                            label=action_label,
+                            dialog_hint=(
+                                " (the dialog currently shows: "
+                                + ", ".join(repr(l) for l in dialog_labels[:5])
+                                + ")"
+                            ),
+                        )
+                        if verbose:
+                            print(
+                                f"[obscured-click {obscured_click_reject_count}/"
+                                f"{_MAX_OBSCURED_CLICK_RETRIES}] {action_label!r} "
+                                f"ถูก dialog บังอยู่ ({len(dialog_labels)} element ใน dialog)",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                        ))
+                        continue
 
                 # W_prefer_row_delete: เมนูโปรไฟล์/บัญชีของผู้ใช้เองไม่เคยเป็นทางไปสู่งานที่
                 # goal สั่ง (นอกจาก goal จะพูดถึงบัญชีเอง) แถมนำไปสู่ flow logout/เปลี่ยน
