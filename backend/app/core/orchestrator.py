@@ -3565,7 +3565,19 @@ class Orchestrator:
                 # กันไม่ให้ lock ตั้งแต่ step แรกสุดที่ยังไม่ได้ทำอะไรเลย
                 goal_scope_satisfied_reason: Optional[str] = None
                 if steps_taken > 0:
-                    if plan_fully_completed:
+                    # W_plan_cursor_not_proof (บั๊กจริง live run 2026-08-28, เจอตอน verify P7):
+                    # plan_cursor เป็น "ตัวนับ action ที่สำเร็จ" ไม่ใช่ "หลักฐานว่างานเสร็จ" —
+                    # รันนั้นเดินถูกทุกอย่าง (Admin -> dropdown -> ESS -> Search -> Select All)
+                    # แต่ Select All คือ action ที่ 5 พอดี cursor จึงผ่านจำนวนข้อของแผน แล้ว
+                    # goal-scope gate ก็ไป **บล็อกปุ่ม Delete ที่ตามมา** และปิด task ด้วย
+                    # success=True ทั้งที่ ESS ยังอยู่ครบ 9 คน (ยืนยันด้วยสคริปต์ไม่ใช้ LLM
+                    # ก่อน/หลังรัน) — W93 แก้ "โมเดลอ้างเลขข้อสุดท้ายทันที" ไปแล้ว แต่ยังเหลือ
+                    # "นับครบจำนวนข้อ = จบ" ซึ่งผิดด้วยเหตุผลเดียวกัน
+                    #
+                    # goal ลบแบบมีเงื่อนไขมี "การวัดตรงๆ" อยู่แล้ว (เหลือกี่แถวที่ตรงเงื่อนไข)
+                    # การวัดต้องชนะตัวนับเสมอ จึงข้าม shortcut ของแผนไปใช้เส้นทางที่อ่านหลักฐาน
+                    # จริงด้านล่างแทน — goal อื่นที่ไม่มีวิธีวัดตรงๆ ยังใช้ธงของแผนเหมือนเดิม
+                    if plan_fully_completed and not delete_all_condition_values:
                         goal_scope_satisfied_reason = "the confirmed plan's last step is already complete"
                     else:
                         if not nav_target_reached_confirmed and goal_nav_target and _navigation_target_reached(
@@ -4540,12 +4552,29 @@ class Orchestrator:
                     )
                     if delete_all_condition_values:
                         remaining = await _scan_remaining_target_records(page)
+                        evidence = None
                         if remaining is not None and remaining[0] > 0:
+                            evidence = remaining[1]
+                        elif remaining is None:
+                            # W_plan_cursor_not_proof: ข้อความนับของหน้านั้นอาจไม่ใช่รูปแบบที่
+                            # _RECORD_COUNT_PATTERNS รู้จัก (ของจริงที่เจอ: หลังกด Select All
+                            # OrangeHRM เปลี่ยนจาก "(9) Records Found" เป็น "(9) Records
+                            # Selected") — ตกลงมานับแถวจากตารางตรงๆ แทน ซึ่งเป็นหลักฐานที่
+                            # แข็งกว่าข้อความสรุปอยู่แล้ว ใช้ helper ตัวเดียวกับ guard ของ
+                            # finish_task ไม่เขียนตัวนับใหม่
+                            row_match = await _count_rows_matching_condition(
+                                page, delete_all_condition_values,
+                            )
+                            if row_match is not None and row_match[0] > 0:
+                                evidence = (
+                                    f"{row_match[0]} of {row_match[1]} visible rows still match"
+                                )
+                        if evidence is not None:
                             success = False
                             final_message = (
                                 f"Stopping task without completing it: the goal asked to delete "
                                 f"every record matching {delete_all_condition_values!r}, but the "
-                                f"table still reports {remaining[1]!r}. Nothing is being claimed "
+                                f"table still reports {evidence!r}. Nothing is being claimed "
                                 "as done — re-check that the filter was applied to the right "
                                 "column and that the rows were actually deleted."
                             )

@@ -4199,6 +4199,99 @@ async def test_clicking_the_profile_menu_is_rejected_when_the_goal_is_not_about_
     assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
 
 
+# --- W_plan_cursor_not_proof (W96): ตัวนับ step ต้องไม่ชนะการวัดจำนวนแถวที่เหลือ ---
+
+
+@pytest.mark.asyncio
+async def test_delete_all_goal_does_not_stop_on_plan_count_while_rows_still_match():
+    """บั๊กจริง live run 2026-08-28 (เจอตอน verify P7): agent เดินถูกทุกอย่าง
+    Admin -> dropdown -> ESS -> Search -> Select All แต่ Select All เป็น action ที่ 5 พอดี
+    plan_cursor จึงผ่านจำนวนข้อของแผน แล้ว goal-scope gate ไป **บล็อกปุ่ม Delete ที่ตามมา**
+    และปิด task ด้วย success=True ทั้งที่ ESS ยังอยู่ครบ 9 คน
+
+    goal ลบแบบมีเงื่อนไขมีวิธีวัดตรงๆ อยู่แล้ว (เหลือกี่แถวที่ตรงเงื่อนไข) การวัดต้องชนะ
+    ตัวนับเสมอ — action ลบต้องถูก dispatch ไม่ใช่ถูก gate ปฏิเสธ"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "button", "type": "", "label": "Select All"},
+        {"index": 2, "tag": "button", "type": "", "label": "Delete Selected"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1, "completed_plan_step": 1},
+         "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2, "completed_plan_step": 2},
+         "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once",\
+               AsyncMock(return_value=(9, "(9) Records Found"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records",\
+               AsyncMock(return_value=(9, "(9) Records Found"))), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+            approved_plan="1. เลือกทุกแถว\n2. ลบ",
+        )
+
+    # แผน 2 ข้อ ทำครบ 2 action แล้ว แต่ยังเหลือ 9 แถวตรงเงื่อนไข = ห้ามอ้างสำเร็จ
+    assert result["success"] is False
+    # และปุ่มลบต้องได้ถูกกดจริง ไม่ใช่ถูก gate ปฏิเสธ
+    assert 2 in [c.args[1]["index"] for c in mock_execute.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_hard_stop_counts_table_rows_when_the_count_text_is_unrecognised():
+    """OrangeHRM เปลี่ยนข้อความจาก "(9) Records Found" เป็น "(9) Records Selected" หลังกด
+    Select All ซึ่ง _RECORD_COUNT_PATTERNS ไม่รู้จัก safety net จึงคืน None แล้วปล่อย
+    success=True ผ่าน — ตกลงมานับแถวจากตารางตรงๆ แทน ซึ่งเป็นหลักฐานที่แข็งกว่าอยู่แล้ว"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Select All"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1, "completed_plan_step": 1},
+         "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "goto", "url": "https://app.example.com/x"},
+         "t2", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "goto", "url": "https://app.example.com/y"},
+         "t3", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch(\
+             "backend.app.core.orchestrator._scan_remaining_target_records_once",\
+             AsyncMock(return_value=(0, "no records")),\
+         ), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records", AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator._count_rows_matching_condition",\
+               AsyncMock(return_value=(9, 9))), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+            approved_plan="1. เลือกทุกแถวแล้วลบ",  # ต้องมีคำว่าลบ ไม่งั้นโดน W_plan_keeps_goal_verb ก่อน
+        )
+
+    assert result["success"] is False
+    assert "still match" in result["message"]
+
+
 @pytest.mark.asyncio
 async def test_run_task_does_not_emit_plan_step_done_when_execute_fails():
     """LLM ใส่ completed_plan_step มา แต่ action นั้น execute() ล้มเหลวจริง — ห้ามยิง
