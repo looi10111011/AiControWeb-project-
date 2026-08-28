@@ -203,6 +203,33 @@ _COLLECT_JS = r"""
     return '';
   };
 
+  // W_field_label_for_plain_inputs: "ชื่อของช่อง" ล้วนๆ สำหรับเอาไปทำ prefix — ต่างจาก
+  // getAssociatedLabelText() ด้านบนตรงที่ตัวนั้นคืน innerText ของ <label> ทั้งก้อน ซึ่งใน
+  // กรณี label แบบ *ห่อครอบ* (`<label>User Role <select>...</select></label>`) จะมีค่าที่
+  // เลือกอยู่ในช่องติดมาด้วย -> ได้ prefix เพี้ยนแบบ "User Role Admin: Admin"
+  // (ตัวนั้นยังใช้เป็น label เต็มๆ ได้ถูกต้องอยู่ จึงไม่แก้ของเดิม แยกตัวใหม่มาเฉพาะงาน prefix)
+  const getFieldNameLabel = (node) => {
+    if (node.id) {
+      try {
+        const forLabel = document.querySelector(`label[for="${CSS.escape(node.id)}"]`);
+        // label[for=...] ไม่ได้ห่อ control จึงเป็นชื่อช่องล้วนๆ อยู่แล้ว ใช้ได้เลย
+        if (forLabel) {
+          const t = (forLabel.innerText || forLabel.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t) return t;
+        }
+      } catch (e) { /* id แปลกๆ -- ข้ามไปเงียบๆ เหมือน getAssociatedLabelText */ }
+    }
+    const wrappingLabel = node.closest ? node.closest('label') : null;
+    if (wrappingLabel) {
+      const whole = (wrappingLabel.innerText || wrappingLabel.textContent || '');
+      const own = (node.innerText || node.textContent || '');
+      // ตัดข้อความของ control เองออกจาก label ที่ห่อมัน เหลือแต่ชื่อช่อง
+      const t = (own ? whole.split(own).join(' ') : whole).replace(/\s+/g, ' ').trim();
+      if (t) return t;
+    }
+    return getPrecedingSiblingLabelText(node);
+  };
+
   // W_toggle ("Switch/Toggle Label Resolver" — บั๊กจริงที่ user รายงาน: agent แก้ toggle
   // switch ไม่ได้เลย เช่น "Include Past Employees" บน OrangeHRM Leave List) — ยืนยันจาก
   // DOM จริง: ปุ่ม toggle พวกนี้ (<div class="oxd-switch-wrapper"><label><input
@@ -662,7 +689,28 @@ _COLLECT_JS = r"""
     // index — ต่างจาก switchLabel ตรงที่ตัวนี้ไม่ได้เอามาใช้เป็น label แทน แต่เอามา "นำหน้า"
     // ค่าที่เลือกอยู่ (ดูจุดใช้งานด้านล่าง) เพราะค่าที่เลือกอยู่จริงก็ยังเป็นข้อมูลที่โมเดล
     // ต้องเห็น (เช่น รู้ว่ายังเป็น '-- Select --' อยู่ = ยังไม่ได้ตั้งค่า)
-    const dropdownFieldLabel = isDropdownTriggerCandidate ? getPrecedingSiblingLabelText(el) : '';
+    // W_field_label_for_plain_inputs (C4 จาก audit ของ P7/P8): prefix ชื่อ field เคยเติมให้
+    // *เฉพาะ* custom dropdown trigger (role=combobox / aria-haspopup / class select-text)
+    // — `<select>` มาตรฐานและ `<input type=text>` ไม่เข้าเงื่อนไขสักข้อ label จึงเป็นแค่ค่าที่
+    // เลือก/พิมพ์อยู่ ("ESS", "William") ไม่มีอะไรบอกว่าเป็นช่องอะไรเลย
+    // ผลที่ตามมาไม่ใช่แค่โมเดลอ่านยาก: W_filter_scope_guard อ่านชื่อ field จาก prefix นี้
+    // มันจึง **เงียบสนิทบนเว็บที่ใช้ form มาตรฐาน** (คืน "" -> fail-open ทุกครั้ง) โดยไม่ error
+    // ไม่ log อะไรเลย ดูจากภายนอกเหมือน guard ทำงานปกติ — ซึ่งอันตรายกว่า guard ที่พังดังๆ
+    //
+    // เหตุผลเดียวกับ W_widget_semantic_label ที่เขียนไว้ด้านล่างเป๊ะ: ค่าที่อยู่ข้างในคือ
+    // "เนื้อหา" ไม่ใช่ "ชื่อของช่อง" — ต่างกันแค่ตรงนี้รู้ชื่อช่องจาก <label for> ได้ตรงๆ
+    // ไม่ต้องพึ่ง aria-label
+    // ตัดชนิดที่มี label ทางของตัวเองอยู่แล้วออก (checkbox/radio มี wrapper label, ปุ่มมี
+    // ข้อความบนตัวมันเอง) กันไปทับของที่ถูกอยู่แล้ว
+    const NON_FILTER_INPUT_TYPES = ['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'hidden', 'file'];
+    const isFilterFieldCandidate = isDropdownTriggerCandidate ||
+      tag === 'select' || tag === 'textarea' ||
+      (tag === 'input' && !NON_FILTER_INPUT_TYPES.includes(type));
+    // custom dropdown trigger ไม่ใช่ form field จริง (ไม่มี <label> ผูก) จึงยังใช้ทางเดิม
+    // ส่วน form field มาตรฐานใช้ getFieldNameLabel ที่ตัดค่าในช่องออกให้แล้ว
+    const dropdownFieldLabel = isFilterFieldCandidate
+      ? (isFormFieldTag ? getFieldNameLabel(el) : getPrecedingSiblingLabelText(el))
+      : '';
     const semantic = el.getAttribute('aria-label') || el.getAttribute('title') ||
                       humanize(dataTest) || el.getAttribute('name') ||
                       humanize(el.id) || checkboxWrapperLabel || radioWrapperLabel ||

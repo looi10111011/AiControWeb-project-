@@ -4864,6 +4864,44 @@
              idx=0 region=''     'Search [obscured]'             <- ยังอยู่ในลิสต์ แต่คลิกไม่ได้
              idx=1 region=''     'Select All [obscured]'
 
+  [x] W100 ("guard ที่เงียบสนิทโดยไม่มีใครรู้" — C4 จาก audit, W_field_label_for_plain_inputs)
+           W94 (filter-scope guard) อ่านชื่อ field จาก prefix `"User Role: ..."` ที่ perception
+           เติมให้ — แต่ prefix นั้นเติมเฉพาะ `isDropdownTriggerCandidate` (role=combobox /
+           aria-haspopup / class select-text|select-wrapper) เท่านั้น
+           **`<select>` มาตรฐานและ `<input type=text>` ไม่เข้าเงื่อนไขสักข้อ** label จึงเป็นแค่
+           ค่าที่เลือก/พิมพ์อยู่ ("ESS", "William") -> `_filter_field_from_label()` คืน `""`
+           -> guard fail-open เงียบๆ ทุกครั้ง
+
+           อันตรายเป็นพิเศษเพราะ **ไม่ error ไม่ log อะไรเลย** ดูจากภายนอกเหมือน guard ทำงาน
+           ปกติทุกประการ — guard ที่พังดังๆ ยังดีกว่า guard ที่เงียบแบบนี้ เพราะอย่างน้อยก็รู้
+           เหตุผลเดียวกับ W_widget_semantic_label ที่เขียนไว้ในไฟล์เดียวกันอยู่แล้วเป๊ะ: ค่าที่อยู่
+           ข้างในคือ "เนื้อหา" ไม่ใช่ "ชื่อของช่อง" ต่างกันแค่ตรงนี้รู้ชื่อช่องจาก <label for> ได้ตรงๆ
+
+           แก้: ขยาย prefix ให้ `<select>` / `<textarea>` / `<input>` (ยกเว้นชนิดที่มี label ทาง
+           ของตัวเองอยู่แล้ว — checkbox/radio มี wrapper label, ปุ่มมีข้อความบนตัวมันเอง)
+
+           **บั๊กที่เจอระหว่างทางและต้องแก้เพิ่ม:** `getAssociatedLabelText()` คืน innerText ของ
+           `<label>` ทั้งก้อน ซึ่งกรณี label แบบ *ห่อครอบ*
+           (`<label>User Role <select>...</select></label>`) จะมีค่าที่เลือกอยู่ติดมาด้วย
+           -> prefix เพี้ยนเป็น `"User Role Admin: Admin"` เทสต์เดิมจับได้ทันที
+           แยก `getFieldNameLabel()` ออกมาเฉพาะงาน prefix: ใช้ `label[for=id]` ก่อน (ไม่ได้ห่อ
+           control จึงเป็นชื่อช่องล้วนๆ) ถ้าไม่มีค่อยใช้ label ที่ห่อ **โดยตัดข้อความของ control
+           เองออก** แล้วค่อย fallback ไป preceding sibling — ไม่แก้ `getAssociatedLabelText()`
+           เดิมเพราะมันยังทำหน้าที่ "label เต็มๆ" ได้ถูกต้องอยู่
+
+           ยืนยันด้วย Chromium จริง:
+             'User Role: -- Select -- ESS'    -> field='userrole'   (native <select>)
+             'Employee Name: William'         -> field='employeename' (input + <label for>)
+             'Department: Type for hints...'  -> field='department' (input + พี่น้องข้างหน้า)
+             'Select row' / 'Search'          -> field=''           (ไม่โดนเติมซ้ำ)
+           = ปิดช่องว่างที่ W94 บันทึกไว้เองว่า "ยังจับการพิมพ์ลง Employee Name ไม่ได้"
+
+           เทสต์เดิม 1 เคสต้องอัปเดต (`select_with_option_selected_still_shows_current_value`)
+           — assertion เดิมคาดว่าไม่มี prefix ซึ่งเป็นจริงเพราะ native `<select>` ถูกกันออกจาก
+           กฎนั้นไว้เฉยๆ ไม่ใช่เพราะตั้งใจให้ไม่มีชื่อ field เจตนาที่เทสต์ปกป้องจริงๆ คือ
+           "ค่าที่เลือกอยู่ต้องไม่ถูกทับทิ้ง" ซึ่งยังเป็นจริงทุกประการ (prefix เป็นการ *เพิ่ม*
+           ข้อมูล กฎเดียวกับ W_dropdown_field_label ที่ทำกับ custom dropdown อยู่ก่อนแล้ว)
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,

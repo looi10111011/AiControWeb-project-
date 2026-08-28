@@ -1330,7 +1330,13 @@ async def test_get_snapshot_uses_wrapping_label_text_as_input_label():
 async def test_get_snapshot_select_with_option_selected_still_shows_current_value_over_label():
     """ยืนยันพฤติกรรมเดิมไม่เปลี่ยน: select ที่มีค่าปัจจุบันอยู่แล้วต้องโชว์ค่านั้น (ไม่ใช่
     associatedLabel) เพราะ "ค่าที่เลือกอยู่จริง" มีประโยชน์กว่าสำหรับ dropdown ที่ใช้บ่อย
-    (เช่น sort-order dropdown)"""
+    (เช่น sort-order dropdown)
+
+    W_field_label_for_plain_inputs: ตั้งแต่ C4 เป็นต้นไป native <select> ได้ชื่อ field นำหน้า
+    ด้วย — **ค่าที่เลือกอยู่ยังอยู่ครบเหมือนเดิม ไม่ถูกทับทิ้ง** ซึ่งคือเจตนาที่เทสต์นี้ปกป้อง
+    ตัว prefix เป็นการ *เพิ่ม* ข้อมูล ไม่ใช่แทนที่ (กฎเดียวกับ W_dropdown_field_label ที่ทำกับ
+    custom dropdown อยู่ก่อนแล้ว) — assertion เดิมที่คาดว่าไม่มี prefix เป็นจริงเพราะ native
+    <select> ถูกกันออกจากกฎนั้นไว้เฉยๆ ไม่ใช่เพราะตั้งใจให้ไม่มีชื่อ field"""
     html = """
     <html><body>
       <label>User Role
@@ -1347,7 +1353,7 @@ async def test_get_snapshot_select_with_option_selected_still_shows_current_valu
 
         await browser.close()
 
-    assert elements[0]["label"] == "Admin"
+    assert elements[0]["label"] == "User Role: Admin"
 
 
 @pytest.mark.asyncio
@@ -1824,6 +1830,45 @@ async def test_select_all_checkbox_is_found_on_an_aria_grid_without_any_table_ta
 
     assert labels.count("Select All") == 1
     assert labels.count("Select row") == 2
+
+
+# --- W_field_label_for_plain_inputs (C4): ชื่อ field ต้องอ่านได้จาก form มาตรฐานด้วย ---
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefixes_field_name_on_native_select_and_text_inputs():
+    """prefix ชื่อ field เคยเติมให้เฉพาะ custom dropdown trigger (role=combobox /
+    aria-haspopup / class select-text) — `<select>` มาตรฐานและ `<input type=text>` ไม่เข้า
+    เงื่อนไขสักข้อ label จึงเป็นแค่ค่าที่เลือก/พิมพ์อยู่ ไม่มีอะไรบอกว่าเป็นช่องอะไร
+
+    ผลที่ตามมาไม่ใช่แค่โมเดลอ่านยาก: W_filter_scope_guard อ่านชื่อ field จาก prefix นี้ มันจึง
+    เงียบสนิทบนเว็บที่ใช้ form มาตรฐาน (คืน "" -> fail-open ทุกครั้ง) โดยไม่ error ไม่ log อะไร
+    เลย ดูจากภายนอกเหมือน guard ทำงานปกติ ซึ่งอันตรายกว่า guard ที่พังดังๆ"""
+    html = (
+        "<label for='role'>User Role</label>"
+        "<select id='role'><option>-- Select --</option><option selected>ESS</option></select>"
+        "<label for='emp'>Employee Name</label><input id='emp' type='text' value='William'>"
+        "<div>Department</div><input type='text' placeholder='Type for hints...'>"
+        "<input type='checkbox' id='cb'><label for='cb'>Select row</label>"
+        "<button>Search</button>"
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            elements, _ = await get_snapshot(page)
+        finally:
+            await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert any(l.startswith("User Role: ") for l in labels)          # native <select>
+    assert any(l.startswith("Employee Name: ") for l in labels)      # input + <label for>
+    assert any(l.startswith("Department: ") for l in labels)         # input + พี่น้องข้างหน้า
+    # ชนิดที่มี label ทางของตัวเองอยู่แล้วต้องไม่โดนเติมซ้ำ
+    assert "Select row" in labels
+    assert "Search" in labels
 
 
 # --- W_dialog_in_snapshot (P8/M2): dialog ที่เปิดค้างต้องมองเห็นได้จาก snapshot ---
