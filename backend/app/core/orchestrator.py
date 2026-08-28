@@ -293,6 +293,35 @@ def _is_deletion_intent_goal(goal: str) -> bool:
     return any(kw in lower for kw in _DELETION_INTENT_KEYWORDS)
 
 
+# W_plan_keeps_goal_verb: แผนที่ LLM ร่างมาต้องยังทำ "สิ่งเดียวกับที่ goal สั่ง" — บั๊กจริง
+# live run 2026-08-27: goal สั่ง "ลบ user ที่ userrole=ess ออกให้หมด" แต่ planner ร่างแผนว่า
+# "เปิดรายการผู้ใช้ที่พบแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS" แล้ว agent ก็เดินตาม
+# แผนนั้นจริงๆ (กด Edit -> เปลี่ยน User Role) — user รายงานว่า "ไม่เดินตาม planner เลย" แต่
+# ความจริงคือเดินตามแผนเป๊ะ ปัญหาอยู่ที่แผนผิดชนิดงานมาตั้งแต่ต้น
+#
+# scope แคบไว้ที่ deletion อย่างเดียวโดยตั้งใจ: "ลบ" มีทางเลือกที่ดูสมเหตุสมผลแต่ผิด (แก้ค่า
+# แทนการลบ) และผลลัพธ์ต่างกันถาวร ส่วนงานอ่าน/ค้นหาไม่มี failure mode แบบนี้
+_PLAN_KEEPS_GOAL_VERB_CORRECTION = (
+    "The plan you drafted does not delete anything. This goal is a DELETE task: the user "
+    "asked for the matching records to be removed, not edited. Never substitute changing a "
+    "field's value (e.g. switching a role to something else) for deleting the record — those "
+    "have permanently different outcomes. Redraft the plan so it uses the row's own delete "
+    "action and confirms the deletion, keeping every other step as it was."
+)
+
+
+def _plan_drops_goal_operation(goal: str, plan_text: str) -> bool:
+    """True = แผนทิ้งชนิดงานที่ goal สั่งไป (ตอนนี้ตรวจเฉพาะเคส "goal สั่งลบ แต่แผนไม่ลบ")
+
+    เกณฑ์แคบและ deterministic: goal มีคำกลุ่มลบ แต่ทั้งแผนไม่มีคำกลุ่มลบเลยสักคำ — ไม่ตัดสิน
+    จากการที่แผน "มีคำแก้ไขด้วย" เพราะแผนลบที่ถูกต้องอาจมีขั้นตอนตั้ง filter ที่ใช้คำว่า
+    "เลือก/set" ได้ตามปกติ ใช้ค่าคงที่เดิม (_DELETION_INTENT_KEYWORDS) ไม่สร้างชุดคำใหม่"""
+    if not plan_text or not _is_deletion_intent_goal(goal):
+        return False
+    lower_plan = plan_text.lower()
+    return not any(kw in lower_plan for kw in _DELETION_INTENT_KEYWORDS)
+
+
 # W64[7.1] ("Filter Order & False Completion" — ticket Issue 7.1, บั๊กจริง: goal สั่งเปลี่ยน
 # Role ของ user ที่ Role=ESS ทั้งหมดเป็น Admin — agent เห็น 1 แถว ESS เหลืออยู่จริงในตารางที่
 # กรองแล้ว แต่ไม่กด Edit ให้ครบ ดันเรียก finish_task(success=true) เลย): ใช้ keyword ตาม
@@ -592,6 +621,46 @@ def _field_names_match(goal_field: str, page_field: str) -> bool:
     # เหลือแค่พิมพ์ผิดจริงๆ ("userole" vs "userrole") — ใช้ ASCII ฝั่ง goal เทียบ ไม่งั้น
     # คำไทยที่ติดมาจะถ่วง ratio ให้ต่ำจนไม่ match
     return SequenceMatcher(None, ascii_goal or goal_field, page_field).ratio() >= _FIELD_NAME_SIMILARITY_THRESHOLD
+
+
+# W_prefer_row_delete: การกด "Edit" ถูกตั้งใจปล่อยผ่านมาตลอด (ดูเหตุผลเหนือ
+# _RECORD_COMMIT_LABEL_RE: บางเว็บใช้หน้า Edit เป็นทางผ่านไปหาปุ่มลบ) — ยังคงเหตุผลนั้นไว้
+# ทุกประการ เพียงแต่เพิ่มเงื่อนไข: ถ้า *บนหน้าเดียวกันนี้* มีปุ่ม/ไอคอนลบให้กดอยู่แล้ว การเข้า
+# หน้า Edit ก็ไม่ใช่ "ทางผ่านที่จำเป็น" อีกต่อไป มันคือการเดินผิดทางเฉยๆ — และเดินผิดทางบน goal
+# ที่สั่งลบเคยจบลงด้วยการเปลี่ยน Role ของ user จริงมาแล้ว (live run 2026-08-27)
+# ไม่มีปุ่มลบในหน้า = ปล่อยผ่านเหมือนเดิม ห้ามบล็อก
+_MAX_PREFER_ROW_DELETE_RETRIES = 2
+
+_PREFER_ROW_DELETE_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' opens an edit form, but this goal only asks you to DELETE — and "
+    "this page already shows a delete control you can use directly ('{delete_label}'). Going "
+    "through the edit form risks changing a record instead of removing it, which cannot be "
+    "undone. Use the delete action on the row you want removed instead."
+)
+
+# W_prefer_row_delete: perception ติดป้าย [Profile/Account Menu] ให้ element กลุ่มนี้อยู่แล้ว
+# แต่ของเดิมมีที่ใช้ป้ายนี้อยู่ที่เดียวคือตอนระบบเลือก element ให้เองใน forced recovery —
+# คลิกที่ "โมเดลเลือกเอง" ไม่เคยถูกกันเลย ทั้งที่เป็นทางเดินออกนอกงานที่เห็นซ้ำๆ (live run
+# 2026-08-27: กด "William Little [Profile/Account Menu]" กลางงานลบ user)
+_PROFILE_MENU_LABEL_MARKER = "[Profile/Account Menu]"
+_ACCOUNT_GOAL_KEYWORDS = (
+    "profile", "account", "logout", "log out", "sign out", "password", "setting",
+    "โปรไฟล์", "บัญชี", "ออกจากระบบ", "รหัสผ่าน", "ตั้งค่า",
+)
+_MAX_PROFILE_MENU_RETRIES = 2
+
+_PROFILE_MENU_NUDGE = (
+    "[Rejected] That element is the user's own profile/account menu (logout, change "
+    "password, personal settings). This goal has nothing to do with the signed-in user's "
+    "account, so opening it cannot move the task forward — and it leads to flows that log "
+    "you out or change credentials. Stay on the page's own content and pick an element that "
+    "belongs to the goal."
+)
+
+
+def _goal_is_about_the_signed_in_account(goal: str) -> bool:
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _ACCOUNT_GOAL_KEYWORDS)
 
 
 _MAX_FILTER_SCOPE_RETRIES = 2
@@ -2572,6 +2641,16 @@ class Orchestrator:
             client, model, goal, page_text, resolved_provider, current_url=current_url_for_plan,
             previous_user_goal=previous_user_goal, previous_assistant_message=previous_assistant_message,
         )
+        # W_plan_keeps_goal_verb: ร่างใหม่ *ครั้งเดียว* พร้อมบอกตรงๆ ว่าผิดตรงไหน — ถ้ารอบสอง
+        # ยังผิดอีกก็ไม่ร่างซ้ำไปเรื่อยๆ ปล่อยแผนนั้นกลับไปให้ user เห็นบนหน้าจอยืนยันแผน
+        # แล้ว run_task() จะเป็นคนหยุดถามเองก่อนเริ่มลงมือ (ดู guard ที่นั่น)
+        if _plan_drops_goal_operation(goal, plan_text):
+            print("⚠️ แผนที่ร่างมาไม่ตรงชนิดงานที่สั่ง (goal สั่งลบ แต่แผนไม่ลบ) — ร่างใหม่อีกครั้ง", flush=True)
+            plan_text = await llm.generate_plan(
+                client, model, f"{goal}\n\n{_PLAN_KEEPS_GOAL_VERB_CORRECTION}", page_text,
+                resolved_provider, current_url=current_url_for_plan,
+                previous_user_goal=previous_user_goal, previous_assistant_message=previous_assistant_message,
+            )
         return plan_text, False
 
 
@@ -3031,6 +3110,10 @@ class Orchestrator:
         # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
         goal_filter_fields = _goal_condition_fields(goal)
         filter_scope_reject_count = 0
+        prefer_row_delete_reject_count = 0
+        profile_menu_reject_count = 0
+        # W_prefer_row_delete: goal นี้เกี่ยวกับบัญชีของผู้ใช้เองหรือเปล่า (คำนวณครั้งเดียว)
+        goal_is_about_account = _goal_is_about_the_signed_in_account(goal)
         nav_target_reached_confirmed = False
         # W_goal_scope: จำนวนครั้งติดกันที่ action ถูกปฏิเสธเพราะ goal ถือว่าสำเร็จแล้ว — เงื่อนไข
         # reset ไม่เหมือน counter อื่นในไฟล์นี้ (ดู comment ตรงจุดใช้งานจริง)
@@ -3368,6 +3451,14 @@ class Orchestrator:
                 cached_elements = cached_page_text = None
                 _, plan_page_text = await get_snapshot(page)
                 plan_text = await llm.generate_plan(client, model, goal, plan_page_text, resolved_provider)
+                # W_plan_keeps_goal_verb: เหมือนเส้นทาง API ด้านบน — ร่างใหม่ครั้งเดียว
+                if _plan_drops_goal_operation(goal, plan_text):
+                    if verbose:
+                        print("[plan] ไม่ตรงชนิดงานที่สั่ง — ร่างใหม่อีกครั้ง", flush=True)
+                    plan_text = await llm.generate_plan(
+                        client, model, f"{goal}\n\n{_PLAN_KEEPS_GOAL_VERB_CORRECTION}",
+                        plan_page_text, resolved_provider,
+                    )
                 if verbose:
                     print(f"[plan]\n{plan_text}", flush=True)
                 approved, plan_text = await _confirm_plan(plan_text, ask_user_func)
@@ -3408,6 +3499,28 @@ class Orchestrator:
                     await wait_stable(page)
 
             # W_goal_scope: resolve ครั้งเดียว ไม่ใช่ทุก iteration — คำนวณจากตัว goal ล้วนๆ
+            # W_plan_keeps_goal_verb: จุดนี้ plan_text นิ่งแล้วทั้งเส้นทาง approved_plan (user
+            # กดยืนยันบนหน้าจอ อาจแก้ข้อความมาเองด้วย) และเส้นทาง confirm_plan ในลูป — ถ้าแผน
+            # ยังทิ้งชนิดงานที่ goal สั่งอยู่ ห้ามเริ่มลงมือ เพราะการเดินตามแผนที่ผิดชนิดงานคือ
+            # การไปแก้ข้อมูลจริงแทนที่จะลบ ซึ่งกู้คืนไม่ได้ (เกิดขึ้นจริงมาแล้ว: agent เปลี่ยน
+            # Role ของ user คนหนึ่งจาก Admin เป็น ESS ทั้งที่ goal สั่งให้ลบ ESS ออก)
+            # ร่างใหม่ไป 1 ครั้งแล้วตอนสร้างแผน — ถึงตรงนี้แปลว่ายังไม่ตรง จึงหยุดถาม user
+            if plan_text and _plan_drops_goal_operation(goal, plan_text):
+                return {
+                    "success": False,
+                    "steps": 0,
+                    "message": (
+                        "หยุดก่อนเริ่มทำงาน: goal สั่งให้ \"ลบ\" แต่แผนที่ได้กลับเป็นการแก้ไข/"
+                        "เปลี่ยนค่าแทน (ร่างใหม่ให้แล้ว 1 ครั้งก็ยังไม่ตรง) — การเดินตามแผนนี้จะไป"
+                        "แก้ข้อมูลจริงแทนที่จะลบ ซึ่งย้อนกลับไม่ได้ กรุณาแก้แผนให้ใช้ปุ่มลบของแถว "
+                        "แล้วสั่งใหม่อีกครั้ง"
+                    ),
+                    "history": self.memory.recent(max_steps),
+                    "tokens": _tokens_dict(total_usage),
+                    "plan": plan_text,
+                    "final_page_state": "",
+                }
+
             # ไม่ข้ามแม้จะมี confirmed plan อยู่ (plan_fully_completed อาจไม่มีวันเป็น True ถ้า
             # planner เติมบรรทัดสุดท้ายเป็นการ "ยืนยันผล" ที่ไม่มี action ไหนทำให้เสร็จได้ —
             # goal_nav_target จึงต้องเป็น signal สำรองที่ใช้ได้เสมอ)
@@ -4467,6 +4580,66 @@ class Orchestrator:
                         resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
                     ))
                     continue
+
+                # W_prefer_row_delete: เมนูโปรไฟล์/บัญชีของผู้ใช้เองไม่เคยเป็นทางไปสู่งานที่
+                # goal สั่ง (นอกจาก goal จะพูดถึงบัญชีเอง) แถมนำไปสู่ flow logout/เปลี่ยน
+                # รหัสผ่าน — perception ติดป้ายให้แล้ว ใช้ป้ายนั้นตรงๆ ไม่ต้องเดา
+                if (
+                    _PROFILE_MENU_LABEL_MARKER in (action_label or "")
+                    and not goal_is_about_account
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and profile_menu_reject_count < _MAX_PROFILE_MENU_RETRIES
+                ):
+                    profile_menu_reject_count += 1
+                    if verbose:
+                        print(
+                            f"[profile-menu {profile_menu_reject_count}/{_MAX_PROFILE_MENU_RETRIES}] "
+                            f"ปฏิเสธการเปิดเมนูบัญชีบน goal ที่ไม่เกี่ยวกับบัญชี: {action_label!r}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, _PROFILE_MENU_NUDGE)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {_PROFILE_MENU_NUDGE}",
+                    ))
+                    continue
+
+                # W_prefer_row_delete (ดูคอมเมนต์ที่จุดประกาศค่าคงที่): goal สั่งลบล้วนๆ แล้ว
+                # โมเดลจะกด Edit ทั้งที่หน้านี้มีปุ่มลบให้กดอยู่แล้ว = เดินผิดทาง ไม่ใช่ทางผ่าน
+                # ที่จำเป็น — หา element ที่ label บอกว่าเป็นการลบจาก snapshot ปัจจุบันตรงๆ
+                # (ไม่ถาม LLM) ถ้าไม่มีเลยก็ปล่อยผ่านเหมือนเดิม รักษาเคสเว็บที่ต้องลบผ่านหน้า Edit
+                if (
+                    goal_is_deletion_only
+                    and tool_input.get("type") == "click"
+                    and action_label
+                    and _ROW_ACTION_LABEL_RE.search(action_label)
+                    and not _DESTRUCTIVE_LABEL_RE.search(action_label)
+                    and prefer_row_delete_reject_count < _MAX_PREFER_ROW_DELETE_RETRIES
+                ):
+                    delete_label = next(
+                        (
+                            str(el.get("label") or "")
+                            for el in (elements or [])
+                            if _DESTRUCTIVE_LABEL_RE.search(str(el.get("label") or ""))
+                        ),
+                        "",
+                    )
+                    if delete_label:
+                        prefer_row_delete_reject_count += 1
+                        nudge_text = _PREFER_ROW_DELETE_NUDGE_TEMPLATE.format(
+                            label=action_label, delete_label=delete_label,
+                        )
+                        if verbose:
+                            print(
+                                f"[prefer-row-delete {prefer_row_delete_reject_count}/"
+                                f"{_MAX_PREFER_ROW_DELETE_RETRIES}] {action_label!r} "
+                                f"ทั้งที่มี {delete_label!r} ให้กดอยู่แล้ว",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                        ))
+                        continue
 
                 # W_no_record_edit_for_delete_goal (ดูคอมเมนต์เหนือ _RECORD_COMMIT_LABEL_RE
                 # ด้านบนสำหรับบั๊กจริง): goal ที่สั่ง "ลบ" ล้วนๆ ต้องไม่กดบันทึกฟอร์มแก้ไข

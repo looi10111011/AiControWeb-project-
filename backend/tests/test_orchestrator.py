@@ -35,6 +35,7 @@ from backend.app.core.orchestrator import (
     _field_names_match,
     _filter_field_from_label,
     _goal_condition_fields,
+    _plan_drops_goal_operation,
     _build_nudge_message,
     _compact_anthropic_messages,
     _compact_gemini_messages,
@@ -4054,6 +4055,145 @@ async def test_filter_scope_guard_is_off_when_the_goal_states_no_field_equals_va
          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
         await Orchestrator().run_task(
             "https://app.example.com", "กรองผู้ใช้แล้วดูผล", provider="anthropic",
+        )
+
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
+
+
+# --- W_plan_keeps_goal_verb / W_prompt_example_leak / W_prefer_row_delete (P7 ขั้น 4) ---
+
+
+def test_plan_that_edits_instead_of_deleting_is_detected():
+    """บั๊กจริง live run 2026-08-27: goal สั่ง "ลบ" แต่ planner ร่างแผนว่า "เปิดแต่ละรายการ
+    เพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS" แล้ว agent ก็เดินตามแผนนั้นจริงๆ — user รายงานว่า
+    "ไม่เดินตาม planner เลย" แต่ความจริงคือเดินตามเป๊ะ ปัญหาคือแผนผิดชนิดงานมาแต่ต้น"""
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS") is True
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. กด Search แล้วลบแถวที่เป็น ESS") is False
+
+
+def test_plan_operation_check_only_arms_for_deletion_goals():
+    """scope แคบไว้ที่ deletion โดยตั้งใจ — งานอ่าน/ค้นหาไม่มี failure mode แบบนี้"""
+    assert _plan_drops_goal_operation("หา user ที่เป็น ESS", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS") is False
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "") is False
+
+
+def test_system_prompt_has_no_status_enabled_example_to_copy():
+    """W_prompt_example_leak: "Status=Enabled" เคยเป็นตัวอย่างใน prompt เอง 2 ที่ แล้ว
+    โมเดลลอกมาตั้งค่าจริงบนหน้าเว็บ ทั้งที่ goal ไม่เคยพูดถึง Status เลย — ตัวอย่างที่ตรงกับ
+    field จริงบนเว็บเป้าหมายเป็นของอันตราย ไม่ใช่ของช่วยอธิบาย"""
+    assert "Status=Enabled" not in llm.SYSTEM_PROMPT
+    assert "Status=Enabled" not in llm._PLAN_PROMPT_TEMPLATE
+
+
+@pytest.mark.asyncio
+async def test_run_task_stops_and_asks_when_the_plan_still_edits_instead_of_deleting():
+    """ร่างใหม่ไปแล้ว 1 ครั้งยังไม่ตรง = ห้ามเริ่มลงมือ เพราะเดินตามแผนที่ผิดชนิดงานคือ
+    การไปแก้ข้อมูลจริงแทนที่จะลบ ซึ่งกู้คืนไม่ได้"""
+    mock_async_playwright, _, _ = _patch_browser()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock()) as mock_na:
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+            approved_plan="1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS",
+        )
+
+    assert result["success"] is False
+    assert result["steps"] == 0
+    mock_na.assert_not_awaited()  # ต้องไม่เริ่มลูปเลยสักรอบ
+
+
+@pytest.mark.asyncio
+async def test_clicking_edit_is_rejected_when_the_page_already_offers_delete():
+    """คงเจตนาเดิมไว้ (บางเว็บใช้หน้า Edit เป็นทางผ่านไปหาปุ่มลบ) แต่ถ้าหน้านี้มีปุ่มลบ
+    ให้กดอยู่แล้ว การเข้าหน้า Edit ก็ไม่ใช่ทางผ่านที่จำเป็น มันคือการเดินผิดทาง"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "button", "type": "", "label": "Edit"},
+        {"index": 2, "tag": "button", "type": "", "label": "Delete"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    mock_execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clicking_edit_is_allowed_when_the_page_has_no_delete_control():
+    """เว็บที่ต้องเข้าหน้า Edit ก่อนถึงจะลบได้ต้องยังทำงานได้เหมือนเดิม — ไม่มีปุ่มลบใน
+    หน้า = ปล่อยผ่าน ห้ามบล็อก"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Edit"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [1]
+
+
+@pytest.mark.asyncio
+async def test_clicking_the_profile_menu_is_rejected_when_the_goal_is_not_about_the_account():
+    """live run 2026-08-27 กด "William Little [Profile/Account Menu]" กลางงานลบ user —
+    perception ติดป้ายให้แล้ว แต่ของเดิมใช้ป้ายนี้เฉพาะตอนระบบเลือก element ให้เองใน
+    forced recovery ไม่เคยกันคลิกที่โมเดลเลือกเองเลย"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "li", "type": "", "label": "William Little [Profile/Account Menu]"},
+        {"index": 2, "tag": "button", "type": "", "label": "Search"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "หาผู้ใช้ในหน้า Admin", provider="anthropic",
         )
 
     assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
