@@ -6,6 +6,7 @@ finish_task(false) ก่อนเวลาอันควร (ด้านล�
 """
 
 import asyncio
+from difflib import SequenceMatcher
 import base64
 import re
 import sys
@@ -527,6 +528,81 @@ def _resolve_prompt_sections(
 
 
 _URL_IN_GOAL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _normalized_field_name(text: str) -> str:
+    """W_filter_scope_guard: ยุบชื่อ field ให้เทียบกันได้ระหว่างที่ user พิมพ์ใน goal กับที่
+    เว็บแสดงจริง — "userrole" (goal) กับ "User Role" (label บนหน้า) คือ field เดียวกัน
+    ตัดทุกอย่างที่ไม่ใช่ตัวอักษร/ตัวเลขทิ้ง (ช่องว่าง ขีด ขีดล่าง) แล้วเทียบตัวพิมพ์เล็ก"""
+    return re.sub(r"[^0-9a-z\u0e00-\u0e7f]+", "", (text or "").lower())
+
+
+def _goal_condition_fields(goal: str) -> list[str]:
+    """W_filter_scope_guard: ฝั่งซ้ายของ "key=value" ใน goal = field ที่ user "อนุญาต" ให้กรอง
+    ("userrole=ess" -> ["userrole"]) — คู่กับ _goal_condition_values() ด้านล่างที่ใช้ฝั่งขวา
+    ใช้ regex ตัวเดียวกัน (actions._KEY_VALUE_IN_QUERY_RE) ไม่เขียนใหม่ซ้อน
+
+    คืน [] ถ้า goal ไม่ได้ระบุเงื่อนไขแบบนี้ = ไม่เปิด guard เลย ตามหลักการเดียวกับ
+    _goal_condition_values: ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ"""
+    goal_without_urls = _URL_IN_GOAL_RE.sub(" ", goal or "")
+    fields: list[str] = []
+    seen: set[str] = set()
+    for raw, _ in _KEY_VALUE_IN_QUERY_RE.findall(goal_without_urls):
+        field = _normalized_field_name(raw)
+        if field and field not in seen:
+            seen.add(field)
+            fields.append(field)
+    return fields
+
+
+# W_filter_scope_guard: perception ใส่ชื่อ field เป็น prefix ให้ dropdown trigger อยู่แล้ว
+# (perception.py — "User Role: -- Select --", "Status: Enabled") ตัวคั่นคือ ": " ตัวแรก
+# เท่านั้น เพราะค่าที่ตามมาอาจมี ":" ของตัวเองได้
+_FIELD_LABEL_PREFIX_RE = re.compile(r"^([^:]{1,40}):\s")
+
+
+def _filter_field_from_label(label: str) -> str:
+    """ชื่อ field ที่ action นี้กำลังจะไปแตะ (normalize แล้ว) — "" ถ้า label ไม่ได้บอกชื่อ
+    field มาเลย ซึ่งแปลว่าตัดสินไม่ได้ ต้องปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก"""
+    match = _FIELD_LABEL_PREFIX_RE.match(label or "")
+    return _normalized_field_name(match.group(1)) if match else ""
+
+
+# W_filter_scope_guard: goal ที่ user พิมพ์จริงไม่ได้สะอาดเหมือนตัวอย่างในเทสต์ — ของจริงคือ
+# "แล้บลบuserole=ess" (ไม่เว้นวรรคก่อน key เลย และสะกด userole ตัว r เดียว) ส่วนหน้าเว็บเขียนว่า
+# "User Role" การเทียบแบบตรงตัวจึงไม่ match แล้ว guard จะไปบล็อก *การกดที่ถูกต้อง* ซึ่งแย่กว่า
+# ไม่มี guard เลย — เทียบ 3 ชั้นจากเข้มไปหลวม และ fail-open เสมอเมื่อตัดสินไม่ได้
+_FIELD_NAME_SIMILARITY_THRESHOLD = 0.8
+
+
+def _field_names_match(goal_field: str, page_field: str) -> bool:
+    """goal_field มาจากที่ user พิมพ์ page_field มาจาก label ที่ perception อ่านได้จริง
+    (normalize มาแล้วทั้งคู่) — True = ถือว่าเป็น field เดียวกัน"""
+    if not goal_field or not page_field:
+        return False
+    if goal_field == page_field:
+        return True
+    # "แล้บลบuserole" ครอบ "userole" อยู่ — คำไทยที่ติดมาหน้า key ไม่ควรทำให้ไม่ match
+    if page_field in goal_field or goal_field in page_field:
+        return True
+    # ตัดส่วนที่ไม่ใช่ ASCII ทิ้งแล้วลองใหม่ ("แล้บลบuserole" -> "userole")
+    ascii_goal = re.sub(r"[^0-9a-z]+", "", goal_field)
+    if ascii_goal and (ascii_goal == page_field or ascii_goal in page_field or page_field in ascii_goal):
+        return True
+    # เหลือแค่พิมพ์ผิดจริงๆ ("userole" vs "userrole") — ใช้ ASCII ฝั่ง goal เทียบ ไม่งั้น
+    # คำไทยที่ติดมาจะถ่วง ratio ให้ต่ำจนไม่ match
+    return SequenceMatcher(None, ascii_goal or goal_field, page_field).ratio() >= _FIELD_NAME_SIMILARITY_THRESHOLD
+
+
+_MAX_FILTER_SCOPE_RETRIES = 2
+
+_FILTER_SCOPE_NUDGE_TEMPLATE = (
+    "[Rejected] This action sets the field '{label}', but the goal only asks you to filter "
+    "by {allowed} — it never mentions that field at all. Setting an extra filter narrows the "
+    "table by a condition the user did not ask for, so rows they DO care about disappear and "
+    "the job looks finished when it is not. Leave every other filter untouched: set only "
+    "{allowed}, then press Search."
+)
 
 
 def _goal_condition_values(goal: str) -> list[str]:
@@ -2952,6 +3028,9 @@ class Orchestrator:
         # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
         # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
         plan_cursor = 1
+        # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
+        goal_filter_fields = _goal_condition_fields(goal)
+        filter_scope_reject_count = 0
         nav_target_reached_confirmed = False
         # W_goal_scope: จำนวนครั้งติดกันที่ action ถูกปฏิเสธเพราะ goal ถือว่าสำเร็จแล้ว — เงื่อนไข
         # reset ไม่เหมือน counter อื่นในไฟล์นี้ (ดู comment ตรงจุดใช้งานจริง)
@@ -4471,6 +4550,43 @@ class Orchestrator:
                         "if it satisfies the goal, call finish_task with that as your evidence; "
                         "otherwise move on to a genuinely different action toward the goal.",
                     )
+                    continue
+
+                # W_filter_scope_guard: goal ระบุเงื่อนไขไว้ชัดเจนแบบ field=value แล้ว
+                # การไปตั้งค่า filter *ช่องอื่น* ที่ goal ไม่เคยพูดถึงไม่ใช่แค่เสียเวลา —
+                # มันกรองแถวที่ user ต้องการออกจากตารางไปด้วย (บั๊กจริง live run 2026-08-27:
+                # goal บอกแค่ userrole=ess แต่ agent ไปตั้ง Status=Enabled ด้วย ทำให้ ESS ที่
+                # ถูก disable หายไปจากตาราง แล้ว "ลบให้หมด" จะลบไม่ครบโดยที่ทุกฝ่ายเข้าใจว่าครบ)
+                #
+                # ทำได้ deterministic ล้วนๆ เพราะ perception ใส่ชื่อ field เป็น prefix ให้
+                # dropdown trigger อยู่แล้ว ("Status: Enabled") ไม่ต้องถาม LLM ว่าช่องนี้คือช่องอะไร
+                #
+                # ใช้โควตาไม่ใช่บล็อกตาย: บางเว็บบังคับให้ต้องเลือกค่าบางช่องก่อนถึงจะกด Search
+                # ได้จริง ถ้าบล็อกตายจะทำให้เว็บกลุ่มนั้นใช้งานไม่ได้เลย
+                touched_field = _filter_field_from_label(action_label or "")
+                if (
+                    goal_filter_fields
+                    and touched_field
+                    and not any(_field_names_match(f, touched_field) for f in goal_filter_fields)
+                    and tool_input.get("type") in ("fill", "select", "click")
+                    and filter_scope_reject_count < _MAX_FILTER_SCOPE_RETRIES
+                ):
+                    filter_scope_reject_count += 1
+                    nudge_text = _FILTER_SCOPE_NUDGE_TEMPLATE.format(
+                        label=action_label,
+                        allowed=", ".join(goal_filter_fields),
+                    )
+                    if verbose:
+                        print(
+                            f"[filter นอกขอบเขต {filter_scope_reject_count}/"
+                            f"{_MAX_FILTER_SCOPE_RETRIES}] label={action_label!r} "
+                            f"field={touched_field!r} allowed={goal_filter_fields}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                    ))
                     continue
 
                 # W64[7.1] ("Filter Order & False Completion" — ดู docstring เต็มของ

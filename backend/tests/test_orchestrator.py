@@ -32,6 +32,9 @@ from backend.app.core.orchestrator import (
     _RAG_CHUNKS_PER_STEP,
     _build_history_digest,
     _focused_plan_context,
+    _field_names_match,
+    _filter_field_from_label,
+    _goal_condition_fields,
     _build_nudge_message,
     _compact_anthropic_messages,
     _compact_gemini_messages,
@@ -3961,6 +3964,99 @@ async def test_plan_cursor_does_not_advance_on_a_read_only_action():
     plan_contexts = [c.args[12] for c in mock_na.await_args_list]  # arg 12 = plan_context
     assert ">>> CURRENT STEP (1/2)" in plan_contexts[0]
     assert ">>> CURRENT STEP (1/2)" in plan_contexts[1]
+
+
+# --- W_filter_scope_guard (P7 ขั้น 3): ตั้ง filter ได้เฉพาะช่องที่ goal ระบุ ---
+
+
+def test_goal_condition_fields_reads_the_left_hand_side_of_the_condition():
+    """คู่กับ _goal_condition_values() ที่อ่านฝั่งขวา — ใช้ regex ตัวเดียวกัน"""
+    assert _goal_condition_fields("ลบ user ที่ userrole=ess ออกให้หมด") == ["userrole"]
+    # goal ที่ไม่ได้ระบุ field=value เลย = ไม่เปิด guard (ไม่เดาเงื่อนไขจากภาษาธรรมชาติ)
+    assert _goal_condition_fields("ลบ user ทุกคนที่เป็น ESS") == []
+
+
+def test_filter_field_from_label_reads_the_prefix_perception_already_adds():
+    """perception ใส่ "ชื่อ field: ค่า" ให้ dropdown trigger อยู่แล้ว guard จึงไม่ต้องถาม LLM"""
+    assert _filter_field_from_label("User Role: -- Select --") == "userrole"
+    assert _filter_field_from_label("Status: Enabled") == "status"
+    # label ที่ไม่บอกชื่อ field = ตัดสินไม่ได้ ต้องปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก
+    assert _filter_field_from_label("Search") == ""
+    assert _filter_field_from_label("ESS") == ""
+
+
+def test_field_names_match_tolerates_how_users_actually_type_goals():
+    """goal จริงของ user คือ "แล้บลบuserole=ess" — ไม่เว้นวรรคก่อน key และสะกด userole
+    ตัว r เดียว ส่วนหน้าเว็บเขียน User Role การเทียบตรงตัวจะไม่ match แล้ว guard จะไป
+    บล็อก *การกดที่ถูกต้อง* ซึ่งแย่กว่าไม่มี guard เลย"""
+    goal_field = _goal_condition_fields("เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด")[0]
+
+    assert _field_names_match(goal_field, "userrole") is True
+    assert _field_names_match(goal_field, "status") is False
+    assert _field_names_match(goal_field, "employeename") is False
+
+
+@pytest.mark.asyncio
+async def test_setting_a_filter_field_the_goal_never_mentioned_is_rejected():
+    """บั๊กจริง live run 2026-08-27: goal บอกแค่ userrole=ess แต่ agent ไปตั้ง
+    Status=Enabled ด้วย ทำให้ ESS ที่ถูก disable หายไปจากตาราง แล้ว ลบให้หมด จะลบไม่ครบ
+    โดยที่ทุกฝ่ายเข้าใจว่าครบ"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "User Role: -- Select --"},
+        {"index": 2, "tag": "div", "type": "", "label": "Status: -- Select --"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 1}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    # Status ถูกปฏิเสธ ส่วน User Role ที่ goal ระบุไว้จริงต้องผ่าน
+    dispatched = [c.args[1]["index"] for c in mock_execute.await_args_list]
+    assert dispatched == [1]
+
+
+@pytest.mark.asyncio
+async def test_filter_scope_guard_is_off_when_the_goal_states_no_field_equals_value():
+    """goal ที่ไม่ได้ระบุเงื่อนไขแบบ field=value ต้องไม่โดน guard นี้เลยสักครั้ง —
+    หลักการเดียวกับ _goal_condition_values: ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 2, "tag": "div", "type": "", "label": "Status: -- Select --"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "กรองผู้ใช้แล้วดูผล", provider="anthropic",
+        )
+
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
 
 
 @pytest.mark.asyncio
