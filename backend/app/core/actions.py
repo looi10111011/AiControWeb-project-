@@ -220,7 +220,7 @@ _SAVE_LABEL_RE = re.compile(r"\b(save|submit|confirm|update)\b|บันทึ�
 # เรียงจากเจาะจงที่สุด (OrangeHRM .oxd-toast) ไปกว้างสุด (ARIA live region/toast framework
 # ทั่วไป) — ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว เพราะ role="status"/role="alert" และ
 # class ที่มีคำว่า toast/snackbar/notification เป็น pattern มาตรฐานที่ web framework ทั่วไปใช้
-# ร่วมกันจริง (Material/Bootstrap/Ant Design ฯลฯ) ต่างจาก _RECORD_COUNT_SELECTOR ใน
+# ร่วมกันจริง (Material/Bootstrap/Ant Design ฯลฯ) ต่างจาก _RECORD_COUNT_SELECTORS ใน
 # orchestrator.py ที่ข้อความ "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย
 _SUCCESS_TOAST_SELECTOR = (
     '.oxd-toast--success, .oxd-toast-container, '

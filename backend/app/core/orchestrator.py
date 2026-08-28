@@ -1030,17 +1030,31 @@ _TOAST_CONFIRMED_NO_RECREATE_SUFFIX = (
 #
 # เพิ่มชั้น generic ที่ครอบรูปแบบที่เว็บทั่วไปใช้จริง โดยยังคง fail-safe เดิมทุกประการ:
 # อ่านไม่ได้/ไม่เจอ = None = ไม่บล็อกอะไร (ดีกว่าบล็อก finish_task ที่อาจถูกต้องอยู่แล้ว)
-_RECORD_COUNT_SELECTOR = (
+# W_record_count_picks_wrapper: เดิมเป็น selector เดียวคั่นด้วย comma แล้วหยิบ `.first` โดยเชื่อ
+# ว่า "ของเจาะจงที่วางไว้ก่อนจะชนะ" — **ผิด** CSS ที่คั่นด้วย comma คืน element ตาม *ลำดับใน DOM*
+# ไม่ใช่ลำดับที่เขียนใน selector และ `:has-text()` ก็ match บรรพบุรุษทุกชั้นที่มีข้อความนั้นอยู่ข้างใน
+# `.first` จึงได้ `<div>` ก้อนใหญ่ที่ครอบทั้งหน้าเสมอ (เห็นจริงใน live run 2026-08-28: ข้อความ
+# ผลลัพธ์ของ task ยัด innerText ทั้งหน้าเข้าไปทั้งก้อน)
+# ไม่ใช่แค่เรื่องความสวย: ข้อความก้อนนั้นถูกส่งต่อให้ _RECORD_COUNT_PATTERNS หาตัวเลข ซึ่งอาจไป
+# เจอเลขอื่นบนหน้าที่ไม่เกี่ยวเลย = guard กัน hallucination ตัวเรือธงอ่านค่าผิด
+#
+# แยกเป็นลิสต์แล้วไล่ทีละตัว (pattern เดียวกับ actions.py::_find_visible_modal_confirm_button)
+# ลำดับใน list ถึงจะมีความหมายจริง และในแต่ละ selector เลือก element ที่ข้อความสั้นที่สุด =
+# ตัวที่เป็นข้อความสรุปเอง ไม่ใช่ container ที่ห่อมันอยู่
+_RECORD_COUNT_SELECTORS = (
     # OrangeHRM (เจาะจงที่สุด เก็บไว้ก่อนเสมอ)
-    '.orangehrm-horizontal-padding span:has-text("Records Found"), '
-    'span:has-text("No Records Found"), '
+    '.orangehrm-horizontal-padding span:has-text("Records Found")',
+    'span:has-text("No Records Found")',
     # generic — ข้อความสรุปผลลัพธ์ที่ framework/เว็บทั่วไปใช้ วางไว้ทีหลังเพื่อให้ของเจาะจง
     # ชนะก่อนถ้ามีทั้งคู่บนหน้าเดียวกัน
-    ':is(span, div, p, h2, h3):has-text("Records Found"), '
-    ':is(span, div, p, h2, h3):has-text("results found"), '
-    ':is(span, div, p, h2, h3):has-text("No results"), '
-    ':is(span, div, p, h2, h3):has-text("รายการ")'
+    ':is(span, div, p, h2, h3):has-text("Records Found")',
+    ':is(span, div, p, h2, h3):has-text("results found")',
+    ':is(span, div, p, h2, h3):has-text("No results")',
+    ':is(span, div, p, h2, h3):has-text("รายการ")',
 )
+# element ที่ match ได้ต่อ selector หนึ่งตัว — ดูแค่ไม่กี่ตัวแรกพอ (ห่วงโซ่บรรพบุรุษที่ห่อข้อความ
+# เดียวกันยาวได้ แต่ตัวที่สั้นที่สุดอยู่ในกลุ่มแรกๆ เสมอ) กัน DOM query บานบนหน้าที่ใหญ่มาก
+_RECORD_COUNT_MAX_CANDIDATES = 8
 
 # รูปแบบตัวเลขที่ยอมรับ เรียงจากเจาะจงไปกว้าง — ตัวแรกที่ match ชนะ
 # ตั้งใจไม่รับ "ตัวเลขลอยๆ" ที่ไม่มีคำบอกบริบทกำกับเลย เพราะหน้าเว็บมีตัวเลขเต็มไปหมด
@@ -1089,11 +1103,27 @@ async def _scan_remaining_target_records_once(page: Page) -> Optional[tuple[int,
     ไม่ block เหมือนหลักการเดียวกับ _scan_validation_errors ด้านบน: เช็คไม่ได้ ดีกว่าบล็อก
     finish_task ที่อาจถูกต้องอยู่แล้ว) "No Records Found" ตีความเป็น 0 เสมอ ไม่ throw ออกไปพัง
     guard เด็ดขาด (เหมือน _scan_validation_errors — จับ Exception กว้างๆ คืน None แทน)"""
+    text = ""
     try:
-        locator = page.locator(_RECORD_COUNT_SELECTOR).first
-        if await locator.count() == 0:
-            return None
-        text = (await locator.inner_text(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+        for selector in _RECORD_COUNT_SELECTORS:
+            locator = page.locator(selector)
+            total = await locator.count()
+            if total == 0:
+                continue
+            candidates = []
+            for i in range(min(total, _RECORD_COUNT_MAX_CANDIDATES)):
+                try:
+                    candidate = (await locator.nth(i).inner_text(
+                        timeout=_DOM_CHECK_TIMEOUT_MS,
+                    )).strip()
+                except Exception:
+                    continue
+                if candidate:
+                    candidates.append(candidate)
+            if candidates:
+                # สั้นที่สุด = ข้อความสรุปเอง ไม่ใช่ container ที่ห่อมันอยู่
+                text = min(candidates, key=len)
+                break
     except Exception:
         return None
     if not text:
@@ -1129,7 +1159,7 @@ async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]
 # W63[7.2] ("Strict Table Assertion & Truth Reporting" — ticket Issue 7.2): เรียงจากเจาะจง
 # ที่สุด (OrangeHRM .oxd-table-body) ไปกว้างสุด (<table><tbody>/ARIA rowgroup/class ที่มีคำว่า
 # table+body มาตรฐานที่ CSS framework ทั่วไปใช้ร่วมกัน — Material/Bootstrap/Ant Design ฯลฯ)
-# ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว ต่างจาก _RECORD_COUNT_SELECTOR ด้านบนที่ข้อความ
+# ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว ต่างจาก _RECORD_COUNT_SELECTORS ด้านบนที่ข้อความ
 # "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย แต่ <tbody>/[role=rowgroup] เป็น
 # มาตรฐาน HTML/ARIA ตรงๆ
 _TABLE_BODY_SELECTOR = (

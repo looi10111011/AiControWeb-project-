@@ -53,6 +53,7 @@ from backend.app.core.orchestrator import (
     _is_fatal_validation_error,
     _scan_created_item_in_table,
     _scan_remaining_target_records,
+    _scan_remaining_target_records_once,
     _scan_validation_errors,
     _is_bare_required_message,
     _label_looks_like_form_submit,
@@ -5211,17 +5212,20 @@ def test_is_deletion_intent_goal_matches_thai_and_english_keywords():
     assert _is_deletion_intent_goal(None) is False
 
 
-def _make_record_count_locator_page(text):
-    """text=None -> ไม่มี element นี้ในหน้าเลย (count=0), text=str -> เจอ element ตัวแรกที่มี
-    inner_text ตามนี้"""
+def _make_record_count_locator_page(text, *, extra_texts=()):
+    """text=None -> ไม่มี element นี้ในหน้าเลย (count=0), text=str -> เจอ element ที่มี
+    inner_text ตามนี้
+
+    W_record_count_picks_wrapper: ตัวสแกนไล่ selector ทีละตัวแล้วดู element ที่ match หลายตัว
+    ต่อ selector (เลือกข้อความที่สั้นที่สุด = ตัวสรุปเอง ไม่ใช่ container ที่ห่อมัน) mock จึง
+    ต้องรองรับ nth() ไม่ใช่แค่ first — extra_texts ใช้จำลอง container ที่ห่อข้อความเดียวกันอยู่"""
+    texts = [] if text is None else [text, *extra_texts]
+
     locator = MagicMock()
-    first = MagicMock()
-    if text is None:
-        first.count = AsyncMock(return_value=0)
-    else:
-        first.count = AsyncMock(return_value=1)
-        first.inner_text = AsyncMock(return_value=text)
-    locator.first = first
+    locator.count = AsyncMock(return_value=len(texts))
+    locator.nth = MagicMock(
+        side_effect=lambda i: MagicMock(inner_text=AsyncMock(return_value=texts[i])),
+    )
     mock_page = MagicMock()
     mock_page.locator = MagicMock(return_value=locator)
     return mock_page
@@ -5250,35 +5254,55 @@ async def test_scan_remaining_target_records_treats_no_records_found_as_zero():
 # ถูกเรียก ชนกับช่วงที่ AJAX ของปุ่ม Search ยังอัปเดต DOM ไม่เสร็จ) — ยืนยันว่า "0" ถูก
 # double-check ก่อนเชื่อ ส่วน >0/None ไม่ต้องรอเพิ่ม (ไม่มี latency cost ในเคสปกติ)
 @pytest.mark.asyncio
+async def test_scan_remaining_target_records_ignores_the_wrapper_that_contains_the_summary():
+    """W_record_count_picks_wrapper (บั๊กจริง live run 2026-08-28): เดิมเป็น selector เดียว
+    คั่นด้วย comma แล้วหยิบ `.first` โดยเชื่อว่า "ของเจาะจงที่วางไว้ก่อนจะชนะ" — ผิด เพราะ CSS
+    ที่คั่นด้วย comma คืน element ตาม *ลำดับใน DOM* และ `:has-text()` ก็ match บรรพบุรุษทุกชั้น
+    ที่มีข้อความนั้นอยู่ข้างใน `.first` จึงได้ `<div>` ก้อนใหญ่ที่ครอบทั้งหน้า
+
+    ไม่ใช่แค่เรื่องความสวยของข้อความผลลัพธ์: ข้อความก้อนนั้นถูกส่งต่อให้หา *ตัวเลข* ซึ่งอาจไป
+    เจอเลขอื่นบนหน้าที่ไม่เกี่ยวเลย = guard กัน hallucination ตัวเรือธงอ่านค่าผิด"""
+    wrapper_text = (
+        "Admin PIM Leave Time 99 results found Username User Role "
+        "(3) Records Found Actions OrangeHRM OS 5.9"
+    )
+    mock_page = _make_record_count_locator_page("(3) Records Found", extra_texts=[wrapper_text])
+
+    result = await _scan_remaining_target_records_once(mock_page)
+
+    assert result == (3, "(3) Records Found")
+
+
+@pytest.mark.asyncio
 async def test_scan_remaining_target_records_rechecks_after_stale_zero_reading():
+    # W_record_count_picks_wrapper: ตัวสแกนอ่านผ่าน nth() ไม่ใช่ first แล้ว (ดู
+    # _make_record_count_locator_page) — อ่านรอบละครั้งเพราะ selector แรกที่ match ชนะ
+    inner_text = AsyncMock(side_effect=["No Records Found", "(16) Records Found"])
     locator = MagicMock()
-    first = MagicMock()
-    first.count = AsyncMock(return_value=1)
-    first.inner_text = AsyncMock(side_effect=["No Records Found", "(16) Records Found"])
-    locator.first = first
+    locator.count = AsyncMock(return_value=1)
+    locator.nth = MagicMock(return_value=MagicMock(inner_text=inner_text))
     mock_page = MagicMock()
     mock_page.locator = MagicMock(return_value=locator)
 
     result = await _scan_remaining_target_records(mock_page)
 
     assert result == (16, "(16) Records Found")  # เชื่อค่าที่อ่านซ้ำรอบสอง (สดกว่า) ไม่ใช่ 0 เดิม
-    assert first.inner_text.await_count == 2
+    assert inner_text.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_scan_remaining_target_records_keeps_zero_when_recheck_still_zero():
+    inner_text = AsyncMock(side_effect=["No Records Found", "No Records Found"])
     locator = MagicMock()
-    first = MagicMock()
-    first.count = AsyncMock(return_value=1)
-    first.inner_text = AsyncMock(side_effect=["No Records Found", "No Records Found"])
-    locator.first = first
+    locator.count = AsyncMock(return_value=1)
+    locator.nth = MagicMock(return_value=MagicMock(inner_text=inner_text))
     mock_page = MagicMock()
     mock_page.locator = MagicMock(return_value=locator)
 
     result = await _scan_remaining_target_records(mock_page)
 
     assert result == (0, "No Records Found")  # ยืนยันตรงกันทั้งสองรอบ -> เชื่อว่า 0 จริง
-    assert first.inner_text.await_count == 2
+    assert inner_text.await_count == 2
 
 
 @pytest.mark.asyncio
