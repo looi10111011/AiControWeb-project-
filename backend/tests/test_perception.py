@@ -1849,6 +1849,7 @@ async def test_snapshot_prefixes_field_name_on_native_select_and_text_inputs():
         "<select id='role'><option>-- Select --</option><option selected>ESS</option></select>"
         "<label for='emp'>Employee Name</label><input id='emp' type='text' value='William'>"
         "<div>Department</div><input type='text' placeholder='Type for hints...'>"
+        "<div>Username</div><input type='text' value='jsmith'>"
         "<input type='checkbox' id='cb'><label for='cb'>Select row</label>"
         "<button>Search</button>"
     )
@@ -1865,8 +1866,13 @@ async def test_snapshot_prefixes_field_name_on_native_select_and_text_inputs():
     labels = [e["label"] for e in elements]
     assert any(l.startswith("User Role: ") for l in labels)          # native <select>
     assert any(l.startswith("Employee Name: ") for l in labels)      # input + <label for>
-    assert any(l.startswith("Department: ") for l in labels)         # input + พี่น้องข้างหน้า
+    # W_empty_field_shows_no_value: ช่องที่ยัง *ว่าง* ต้องแสดงแค่ชื่อช่อง ไม่ใช่
+    # "Department: Type for hints..." ซึ่งอ่านยังไงก็เหมือนช่องนี้มีค่าแล้ว (placeholder เป็น
+    # คำใบ้ของ UI ไม่ใช่ค่าที่ถูกกรอกไว้) — ชื่อ field ยังอ่านได้ตามปกติผ่าน W104
+    assert "Department" in labels                                   # input ว่าง + พี่น้องข้างหน้า
     # ชนิดที่มี label ทางของตัวเองอยู่แล้วต้องไม่โดนเติมซ้ำ
+    # ช่องที่ *มีค่าแล้ว* ยังต้องได้ prefix เหมือนเดิม — นั่นคือกรณีที่ prefix มีประโยชน์จริง
+    assert "Username: jsmith" in labels
     assert "Select row" in labels
     assert "Search" in labels
 

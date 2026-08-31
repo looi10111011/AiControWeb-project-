@@ -5091,6 +5091,36 @@
            / ตัวกรองส่วนเกิน) และเคส "กรองถูก + ตารางว่าง = ต้องยังจบงานได้" กันไม่ให้ guard นี้
            ทำให้งานลบที่สำเร็จจริงจบไม่ได้
 
+  [x] W106 ("ช่องว่างต้องไม่ดูเหมือนมีค่าอยู่แล้ว" — W_empty_field_shows_no_value)
+           **W105 สร้าง false positive จริงทันทีที่ user รันรอบถัดไป** — agent ทำถูกครบ 12 steps
+           (Search -> Select All -> Delete Selected -> Yes, Delete -> ตรวจซ้ำได้ 0 แถว) แต่ UI
+           ขึ้น Failed พร้อมข้อความ:
+             "an extra filter the goal never mentioned is still narrowing it
+              ('Employee Name: Type for hints...')"
+           `"Type for hints..."` คือ **placeholder ของช่องที่ยังว่างเปล่า** ไม่ใช่ค่าที่ถูกกรอก
+
+           **ต้นตออยู่ที่ W100 ไม่ใช่ W105:** W100 เติม prefix ชื่อ field ให้ input ธรรมดา แต่
+           label ของช่องที่ยังว่างตกไปใช้ placeholder (label chain: `el.value || associatedLabel
+           || placeholder`) พอเติม prefix จึงได้ "Employee Name: Type for hints..." ซึ่งอ่านยังไง
+           ก็เหมือนช่องนี้มีค่าแล้ว — W105 ที่อ่านค่าตัวกรองจาก label ตัวนี้จึงเห็นเป็นตัวกรอง
+           ส่วนเกินที่ตั้งค้างอยู่ แล้วปฏิเสธงานที่ทำสำเร็จแล้ว
+
+           **แก้ที่ perception ไม่ใช่ที่ guard** — label ที่บอกว่า "ช่องว่างมีค่า" เป็นข้อมูลผิด
+           ตั้งแต่ต้นทาง ถ้าไปแก้ที่ guard อย่างเดียว โมเดลก็ยังเห็น label ที่ทำให้เข้าใจผิดอยู่ดี
+           ช่อง form field ที่ `el.value` ว่าง -> แสดงแค่ชื่อช่องเฉยๆ (placeholder เป็นคำใบ้ของ UI
+           ไม่ใช่ค่าที่ถูกกรอกไว้) ส่วนชื่อ field ยังอ่านได้ตามปกติผ่าน W104 ที่รับ label ไม่มี ":"
+
+           ยืนยันด้วย Chromium จริง:
+             'Employee Name: Type for hints...' -> 'Employee Name'      (ว่าง = ไม่มีค่า)
+             'Username: jsmith'                 -> 'Username: jsmith'   (มีค่าจริง ยังจับได้)
+             'Status: -- Select --'             -> คงเดิม (ไม่นับเป็นส่วนเกินอยู่แล้ว)
+           => `extra filters set` ของเคสที่ user เจอเหลือ [] guard ไม่ยิง งานจบเป็น success
+
+           **บทเรียนของรอบนี้ (คู่กับ W105):** W105 ผ่าน unit test ครบและ "ไม่ยิงเลย" ในการรันสด
+           3 รอบ ผมจึงสรุปว่าไม่มี false positive — แต่ 3 รอบนั้นบังเอิญไม่มีหน้าไหนที่มีช่อง input
+           ว่างพร้อม placeholder อยู่ในสถานะที่ guard จะอ่าน "ไม่ยิงเลย" ไม่ใช่หลักฐานว่าไม่มี
+           false positive มันแปลว่า **ยังไม่เคยถูกทดสอบ** ต่างหาก
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,

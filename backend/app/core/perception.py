@@ -773,7 +773,20 @@ _COLLECT_JS = r"""
     // อยู่แล้ว (dropdown ที่เลือกค่าไปแล้วอาจโชว์ค่าที่ตรงกับชื่อ field พอดี ไม่ควรซ้ำสองรอบ)
     // — คงค่าที่เลือกอยู่ไว้เสมอ ไม่ทับทิ้ง ให้ผลเป็น 'User Role: -- Select --'
     if (dropdownFieldLabel && !label.toLowerCase().includes(dropdownFieldLabel.toLowerCase())) {
-      label = (label ? `${dropdownFieldLabel}: ${label}` : dropdownFieldLabel).slice(0, 80);
+      // W_empty_field_shows_no_value (บั๊กจริงที่ user รายงาน 2026-08-31): ช่อง input ที่ยัง
+      // *ว่าง* ตกไปใช้ placeholder เป็น label ("Type for hints...") พอเติมชื่อ field นำหน้าจึง
+      // ได้ "Employee Name: Type for hints..." ซึ่งอ่านยังไงก็เหมือน "ช่องนี้มีค่าแล้ว"
+      // ผลจริง: guard ที่อ่านค่าตัวกรองจาก label (W_empty_table_needs_right_filter) เห็นเป็น
+      // ตัวกรองส่วนเกินที่ตั้งค้างอยู่ แล้วปฏิเสธงานที่ทำสำเร็จแล้ว -> รายงานว่า Failed ทั้งที่
+      // agent ทำถูกครบ
+      // ช่องว่างต้องแสดงแค่ "ชื่อช่อง" เฉยๆ ซึ่งเป็นความจริงตรงตัวอยู่แล้ว — placeholder เป็น
+      // คำใบ้ของ UI ไม่ใช่ค่าที่ถูกกรอกไว้
+      const isEmptyValueField = isFormFieldTag && !((el.value || '').trim());
+      label = (
+        isEmptyValueField || !label
+          ? dropdownFieldLabel
+          : `${dropdownFieldLabel}: ${label}`
+      ).slice(0, 80);
     }
     // W20 (Task10): แปะ marker ที่ชัดเจนไม่กำกวมให้ element ที่จับได้จาก
     // PROFILE_MENU_CLASS_RE ด้านบน — ให้ LLM มั่นใจได้ 100% ว่านี่คือ target ที่ SYSTEM_PROMPT
