@@ -977,10 +977,38 @@ _VISIBLE_TABLE_ROWS_JS = r"""
   for (const t of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
     let rowEls = Array.from(t.querySelectorAll('tr'));
     if (rowEls.length === 0) rowEls = Array.from(t.querySelectorAll('[role="row"]'));
+    // W_column_headers_fallback: ชั้นที่ 1 คือหัวตารางจริง (th/[role=columnheader]) — ถ้าไม่มี
+    // ตารางจำนวนมากยังบอกชื่อคอลัมน์ไว้ที่ตัวเซลล์เอง โดยเฉพาะตาราง responsive ที่ต้องโชว์ชื่อ
+    // คอลัมน์บนมือถือ ลองไล่ต่ออีก 2 ชั้นก่อนจะยอมแพ้
     const headerEl = rowEls.find((r) => r.querySelector('th, [role="columnheader"]'));
-    const headers = headerEl
+    let headers = headerEl
       ? Array.from(headerEl.querySelectorAll('th, [role="columnheader"]')).map((h) => clean(h.innerText))
       : [];
+    let headerSource = headers.length ? 'header-row' : '';
+    if (!headers.length) {
+      // ชั้นที่ 2: เซลล์ชี้ไปหาหัวคอลัมน์ที่ประกาศไว้เอง (aria-labelledby / headers=)
+      const firstBody = rowEls.find(
+        (r) => !r.querySelector('th, [role="columnheader"]') &&
+               r.querySelector('td, [role="cell"], [role="gridcell"]'),
+      );
+      const bodyCells = firstBody
+        ? Array.from(firstBody.querySelectorAll('td, [role="cell"], [role="gridcell"]'))
+        : [];
+      const viaIds = bodyCells.map((c) => {
+        const ref = c.getAttribute('headers') || c.getAttribute('aria-labelledby') || '';
+        const target = ref ? document.getElementById(ref.split(/\s+/)[0]) : null;
+        return target ? clean(target.innerText) : '';
+      });
+      if (viaIds.some(Boolean)) { headers = viaIds; headerSource = 'aria'; }
+      if (!headers.length) {
+        // ชั้นที่ 3: data-* ที่ชื่อคอลัมน์ (พบบ่อยในตาราง responsive ที่โชว์ label ผ่าน CSS)
+        const viaData = bodyCells.map(
+          (c) => clean(c.getAttribute('data-col') || c.getAttribute('data-field') ||
+                       c.getAttribute('data-label') || c.getAttribute('data-title') || ''),
+        );
+        if (viaData.some(Boolean)) { headers = viaData; headerSource = 'data-attr'; }
+      }
+    }
     const rows = [];
     for (const r of rowEls) {
       if (r.querySelector('th, [role="columnheader"]')) continue;
@@ -992,7 +1020,9 @@ _VISIBLE_TABLE_ROWS_JS = r"""
         : [clean(r.innerText)];
       if (cells.some(Boolean)) rows.push(cells);
     }
-    if (rows.length > 0 && (!best || rows.length > best.rows.length)) best = { headers, rows };
+    if (rows.length > 0 && (!best || rows.length > best.rows.length)) {
+      best = { headers, rows, headerSource };
+    }
   }
   return best;
 }
@@ -1013,6 +1043,13 @@ async def _scan_visible_table_rows(page: Page) -> Optional[tuple[list[str], list
     headers = [str(h) for h in (table.get("headers") or [])]
     rows = [[str(c) for c in row] for row in table["rows"] if isinstance(row, list)]
     return (headers, rows) if rows else None
+
+
+def _table_columns_are_addressable(headers: list[str], rows: list[list[str]]) -> bool:
+    """W_column_headers_fallback: เล็งคอลัมน์ได้จริงไหม — ต้องมีชื่อคอลัมน์ *และ* แถวถูกแยก
+    เป็นเซลล์จริง (ตาราง div ล้วนถูกยัดทั้งแถวเป็นเซลล์เดียวโดย _VISIBLE_TABLE_ROWS_JS
+    ซึ่งเทียบเท่ากับไม่มีคอลัมน์เลย)"""
+    return bool(headers) and any(len(row) > 1 for row in rows)
 
 
 def _column_index_for_field(headers: list[str], field: str) -> Optional[int]:
@@ -1062,16 +1099,29 @@ def _row_matches_condition(
 
 
 async def _count_rows_matching_condition(
-    page: Page, pairs: list[tuple[str, str]],
+    page: Page, pairs: list[tuple[str, str]], *, require_columns: bool = False,
 ) -> Optional[tuple[int, int]]:
     """W_delete_all_intent: คืน (จำนวนแถวที่ตรงเงื่อนไขทุกคู่, จำนวนแถวทั้งหมดที่เห็น) ของตาราง
-    ที่แสดงอยู่ หรือ None ถ้าเช็คไม่ได้"""
+    ที่แสดงอยู่ หรือ None ถ้าเช็คไม่ได้
+
+    W_column_headers_fallback: `require_columns=True` = "ถ้าเล็งคอลัมน์ไม่ได้ ให้ตอบว่าตัดสิน
+    ไม่ได้ (None) แทนที่จะถอยไปเทียบทั้งแถว" — ตารางที่ไม่มีหัวคอลัมน์เลยทำให้
+    _row_matches_condition() fail-open กลับไปเทียบข้อความทั้งแถว ซึ่งคือบั๊ก W97 เดิมเป๊ะ
+    (ค่า "ess" ไปตรงกับชื่อคน "Jessica") เพียงแต่เงียบกว่าเพราะไม่มีใครเห็น
+
+    ผู้เรียกต้องเลือกเองตามทิศทางของการตัดสินใจ:
+      - ทิศที่ปลอดภัย (บล็อกไว้ก่อน เช่น กันลบจากตารางที่ยังไม่กรอง) -> require_columns=False
+        เทียบทั้งแถวได้ เพราะเดาเกินไปแล้วบล็อก อย่างมากก็เสีย step
+      - ทิศที่อันตราย (ใช้เป็นหลักฐานว่า "จบงานแล้ว") -> require_columns=True เพราะการนับเกิน
+        จริงในทิศนี้แปลว่าอ้างว่าเสร็จทั้งที่ยังเหลือ"""
     if not pairs:
         return None
     scanned = await _scan_visible_table_rows(page)
     if scanned is None:
         return None
     headers, rows = scanned
+    if require_columns and not _table_columns_are_addressable(headers, rows):
+        return None
     matching = sum(1 for cells in rows if _row_matches_condition(headers, cells, pairs))
     return matching, len(rows)
 
@@ -5043,8 +5093,10 @@ class Orchestrator:
                             # Selected") — ตกลงมานับแถวจากตารางตรงๆ แทน ซึ่งเป็นหลักฐานที่
                             # แข็งกว่าข้อความสรุปอยู่แล้ว ใช้ helper ตัวเดียวกับ guard ของ
                             # finish_task ไม่เขียนตัวนับใหม่
+                            # W_column_headers_fallback: ตรงนี้ใช้ตัดสินว่า "ยังเหลืองานไหม"
+                            # ซึ่งเป็นทิศที่ผิดแล้วอ้างว่าเสร็จ -> ต้องเล็งคอลัมน์ได้จริงเท่านั้น
                             row_match = await _count_rows_matching_condition(
-                                page, delete_all_condition_pairs,
+                                page, delete_all_condition_pairs, require_columns=True,
                             )
                             if row_match is not None and row_match[0] > 0:
                                 evidence = (

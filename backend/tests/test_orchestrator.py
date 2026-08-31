@@ -3,6 +3,7 @@ import itertools
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from playwright.async_api import async_playwright
 
 from backend.app.core import llm
 from backend.app.core import orchestrator as orchestrator_module
@@ -47,6 +48,9 @@ from backend.app.core.orchestrator import (
     _cell_matches_value,
     _column_index_for_field,
     _row_matches_condition,
+    _count_rows_matching_condition,
+    _scan_visible_table_rows,
+    _table_columns_are_addressable,
     _plan_drops_goal_operation,
     _build_nudge_message,
     _compact_anthropic_messages,
@@ -3884,6 +3888,87 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     plan_step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "plan_step_done"]
     assert len(plan_step_events) == 1
     assert plan_step_events[0]["step"] == 1
+
+
+# --- W_column_headers_fallback (W110): ตารางที่ไม่มีหัวคอลัมน์ ---
+
+
+def test_columns_are_addressable_needs_both_headers_and_real_cells():
+    """ตาราง div ล้วนถูกยัดทั้งแถวเป็นเซลล์เดียวโดย _VISIBLE_TABLE_ROWS_JS ซึ่งเทียบเท่า
+    กับไม่มีคอลัมน์เลย ถึงจะมีชื่อหัวตารางอยู่ก็ตาม"""
+    assert _table_columns_are_addressable(["Username", "Role"], [["a", "b"]]) is True
+    assert _table_columns_are_addressable([], [["a", "b"]]) is False
+    assert _table_columns_are_addressable(["Username", "Role"], [["a b"]]) is False
+
+
+@pytest.mark.asyncio
+async def test_column_headers_are_found_from_aria_and_data_attributes_too():
+    """ตารางจำนวนมากไม่มี th/[role=columnheader] แต่บอกชื่อคอลัมน์ไว้ที่ตัวเซลล์เอง
+    (โดยเฉพาะตาราง responsive ที่ต้องโชว์ชื่อคอลัมน์บนมือถือ) — ถ้าอ่านไม่ออกจะตกไป
+    เทียบข้อความทั้งแถว ซึ่งคือบั๊ก W97 เดิมเป๊ะ (ค่า ess ไปตรงกับชื่อคน Jessica)
+
+    ใช้ Chromium จริงเพราะสิ่งที่ต้องพิสูจน์คือ JS อ่าน DOM จริงได้ไหม mock พิสูจน์ไม่ได้"""
+    pairs = _goal_condition_pairs("ลบ userrole=ess ออกให้หมด")
+    pages = {
+        "th": (
+            "<table><tr><th>Username</th><th>User Role</th></tr>"
+            "<tr><td>jessica</td><td>Admin</td></tr>"
+            "<tr><td>bob</td><td>ESS</td></tr></table>"
+        ),
+        "aria-labelledby": (
+            "<span id='h1'>Username</span><span id='h2'>User Role</span><table>"
+            "<tr><td aria-labelledby='h1'>jessica</td>"
+            "<td aria-labelledby='h2'>Admin</td></tr>"
+            "<tr><td aria-labelledby='h1'>bob</td>"
+            "<td aria-labelledby='h2'>ESS</td></tr></table>"
+        ),
+        "data-col": (
+            "<table><tr><td data-col='Username'>jessica</td>"
+            "<td data-col='User Role'>Admin</td></tr>"
+            "<tr><td data-col='Username'>bob</td>"
+            "<td data-col='User Role'>ESS</td></tr></table>"
+        ),
+    }
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            for name, html in pages.items():
+                await page.set_content(html)
+                scanned = await _scan_visible_table_rows(page)
+                assert scanned is not None, name
+                headers, rows = scanned
+                assert _table_columns_are_addressable(headers, rows) is True, name
+                # ต้องนับได้ 1 จาก 2 — jessica (Admin) ต้องไม่ถูกนับเป็น ESS
+                assert await _count_rows_matching_condition(
+                    page, pairs, require_columns=True) == (1, 2), name
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_table_without_any_column_names_reports_undecidable_not_a_guess():
+    """ทิศที่อันตรายคือการใช้ตัวเลขนี้เป็นหลักฐานว่า "จบงานแล้ว" — เล็งคอลัมน์ไม่ได้ต้องตอบ
+    ว่าตัดสินไม่ได้ (None) ไม่ใช่ถอยไปเทียบทั้งแถวเงียบๆ
+
+    ส่วนทิศที่ปลอดภัย (บล็อกไว้ก่อน) ยังเทียบทั้งแถวได้เหมือนเดิม เพราะเดาเกินแล้วบล็อก
+    อย่างมากก็เสีย step"""
+    pairs = _goal_condition_pairs("ลบ userrole=ess ออกให้หมด")
+    html = ("<table><tr><td>jessica</td><td>Admin</td></tr>"
+            "<tr><td>bob</td><td>ESS</td></tr></table>")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            assert await _count_rows_matching_condition(
+                page, pairs, require_columns=True) is None
+            # ค่าเริ่มต้น (ทิศปลอดภัย) ยังตอบได้เหมือนเดิม
+            assert await _count_rows_matching_condition(page, pairs) is not None
+        finally:
+            await browser.close()
 
 
 # --- W_marker_registry / W_label_marker_key (W107+W108) ---
