@@ -1420,6 +1420,24 @@ def run_release_gate_cmd():
         sys.exit(1)
 
 
+def run_kpi_cmd():
+    """W_production_kpi: สรุป data/token_usage.jsonl + data/step_trace.jsonl ของ *งานจริง*
+
+    ต่างจาก release-gate (ข้อ 22) ที่ตอบว่า "benchmark ดีขึ้นไหม" — อันนี้ตอบว่า "งานจริงของ
+    user ดีขึ้นไหม" ซึ่งก่อนหน้านี้ไม่มีอะไรตอบได้เลยทั้งที่ข้อมูลถูกเก็บครบมาตั้งแต่ W78/W83
+
+    อ่านอย่างเดียวล้วนๆ ไม่เปิด browser ไม่เรียก LLM ไม่แก้ไฟล์ไหน — รันได้ตลอดเวลาแม้ระหว่างที่
+    มี task อื่นทำงานอยู่"""
+    from backend.app.core.kpi import build_kpi_report, format_kpi_report
+
+    window = 7
+    for arg in sys.argv[2:]:
+        if arg.isdigit():
+            window = int(arg)
+    print(format_kpi_report(build_kpi_report(window_days=window)), flush=True)
+    return True
+
+
 ACTIONS = {
     "1": ("รัน API server", run_server),
     "2": ("รัน tests (pytest)", run_tests),
@@ -1443,9 +1461,11 @@ ACTIONS = {
     "20": ("MiniWoB++ Evaluation (Farama benchmark tasks)", run_miniwob_evaluation),
     "21": ("OrangeHRM Evaluation (public demo, ชั่วคราวระหว่างรอ Docker)", run_orangehrm_evaluation),
     "22": ("W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน, เทียบ baseline)", run_release_gate_cmd),
+    "23": ("W_production_kpi: สรุป telemetry ของงานจริง (อ่านอย่างเดียว ไม่รัน browser/LLM)", run_kpi_cmd),
 }
 
 ALIASES = {
+    "kpi": "23",
     "server": "1",
     "test": "2",
     "tests": "2",
