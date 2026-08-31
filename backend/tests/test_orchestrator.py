@@ -37,6 +37,8 @@ from backend.app.core.orchestrator import (
     _field_names_match,
     _goal_is_about_the_signed_in_account,
     _filter_field_from_label,
+    _extra_filters_set_on_page,
+    _page_filter_matches_goal,
     _goal_condition_fields,
     _goal_condition_pairs,
     _goal_condition_values,
@@ -3880,6 +3882,116 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     plan_step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "plan_step_done"]
     assert len(plan_step_events) == 1
     assert plan_step_events[0]["step"] == 1
+
+
+# --- W_empty_table_needs_right_filter (W105): ตารางว่างเพราะกรองผิด ไม่ใช่เพราะลบครบ ---
+
+
+def _labels(*texts):
+    return [{"label": t} for t in texts]
+
+
+def test_page_filter_check_has_three_states_and_fails_open_when_unreadable():
+    """3 สถานะเป็นหัวใจของ guard นี้ — None ต้องแปลว่า "ตัดสินไม่ได้" ไม่ใช่ "ไม่ตรง"
+    ไม่งั้นเว็บที่ perception อ่าน label ตัวกรองไม่ได้จะพังทันทีเพราะ guard นี้"""
+    pairs = _goal_condition_pairs("ลบ user ที่ userrole=ess ออกให้หมด")
+
+    assert _page_filter_matches_goal(_labels("User Role: ESS", "Search"), pairs) is True
+    # ตัวกรองหลุดกลับไปเป็นค่าเริ่มต้น = ไม่ตรง ไม่ใช่ตัดสินไม่ได้
+    assert _page_filter_matches_goal(_labels("User Role: -- Select --"), pairs) is False
+    assert _page_filter_matches_goal(_labels("User Role: Admin"), pairs) is False
+    # อ่านตัวกรองไม่ได้เลย -> fail-open
+    assert _page_filter_matches_goal(_labels("Search", "Delete"), pairs) is None
+    assert _page_filter_matches_goal(None, pairs) is None
+    assert _page_filter_matches_goal(_labels(), pairs) is None
+
+
+def test_extra_filter_left_set_is_reported():
+    """เคส Status=Enabled ที่ user เจอตั้งแต่ต้น: ESS ที่ถูก disable หายจากตาราง แล้ว
+    "ลบให้หมด" จะจบทั้งที่ยังเหลือ — W_filter_scope_guard กันตอนจะตั้ง ตัวนี้กันตอนจะสรุปผล"""
+    pairs = _goal_condition_pairs("ลบ user ที่ userrole=ess ออกให้หมด")
+
+    assert _extra_filters_set_on_page(
+        _labels("User Role: ESS", "Status: Enabled"), pairs) == ["Status: Enabled"]
+    # ช่องอื่นที่ยังไม่ได้ตั้งค่า ไม่นับเป็นตัวกรองส่วนเกิน
+    assert _extra_filters_set_on_page(_labels("User Role: ESS", "Status: -- Select --"), pairs) == []
+
+
+@pytest.mark.asyncio
+async def test_empty_table_is_not_accepted_as_done_when_the_filter_is_wrong():
+    """บั๊กจริง live stability check 2026-08-31: agent คลิก dropdown ซ้ำซ้อนจนตัวกรองเพี้ยน
+    กด Search ได้ตารางว่าง แล้วรายงาน "ลบครบแล้ว" ทั้งที่ ground truth ก่อนและหลังเท่ากันที่
+    1 ESS = ไม่ได้ลบอะไรเลย
+
+    ฝั่งทำลายข้อมูลมี guard คู่นี้อยู่แล้ว (ตรวจว่าแถวตรงเงื่อนไขก่อนยอมให้ลบ) แต่ฝั่งยืนยัน
+    ว่าจบงานไม่เคยมีคู่ของมัน"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "div", "type": "", "label": "User Role: -- Select --"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ลบครบแล้ว"}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ยังไม่ครบ"}, "t3", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "ยังไม่ครบ"}, "t4", ["m"], llm.TokenUsage()),
+    ]
+
+    tool_results = []
+
+    def _record(messages, tool_use_id, result_text):
+        tool_results.append(result_text)
+        return messages
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records",\
+               AsyncMock(return_value=(0, "No Records Found"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once",\
+               AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert result["success"] is False
+    assert [t for t in tool_results if "not evidence the job is done" in t]
+
+
+@pytest.mark.asyncio
+async def test_empty_table_is_still_accepted_when_the_filter_is_right():
+    """ตัวกรองถูกต้อง + ตารางว่าง = จบงานจริง ต้องยังยอมรับเหมือนเดิม ไม่งั้น guard นี้
+    จะทำให้งานลบที่สำเร็จจริงจบไม่ได้เลยสักครั้ง"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "div", "type": "", "label": "User Role: ESS"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ลบครบแล้ว"}, "t2", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records",\
+               AsyncMock(return_value=(0, "No Records Found"))), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records_once",\
+               AsyncMock(return_value=None)), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, t, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert result["success"] is True
 
 
 # --- W104: 2 บั๊กที่ live stability check เจอ ---

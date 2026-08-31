@@ -797,6 +797,87 @@ def _goal_is_about_the_signed_in_account(goal: str) -> bool:
     return any(kw in lower for kw in _ACCOUNT_GOAL_KEYWORDS)
 
 
+# W_empty_table_needs_right_filter (บั๊กจริง live stability check 2026-08-31): guard ฝั่ง
+# "ยืนยันว่าจบงาน" รับ "ตารางที่แสดงอยู่เหลือ 0 แถว" เป็นหลักฐานความสำเร็จ โดย **ไม่เคยตรวจว่า
+# ตัวกรองบนหน้ายังตั้งเป็นค่าที่ goal สั่งอยู่จริงไหม** — ตารางว่างเพราะกรองผิดกับตารางว่างเพราะ
+# ลบครบ หน้าตาเหมือนกันเป๊ะสำหรับมัน
+# (รันจริง: agent คลิก dropdown ซ้ำซ้อนจนตัวกรองเพี้ยน กด Search ได้ตารางว่าง แล้วรายงานว่า
+# "ลบครบแล้ว" ทั้งที่ ground truth ก่อนและหลังเท่ากันที่ 1 ESS = ไม่ได้ลบอะไรเลย)
+#
+# น่าสังเกตว่าฝั่ง *ทำลายข้อมูล* มี guard คู่นี้อยู่แล้ว (W_delete_all_intent guard B ตรวจว่าแถว
+# ที่เห็นตรงเงื่อนไขก่อนยอมให้ลบ) แต่ฝั่ง *ยืนยันว่าจบงาน* ไม่เคยมีคู่ของมัน
+#
+# อ่านจาก label ที่ perception ทำไว้ให้แล้วล้วนๆ ("User Role: ESS" — W_dropdown_field_label +
+# W_field_label_for_plain_inputs) ไม่เรียก LLM ไม่ยิง DOM เพิ่มสักครั้ง
+# ค่าที่แปลว่า "ยังไม่ได้ตั้ง" ของ dropdown ตัวกรอง — ต้องถือว่า "ไม่ตรงเงื่อนไข" ไม่ใช่ "ไม่รู้"
+_FILTER_UNSET_VALUE_TEXTS = ("-- select --", "--select--", "select...", "all", "any", "ทั้งหมด", "")
+
+
+def _filter_value_from_label(label: str) -> Optional[str]:
+    """ค่าที่ตัวกรองตัวนี้ถืออยู่ตอนนี้ ("User Role: ESS" -> "ESS") — None ถ้า label ไม่ได้อยู่ใน
+    รูป "ชื่อ field: ค่า" เลย (ตัดสินไม่ได้)"""
+    match = _FIELD_LABEL_PREFIX_RE.match(label or "")
+    return label[match.end():].strip() if match else None
+
+
+def _page_filter_matches_goal(
+    elements: Optional[list], pairs: list[tuple[str, str]],
+) -> Optional[bool]:
+    """ตัวกรองบนหน้าตอนนี้ตรงกับที่ goal สั่งไหม
+
+    True  = ทุก field ที่ goal ระบุ แสดงค่าที่ถูกต้องอยู่บนหน้าจริง
+    False = เจอ field นั้นแต่ค่าไม่ตรง (รวมกรณีค่ากลับไปเป็น "-- Select --" = ตัวกรองหลุด)
+    None  = อ่านตัวกรองไม่ได้เลย -> **ผู้เรียกต้อง fail-open** คงพฤติกรรมเดิมทุกประการ
+            (เว็บที่ perception อ่าน label ตัวกรองไม่ได้ต้องไม่พังเพราะ guard นี้)
+    """
+    if not pairs or not elements:
+        return None
+    decided = False
+    for field, value in pairs:
+        for el in elements:
+            label = str(el.get("label") or "")
+            page_field = _filter_field_from_label(label)
+            if not page_field or not _field_names_match(field, page_field):
+                continue
+            current = _filter_value_from_label(label)
+            if current is None:
+                continue
+            decided = True
+            if current.strip().lower() in _FILTER_UNSET_VALUE_TEXTS:
+                return False
+            if not _cell_matches_value(current, value):
+                return False
+            break
+    return True if decided else None
+
+
+def _extra_filters_set_on_page(elements: Optional[list], pairs: list[tuple[str, str]]) -> list[str]:
+    """ชื่อ+ค่าของตัวกรองตัวอื่นที่ "ถูกตั้งค่าไว้" ทั้งที่ goal ไม่ได้พูดถึง — ตารางว่างขณะที่มี
+    ตัวกรองส่วนเกินตั้งอยู่ เชื่อไม่ได้เหมือนกัน (เคส Status=Enabled ที่ user เจอตั้งแต่ต้น:
+    ESS ที่ถูก disable หายจากตาราง แล้ว "ลบให้หมด" จะจบทั้งที่ยังเหลือ)
+    W_filter_scope_guard กันตอน *จะตั้ง* ตัวกรองอยู่แล้ว ตัวนี้กันตอน *จะสรุปผล*"""
+    if not pairs or not elements:
+        return []
+    extras = []
+    for el in elements:
+        label = str(el.get("label") or "")
+        page_field = _filter_field_from_label(label)
+        if not page_field or any(_field_names_match(f, page_field) for f, _ in pairs):
+            continue
+        current = _filter_value_from_label(label)
+        if current is not None and current.strip().lower() not in _FILTER_UNSET_VALUE_TEXTS:
+            extras.append(label)
+    return extras
+
+
+_EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE = (
+    "[Rejected] The table is empty, but that is not evidence the job is done: {problem}. "
+    "An empty table only proves the work is complete when the filter on screen is exactly "
+    "the one the goal asked for ({condition}). Set the filter to that, press Search, and "
+    "look at the rows that come back before claiming anything."
+)
+
+
 _MAX_FILTER_SCOPE_RETRIES = 2
 
 _FILTER_SCOPE_NUDGE_TEMPLATE = (
@@ -4391,6 +4472,52 @@ class Orchestrator:
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
                         messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
                         continue
+                    # W_empty_table_needs_right_filter: ตารางว่างเป็นหลักฐานความสำเร็จได้ก็
+                    # ต่อเมื่อตัวกรองบนหน้าคือตัวที่ goal สั่งจริง — ไม่งั้น "ว่างเพราะกรองผิด"
+                    # จะถูกนับเป็น "ว่างเพราะลบครบ" (ดูเหตุผลเต็มที่จุดประกาศ helper)
+                    if (
+                        claimed_success
+                        and tool_use_id
+                        and delete_all_condition_pairs
+                        and remaining_records is not None
+                        and remaining_records[0] == 0
+                        and premature_deletion_incomplete_count
+                        < _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES
+                    ):
+                        filter_ok = _page_filter_matches_goal(elements, delete_all_condition_pairs)
+                        extra_filters = _extra_filters_set_on_page(
+                            elements, delete_all_condition_pairs,
+                        )
+                        problem = ""
+                        if filter_ok is False:
+                            problem = "the filter on screen is not set to what the goal asked for"
+                        elif extra_filters:
+                            problem = (
+                                "an extra filter the goal never mentioned is still narrowing the "
+                                f"table ({', '.join(repr(f) for f in extra_filters)})"
+                            )
+                        if problem:
+                            premature_deletion_incomplete_count += 1
+                            nudge_text = _EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE.format(
+                                problem=problem,
+                                condition=" + ".join(
+                                    f"{f}={v}" for f, v in delete_all_condition_pairs
+                                ),
+                            )
+                            if verbose:
+                                print(
+                                    f"[ตารางว่างแต่ตัวกรองไม่ตรง "
+                                    f"{premature_deletion_incomplete_count}/"
+                                    f"{_MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES}] {problem}",
+                                    flush=True,
+                                )
+                            messages = append_tool_result(messages, tool_use_id, nudge_text)
+                            messages.append(_build_nudge_message(
+                                resolved_provider,
+                                f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                            ))
+                            continue
+
                     if remaining_records is not None and remaining_records[0] > 0:
                         # retry ครบโควตาแล้วยังลบ/แก้ไขไม่ครบจริง — ต่างจาก validation-error
                         # guard ด้านบนที่ปล่อยผ่านตามคำยืนยันของโมเดล (error message ตีความได้
@@ -4828,6 +4955,32 @@ class Orchestrator:
                         reason=goal_scope_satisfied_reason,
                     )
                     if delete_all_condition_values:
+                        # W_empty_table_needs_right_filter: เช็คตัวกรองก่อนตัวนับแถว — ถ้ากรอง
+                        # ผิดอยู่ ตัวเลข 0 ที่อ่านได้ไม่มีความหมายเลยตั้งแต่ต้น ไม่ต้องไปดูมัน
+                        # (elements ตรงนี้เป็น snapshot ของ iteration ปัจจุบันแล้ว — คนละกรณี
+                        # กับจุดที่ตั้ง goal_scope_satisfied_reason ซึ่งเกิดก่อน get_snapshot)
+                        _filter_ok = _page_filter_matches_goal(elements, delete_all_condition_pairs)
+                        _extra_filters = _extra_filters_set_on_page(
+                            elements, delete_all_condition_pairs,
+                        )
+                        if _filter_ok is False or _extra_filters:
+                            success = False
+                            final_message = (
+                                "Stopping task without completing it: the table looks empty, but "
+                                "that is not evidence the job is done — "
+                                + (
+                                    "the filter on screen is not set to what the goal asked for"
+                                    if _filter_ok is False
+                                    else "an extra filter the goal never mentioned is still "
+                                    f"narrowing it ({', '.join(repr(f) for f in _extra_filters)})"
+                                )
+                                + f". Nothing is being claimed as done for "
+                                f"{delete_all_condition_values!r}."
+                            )
+                            if verbose:
+                                print(f"[goal-scope] {final_message}", flush=True)
+                            break
+
                         remaining = await _scan_remaining_target_records(page)
                         evidence = None
                         if remaining is not None and remaining[0] > 0:
