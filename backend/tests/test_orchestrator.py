@@ -39,6 +39,8 @@ from backend.app.core.orchestrator import (
     _filter_field_from_label,
     _extra_filters_set_on_page,
     _page_filter_matches_goal,
+    _PERCEPTION_LABEL_MARKERS,
+    _label_without_markers,
     _goal_condition_fields,
     _goal_condition_pairs,
     _goal_condition_values,
@@ -3882,6 +3884,117 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     plan_step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "plan_step_done"]
     assert len(plan_step_events) == 1
     assert plan_step_events[0]["step"] == 1
+
+
+# --- W_marker_registry / W_label_marker_key (W107+W108) ---
+
+
+def test_marker_registry_covers_every_marker_perception_actually_appends():
+    """**เทสต์ตัวนี้คือหัวใจของ W108 ไม่ใช่ตัวทะเบียน** — อ่านซอร์สของ perception.py จริง
+    แล้วยืนยันว่า marker ทุกตัวที่ JS เติมเข้า label มีอยู่ในทะเบียนฝั่ง Python ครบ
+
+    วันที่มีใครเพิ่ม marker ตัวที่ 8 โดยไม่แตะทะเบียน `_label_without_markers()` จะตัดมันไม่ออก
+    แล้ว loop detector ก็จะเงียบไปอีกครั้งโดยไม่มีอะไรเตือน — ซึ่งเป็นรูปแบบที่เกิดซ้ำมาแล้ว
+    หลายครั้งในโปรเจกต์นี้ (เจตนาถูก แต่โค้ดอีกฝั่งไม่ทำตาม)"""
+    import re as _re
+    from pathlib import Path
+
+    source = Path("backend/app/core/perception.py").read_text(encoding="utf-8")
+    # จับรูปแบบที่ perception ใช้เติม marker ทุกตัว: label = label ? `${label} [X]` : '[X]'
+    appended = set(_re.findall(
+        r"label = label [?] `[$][{]label[}] ([[][^`]+[]])`", source,
+    ))
+
+    assert appended, "อ่าน marker จาก perception.py ไม่ได้เลย — รูปแบบ regex ต้องตามซอร์สให้ทัน"
+    missing = appended - set(_PERCEPTION_LABEL_MARKERS)
+    assert not missing, f"perception เติม marker ที่ทะเบียนไม่รู้จัก: {sorted(missing)}"
+
+
+def test_label_without_markers_strips_state_but_keeps_identity():
+    """marker คือ *สถานะชั่วคราว* ของ element ไม่ใช่ตัวตนของมัน"""
+    assert _label_without_markers("Select row") == "Select row"
+    assert _label_without_markers(
+        "Select row [hidden — may need to hover the row first]") == "Select row"
+    assert _label_without_markers("Yes, Delete [in open dialog]") == "Yes, Delete"
+    # ซ้อนกันหลายตัว และตัวที่กลายเป็น label ทั้งก้อนเพราะ label เดิมว่าง
+    assert _label_without_markers("[in open dialog] [obscured]") == ""
+    assert _label_without_markers("Save [disabled] [required]") == "Save"
+
+
+def test_label_without_markers_leaves_the_site_own_brackets_alone():
+    """ตัดเฉพาะ marker ที่รู้จัก — label จริงของเว็บมีวงเล็บเหลี่ยมของตัวเองได้
+    ตัดมั่วจะทำให้ element คนละตัวกลายเป็นตัวเดียวกัน ซึ่งอันตรายกว่าไม่ตัดเลย"""
+    assert _label_without_markers("[Beta] Export") == "[Beta] Export"
+    assert _label_without_markers("Row [1] of [10]") == "Row [1] of [10]"
+
+
+@pytest.mark.asyncio
+async def test_same_label_loop_is_detected_when_only_a_marker_differs():
+    """บั๊กจริง live stability 2026-08-31: agent สลับคลิกระหว่าง "Select row" กับ
+    "Select row [hidden — ...]" ซึ่งเป็นปุ่มชนิดเดียวกันเป๊ะ แต่ loop detector ใช้ label ดิบ
+    เป็นกุญแจ ตัวนับจึงรีเซ็ตทุกครั้งที่สลับ ไม่มีวันถึงเกณฑ์ 4 -> เผา step จนหมด max_steps
+    ทั้งที่ guard ตัวนี้ถูกเขียนมาเพื่อเคสนี้โดยตรง"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "Select row"},
+        {"index": 2, "tag": "div", "type": "",
+         "label": "Select row [hidden — may need to hover the row first]"},
+    ]
+    calls = [
+        ("browser_action", {"type": "click", "index": (1 if i % 2 == 0 else 2)},
+         f"t{i}", ["m"], llm.TokenUsage())
+        for i in range(8)
+    ] + [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    forced = []
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result",\
+               side_effect=lambda m, t, r: forced.append(r) or m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบแถวทั้งหมด", provider="anthropic",
+        )
+
+    # loop detector ต้องทำงาน = มีการบังคับ recovery เกิดขึ้น
+    assert [f for f in forced if "System forced" in str(f) or "loop" in str(f).lower()]
+
+
+@pytest.mark.asyncio
+async def test_same_label_loop_does_not_fire_for_genuinely_different_labels():
+    """เคสควบคุมของเทสต์ด้านบน — ถ้าตัดมั่วจนของคนละตัวกลายเป็นตัวเดียวกัน guard จะไปจับ
+    การทำงานปกติที่คลิกปุ่มคนละปุ่มสลับกัน ซึ่งอันตรายกว่าไม่ตัดเลย"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "button", "type": "", "label": "[Beta] Export"},
+        {"index": 2, "tag": "button", "type": "", "label": "Import"},
+    ]
+    calls = [
+        ("browser_action", {"type": "click", "index": (1 if i % 2 == 0 else 2)},
+         f"t{i}", ["m"], llm.TokenUsage())
+        for i in range(8)
+    ] + [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    forced = []
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))),          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))),          patch("backend.app.core.orchestrator.llm.append_tool_result",
+               side_effect=lambda m, t, r: forced.append(r) or m),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "สลับกดสองปุ่ม", provider="anthropic",
+        )
+
+    assert not [f for f in forced if "same element kind" in str(f)]
 
 
 # --- W_empty_table_needs_right_filter (W105): ตารางว่างเพราะกรองผิด ไม่ใช่เพราะลบครบ ---

@@ -676,11 +676,14 @@ def _filter_field_from_label(label: str, action_type: str = "") -> str:
     จำกัดไว้ที่ fill/select เท่านั้น: การ fill เล็งไปที่ form field เสมอ label ที่ไม่มี ":" จึงคือ
     ชื่อช่องแน่ๆ — ส่วน click ห้ามตีความแบบนี้เด็ดขาด ปุ่มชื่อ "Search"/"Delete" จะกลายเป็น
     "ชื่อ field" ทันทีแล้ว guard จะบล็อกทุกปุ่มบนหน้า"""
-    match = _FIELD_LABEL_PREFIX_RE.match(label or "")
+    # W_label_marker_key: "Username [required]" ต้องให้ชื่อ field เป็น "username" ไม่ใช่
+    # "usernamerequired" ซึ่งจะไม่ match อะไรเลยแล้ว guard ก็เงียบไปเฉยๆ
+    cleaned = _label_without_markers(label)
+    match = _FIELD_LABEL_PREFIX_RE.match(cleaned)
     if match:
         return _normalized_field_name(match.group(1))
     if action_type in ("fill", "select"):
-        return _normalized_field_name(label or "")
+        return _normalized_field_name(cleaned)
     return ""
 
 
@@ -746,6 +749,48 @@ def _field_names_match(goal_field: str, page_field: str) -> bool:
 # ว่าจงใจเก็บ element ที่ถูกบังไว้ใน snapshot เพราะ overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง
 # (dropdown/tooltip ที่ปิดตัวเอง) การมี dialog เปิดค้างต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็น
 # ถาวรจนคลิกไม่ได้แน่ๆ
+# W_marker_registry (W108): perception เติม marker ต่อท้าย label 7 ตัว แต่ฝั่ง Python เคยตั้งชื่อ
+# ไว้แค่ 3 ตัว ที่เหลือถูกพิมพ์เป็น literal ซ้ำหลายที่ ("[already active]" อยู่ 5 จุด) และ
+# [disabled]/[required]/[hidden — ...] ไม่มีชื่อเลย — วันที่มีใครเพิ่ม marker ตัวที่ 8 จะไม่มีอะไร
+# เตือนว่าต้องมาแก้ตัวตัดด้านล่างด้วย
+#
+# *** ทะเบียนนี้ไม่ใช่ของสำคัญที่สุด เทสต์ที่คู่กับมันต่างหาก ***
+# test_orchestrator.py อ่านซอร์สของ perception.py จริงแล้วยืนยันว่า marker ทุกตัวที่ JS เติม
+# มีอยู่ในทะเบียนนี้ครบ — นั่นคือสิ่งเดียวที่ทำให้ drift "ดัง" ขึ้นมาแทนที่จะเงียบ ซึ่งเป็นรูปแบบ
+# ที่เจอซ้ำมาแล้วหลายครั้งในโปรเจกต์นี้ (comment/เจตนาถูก แต่โค้ดอีกฝั่งไม่ทำตาม)
+_PERCEPTION_LABEL_MARKERS = (
+    "[in open dialog]",
+    "[Profile/Account Menu]",
+    "[obscured]",
+    "[hidden — may need to hover the row first]",
+    "[disabled]",
+    "[required]",
+    "[already active]",
+)
+
+_ALREADY_ACTIVE_LABEL_MARKER = "[already active]"
+
+# W_label_marker_key (W107): marker เป็น "สถานะชั่วคราวของ element" ไม่ใช่ "ตัวตน" ของมัน —
+# ปุ่มเดิมที่บังเอิญถูก hover/ถูกบัง/อยู่ใน dialog ได้ label คนละสตริง โค้ดที่ใช้ label เป็นกุญแจ
+# เทียบจึงมองว่าเป็นคนละ element
+# บั๊กจริงที่ user เจอ: loop detector ใช้ (type, label) เป็นกุญแจ พอ agent สลับคลิกระหว่าง
+# "Select row" กับ "Select row [hidden — may need to hover the row first]" ตัวนับก็รีเซ็ตทุกครั้ง
+# ไม่มีวันถึงเกณฑ์ 4 -> เผา step จนหมด max_steps ทั้งที่ guard ตัวนี้ถูกเขียนมาเพื่อเคสนี้โดยตรง
+#
+# ตัดเฉพาะ marker ที่รู้จัก **ไม่ตัด [...] ทั่วไป** เพราะ label จริงของเว็บมีวงเล็บเหลี่ยมของ
+# ตัวเองได้ (เช่นปุ่ม "[Beta] Export") การตัดมั่วจะทำให้ element คนละตัวกลายเป็นตัวเดียวกัน
+def _label_without_markers(label: str) -> str:
+    """label ที่ตัด marker ของ perception ออกหมดแล้ว — ใช้ตอนต้องการ "ตัวตน" ของ element
+    เท่านั้น ห้ามใช้แทน label ดิบในที่ที่ตั้งใจตรวจ marker (ดู _OBSCURED_LABEL_MARKER ฯลฯ)
+
+    marker ต่อท้ายเป็นปกติ แต่กลายเป็น label ทั้งก้อนได้ถ้า label เดิมว่าง และซ้อนกันได้หลายตัว
+    จึงตัดทุกตำแหน่ง ไม่ใช่แค่ท้ายสตริง"""
+    cleaned = label or ""
+    for marker in _PERCEPTION_LABEL_MARKERS:
+        cleaned = cleaned.replace(marker, " ")
+    return " ".join(cleaned.split())
+
+
 _OBSCURED_LABEL_MARKER = "[obscured]"
 # ป้ายที่ perception ติดให้ element ที่อยู่ในกล่องโต้ตอบที่เปิดค้าง (W_dialog_in_snapshot)
 _DIALOG_LABEL_MARKER = "[in open dialog]"
@@ -816,8 +861,11 @@ _FILTER_UNSET_VALUE_TEXTS = ("-- select --", "--select--", "select...", "all", "
 def _filter_value_from_label(label: str) -> Optional[str]:
     """ค่าที่ตัวกรองตัวนี้ถืออยู่ตอนนี้ ("User Role: ESS" -> "ESS") — None ถ้า label ไม่ได้อยู่ใน
     รูป "ชื่อ field: ค่า" เลย (ตัดสินไม่ได้)"""
-    match = _FIELD_LABEL_PREFIX_RE.match(label or "")
-    return label[match.end():].strip() if match else None
+    # W_label_marker_key: ตัด marker ก่อนเสมอ ไม่งั้นค่าที่ได้กลายเป็น "ESS [in open dialog]"
+    # แล้ว _cell_matches_value()/_FILTER_UNSET_VALUE_TEXTS อ่านผิดทั้งคู่
+    cleaned = _label_without_markers(label)
+    match = _FIELD_LABEL_PREFIX_RE.match(cleaned)
+    return cleaned[match.end():].strip() if match else None
 
 
 def _page_filter_matches_goal(
@@ -4791,8 +4839,11 @@ class Orchestrator:
                 _same_label_text = next(
                     (e["label"] for e in elements if e["index"] == _same_label_index), ""
                 ) if _same_label_index is not None else ""
+                # W_label_marker_key: เทียบด้วย "ตัวตน" ของ element ไม่ใช่ label ดิบ —
+                # ดูเหตุผลเต็มที่จุดประกาศ _label_without_markers()
+                _same_label_identity = _label_without_markers(_same_label_text)
                 same_label_key = (
-                    (tool_input.get("type"), _same_label_text.strip()) if _same_label_text.strip() else None
+                    (tool_input.get("type"), _same_label_identity) if _same_label_identity else None
                 )
                 if same_label_key is None or is_bulk_safe_repeat:
                     last_same_label_key = None
