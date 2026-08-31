@@ -663,11 +663,25 @@ def _goal_condition_fields(goal: str) -> list[str]:
 _FIELD_LABEL_PREFIX_RE = re.compile(r"^([^:]{1,40}):\s")
 
 
-def _filter_field_from_label(label: str) -> str:
+def _filter_field_from_label(label: str, action_type: str = "") -> str:
     """ชื่อ field ที่ action นี้กำลังจะไปแตะ (normalize แล้ว) — "" ถ้า label ไม่ได้บอกชื่อ
-    field มาเลย ซึ่งแปลว่าตัดสินไม่ได้ ต้องปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก"""
+    field มาเลย ซึ่งแปลว่าตัดสินไม่ได้ ต้องปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก
+
+    W_field_label_without_value (บั๊กจริง live stability check 2026-08-31): prefix
+    "ชื่อ field: ค่า" จะมีก็ต่อเมื่อช่องนั้น *มีค่าอยู่แล้ว* — ช่องที่ยังว่าง label คือชื่อ field
+    เปล่าๆ ("Username") ไม่มี ":" เลย เพราะตัวเติม prefix ข้ามไปเมื่อ label มีชื่อนั้นอยู่แล้ว
+    ผลคือ guard ตาบอดพอดีตอนที่ช่องยังไม่ถูกแตะ — ซึ่งคือจังหวะเดียวที่มันต้องทำงาน
+    (รันจริง: goal บอกแค่ userrole=ess แต่ agent ไป fill ช่อง "Username" ผ่านฉลุย)
+
+    จำกัดไว้ที่ fill/select เท่านั้น: การ fill เล็งไปที่ form field เสมอ label ที่ไม่มี ":" จึงคือ
+    ชื่อช่องแน่ๆ — ส่วน click ห้ามตีความแบบนี้เด็ดขาด ปุ่มชื่อ "Search"/"Delete" จะกลายเป็น
+    "ชื่อ field" ทันทีแล้ว guard จะบล็อกทุกปุ่มบนหน้า"""
     match = _FIELD_LABEL_PREFIX_RE.match(label or "")
-    return _normalized_field_name(match.group(1)) if match else ""
+    if match:
+        return _normalized_field_name(match.group(1))
+    if action_type in ("fill", "select"):
+        return _normalized_field_name(label or "")
+    return ""
 
 
 # W_filter_scope_guard: goal ที่ user พิมพ์จริงไม่ได้สะอาดเหมือนตัวอย่างในเทสต์ — ของจริงคือ
@@ -4444,7 +4458,31 @@ class Orchestrator:
                     verify_text = str(tool_input.get("verify_text") or "").strip()
                     table_item_found = True
                     if claimed_success and tool_use_id and verify_text:
-                        table_item_found = await _scan_created_item_in_table(page, verify_text)
+                        # W_verify_text_on_delete_goal (บั๊กจริง live stability check 2026-08-31):
+                        # verify_text ถูกออกแบบมาสำหรับงาน *สร้าง* รายการ ("ชื่อที่เพิ่งสร้างต้อง
+                        # โผล่ในตารางจริง") — SYSTEM_PROMPT (W63[7.2]) ก็สั่งไว้ตรงตัวว่างานลบให้
+                        # เว้นว่าง แต่โมเดลส่ง verify_text="No Records Found" มาบนงานลบ แล้ว guard
+                        # ก็ไล่หาข้อความนั้นเป็น *แถวหนึ่งในตาราง* ตามหน้าที่ ไม่เจอ (มันเป็น
+                        # ข้อความสถานะ ไม่ใช่แถว) จึงพลิกงานที่สำเร็จจริงให้กลายเป็น
+                        # VERIFICATION_FAILED — ตารางว่างเปล่าคือ *หลักฐานว่าสำเร็จ* ของงานลบ
+                        # ไม่ใช่หลักฐานว่าล้มเหลว
+                        #
+                        # สองชั้น ชั้นแรกตรงตามสัญญาที่ prompt เขียนไว้แล้ว ชั้นสองกันเคสทั่วไป
+                        # (โมเดลส่งวลี "ไม่มีผลลัพธ์" มาบน goal ชนิดอื่น) ใช้ชุดคำเดิม
+                        # _RECORD_COUNT_ZERO_TEXTS ไม่สร้างชุดใหม่
+                        verify_text_is_zero_phrase = any(
+                            zero_text in verify_text.lower()
+                            for zero_text in _RECORD_COUNT_ZERO_TEXTS
+                        )
+                        if goal_is_deletion_only or verify_text_is_zero_phrase:
+                            if verbose:
+                                print(
+                                    f"[verify_text] ข้ามการหาแถวในตาราง ({verify_text!r}) — "
+                                    "งานลบใช้ 'ตารางว่าง' เป็นหลักฐานความสำเร็จ ไม่ใช่ความล้มเหลว",
+                                    flush=True,
+                                )
+                        else:
+                            table_item_found = await _scan_created_item_in_table(page, verify_text)
                     if (
                         not table_item_found
                         and premature_table_verify_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES
@@ -5041,7 +5079,9 @@ class Orchestrator:
                 #
                 # ใช้โควตาไม่ใช่บล็อกตาย: บางเว็บบังคับให้ต้องเลือกค่าบางช่องก่อนถึงจะกด Search
                 # ได้จริง ถ้าบล็อกตายจะทำให้เว็บกลุ่มนั้นใช้งานไม่ได้เลย
-                touched_field = _filter_field_from_label(action_label or "")
+                touched_field = _filter_field_from_label(
+                    action_label or "", str(tool_input.get("type") or ""),
+                )
                 if (
                     goal_filter_fields
                     and touched_field

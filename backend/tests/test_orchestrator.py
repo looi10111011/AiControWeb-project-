@@ -3882,6 +3882,98 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     assert plan_step_events[0]["step"] == 1
 
 
+# --- W104: 2 บั๊กที่ live stability check เจอ ---
+
+
+def test_field_name_is_readable_from_an_empty_field_whose_label_has_no_value():
+    """W_field_label_without_value (บั๊กจริง live stability check 2026-08-31): prefix
+    "ชื่อ field: ค่า" จะมีก็ต่อเมื่อช่องนั้น *มีค่าอยู่แล้ว* — ช่องที่ยังว่าง label คือชื่อ field
+    เปล่าๆ ("Username") ไม่มี ":" เลย filter-scope guard จึงตาบอดพอดีตอนที่ช่องยังไม่ถูกแตะ
+    ซึ่งคือจังหวะเดียวที่มันต้องทำงาน (รันจริง: goal บอกแค่ userrole=ess แต่ agent ไป fill
+    ช่อง "Username" ผ่านฉลุย)"""
+    assert _filter_field_from_label("Username", "fill") == "username"
+    assert _filter_field_from_label("User Role: ESS", "fill") == "userrole"
+
+    # click ห้ามตีความแบบนี้เด็ดขาด ไม่งั้นปุ่มทุกปุ่มบนหน้าจะกลายเป็น "ชื่อ field"
+    # แล้ว guard จะบล็อกทั้งหมด
+    assert _filter_field_from_label("Search", "click") == ""
+    assert _filter_field_from_label("Delete Selected", "click") == ""
+    assert _filter_field_from_label("Username", "click") == ""
+
+
+@pytest.mark.asyncio
+async def test_filling_an_empty_field_outside_the_goal_is_rejected():
+    """ผลรวมของบั๊กด้านบน: ช่องว่างที่ goal ไม่ได้พูดถึงต้องโดนปฏิเสธเหมือนกับ dropdown"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "input", "type": "text", "label": "Username"},
+        {"index": 2, "tag": "div", "type": "", "label": "User Role: -- Select --"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "fill", "index": 1, "text": "abc"}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "ok", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    # ช่อง Username โดนปฏิเสธ ส่วน User Role ที่ goal ระบุไว้จริงต้องผ่าน
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
+
+
+@pytest.mark.asyncio
+async def test_delete_goal_is_not_failed_by_a_verify_text_that_is_not_a_table_row():
+    """W_verify_text_on_delete_goal (บั๊กจริง live stability check 2026-08-31): verify_text
+    ออกแบบมาสำหรับงาน *สร้าง* รายการ และ SYSTEM_PROMPT ก็สั่งไว้ตรงตัวว่างานลบให้เว้นว่าง —
+    แต่โมเดลส่ง verify_text="No Records Found" มาบนงานลบ แล้ว guard ก็ไล่หาข้อความนั้นเป็น
+    *แถวหนึ่งในตาราง* ตามหน้าที่ ไม่เจอ (มันเป็นข้อความสถานะ ไม่ใช่แถว) จึงพลิกงานที่สำเร็จ
+    จริงให้กลายเป็น VERIFICATION_FAILED
+
+    ตารางว่างเปล่าคือ *หลักฐานว่าสำเร็จ* ของงานลบ ไม่ใช่หลักฐานว่าล้มเหลว"""
+    mock_async_playwright, _, _ = _patch_browser()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "ลบครบแล้ว", "verify_text": "No Records Found"},
+         "t2", ["m"], llm.TokenUsage()),
+    ]
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Delete"}]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator._scan_remaining_target_records",\
+               AsyncMock(return_value=(0, "No Records Found"))), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table",\
+               AsyncMock(return_value=False)) as mock_scan_created, \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert "VERIFICATION_FAILED" not in str(result["message"])
+    # ต้องไม่ไปไล่หาข้อความนั้นเป็นแถวในตารางเลยตั้งแต่แรก
+    mock_scan_created.assert_not_awaited()
+
+
 # --- W_plan_progress_stall (MR2): ทำไปหลาย action แล้วแผนไม่คืบหน้าเลย ---
 
 
