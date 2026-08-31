@@ -15,6 +15,8 @@ from backend.app.core.orchestrator import (
     _LONG_TERM_MEMORY_CHUNKS_PER_STEP,
     _MAX_CONSECUTIVE_IDENTICAL_ACTIONS,
     _MAX_DELETE_ALL_UNVERIFIED_RETRIES,
+    _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS,
+    _MAX_PLAN_STALL_NOTES,
     _MAX_PREMATURE_ALL_FAILED_RETRIES,
     _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES,
     _MAX_PREMATURE_FALSE_FINISH_RETRIES,
@@ -3880,6 +3882,98 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     assert plan_step_events[0]["step"] == 1
 
 
+# --- W_plan_progress_stall (MR2): ทำไปหลาย action แล้วแผนไม่คืบหน้าเลย ---
+
+
+def _stall_run(plan, calls, *, elements=None):
+    """helper: รัน run_task แล้วคืนข้อความ tool_result ทุกอันที่ถูกส่งกลับไปให้โมเดล"""
+    mock_async_playwright, _, _ = _patch_browser()
+    tool_results = []
+
+    def _record(messages, tool_use_id, result_text):
+        tool_results.append(result_text)
+        return messages
+
+    async def _run():
+        with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+             patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+             patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+             patch("backend.app.core.orchestrator.get_snapshot",\
+                   AsyncMock(return_value=(elements or [], "page"))), \
+             patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+             patch("backend.app.core.orchestrator.execute",\
+                   AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+             patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record), \
+             patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+            await Orchestrator().run_task(
+                "https://app.example.com", "goal", provider="anthropic", approved_plan=plan,
+            )
+
+    return _run, tool_results
+
+
+def _click(n):
+    return ("browser_action", {"type": "click", "index": n}, f"t{n}", ["m"], llm.TokenUsage())
+
+
+@pytest.mark.asyncio
+async def test_plan_stall_note_is_attached_after_several_actions_without_progress():
+    """stall detector ที่มีอยู่ 3 ตัวจับได้แต่ "action ซ้ำ" — agent ที่ทำ action ต่างกันทุกครั้ง
+    แต่ไม่คืบหน้าตามแผนเลย ไม่มีตัวไหนจับได้
+
+    เตือนโดยแนบไปกับผลของ action ไม่ใช่ reject+continue เพราะจุดที่รู้ผลอยู่หลัง dispatch
+    การ continue ตรงนั้นจะทิ้ง tool_use ไว้โดยไม่มี tool_result ตอบ"""
+    plan = "1. ไป Admin\n2. กด Search"
+    calls = [_click(i) for i in range(1, 6)] + [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+    run, tool_results = _stall_run(plan, calls)
+
+    await run()
+
+    stall_notes = [t for t in tool_results if "since the last plan step was completed" in t]
+    assert len(stall_notes) == 1
+    assert "กด Search" not in stall_notes[0] or "ไป Admin" in stall_notes[0]
+
+
+@pytest.mark.asyncio
+async def test_plan_stall_counter_resets_when_a_step_completes():
+    """รายงาน completed_plan_step = แผนคืบหน้าจริง ต้องเริ่มนับใหม่ ไม่ใช่สะสมต่อ"""
+    plan = "1. ไป Admin\n2. กด Search\n3. ลบ"
+    calls = [
+        _click(1), _click(2),
+        ("browser_action", {"type": "click", "index": 3, "completed_plan_step": 1},
+         "t3", ["m"], llm.TokenUsage()),
+        _click(4), _click(5),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+    run, tool_results = _stall_run(plan, calls)
+
+    await run()
+
+    # 2 action -> คืบหน้า -> อีก 2 action = ไม่มีช่วงไหนถึง 4 ติดกัน
+    assert not [t for t in tool_results if "since the last plan step was completed" in t]
+
+
+@pytest.mark.asyncio
+async def test_plan_stall_note_is_not_sent_for_a_task_without_a_plan():
+    """ad-hoc task ที่ไม่มีแผนต้องไม่เห็นข้อความนี้เลย"""
+    calls = [_click(i) for i in range(1, 8)] + [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+    run, tool_results = _stall_run(None, calls)
+
+    await run()
+
+    assert not [t for t in tool_results if "since the last plan step was completed" in t]
+
+
+def test_plan_stall_quota_constants_are_sane():
+    """เตือนเร็วเกินไป = รบกวนงานปกติ, ไม่จำกัดจำนวน = สแปมทุก action ที่เหลือของ task"""
+    assert _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS >= 3
+    assert 1 <= _MAX_PLAN_STALL_NOTES <= 3
+
+
 # --- W_plan_step_cursor (P7 ขั้น 2): ความคืบหน้าของแผนเป็นของโค้ด ไม่ใช่ตัวเลขที่โมเดลอ้าง ---
 
 
@@ -4074,14 +4168,16 @@ def test_plan_that_edits_instead_of_deleting_is_detected():
     """บั๊กจริง live run 2026-08-27: goal สั่ง "ลบ" แต่ planner ร่างแผนว่า "เปิดแต่ละรายการ
     เพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS" แล้ว agent ก็เดินตามแผนนั้นจริงๆ — user รายงานว่า
     "ไม่เดินตาม planner เลย" แต่ความจริงคือเดินตามเป๊ะ ปัญหาคือแผนผิดชนิดงานมาแต่ต้น"""
-    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS") is True
-    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. กด Search แล้วลบแถวที่เป็น ESS") is False
+    # W_plan_commits_a_record_edit: คืน "เหตุผลที่ผิด" แทน bool แล้ว (ผู้เรียกใช้เป็น boolean
+    # เหมือนเดิม แต่ข้อความทำให้บอกได้ว่าผิดกฎข้อไหน)
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS")
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "1. ไป Admin\n2. กด Search แล้วลบแถวที่เป็น ESS") is None
 
 
 def test_plan_operation_check_only_arms_for_deletion_goals():
     """scope แคบไว้ที่ deletion โดยตั้งใจ — งานอ่าน/ค้นหาไม่มี failure mode แบบนี้"""
-    assert _plan_drops_goal_operation("หา user ที่เป็น ESS", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS") is False
-    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "") is False
+    assert _plan_drops_goal_operation("หา user ที่เป็น ESS", "1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS") is None
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", "") is None
 
 
 def test_system_prompt_has_no_status_enabled_example_to_copy():
@@ -4092,27 +4188,60 @@ def test_system_prompt_has_no_status_enabled_example_to_copy():
     assert "Status=Enabled" not in llm._PLAN_PROMPT_TEMPLATE
 
 
+def test_plan_that_saves_an_edit_form_is_caught_even_when_it_mentions_deleting():
+    """W_plan_commits_a_record_edit: กฎเดิมผ่านทันทีที่แผนมีคำกลุ่มลบ *ที่ไหนก็ได้* — แผนที่
+    ทำให้ agent ไปเปลี่ยน Role ของ user จริงในรันที่ user รายงาน มีคำว่า ลบ อยู่ด้วย จึงผ่าน
+    ฉลุยทั้งที่ workflow เป็น edit ล้วน
+
+    กฎใหม่: goal ลบล้วนๆ + แผนมีขั้นตอน *บันทึก* การแก้ไข = ผิด เพราะงานลบล้วนไม่มีวันต้อง
+    กด Save ฟอร์มเลยสักครั้ง (กฎเดียวกับที่ runtime บังคับอยู่แล้ว แค่ย้ายมาตรวจตอนร่างแผน)"""
+    edit_plan = ("1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข\n3. เปลี่ยน Role\n"
+                 "4. บันทึกการเปลี่ยนแปลง\n5. ลบสิทธิ์ ESS ออกจากผู้ใช้")
+
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", edit_plan)
+
+    # แผนลบที่ถูกต้องมีขั้นตอนตั้ง filter ได้ตามปกติ ต้องไม่โดนกฎนี้
+    good_plan = "1. ไป Admin\n2. เลือก User Role = ESS แล้วกด Search\n3. เลือกทุกแถวแล้วลบ"
+    assert _plan_drops_goal_operation("ลบ user ที่ userrole=ess ออกให้หมด", good_plan) is None
+
+    # goal ที่สั่งแก้ไขจริงต้องไม่โดนกฎนี้เลย (gate ด้วย _goal_is_deletion_only)
+    assert _plan_drops_goal_operation("เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin", edit_plan) is None
+
+
 @pytest.mark.asyncio
-async def test_run_task_stops_and_asks_when_the_plan_still_edits_instead_of_deleting():
-    """ร่างใหม่ไปแล้ว 1 ครั้งยังไม่ตรง = ห้ามเริ่มลงมือ เพราะเดินตามแผนที่ผิดชนิดงานคือ
-    การไปแก้ข้อมูลจริงแทนที่จะลบ ซึ่งกู้คืนไม่ได้"""
+async def test_run_task_warns_but_does_not_stop_when_the_confirmed_plan_mismatches():
+    """W_plan_warn_not_abort: เดิมจุดนี้ return steps=0 หยุดทั้ง task — แต่กว่าจะมาถึงตรงนี้
+    plan_text มาจาก approved_plan หรือ _confirm_plan() ซึ่ง **ทั้งสองทางคือแผนที่ user ยืนยัน
+    มาแล้ว** (และอาจแก้ข้อความเองด้วยซ้ำ) การหยุดจึงเท่ากับตัดสินใจแทน user บนสิ่งที่เขาเพิ่ง
+    อ่านและกดยืนยันไปเอง
+
+    ความปลอดภัยไม่ได้หายไป: guard ตอน execution ยังบล็อกการกด Save จริงอยู่ครบ
+    (W_no_record_edit_for_delete_goal เป็น hard reject ไม่มีโควตา)"""
     mock_async_playwright, _, _ = _patch_browser()
+    bad_plan = "1. เปิดแต่ละรายการเพื่อแก้ไข\n2. บันทึกการเปลี่ยนแปลง\n3. ลบสิทธิ์ ESS"
+
+    next_action_calls = [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
 
     with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
-         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock()) as mock_na:
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_na:
         result = await Orchestrator().run_task(
             "https://app.example.com", "ลบ user ที่ userrole=ess ออกให้หมด", provider="anthropic",
-            approved_plan="1. ไป Admin\n2. เปิดแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS",
+            approved_plan=bad_plan,
         )
 
-    assert result["success"] is False
-    assert result["steps"] == 0
-    mock_na.assert_not_awaited()  # ต้องไม่เริ่มลูปเลยสักรอบ
-
+    # ต้องเดินต่อ ไม่ใช่หยุดที่ steps=0 เหมือนเดิม
+    mock_na.assert_awaited()
+    assert result["steps"] >= 0
+    # และคำเตือนต้องอยู่ใน goal ที่ส่งให้โมเดล ไม่ใช่หายไปเงียบๆ
+    goal_sent = mock_na.await_args_list[0].args[2]
+    assert "does not match what the goal asks for" in goal_sent
 
 @pytest.mark.asyncio
 async def test_clicking_edit_is_rejected_when_the_page_already_offers_delete():

@@ -301,6 +301,36 @@ def _is_deletion_intent_goal(goal: str) -> bool:
 #
 # scope แคบไว้ที่ deletion อย่างเดียวโดยตั้งใจ: "ลบ" มีทางเลือกที่ดูสมเหตุสมผลแต่ผิด (แก้ค่า
 # แทนการลบ) และผลลัพธ์ต่างกันถาวร ส่วนงานอ่าน/ค้นหาไม่มี failure mode แบบนี้
+# W_plan_warn_not_abort: ข้อความที่ยัดเข้า messages ตั้งแต่เทิร์นแรกเมื่อแผนที่ user ยืนยันมา
+# ยังไม่ตรงชนิดงาน — เตือนโมเดลตรงๆ ว่าอย่าเดินตามส่วนที่ผิดของแผน ไม่ใช่หยุดทั้ง task
+# W_plan_progress_stall: stall detector ที่มีอยู่ 3 ตัว (action ซ้ำเป๊ะ / label เดิม / วนเป็นคาบ
+# 2-4) จับได้แต่ "ทำ action ซ้ำ" — agent ที่ทำ action *ต่างกันทุกครั้ง* แต่ไม่คืบหน้าตามแผนเลย
+# ไม่มีตัวไหนจับได้ และ counter ที่มีทั้งหมดในไฟล์นี้เป็นแบบ "reset เมื่อสำเร็จ" ไม่ใช่ "นับว่า
+# ผ่านไปกี่ครั้งแล้ว" จึงต้องมีตัวใหม่ — แต่ผูกกับ plan_cursor ที่มีอยู่แล้ว ไม่ได้สร้างนิยาม
+# "ความคืบหน้า" ตัวที่สอง
+#
+# advisory ล้วน ไม่บล็อก: จุดที่รู้ผลอยู่ *หลัง* dispatch ซึ่ง nudge แบบ reject+continue ใช้ไม่ได้
+# (จะทิ้ง tool_use ไว้โดยไม่มี tool_result ตอบ -> Anthropic/Groq error ดู docstring ของ
+# _force_loop_recovery) จึงแนบข้อความไปกับผลของ action แทน — pattern เดียวกับ blocked_note
+# ของ W_modal_check_on_failure ไม่เสียเทิร์น LLM เพิ่มและโมเดลเห็นทันที
+_MAX_ACTIONS_WITHOUT_PLAN_PROGRESS = 4
+_MAX_PLAN_STALL_NOTES = 2
+
+_PLAN_STALL_NOTE_TEMPLATE = (
+    " [You have taken {count} actions since the last plan step was completed, and the plan is "
+    "still on step {step} of {total}: {step_text!r}. Re-read that step and do what it actually "
+    "asks — if it is already done, say so by passing completed_plan_step on your next action; "
+    "if it cannot be done on this page, go where it can be done instead of trying more "
+    "variations here.]"
+)
+
+_PLAN_MISMATCH_WARNING_TEMPLATE = (
+    "The confirmed plan does not match what the goal asks for: {reason}. Follow the goal, "
+    "not that part of the plan — this goal only asks you to DELETE records. Never open an "
+    "edit form and save it: changing a record is not deleting it, and it cannot be undone. "
+    "Use each row's own delete action instead."
+)
+
 _PLAN_KEEPS_GOAL_VERB_CORRECTION = (
     "The plan you drafted does not delete anything. This goal is a DELETE task: the user "
     "asked for the matching records to be removed, not edited. Never substitute changing a "
@@ -310,16 +340,42 @@ _PLAN_KEEPS_GOAL_VERB_CORRECTION = (
 )
 
 
-def _plan_drops_goal_operation(goal: str, plan_text: str) -> bool:
-    """True = แผนทิ้งชนิดงานที่ goal สั่งไป (ตอนนี้ตรวจเฉพาะเคส "goal สั่งลบ แต่แผนไม่ลบ")
+def _plan_drops_goal_operation(goal: str, plan_text: str) -> Optional[str]:
+    """คืน "เหตุผลที่แผนผิด" ถ้าแผนทิ้งชนิดงานที่ goal สั่งไป หรือ None ถ้าแผนใช้ได้
 
-    เกณฑ์แคบและ deterministic: goal มีคำกลุ่มลบ แต่ทั้งแผนไม่มีคำกลุ่มลบเลยสักคำ — ไม่ตัดสิน
-    จากการที่แผน "มีคำแก้ไขด้วย" เพราะแผนลบที่ถูกต้องอาจมีขั้นตอนตั้ง filter ที่ใช้คำว่า
-    "เลือก/set" ได้ตามปกติ ใช้ค่าคงที่เดิม (_DELETION_INTENT_KEYWORDS) ไม่สร้างชุดคำใหม่"""
-    if not plan_text or not _is_deletion_intent_goal(goal):
-        return False
-    lower_plan = plan_text.lower()
-    return not any(kw in lower_plan for kw in _DELETION_INTENT_KEYWORDS)
+    (คืนเป็นข้อความ ไม่ใช่ bool เพราะผู้เรียกต้องบอกได้ว่าผิดกฎข้อไหน — ผู้เรียกทั้งหมดใช้ค่านี้
+    เป็น boolean อยู่แล้ว จึงไม่กระทบพฤติกรรมเดิม)
+
+    กฎ A — goal มีคำกลุ่มลบ แต่ทั้งแผนไม่มีคำกลุ่มลบเลยสักคำ
+    เกณฑ์แคบและ deterministic: ไม่ตัดสินจากการที่แผน "มีคำแก้ไขด้วย" เพราะแผนลบที่ถูกต้องอาจมี
+    ขั้นตอนตั้ง filter ที่ใช้คำว่า "เลือก/set" ได้ตามปกติ
+
+    กฎ B (W_plan_commits_a_record_edit) — goal เป็นงานลบ *ล้วนๆ* แต่แผนมีขั้นตอนที่ "บันทึก"
+    การแก้ไข record: งานลบล้วนไม่มีวันต้องกด Save ฟอร์มเลยแม้แต่ครั้งเดียว
+    กฎ A อย่างเดียวไม่พอจริงตามที่ audit ท้วง — แผนที่ทำให้ agent ไปเปลี่ยน Role ของ user จริง
+    ในรันที่ user รายงาน ("เปิดแต่ละรายการเพื่อแก้ไข -> เปลี่ยน Role -> บันทึก -> ลบสิทธิ์ ESS")
+    มีคำว่า "ลบ" อยู่ด้วย จึงผ่านกฎ A ฉลุยทั้งที่ workflow เป็น edit ล้วน
+    นี่คือกฎเดียวกับที่ runtime บังคับอยู่แล้วใน W_no_record_edit_for_delete_goal เพียงแต่ย้ายมา
+    ตรวจตั้งแต่ตอนร่างแผน แทนที่จะรอไปบล็อกตอนจะกด Save จริง
+
+    กฎ B gate ด้วย _goal_is_deletion_only() ไม่ใช่ _is_deletion_intent_goal() — goal ที่สั่งแก้ไข
+    จริง ("เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin") ต้องไม่โดนกฎนี้เลย"""
+    if not plan_text:
+        return None
+    if _is_deletion_intent_goal(goal) and not any(
+        kw in plan_text.lower() for kw in _DELETION_INTENT_KEYWORDS
+    ):
+        return (
+            "แผนไม่มีขั้นตอนลบเลยสักข้อ ทั้งที่ goal สั่งให้ลบ"
+        )
+    if _goal_is_deletion_only(goal):
+        for line in _plan_step_lines(plan_text):
+            if _PLAN_COMMIT_STEP_RE.search(line):
+                return (
+                    f"แผนมีขั้นตอนบันทึกการแก้ไข record ({line!r}) ทั้งที่ goal สั่งให้ลบอย่างเดียว "
+                    "— งานลบล้วนไม่มีวันต้องกด Save ฟอร์ม"
+                )
+    return None
 
 
 # W64[7.1] ("Filter Order & False Completion" — ticket Issue 7.1, บั๊กจริง: goal สั่งเปลี่ยน
@@ -2344,8 +2400,18 @@ _NO_CREDENTIAL_FLOW_NUDGE = (
 # ด้วยเหตุผลข้อแรกนี้เองจึงไม่เอา _FORM_SUBMIT_LABEL_KEYWORDS ที่มีอยู่แล้วมาใช้ซ้ำ — มันมี
 # confirm/ยืนยัน/submit ครบ เพราะถูกออกแบบมาตอบคำถาม "ควรสแกน validation error หลัง action ไหน"
 # ซึ่งกว้างได้อย่างปลอดภัย คนละเจตนากับการบล็อก action
+# W_plan_commits_a_record_edit: คำชุดเดียวกัน แต่ใช้คนละ anchoring เพราะตอบคำถามคนละข้อ —
+# ตัวมี ^ ใช้กับ *label ของปุ่ม* (label ขึ้นต้นด้วยคำนี้ = ปุ่ม commit จริง ไม่ใช่ "Saved Searches")
+# ส่วนตัวไม่มี ^ ใช้กับ *ข้อความของแผน* ซึ่งคำจะอยู่กลางประโยคเสมอ ("3. บันทึกการเปลี่ยนแปลง")
+# แยกคำออกมาเป็นค่าคงที่เดียวเพื่อไม่ให้มีคลังคำ 2 ชุดที่ต้องแก้พร้อมกัน
+_RECORD_COMMIT_WORDS = ("save", "update", "บันทึก", "อัปเดต")
+_RECORD_COMMIT_ALTERNATION = "|".join(_RECORD_COMMIT_WORDS)
+
 _RECORD_COMMIT_LABEL_RE = re.compile(
-    r"^\s*(?:save|update)\b|^\s*(?:บันทึก|อัปเดต)", re.IGNORECASE,
+    rf"^\s*(?:{_RECORD_COMMIT_ALTERNATION})\b", re.IGNORECASE,
+)
+_PLAN_COMMIT_STEP_RE = re.compile(
+    rf"(?:{_RECORD_COMMIT_ALTERNATION})", re.IGNORECASE,
 )
 
 
@@ -3272,6 +3338,9 @@ class Orchestrator:
         # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
         # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
         plan_cursor = 1
+        # W_plan_progress_stall: กี่ action ที่สำเร็จแล้วผ่านไปโดย plan_cursor ไม่ขยับเลย
+        actions_since_plan_progress = 0
+        plan_stall_notes_sent = 0
         # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
         goal_filter_fields = _goal_condition_fields(goal)
         filter_scope_reject_count = 0
@@ -3666,26 +3735,30 @@ class Orchestrator:
 
             # W_goal_scope: resolve ครั้งเดียว ไม่ใช่ทุก iteration — คำนวณจากตัว goal ล้วนๆ
             # W_plan_keeps_goal_verb: จุดนี้ plan_text นิ่งแล้วทั้งเส้นทาง approved_plan (user
-            # กดยืนยันบนหน้าจอ อาจแก้ข้อความมาเองด้วย) และเส้นทาง confirm_plan ในลูป — ถ้าแผน
-            # ยังทิ้งชนิดงานที่ goal สั่งอยู่ ห้ามเริ่มลงมือ เพราะการเดินตามแผนที่ผิดชนิดงานคือ
-            # การไปแก้ข้อมูลจริงแทนที่จะลบ ซึ่งกู้คืนไม่ได้ (เกิดขึ้นจริงมาแล้ว: agent เปลี่ยน
-            # Role ของ user คนหนึ่งจาก Admin เป็น ESS ทั้งที่ goal สั่งให้ลบ ESS ออก)
-            # ร่างใหม่ไป 1 ครั้งแล้วตอนสร้างแผน — ถึงตรงนี้แปลว่ายังไม่ตรง จึงหยุดถาม user
-            if plan_text and _plan_drops_goal_operation(goal, plan_text):
-                return {
-                    "success": False,
-                    "steps": 0,
-                    "message": (
-                        "หยุดก่อนเริ่มทำงาน: goal สั่งให้ \"ลบ\" แต่แผนที่ได้กลับเป็นการแก้ไข/"
-                        "เปลี่ยนค่าแทน (ร่างใหม่ให้แล้ว 1 ครั้งก็ยังไม่ตรง) — การเดินตามแผนนี้จะไป"
-                        "แก้ข้อมูลจริงแทนที่จะลบ ซึ่งย้อนกลับไม่ได้ กรุณาแก้แผนให้ใช้ปุ่มลบของแถว "
-                        "แล้วสั่งใหม่อีกครั้ง"
-                    ),
-                    "history": self.memory.recent(max_steps),
-                    "tokens": _tokens_dict(total_usage),
-                    "plan": plan_text,
-                    "final_page_state": "",
-                }
+            # กดยืนยันบนหน้าจอ อาจแก้ข้อความมาเองด้วย) และเส้นทาง confirm_plan ในลูป
+            #
+            # W_plan_warn_not_abort: เดิมจุดนี้ `return {"steps": 0}` หยุดทั้ง task ทันที —
+            # แต่กว่าจะมาถึงตรงนี้ plan_text มาจาก approved_plan หรือ _confirm_plan() ซึ่ง
+            # **ทั้งสองทางคือแผนที่ user ยืนยันมาแล้ว** (และอาจแก้ข้อความเองด้วยซ้ำ) การหยุดจึง
+            # เท่ากับตัดสินใจแทน user บนสิ่งที่เขาเพิ่งอ่านและกดยืนยันไปเอง
+            # ตามที่ user เลือกไว้: เตือนให้ดังตั้งแต่เทิร์นแรก แต่ไม่หยุด
+            #
+            # ความปลอดภัยไม่ได้หายไปไหน — guard ตอน execution ยังบล็อกการกด Save จริงอยู่ครบ
+            # (W_no_record_edit_for_delete_goal เป็น hard reject ไม่มีโควตา + W_prefer_row_delete)
+            # ที่เปลี่ยนคือ "ไม่ตัดสินใจแทน user ตั้งแต่ยังไม่เริ่ม" ไม่ใช่ "ปล่อยให้เขียนทับข้อมูล"
+            plan_mismatch_reason = (
+                _plan_drops_goal_operation(goal, plan_text) if plan_text else None
+            )
+            if plan_mismatch_reason:
+                # ต่อท้าย effective_goal ไม่ใช่ยัดเข้า messages: ตรงนี้ messages ยังว่างอยู่
+                # (ประกาศไว้ต้น run_task) การใส่ข้อความแรกเป็น nudge จะได้ user turn สองอัน
+                # ติดกันก่อน goal ซึ่ง provider บางเจ้าไม่รับ — และการอยู่ใน goal ทำให้คำเตือน
+                # ติดไปกับ *ทุก* step ไม่ใช่หายไปหลังเทิร์นแรก
+                print(f"\u26a0\ufe0f [plan] {plan_mismatch_reason}", flush=True)
+                effective_goal = (
+                    f"{effective_goal}\n\n"
+                    + _PLAN_MISMATCH_WARNING_TEMPLATE.format(reason=plan_mismatch_reason)
+                )
 
             # ไม่ข้ามแม้จะมี confirmed plan อยู่ (plan_fully_completed อาจไม่มีวันเป็น True ถ้า
             # planner เติมบรรทัดสุดท้ายเป็นการ "ยืนยันผล" ที่ไม่มี action ไหนทำให้เสร็จได้ —
@@ -5352,13 +5425,19 @@ class Orchestrator:
                 # กับงานที่ทำจริง
                 # เงื่อนไข action type ใช้ชุดเดียวกับ W_goal_scope_false_success ด้านล่าง
                 # ไม่สร้างชุดใหม่ซ้อน (อ่านอย่างเดียวไม่ทำให้ step ไหน "เสร็จ" ได้จริง)
-                if (
-                    plan_text
+                # W_plan_progress_stall: นิยาม "action ที่ควรทำให้แผนคืบ" ใช้ชุดเดียวกับที่
+                # cursor ใช้ (ไม่อยู่ใน _GOAL_SCOPE_ALLOWED_ACTION_TYPES = ไม่ใช่การอ่านเฉยๆ) —
+                # ในไฟล์นี้มีนิยาม "mutating" อยู่ 2 ชุดแล้วและต่างกัน อย่าสร้างชุดที่สาม
+                plan_progressing_action = (
+                    bool(plan_text)
                     and result.success
-                    and completed_plan_step is not None
                     and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
-                ):
+                )
+                if plan_progressing_action and completed_plan_step is not None:
                     plan_cursor = min(plan_cursor + 1, _total_plan_steps(plan_text) + 1)
+                    actions_since_plan_progress = 0
+                elif plan_progressing_action:
+                    actions_since_plan_progress += 1
                 if plan_text and result.success and completed_plan_step is not None:
                     await _emit({"kind": "plan_step_done", "step": min(plan_cursor - 1, _total_plan_steps(plan_text))})
                     # W_goal_scope: step สุดท้ายของแผนเสร็จแล้ว = goal ถือว่าสำเร็จ ใช้เป็น
@@ -5465,6 +5544,34 @@ class Orchestrator:
                     except Exception as e:
                         if verbose:
                             print(f"  [vision-fallback] ล้มเหลว: {e}", flush=True)
+
+                # W_plan_progress_stall: แนบตรงนี้เพราะเป็นจุดเดียวที่ตอบ tool_result ของเทิร์นนี้
+                # — การ continue ก่อนถึงบรรทัดนี้จะทิ้ง tool_use ไว้โดยไม่มีคำตอบ
+                if (
+                    plan_text
+                    and actions_since_plan_progress >= _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS
+                    and plan_stall_notes_sent < _MAX_PLAN_STALL_NOTES
+                ):
+                    plan_stall_notes_sent += 1
+                    _plan_steps = _plan_step_lines(plan_text)
+                    _current_step_text = (
+                        _plan_steps[plan_cursor - 1] if 0 < plan_cursor <= len(_plan_steps) else ""
+                    )
+                    if _current_step_text:
+                        if verbose:
+                            print(
+                                f"[plan-stall {plan_stall_notes_sent}/{_MAX_PLAN_STALL_NOTES}] "
+                                f"{actions_since_plan_progress} action แล้วยังอยู่ข้อ {plan_cursor}",
+                                flush=True,
+                            )
+                        result_text = result_text + _PLAN_STALL_NOTE_TEMPLATE.format(
+                            count=actions_since_plan_progress,
+                            step=plan_cursor,
+                            total=len(_plan_steps),
+                            step_text=_current_step_text,
+                        )
+                        # นับใหม่หลังเตือน ไม่งั้นจะเตือนซ้ำทุก action ที่เหลือ
+                        actions_since_plan_progress = 0
 
                 messages = append_tool_result(messages, tool_use_id, result_text)
 
