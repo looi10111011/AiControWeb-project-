@@ -313,6 +313,80 @@ def _is_deletion_intent_goal(goal: str) -> bool:
 # (จะทิ้ง tool_use ไว้โดยไม่มี tool_result ตอบ -> Anthropic/Groq error ดู docstring ของ
 # _force_loop_recovery) จึงแนบข้อความไปกับผลของ action แทน — pattern เดียวกับ blocked_note
 # ของ W_modal_check_on_failure ไม่เสียเทิร์น LLM เพิ่มและโมเดลเห็นทันที
+# W_action_matches_plan_step (W111): W_plan_progress_stall ด้านล่างเป็นแค่ *ตัวนับ* — มันถาม
+# ว่า "cursor ขยับไหม" ไม่ใช่ "สิ่งที่ทำตรงกับ step ที่กำลังทำอยู่ไหม" และ live run แสดงจุดอ่อน
+# ของมันตรงๆ: โมเดลใส่ completed_plan_step มาแทบทุก action ทำให้ cursor ขยับตลอด ตัวนับจึงไม่มี
+# วันถึงเกณฑ์ ทั้งที่งานไม่คืบเลย
+#
+# ตัวนี้จึง **ห้ามรีเซ็ตเมื่อ cursor ขยับ** (นั่นคือรูโหว่ของตัวนั้นพอดี) — รีเซ็ตเฉพาะเมื่อ
+# action *ตรงกับ step* จริงๆ เท่านั้น
+#
+# advisory ล้วน ไม่บล็อก และเป็น "สัญญาณอ่อน" โดยเจตนา: ข้อความของ step เขียนโดย LLM จึงกว้าง/
+# กำกวมได้ตลอด การเอาไปบล็อก action จะพังงานที่ถูกต้อง — เป้าหมายคือเตือนโมเดลให้กลับไปอ่าน step
+_MIN_PLAN_STEP_WORDS_TO_JUDGE = 3
+_MAX_ACTIONS_MISMATCHING_PLAN_STEP = 5
+_MAX_PLAN_MISMATCH_NOTES = 1
+
+_PLAN_MISMATCH_NOTE_TEMPLATE = (
+    " [None of your last {count} actions matched what the current plan step actually asks. "
+    "Step {step} of {total} says: {step_text!r}. Read it again and do that — or, if this page "
+    "cannot do it, go where it can instead of trying more variations here.]"
+)
+
+# คำที่ไม่ช่วยแยกแยะอะไรเลย ตัดทิ้งก่อนเทียบ ไม่งั้นเกือบทุก action จะ "ตรง" เพราะบังเอิญมีคำ
+# เชื่อมเหมือนกัน — ชุดเล็กโดยเจตนา เอาเฉพาะคำที่โผล่ในแผนแทบทุกข้อของโปรเจกต์นี้
+_PLAN_STEP_STOPWORDS = frozenset({
+    "หน้า", "แล้ว", "และ", "ที่", "ของ", "ให้", "ไป", "จาก", "เพื่อ", "การ", "ใน", "กับ",
+    "the", "and", "then", "for", "with", "from", "into", "page", "click", "on", "to", "a", "of",
+})
+
+
+def _plan_step_keywords(step_text: str) -> set[str]:
+    """คำที่พอจะใช้บอกได้ว่า step นี้พูดถึงอะไร — ตัดคำเชื่อมและคำสั้นทิ้ง"""
+    words = re.findall(r"[\w\u0e00-\u0e7f]+", (step_text or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _PLAN_STEP_STOPWORDS}
+
+
+def _action_matches_plan_step(step_text: str, action_label: str, action_type: str) -> Optional[bool]:
+    """action นี้ดูเหมือนกำลังทำ step นี้อยู่ไหม
+
+    None = ตัดสินไม่ได้ (step กว้าง/สั้นเกินไป หรือ action ไม่มี label ให้เทียบ) — ผู้เรียกต้อง
+    ไม่นับเป็น mismatch เพราะ "อ่านไม่ออก" กับ "ทำผิด" คนละเรื่องกัน
+    ใช้ _field_names_match() ที่ทนพิมพ์ผิด/คำไทยติดกันอยู่แล้ว ไม่สร้างตัวเทียบชุดที่สอง"""
+    if not (action_label or "").strip():
+        return None
+
+    # W_action_matches_plan_step: แผนถูกเขียนเป็นภาษาไทยแต่ label ของเว็บเป็นอังกฤษเกือบเสมอ
+    # ในโปรเจกต์นี้ — การเทียบ token ตรงๆ จึงตอบ "ไม่ตรง" ให้กับคู่ที่ถูกต้องอย่าง
+    # step "แล้วกดค้นหา" กับปุ่ม "Search" ซึ่งจะทำให้ guard นี้เตือนผิดเป็นปกติ
+    # ใช้ regex สองภาษาที่มีอยู่แล้วในไฟล์นี้เป็นสะพานข้ามภาษา แทนการสร้างพจนานุกรมใหม่
+    # (ทุกตัวครอบทั้งไทย/อังกฤษอยู่แล้วเพราะถูกเขียนมาเพื่ออ่าน label ของเว็บไทยตั้งแต่ต้น)
+    # ต้องเช็คก่อนเกณฑ์จำนวนคำด้านล่าง เพราะภาษาไทยไม่มีเว้นวรรค การตัดคำแบบ regex จึงได้
+    # token เดียวยาวๆ ต่อประโยค ทำให้ step ภาษาไทยเกือบทุกข้อมีคำน้อยกว่าเกณฑ์และกลายเป็น
+    # "ตัดสินไม่ได้" ทั้งหมด — guard จะไม่มีวันได้ทำงานเลยกับแผนที่ planner เขียนจริง
+    for step_pattern, label_pattern in (
+        (_SEARCH_LABEL_RE, _SEARCH_LABEL_RE),
+        (_DESTRUCTIVE_LABEL_RE, _DESTRUCTIVE_LABEL_RE),
+        (_ROW_ACTION_LABEL_RE, _ROW_ACTION_LABEL_RE),
+        # ฝั่ง step ใช้ตัวไม่ผูก ^ (คำอยู่กลางประโยคเสมอ) ฝั่ง label ใช้ตัวผูก ^ ตามเดิม
+        # เพื่อไม่ให้ "Saved Searches" นับเป็นปุ่มบันทึก — นี่คือเหตุผลที่ W103 แยกสองตัวไว้
+        (_PLAN_COMMIT_STEP_RE, _RECORD_COMMIT_LABEL_RE),
+    ):
+        if step_pattern.search(step_text or "") and label_pattern.search(action_label or ""):
+            return True
+
+    keywords = _plan_step_keywords(step_text)
+    if len(keywords) < _MIN_PLAN_STEP_WORDS_TO_JUDGE:
+        return None
+    haystack = _plan_step_keywords(f"{action_label} {action_type}")
+    if not haystack:
+        return None
+    for word in haystack:
+        if any(_field_names_match(word, key) for key in keywords):
+            return True
+    return False
+
+
 _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS = 4
 _MAX_PLAN_STALL_NOTES = 2
 
@@ -3534,6 +3608,9 @@ class Orchestrator:
         # W_plan_progress_stall: กี่ action ที่สำเร็จแล้วผ่านไปโดย plan_cursor ไม่ขยับเลย
         actions_since_plan_progress = 0
         plan_stall_notes_sent = 0
+        # W_action_matches_plan_step: นับแยกจากตัวบน และ *ไม่* รีเซ็ตเมื่อ cursor ขยับ
+        actions_mismatching_plan_step = 0
+        plan_mismatch_notes_sent = 0
         # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
         goal_filter_fields = _goal_condition_fields(goal)
         filter_scope_reject_count = 0
@@ -5734,6 +5811,26 @@ class Orchestrator:
                     actions_since_plan_progress = 0
                 elif plan_progressing_action:
                     actions_since_plan_progress += 1
+
+                # W_action_matches_plan_step: เทียบกับ step ที่กำลังทำอยู่ *หลัง* cursor ขยับแล้ว
+                # (ถ้า cursor เพิ่งขยับ แปลว่า step ปัจจุบันคือข้อถัดไป ซึ่งเป็นข้อที่ต้องเทียบจริง
+                # ในเทิร์นหน้า) — รีเซ็ตเฉพาะตอน "ตรง" เท่านั้น ไม่ใช่ตอน cursor ขยับ
+                if plan_progressing_action:
+                    # W_action_matches_plan_step: cursor วิ่งเลยข้อสุดท้ายได้ (โมเดลใส่
+                    # completed_plan_step มาทุก action) — ตรึงไว้ที่ข้อสุดท้ายแทนที่จะปล่อยให้
+                    # ไม่มี step ให้เทียบ ซึ่งจะทำให้ guard เงียบพอดีในเคสที่ต้องการมันที่สุด
+                    # (แผน "เสร็จ" ตามตัวนับแล้วแต่ agent ยังทำอะไรอยู่ = ต้องเกี่ยวกับข้อสุดท้าย)
+                    _steps_now = _plan_step_lines(plan_text)
+                    _current_now = (
+                        _steps_now[min(plan_cursor, len(_steps_now)) - 1] if _steps_now else ""
+                    )
+                    _matched = _action_matches_plan_step(
+                        _current_now, action_label or "", str(tool_input.get("type") or ""),
+                    )
+                    if _matched is True:
+                        actions_mismatching_plan_step = 0
+                    elif _matched is False:
+                        actions_mismatching_plan_step += 1
                 if plan_text and result.success and completed_plan_step is not None:
                     await _emit({"kind": "plan_step_done", "step": min(plan_cursor - 1, _total_plan_steps(plan_text))})
                     # W_goal_scope: step สุดท้ายของแผนเสร็จแล้ว = goal ถือว่าสำเร็จ ใช้เป็น
@@ -5868,6 +5965,35 @@ class Orchestrator:
                         )
                         # นับใหม่หลังเตือน ไม่งั้นจะเตือนซ้ำทุก action ที่เหลือ
                         actions_since_plan_progress = 0
+
+                # W_action_matches_plan_step: แนบที่เดียวกับ W_plan_progress_stall ด้วยเหตุผล
+                # เดียวกัน — จุดนี้คือที่เดียวที่ตอบ tool_result ของเทิร์นนี้
+                if (
+                    plan_text
+                    and actions_mismatching_plan_step >= _MAX_ACTIONS_MISMATCHING_PLAN_STEP
+                    and plan_mismatch_notes_sent < _MAX_PLAN_MISMATCH_NOTES
+                ):
+                    _mismatch_steps = _plan_step_lines(plan_text)
+                    _mismatch_text = (
+                        _mismatch_steps[min(plan_cursor, len(_mismatch_steps)) - 1]
+                        if _mismatch_steps else ""
+                    )
+                    if _mismatch_text:
+                        plan_mismatch_notes_sent += 1
+                        if verbose:
+                            print(
+                                f"[plan-mismatch {plan_mismatch_notes_sent}/"
+                                f"{_MAX_PLAN_MISMATCH_NOTES}] "
+                                f"{actions_mismatching_plan_step} action \u0e44\u0e21\u0e48\u0e15\u0e23\u0e07\u0e01\u0e31\u0e1a step {plan_cursor}",
+                                flush=True,
+                            )
+                        result_text = result_text + _PLAN_MISMATCH_NOTE_TEMPLATE.format(
+                            count=actions_mismatching_plan_step,
+                            step=plan_cursor,
+                            total=len(_mismatch_steps),
+                            step_text=_mismatch_text,
+                        )
+                        actions_mismatching_plan_step = 0
 
                 messages = append_tool_result(messages, tool_use_id, result_text)
 

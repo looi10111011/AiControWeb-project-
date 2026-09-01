@@ -51,6 +51,8 @@ from backend.app.core.orchestrator import (
     _count_rows_matching_condition,
     _scan_visible_table_rows,
     _table_columns_are_addressable,
+    _action_matches_plan_step,
+    _MAX_ACTIONS_MISMATCHING_PLAN_STEP,
     _plan_drops_goal_operation,
     _build_nudge_message,
     _compact_anthropic_messages,
@@ -3888,6 +3890,97 @@ async def test_run_task_emits_plan_step_done_when_execute_succeeds_and_llm_marks
     plan_step_events = [c.args[0] for c in on_event.await_args_list if c.args[0].get("kind") == "plan_step_done"]
     assert len(plan_step_events) == 1
     assert plan_step_events[0]["step"] == 1
+
+
+# --- W_action_matches_plan_step (W111): ทำตรงกับ step ที่กำลังทำอยู่ไหม ---
+
+
+def test_action_matches_plan_step_bridges_thai_plan_and_english_ui():
+    """แผนถูกเขียนเป็นภาษาไทยแต่ label ของเว็บเป็นอังกฤษเกือบเสมอในโปรเจกต์นี้ — การเทียบ
+    token ตรงๆ จะตอบ "ไม่ตรง" ให้คู่ที่ถูกต้อง (step "แล้วกดค้นหา" กับปุ่ม "Search")
+    ทำให้ guard เตือนผิดเป็นปกติ
+
+    ใช้ regex สองภาษาที่มีอยู่แล้วในไฟล์เป็นสะพาน ไม่สร้างพจนานุกรมใหม่ — และต้องเช็คก่อน
+    เกณฑ์จำนวนคำ เพราะภาษาไทยไม่มีเว้นวรรค การตัดคำจึงได้ token เดียวยาวๆ ต่อประโยค
+    ทำให้ step ภาษาไทยเกือบทุกข้อตกเกณฑ์และกลายเป็น "ตัดสินไม่ได้" ทั้งหมด"""
+    assert _action_matches_plan_step(
+        "หน้า Admin: ค้นหาผู้ใช้ที่มี Role เป็น ESS แล้วกดค้นหา", "Search", "click") is True
+    assert _action_matches_plan_step(
+        "หน้า Admin: เลือกทุกแถวแล้วลบรายการที่พบ", "Delete Selected", "click") is True
+    assert _action_matches_plan_step(
+        "หน้า Admin: บันทึกการเปลี่ยนแปลง", "Save", "click") is True
+
+
+def test_action_matches_plan_step_keeps_the_anchored_commit_rule():
+    """ฝั่ง label ใช้ regex ที่ผูก ^ ตามเดิม เพื่อไม่ให้ลิงก์ "Saved Searches" นับเป็นปุ่ม
+    บันทึก — เหตุผลเดียวกับที่ W103 แยก regex สองตัวจากคำชุดเดียวกันไว้ตั้งแต่ต้น"""
+    assert _action_matches_plan_step(
+        "หน้า Admin: บันทึกการเปลี่ยนแปลง", "Saved Searches", "click") is not True
+
+
+def test_action_matches_plan_step_answers_undecidable_rather_than_guessing():
+    """"อ่านไม่ออก" กับ "ทำผิด" คนละเรื่องกัน — step ที่กว้างเกินไปหรือ action ที่ไม่มี
+    label ให้เทียบ ต้องคืน None เพื่อไม่ให้ถูกนับเป็น mismatch
+
+    guard นี้เป็นสัญญาณอ่อนโดยเจตนา เพราะข้อความของ step เขียนโดย LLM จึงกว้าง/กำกวมได้เสมอ"""
+    assert _action_matches_plan_step("ตรวจสอบ", "Select row", "click") is None
+    assert _action_matches_plan_step("หน้า Admin: กดปุ่ม Search", "", "click") is None
+
+    # ตัดสินได้และไม่ตรงจริง ต้องตอบ False ไม่ใช่ None
+    assert _action_matches_plan_step(
+        "หน้า Admin: ค้นหาผู้ใช้ที่มี Role เป็น ESS", "Delete", "click") is False
+
+
+@pytest.mark.asyncio
+async def test_plan_mismatch_note_is_attached_after_repeated_off_step_actions():
+    """W_plan_progress_stall (W103) เป็นแค่ตัวนับ — มันถามว่า "cursor ขยับไหม" ไม่ใช่
+    "สิ่งที่ทำตรงกับ step ไหม" และ live run แสดงจุดอ่อนตรงๆ: โมเดลใส่ completed_plan_step
+    มาแทบทุก action ทำให้ cursor ขยับตลอด ตัวนับจึงไม่มีวันถึงเกณฑ์ ทั้งที่งานไม่คืบเลย
+
+    ตัวนี้จึงต้อง **ไม่รีเซ็ตเมื่อ cursor ขยับ** — รีเซ็ตเฉพาะตอน action ตรงกับ step เท่านั้น"""
+    mock_async_playwright, _, _ = _patch_browser()
+    # ปุ่มคนละตัวสลับกัน เพื่อไม่ให้ loop detector เดิม (action ซ้ำเป๊ะ / label เดิม) กินเทิร์น
+    # ไปก่อน — สิ่งที่ต้องพิสูจน์คือ "ทำหลาย action ที่ไม่ตรง step" ไม่ใช่ "ทำซ้ำ"
+    elements = [
+        {"index": 1, "tag": "button", "type": "", "label": "Select row"},
+        {"index": 2, "tag": "button", "type": "", "label": "Import"},
+    ]
+    # ทุก action ใส่ completed_plan_step มาด้วย = cursor ขยับตลอด (จุดอ่อนของ W103)
+    calls = [
+        ("browser_action",
+         {"type": "click", "index": (1 if i % 2 == 0 else 2), "completed_plan_step": 1},
+         f"t{i}", ["m"], llm.TokenUsage())
+        for i in range(_MAX_ACTIONS_MISMATCHING_PLAN_STEP + 2)
+    ] + [
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+    tool_results = []
+
+    def _record(messages, tool_use_id, result_text):
+        tool_results.append(result_text)
+        return messages
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "goal", provider="anthropic",
+            # แผนหลายข้อโดยเจตนา: ทุก action ใส่ completed_plan_step มา cursor จึงขยับทุกครั้ง
+            # ถ้าแผนมีข้อเดียว plan_fully_completed จะติดตั้งแต่ action แรกแล้ว Goal Boundary
+            # Gate จะหยุด task ก่อนที่ guard ตัวนี้จะได้ทำงาน
+            approved_plan=(chr(10)).join(
+                f"{n}. หน้า Admin: ค้นหาผู้ใช้ที่มี Role เป็น ESS แล้วกดค้นหา"
+                for n in range(1, 10)
+            ),
+        )
+
+    assert [t for t in tool_results if "matched what the current plan step" in t]
 
 
 # --- W_column_headers_fallback (W110): ตารางที่ไม่มีหัวคอลัมน์ ---
