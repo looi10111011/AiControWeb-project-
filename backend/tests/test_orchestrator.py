@@ -4656,6 +4656,86 @@ async def test_filter_scope_guard_is_off_when_the_goal_states_no_field_equals_va
     assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
 
 
+@pytest.mark.asyncio
+async def test_filter_scope_guard_covers_every_action_type_that_can_set_a_filter():
+    """live 2026-09-01: agent ตั้ง Status=Enabled ได้ทั้งที่ goal บอกแค่ userrole=ess —
+    trace คือ press_key(Status: -- Select --) แล้วตามด้วย click(Enabled)
+
+    ลิสต์ชนิด action ของ guard เดิมมีแค่ fill/select/click จึงข้าม press_key ที่เลือกค่าใน
+    dropdown ได้จริง และ check ที่ติ๊ก filter แบบ checkbox/toggle ได้ — ตัว guard เองถูกอยู่แล้ว
+    ทุกบรรทัด แต่มองไม่เห็น action ที่ทำสิ่งเดียวกันด้วยชนิดอื่น"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "User Role: -- Select --"},
+        {"index": 2, "tag": "div", "type": "", "label": "Status: -- Select --"},
+        {"index": 3, "tag": "input", "type": "checkbox", "label": "Status: Enabled"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "press_key", "index": 2, "key": "Enter"},
+         "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "check", "index": 3}, "t2", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 1}, "t3", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com",
+            "เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    # press_key และ check บนช่อง Status ต้องไม่ถูกส่งออกไปเลย เหลือแต่ User Role ที่ goal ระบุ
+    dispatched = [c.args[1]["index"] for c in mock_execute.await_args_list]
+    assert dispatched == [1]
+
+
+@pytest.mark.asyncio
+async def test_filter_scope_guard_still_lets_the_goals_own_field_through_on_those_types():
+    """ด้านกลับของเทสต์บน — การขยายลิสต์ชนิด action ต้องไม่ไปบล็อกช่องที่ goal ระบุเอง
+    ไม่งั้นเว็บที่ต้องกด Enter/ติ๊ก checkbox เพื่อตั้ง filter จะใช้งานไม่ได้เลย
+
+    guard นี้เจตนาใช้โควตาไม่ใช่บล็อกตายด้วยเหตุผลเดียวกัน (ดู comment ที่ตัว guard)
+    เทสต์นี้จึงคุมทิศ false positive ซึ่งเป็นทิศที่แพงกว่าสำหรับ guard ตระกูลนี้"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "User Role: -- Select --"},
+        {"index": 4, "tag": "button", "type": "", "label": "Search"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "press_key", "index": 1, "key": "Enter"},
+         "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 4}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com",
+            "เปิดเว็ป แล้วไปที่เมนูแอดมิน แล้บลบuserole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    # ทั้ง press_key บนช่องของ goal เอง และปุ่ม Search (label อ่านชื่อ field ไม่ได้) ต้องผ่าน
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [1, 4]
+
+
 # --- W_plan_keeps_goal_verb / W_prompt_example_leak / W_prefer_row_delete (P7 ขั้น 4) ---
 
 

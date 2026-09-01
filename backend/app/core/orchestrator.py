@@ -5412,6 +5412,18 @@ class Orchestrator:
                 #
                 # ใช้โควตาไม่ใช่บล็อกตาย: บางเว็บบังคับให้ต้องเลือกค่าบางช่องก่อนถึงจะกด Search
                 # ได้จริง ถ้าบล็อกตายจะทำให้เว็บกลุ่มนั้นใช้งานไม่ได้เลย
+                #
+                # W_filter_scope_via_dropdown (live 2026-09-01: agent ตั้ง Status=Enabled ได้
+                # ทั้งที่ goal บอกแค่ userrole=ess — trace: press_key(Status: -- Select --)
+                # แล้วตามด้วย click(Enabled)): ลิสต์ชนิด action เดิมมีแค่ fill/select/click
+                # จึงข้าม press_key ที่เลือกค่าใน dropdown ได้จริง และ check ที่ติ๊ก filter
+                # แบบ checkbox/toggle ได้ — ต้องครอบ *ทุก* ชนิดที่ตั้งค่า filter ได้
+                #
+                # อีกทางที่เคยสงสัยว่าหลุด คือ "กดตัวเลือกในลิสต์" (label เป็นแค่ "Enabled"
+                # ไม่มีชื่อ field นำหน้า guard จึงอ่านไม่ออก) — ตรวจแล้วว่าปิดเองโดยอัตโนมัติ
+                # เมื่อครอบ trigger ครบทุกชนิด: ลิสต์ตัวเลือกจะเปิดขึ้นมาได้ก็ต่อเมื่อ action ที่
+                # เปิดมันผ่าน guard นี้ไปแล้ว ซึ่งแปลว่าช่องนั้นอยู่ในขอบเขต goal หรือโควตาหมด
+                # ไปแล้วทั้งคู่ การไล่ตามหา "ตัวเลือกของ trigger ตัวไหน" จึงเป็นโค้ดที่ยิงไม่ได้จริง
                 touched_field = _filter_field_from_label(
                     action_label or "", str(tool_input.get("type") or ""),
                 )
@@ -5419,7 +5431,9 @@ class Orchestrator:
                     goal_filter_fields
                     and touched_field
                     and not any(_field_names_match(f, touched_field) for f in goal_filter_fields)
-                    and tool_input.get("type") in ("fill", "select", "click")
+                    and tool_input.get("type") in (
+                        "fill", "select", "click", "press_key", "check",
+                    )
                     and filter_scope_reject_count < _MAX_FILTER_SCOPE_RETRIES
                 ):
                     filter_scope_reject_count += 1
@@ -5691,6 +5705,7 @@ class Orchestrator:
                     filter_changed_without_search = True
                 else:
                     filter_dirty_since_search = False
+
                 # W_delete_all_intent: ธง sticky ตัวนี้ล้างได้ทางเดียวเท่านั้น — กด Search
                 # สำเร็จจริง (_SEARCH_LABEL_RE ครอบคลุมไทย/อังกฤษ เดิมประกาศไว้แต่ไม่เคยถูกใช้
                 # เลยสักที่) ไม่ล้างตาม action อื่นเหมือน filter_dirty_since_search เพราะ
