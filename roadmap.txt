@@ -5283,6 +5283,64 @@
            ยืนยันว่าเทสต์ตัวแรก **ล้มจริงบนโค้ดก่อนแก้** ก่อนจะเชื่อว่ามันพิสูจน์อะไรได้
            (บทเรียนจาก W111 ที่ guard เก่าบังการทำงานของ guard ใหม่จนอ่านผลผิด)
 
+  [~] W_token_trim ("ลด input token ต่อ step ของ agent loop" — แผนเต็มอยู่ที่
+           ~/.claude/plans/now-provider-open-ai-bubbly-bonbon.md, Section 1-5)
+           ที่มา: telemetry จริง (data/token_usage.jsonl, provider "openai" เป็น default)
+           input 10k-25k token/step ไต่ขึ้นถึง 590k-715k บน task 25-28 step และ prompt
+           กินราว 80% ของ input บน gate run 15 task — เกือบทั้งหมดไม่ใช่เนื้อหาหน้าเว็บ
+
+           เฟสที่ทำเสร็จแล้ว (pytest ผ่านหมด baseline 0 fail, ยกเว้น
+           test_site_learning_crawler::...mid_crawl_login_page_as_dead_end ที่ล้มอยู่ก่อน
+           แล้วบน HEAD สะอาด — ยืนยันด้วย git stash — ไม่เกี่ยวกับงานนี้):
+
+           P1  (commit W_token_trim P1+P2): clip result string หัว+ท้าย 200+120 char
+               (memory.clip_result ใช้ใน failed/recent summary + _build_history_digest);
+               RAG/long-term chunk 3->2; _focused_plan_context ส่งแค่ CURRENT+NEXT+FINAL
+               เต็มข้อความ ยุบข้อที่ทำแล้ว/ข้อกลางเป็นบรรทัดนับ; ตัด key/then_click_index
+               tool-param description ให้สั้น (คง warning "swap fill+submit เขียนค่าแต่ไม่
+               submit เงียบๆ")
+           P2/M1  (commit เดียวกัน): _dedupe_stale_snapshots — stub บล็อก "Current page:"
+               ของ user turn เก่าทุกอันยกเว้นอันล่าสุด ก่อนยิง next_action (idempotent,
+               ไม่ throw, provider-agnostic); next_action ต่อ snapshot สดของ step นี้เอง
+               = ทุก request เห็น snapshot เต็ม 2 อันล่าสุดพอดี (ที่เหลือ SYSTEM_PROMPT
+               W19 "Action Trap" สั่งห้ามอ้างอิงข้ามอยู่แล้ว); _COMPACT_AFTER_STEPS 6->4
+           P3/M3  (commit W_token_trim P3/M3): site manual คงที่ทั้ง task แต่เดิมส่งเต็ม
+               ทุก step (~0.8k-2k tok x N) — llm.site_manual_blocks() คืน (full, ref);
+               orchestrator ส่ง full เฉพาะ step แรก + step แรกหลัง compaction ทุกครั้ง
+               (ซึ่งจะตัด copy เต็มอันเก่าทิ้ง) นอกนั้นส่ง "[id=<sha1 ย่อ>] unchanged.
+               Covers: <summary>"; _render_site_manual แปลง marker กลับเป็น prose แล้ว
+               ตัด sentinel ทิ้ง — string ธรรมดา (test/generate_plan/qa_summary) render
+               เท่าเดิมเป๊ะ; [PRE_LEARNED_MANUAL] marker ยังอยู่ต้น body และถูกฉีดเต็มใหม่
+               ภายใน 1 step หลัง compaction ทุกครั้ง = strict mode ยังถึงโมเดลทุก
+               compaction window
+           P4/M2  (commit W_token_trim P4/M2): compress bullet ที่ไม่ใช่ safety ของ
+               _PROMPT_CORE/_PROMPT_PLAN/_PROMPT_WIDGET/_PROMPT_PASSWORD/_PROMPT_TABLE —
+               เก็บทุก directive + trigger literal + W-tag ตัด "ทำไม"/ประวัติบั๊ก/
+               ตัวอย่างที่แค่พูดกฎซ้ำ/cross-ref; **ไม่แตะเลยแม้แต่ byte เดียว** (ยืนยันจาก
+               diff): bullet ที่ tag W21/W50/W63/W64 ทั้งหมด + format spec ของ card list
+           P5/M4  (commit W_token_trim P5/M4): compress _PLAN_PROMPT_TEMPLATE วิธีเดียวกัน
+               ไม่แตะ 2 บล็อก W21 + Page-Grouped Format spec + format placeholder
+
+           วัดด้วย backend/tests/measure_prompt_size.py (script ใหม่ ไม่ใช่ pytest —
+           ประกอบ input ต่อ step ของ step กลาง task สังเคราะห์แล้วพิมพ์ char + char//4):
+             {plan,table} mid-task step: 13,606 -> 12,026 tok proxy (system prompt
+             38,368 -> 32,712 char)
+           *** ตัวเลขนี้เห็นแค่ผลของ M2/M3/Q ต่อ 1 turn — ผลหลักของ M1/Q1 อยู่ที่
+           conversation history ที่โตขึ้นเรื่อยๆ ตลอด task ยาว (stub snapshot ทบต้น 15-25
+           step + compact ถี่ขึ้น) ซึ่ง scoreboard 1-step ไม่จับ ต้องดู
+           data/step_trace.jsonl tokens.input จาก live run จริง ***
+
+           ค้าง (ต้องรัน live A/B — user จะรันเอง):
+             - run.py miniwob + orangehrm + release-gate เทียบก่อน/หลัง P4/M2 ราย
+               section, revert กฎที่ทำ task regress
+             - 1 live run.py agent บนเว็บที่มี learned manual — ยืนยัน [PRE_LEARNED_MANUAL]
+               ยังถึงโมเดลทุก compaction window (M3)
+             - safety spot-check: OrangeHRM "ลบ user ที่ Role=ESS ออกให้หมด" 1 รอบ —
+               ยืนยัน filter-verification/batch-protocol/dropdown-safety ยังทำงาน และ diff
+               ไม่แตะ bullet W21/W50/W63/W64
+             - Q5 (ย้ายบรรทัดเวลา): **ตัดทิ้ง** — แผนเองให้คะแนน "~0 tok" และ turn ใหม่
+               ทุก step ไม่เคย cache hit ข้าม step อยู่แล้ว ไม่คุ้มเสี่ยง churn
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,
