@@ -3651,6 +3651,15 @@ class Orchestrator:
         # แล้วเคลียร์ทิ้ง (ไม่ persist ข้าม step เพราะเป็น diagnostic ของสถานการณ์ตอนนั้น
         # ไม่ใช่ fact ถาวรแบบ manual/memory context)
         pending_vision_context = ""
+        # W_token_trim (P3/M3): the site manual is constant per task — send it in full once
+        # (first step + first step after every compaction), then reference it by a stable
+        # id + summary. site_manual_full/_ref are "" when there is no manual, so the whole
+        # scheme collapses to "pass '' every step" exactly as before.
+        site_manual_full, site_manual_ref = llm.site_manual_blocks(
+            site_manual_context, extract_domain(url),
+        )
+        site_manual_full_sent = False
+        force_full_site_manual = False
         plan_text: Optional[str] = None
         # W10[F]: goal ที่ next_action() เห็นจริงทุก step — ปกติเท่ากับ goal เดิมเป๊ะ แต่ถ้า
         # confirm_plan=True จะถูกผนวกด้วยแผน (ที่อาจถูก user แก้ไขก่อน confirm) เข้าไปด้วย
@@ -4408,11 +4417,23 @@ class Orchestrator:
                 # append) = เห็น snapshot เต็ม 2 อันล่าสุดในทุก request
                 messages = _dedupe_stale_snapshots(messages, keep_last_full=1)
 
+                # W_token_trim (P3/M3): full manual on the first step and on the first step
+                # after any compaction (which would have spliced the earlier full copy
+                # out); a short id+summary reference every other step
+                if not site_manual_full:
+                    effective_site_manual = ""
+                elif force_full_site_manual or not site_manual_full_sent:
+                    effective_site_manual = site_manual_full
+                    site_manual_full_sent = True
+                    force_full_site_manual = False
+                else:
+                    effective_site_manual = site_manual_ref
+
                 tool_name, tool_input, tool_use_id, messages, usage = await asyncio.wait_for(
                     next_action(
                         client, model, effective_goal, page_text, messages,
                         manual_context, memory_context, long_term_context, vision_context,
-                        site_manual_context, page.url, action_history_context,
+                        effective_site_manual, page.url, action_history_context,
                         # W_plan_step_cursor: ส่งแผนพร้อมเครื่องหมายว่าอยู่ข้อไหน แทนแผนดิบ
                         _focused_plan_context(plan_text, plan_cursor),
                         verification_context=verification_context,
@@ -6148,6 +6169,12 @@ class Orchestrator:
                         step_boundaries = [
                             (s, b - removed) for s, b in step_boundaries[cut_list_index:]
                         ]
+                        # W_token_trim (P3/M3): the compaction just spliced away the turns
+                        # that held the full site manual — re-send it in full next step so
+                        # the id reference always has something earlier to point back to
+                        # ([PRE_LEARNED_MANUAL] strict mode in particular must reach the
+                        # model at least once per compaction window)
+                        force_full_site_manual = True
                         if verbose:
                             print(
                                 f"[context-compact] ย่อ step ..{cut_step_num} เหลือ digest สะสม "

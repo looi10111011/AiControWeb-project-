@@ -40,6 +40,7 @@ W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) �
 import asyncio
 import base64
 import copy
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -321,6 +322,75 @@ def _current_bangkok_time_text() -> str:
     return now.strftime("%A, %d %B %Y at %H:%M")
 
 
+# W_token_trim (P3/M3): the learned site manual is constant for the whole task but was
+# re-emitted verbatim under a ~50-word header every single step (~0.8k–2k tok × N steps).
+# Send the full text once — on the first loop turn, and again on the first kept turn after
+# each history compaction (see orchestrator.py force_full_site_manual) — then reference it
+# by a stable content-hash id plus a 1–2 line "what it covers" summary. The full text is
+# always still reachable earlier in the same conversation (or is re-injected right after a
+# compaction that would have spliced it out), so nothing is actually lost.
+#
+# site_manual_blocks() returns (full_block, ref_block); the orchestrator picks one per step
+# and passes it as site_manual_context. _render_site_manual() below turns whichever marker
+# it sees back into prose and strips the marker so the model never sees it. A plain string
+# with neither marker (tests, generate_plan, any caller not using this scheme) renders
+# exactly as before — byte-for-byte the old header.
+_SITE_MANUAL_FULL_MARK = "\x00SITE_MANUAL_FULL\x00"
+_SITE_MANUAL_REF_MARK = "\x00SITE_MANUAL_REF\x00"
+_SITE_MANUAL_BODY_SEP = "\x00BODY\x00"
+
+
+def _site_manual_summary(raw: str) -> str:
+    """1–2 line "what it covers" line. For a [PRE_LEARNED_MANUAL] block use the page-flow /
+    target-page lines it already carries; otherwise the first non-empty line(s)."""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return "(no summary available)"
+    if lines[0] == "[PRE_LEARNED_MANUAL]":
+        picked = [ln for ln in lines[1:4] if not ln.startswith("Recorded ")][:2]
+        return " — ".join(picked) if picked else "a single goal-matched page flow"
+    return " · ".join(lines[:2])[:240]
+
+
+def site_manual_blocks(raw: str, domain: str) -> tuple[str, str]:
+    """(full_block, ref_block) for a per-task site manual, or ("", "") if there is none.
+    The id is a short content hash so it is stable across steps and runs but changes if the
+    crawled manual is regenerated."""
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+    handle = f"SITE_MANUAL:{domain or 'site'}#{hashlib.sha1(text.encode()).hexdigest()[:8]}"
+    summary = _site_manual_summary(text)
+    full_block = f"{_SITE_MANUAL_FULL_MARK}{handle}\n{summary}{_SITE_MANUAL_BODY_SEP}{text}"
+    ref_block = f"{_SITE_MANUAL_REF_MARK}{handle}\n{summary}"
+    return full_block, ref_block
+
+
+def _render_site_manual(site_manual_context: str) -> str:
+    if site_manual_context.startswith(_SITE_MANUAL_REF_MARK):
+        handle, _, summary = site_manual_context[len(_SITE_MANUAL_REF_MARK):].partition("\n")
+        return (
+            f"\n\nLearned site manual [id={handle}] — unchanged: the full text was shown "
+            "earlier in this conversation and still applies, so reuse it (it is NOT missing "
+            f"and does not need to be re-fetched). Covers: {summary}"
+        )
+    if site_manual_context.startswith(_SITE_MANUAL_FULL_MARK):
+        head, _, body = site_manual_context[len(_SITE_MANUAL_FULL_MARK):].partition(_SITE_MANUAL_BODY_SEP)
+        handle = head.partition("\n")[0]
+        return (
+            f"\n\nInformation from the automatically learned site manual [id={handle}] "
+            "(page structure/buttons found while crawling — supporting information for your "
+            "decision, not binding instructions, and possibly outdated if the site changed; "
+            f"later turns reference this by its id instead of repeating it):\n{body}"
+        )
+    return (
+        "\n\nInformation from the automatically learned site manual (page structure/"
+        "buttons found while crawling — supporting information for your decision, not "
+        "binding instructions, and possibly outdated if the site changed):\n"
+        f"{site_manual_context}"
+    )
+
+
 def _build_user_turn_text(
     goal: str,
     page_text: str,
@@ -364,12 +434,9 @@ def _build_user_turn_text(
     # วางก่อน manual_context เพราะเป็นความรู้พื้นฐานเกี่ยวกับ "เว็บนี้คืออะไร มีหน้าไหนบ้าง"
     # ที่ตัวเว็บเองมีมาก่อนคู่มือเชิงนโยบายของ user เสียอีก
     if site_manual_context:
-        text += (
-            "\n\nInformation from the automatically learned site manual (page structure/"
-            "buttons found while crawling — supporting information for your decision, not "
-            "binding instructions, and possibly outdated if the site changed):\n"
-            f"{site_manual_context}"
-        )
+        # W_token_trim (P3/M3): full text once, then a stable id + summary — see
+        # site_manual_blocks() / _render_site_manual() above
+        text += _render_site_manual(site_manual_context)
     if manual_context:
         text += (
             "\n\nReference information from the relevant manual (supporting information "

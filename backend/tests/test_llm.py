@@ -1110,6 +1110,66 @@ def test_build_user_turn_text_includes_plan_section_when_provided():
     assert result.index("Current plan confirmed by the user") < result.index("Current page")
 
 
+# --- W_token_trim (P3/M3): site manual by stable id handle + summary bullet ---
+
+
+def test_site_manual_blocks_empty_when_there_is_no_manual():
+    assert llm.site_manual_blocks("", "orangehrmlive.com") == ("", "")
+    assert llm.site_manual_blocks("   \n  ", "orangehrmlive.com") == ("", "")
+
+
+def test_site_manual_blocks_full_and_ref_share_a_stable_id():
+    raw = "- Users page: filter by role, delete rows\n- Add User page: form with 4 fields"
+    full, ref = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    # id is a content hash scoped by domain — stable across calls, changes with the text
+    full2, ref2 = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    assert (full, ref) == (full2, ref2)
+    assert llm.site_manual_blocks(raw + " x", "orangehrmlive.com")[1] != ref
+    assert "SITE_MANUAL:orangehrmlive.com#" in ref
+
+
+def test_render_site_manual_full_carries_the_body_and_the_id():
+    raw = (
+        "- Users page: filter by role\n- Add User page: 4 fields\n"
+        "- Job Titles page: add/edit/delete\n- Reports page: build a custom report"
+    )
+    full, ref = llm.site_manual_blocks(raw, "orangehrmlive.com")
+
+    rendered_full = llm._build_user_turn_text("goal", "page", site_manual_context=full)
+    assert "automatically learned site manual [id=SITE_MANUAL:orangehrmlive.com#" in rendered_full
+    assert "- Reports page: build a custom report" in rendered_full
+    assert "\x00" not in rendered_full  # sentinel never leaks to the model
+
+    rendered_ref = llm._build_user_turn_text("goal", "page", site_manual_context=ref)
+    assert "unchanged" in rendered_ref
+    assert "- Reports page: build a custom report" not in rendered_ref  # full body not repeated
+    assert len(rendered_ref) < len(rendered_full)
+    assert "SITE_MANUAL:orangehrmlive.com#" in rendered_ref
+    assert "\x00" not in rendered_ref
+    # same id in both so the model can bind the reference to the earlier full text
+    full_id = rendered_full.split("[id=")[1].split("]")[0]
+    ref_id = rendered_ref.split("[id=")[1].split("]")[0]
+    assert full_id == ref_id
+
+
+def test_render_site_manual_keeps_pre_learned_marker_at_the_start_of_the_body():
+    """W21 strict mode checks that the manual text begins with [PRE_LEARNED_MANUAL] — the
+    id wrapper must not push that marker off the front of the body."""
+    raw = "[PRE_LEARNED_MANUAL]\nTarget Page: Admin — /admin\nRecorded buttons on this page:"
+    full, _ = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    rendered = llm._build_user_turn_text("goal", "page", site_manual_context=full)
+    body = rendered.split("):\n", 1)[1]
+    assert body.startswith("[PRE_LEARNED_MANUAL]")
+
+
+def test_render_site_manual_plain_string_is_unchanged_from_the_old_header():
+    """any caller not using the id scheme (tests, generate_plan) gets the exact old text"""
+    result = llm._build_user_turn_text("goal", "page", site_manual_context="- just a plain chunk")
+    assert "Information from the automatically learned site manual (page structure/" in result
+    assert "- just a plain chunk" in result
+    assert "[id=" not in result
+
+
 # --- เวลาปัจจุบันของเซิร์ฟเวอร์ ฉีดเข้า context ทุก turn (LLM ไม่มีการรับรู้เวลาจริงในตัว
 # เอง) — ดู _current_bangkok_time_text() ใน llm.py ---
 

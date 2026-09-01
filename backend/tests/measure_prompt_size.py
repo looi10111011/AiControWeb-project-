@@ -78,28 +78,32 @@ _PLAN_TEXT = (
 
 def _sizes(label: str) -> None:
     tool_json = json.dumps(llm._OPENAI_TOOLS, ensure_ascii=False)
+    full_manual, ref_manual = llm.site_manual_blocks(_SITE_MANUAL, "orangehrmlive.com")
 
     for section_label, sections in (("full (sections=None)", None),
                                     ("{plan, table}", frozenset({"plan", "table"}))):
         system = llm.build_system_prompt(sections)
-        user_turn = llm._build_user_turn_text(
-            goal="ไปที่หน้า Admin แล้วลบผู้ใช้ที่ Role=ESS ออกให้หมด",
-            page_text=_PAGE_TEXT,
-            manual_context="",
-            memory_context=_MEMORY_CONTEXT,
-            long_term_context=_LONG_TERM,
-            site_manual_context=_SITE_MANUAL,
-            current_url="https://opensource-demo.orangehrmlive.com/web/index.php/admin/viewSystemUsers",
-            action_history_context=_ACTION_HISTORY,
-            plan_context=llm_focused_plan(),
-        )
-        total = len(system) + len(tool_json) + len(user_turn)
-        print(f"  [{section_label}]")
-        print(f"    system prompt : {len(system):>7,} chars  (~{len(system)//4:>6,} tok)")
-        print(f"    tool JSON     : {len(tool_json):>7,} chars  (~{len(tool_json)//4:>6,} tok)")
-        print(f"    user turn     : {len(user_turn):>7,} chars  (~{len(user_turn)//4:>6,} tok)")
-        print(f"    TOTAL / step  : {total:>7,} chars  (~{total//4:>6,} tok)")
-        print()
+        # a mid-task step re-references the site manual by id (M3); step 1 sends it in full
+        for manual_label, manual_block in (("mid-task step (manual by id)", ref_manual),
+                                           ("first step (manual in full)", full_manual)):
+            user_turn = llm._build_user_turn_text(
+                goal="ไปที่หน้า Admin แล้วลบผู้ใช้ที่ Role=ESS ออกให้หมด",
+                page_text=_PAGE_TEXT,
+                manual_context="",
+                memory_context=_MEMORY_CONTEXT,
+                long_term_context=_LONG_TERM,
+                site_manual_context=manual_block,
+                current_url="https://opensource-demo.orangehrmlive.com/web/index.php/admin/viewSystemUsers",
+                action_history_context=_ACTION_HISTORY,
+                plan_context=llm_focused_plan(),
+            )
+            total = len(system) + len(tool_json) + len(user_turn)
+            print(f"  [{section_label}] [{manual_label}]")
+            print(f"    system prompt : {len(system):>7,} chars  (~{len(system)//4:>6,} tok)")
+            print(f"    tool JSON     : {len(tool_json):>7,} chars  (~{len(tool_json)//4:>6,} tok)")
+            print(f"    user turn     : {len(user_turn):>7,} chars  (~{len(user_turn)//4:>6,} tok)")
+            print(f"    TOTAL / step  : {total:>7,} chars  (~{total//4:>6,} tok)")
+            print()
 
 
 def llm_focused_plan() -> str:

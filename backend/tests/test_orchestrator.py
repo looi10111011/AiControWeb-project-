@@ -4813,6 +4813,74 @@ async def test_filter_scope_guard_still_lets_the_goals_own_field_through_on_thos
     assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [1, 4]
 
 
+# --- W_token_trim (P3/M3): site manual sent in full once, then referenced by id ---
+
+
+@pytest.mark.asyncio
+async def test_site_manual_is_sent_in_full_only_on_the_first_step_then_referenced():
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Go"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 1}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action",
+               AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        await Orchestrator().run_task(
+            "https://app.example.com", "do the thing", provider="anthropic",
+            site_manual_context=(
+                "- Users page: filter by role\n- Add User page: 4 fields\n"
+                "- Job Titles page: add/edit/delete"
+            ),
+        )
+
+    # positional arg 9 of next_action is the (possibly-referenced) site manual block
+    sent = [c.args[9] for c in mock_next_action.await_args_list]
+    assert sent[0].startswith(llm._SITE_MANUAL_FULL_MARK)
+    assert "- Job Titles page: add/edit/delete" in sent[0]
+    for later in sent[1:]:
+        assert later.startswith(llm._SITE_MANUAL_REF_MARK)
+        assert "- Job Titles page: add/edit/delete" not in later  # full body not repeated
+        assert len(later) < len(sent[0])
+    # same id across full and ref so the model can bind the reference
+    assert sent[0].split("\n")[0].removeprefix(llm._SITE_MANUAL_FULL_MARK) == \
+        sent[1].split("\n")[0].removeprefix(llm._SITE_MANUAL_REF_MARK)
+
+
+@pytest.mark.asyncio
+async def test_no_site_manual_means_every_step_passes_an_empty_string_as_before():
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Go"}]
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "done"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action",
+               AsyncMock(side_effect=next_action_calls)) as mock_next_action:
+        await Orchestrator().run_task("https://app.example.com", "do the thing", provider="anthropic")
+
+    assert all(c.args[9] == "" for c in mock_next_action.await_args_list)
+
+
 # --- W_plan_keeps_goal_verb / W_prompt_example_leak / W_prefer_row_delete (P7 ขั้น 4) ---
 
 
