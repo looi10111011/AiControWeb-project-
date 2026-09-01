@@ -1816,6 +1816,11 @@ async def route_multi_turn_strategy(
                 if fc and fc.name == "route_strategy":
                     result = _gemini_struct_to_plain_python(fc.args)
                     break
+        elif provider == "openai":
+            result = await _openai_forced_tool_call(
+                client, model, _MULTI_TURN_SYSTEM_PROMPT, prompt,
+                "route_strategy", _MULTI_TURN_DESC, _MULTI_TURN_PARAMS,
+            )
         else:
             result = None
 
@@ -2027,6 +2032,11 @@ async def extract_structured_items(client, model: str, page_content: str, extrac
                 if fc and fc.name == "emit_structured_items":
                     result = _gemini_struct_to_plain_python(fc.args)
                     break
+        elif provider == "openai":
+            result = await _openai_forced_tool_call(
+                client, model, _STRUCTURED_EXTRACT_SYSTEM_PROMPT, prompt,
+                "emit_structured_items", _STRUCTURED_EXTRACT_DESC, _STRUCTURED_EXTRACT_PARAMS,
+            )
         else:
             result = None
 
@@ -2514,6 +2524,13 @@ async def _openai_forced_tool_call(
     (plan_with_procedural_memory) เป็น no-op เสมอเมื่อใช้ provider="openai" — เจอบั๊กนี้จริง
     ระหว่างทดสอบ live demo วัด token savings ก่อน/หลัง (fastpath escalate กลับ full LLM loop
     ทุกครั้งเพราะ repair_step() ก็ตกไป None -> REPLAN_SIGNAL เหมือนกัน)
+
+    W_openai_multiturn (2026-09): callers จริงตัวแรกของ primitive นี้คือ multi-turn stack ที่
+    ต่อสายจริงใน routes.py — route_multi_turn_strategy() (route_strategy) และ
+    extract_structured_items() (emit_structured_items) ก่อนหน้านี้ primitive มีแต่ยังไม่มีใครเรียก
+    (helper ตัวอื่นที่ยังไม่มี branch openai — abstractor/procedural planner/repair_step/
+    semantic redundancy/middleware/persona — ยังปิดด้วย feature flag หรือไม่มี consumer จริง
+    เลย ยังไม่ port เพิ่ม latency+rate-limit บน codex endpoint โดยไม่มี behavior change ที่วัดได้)
 
     คืน None (ไม่ throw) ถ้าไม่มี function_call กลับมาเลย (ไม่ควรเกิดเพราะ tool_choice บังคับ
     tool นี้ตัวเดียว แต่กันไว้เหมือน next_action_openai()'s fallback) — ผู้เรียกแต่ละตัวมี

@@ -2093,6 +2093,80 @@ async def test_route_multi_turn_strategy_groq_parses_in_page_action_from_model()
     assert result["planned_action"]["tool"] == "click"
 
 
+# --- W_openai_multiturn: openai (ChatGPT OAuth / codex Responses API) branch of the
+# multi-turn stack — route_multi_turn_strategy() + extract_structured_items() both go
+# through llm._openai_forced_tool_call(), which reads function_call items off
+# "response.output_item.done" stream events ---
+
+
+class _FakeOpenAIStreamEvent:
+    def __init__(self, type, item=None, response=None):
+        self.type = type
+        self.item = item
+        self.response = response
+
+
+class _FakeOpenAIStream:
+    def __init__(self, events):
+        self._events = events
+
+    def __aiter__(self):
+        return self._aiter()
+
+    async def _aiter(self):
+        for event in self._events:
+            yield event
+
+
+def _fake_openai_function_call_item(name, args_obj):
+    item = MagicMock()
+    item.type = "function_call"
+    item.name = name
+    item.arguments = json.dumps(args_obj)
+    return item
+
+
+def _fake_openai_forced_tool_client(events, monkeypatch):
+    monkeypatch.setattr(llm, "_openai_oauth_headers", AsyncMock(return_value={}))
+    client = MagicMock()
+    client.responses.create = AsyncMock(return_value=_FakeOpenAIStream(events))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_openai_parses_decision_from_model(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent(
+            "response.output_item.done",
+            item=_fake_openai_function_call_item("route_strategy", _ROUTE_REPLY_FROM_MEMORY),
+        )],
+        monkeypatch,
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "gpt-5-codex", "ซื้อรองเท้า", "ราคาเท่าไหร่", "shopee.co.th",
+        "https://shopee.co.th/search?q=รองเท้า",
+        '[{"item_index": 1, "title": "Nike Pegasus 42", "price": "฿4,200"}]', "", "openai",
+    )
+
+    assert result == _ROUTE_REPLY_FROM_MEMORY
+    _, kwargs = client.responses.create.call_args
+    assert kwargs["tool_choice"] == {"type": "function", "name": "route_strategy"}
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_openai_defaults_when_no_tool_call(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent("response.completed", response=MagicMock())], monkeypatch,
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "gpt-5-codex", "goal", "instruction", "example.com", "https://example.com", "", "", "openai",
+    )
+
+    assert result["chosen_strategy"] == "NEW_NAVIGATION"
+
+
 # --- W19-4: llm.extract_structured_items() (Structured Data Extractor) ---
 
 _EXTRACTED_ITEMS = [
@@ -2177,6 +2251,33 @@ async def test_extract_structured_items_returns_empty_list_when_items_field_is_n
     )
 
     result = await llm.extract_structured_items(client, "claude-x", "some content", "", "anthropic")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_openai_parses_items_from_model(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent(
+            "response.output_item.done",
+            item=_fake_openai_function_call_item("emit_structured_items", {"items": _EXTRACTED_ITEMS}),
+        )],
+        monkeypatch,
+    )
+
+    result = await llm.extract_structured_items(client, "gpt-5-codex", "some content", "", "openai")
+
+    assert len(result) == 2
+    assert result[0]["title"] == "Nike Men's Pegasus 42"
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_openai_returns_empty_on_response_failed(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent("response.failed", response=MagicMock(error="boom"))], monkeypatch,
+    )
+
+    result = await llm.extract_structured_items(client, "gpt-5-codex", "some content", "", "openai")
 
     assert result == []
 
