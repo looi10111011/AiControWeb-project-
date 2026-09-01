@@ -7,6 +7,25 @@ W1: skeleton only. W7[A]: short-term ทำจริงแล้ว (ดู fail
 
 from backend.app.core.actions import REJECTED_BY_USER_MESSAGE
 
+# W_token_trim (P1/Q1): summaries ที่ป้อนกลับเข้า prompt ทุก step (failed_actions_summary/
+# recent_actions_summary ด้านล่าง และ _build_history_digest ใน orchestrator.py) เดิมฝัง
+# result string เต็มความยาว — result ของ read_page_data (ตารางได้ถึง 60 แถว ดู
+# config.py::read_page_data_max_rows) จะค้างอยู่ในหน้าต่าง last-5 ยาว 5 step และใน
+# digest ต่ออีกทั้ง task กินหลายพัน token ต่อ step โดยไม่จำเป็น — clip แบบ "หัว+ท้าย"
+# (ไม่ใช่ตัดหัวทิ้งท้าย) เพื่อคง prefix ที่ระบุชนิด result (เช่น "[OK] read_page_data -> ")
+# และท้ายที่มักเป็น row-count/notice ไว้ทั้งคู่ — result เต็มยังอยู่ครบใน raw tool_result
+# ของ step ล่าสุดใน messages เสมอ (summary พวกนี้เป็นแค่คำใบ้กันวนซ้ำ ไม่ใช่ข้อมูลตัวจริง)
+_RESULT_CLIP_HEAD = 200
+_RESULT_CLIP_TAIL = 120
+
+
+def clip_result(s: object) -> str:
+    text = str(s or "")
+    if len(text) <= _RESULT_CLIP_HEAD + _RESULT_CLIP_TAIL + 32:
+        return text
+    omitted = len(text) - _RESULT_CLIP_HEAD - _RESULT_CLIP_TAIL
+    return f"{text[:_RESULT_CLIP_HEAD]} …[{omitted} chars omitted]… {text[-_RESULT_CLIP_TAIL:]}"
+
 
 class ShortTermMemory:
     def __init__(self):
@@ -68,8 +87,8 @@ class ShortTermMemory:
                 seen_cmds.append(h.get("cmd"))
                 deduped_rejected.append(h)
 
-        lines = [f"- {h.get('cmd')} -> {h.get('result', '')}" for h in deduped_rejected]
-        lines += [f"- {h.get('cmd')} -> {h.get('result', '')}" for h in other[-max_items:]]
+        lines = [f"- {h.get('cmd')} -> {clip_result(h.get('result', ''))}" for h in deduped_rejected]
+        lines += [f"- {h.get('cmd')} -> {clip_result(h.get('result', ''))}" for h in other[-max_items:]]
         return "\n".join(lines)
 
     def recent_actions_summary(self, n: int = 5) -> str:
@@ -89,7 +108,8 @@ class ShortTermMemory:
         if not recent:
             return ""
         return "\n".join(
-            f"- step {h.get('step', '?')}: {h.get('cmd')} -> {h.get('result', '')}" for h in recent
+            f"- step {h.get('step', '?')}: {h.get('cmd')} -> {clip_result(h.get('result', ''))}"
+            for h in recent
         )
 
 

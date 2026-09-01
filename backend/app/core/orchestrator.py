@@ -37,7 +37,7 @@ from backend.app.core.actions import _KEY_VALUE_IN_QUERY_RE
 # บ่งบอกว่า goal เป็นคำถามเชิงนับ อยู่ที่ actions.py ที่เดียวกับที่สร้างข้อความนั้นขึ้นมา —
 # import ชื่อมาใช้ ไม่ก็อป format/keyword มาไว้อีกที่
 from backend.app.core.actions import _COUNT_QUERY_KEYWORDS, system_counted_conditions
-from backend.app.core.memory import ShortTermMemory
+from backend.app.core.memory import ShortTermMemory, clip_result
 from backend.app.core.perception import get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain, install_ssrf_guard
@@ -1735,11 +1735,14 @@ def _detect_repeating_cycle_period(recent_actions: list[dict]) -> Optional[int]:
 # W6[B]: จำนวน chunk คู่มือสูงสุดที่จะดึงมาแนบให้ LLM เห็นทุก step ของ per-step loop —
 # ดึงใหม่ทุก step ตาม page_text ปัจจุบัน (ไม่ใช้กับ generate_plan ซึ่งเป็นแค่แผนคร่าวๆ
 # ครั้งเดียวก่อนเริ่ม loop จริง เก็บ scope ไว้แค่ per-step planner ตามที่คุยกันไว้)
-_RAG_CHUNKS_PER_STEP = 3
+# W_token_trim (P1/Q2): 3 -> 2 — chunk อันดับ 3 ถูก rank ว่า marginal อยู่แล้ว
+# (retriever เรียงตาม relevance) ตัดออก 1 ประหยัด ~1 chunk (~500 char) ต่อ step
+# ที่หน้าเปลี่ยน โดยแทบไม่เสีย recall จริง
+_RAG_CHUNKS_PER_STEP = 2
 
 # W7[A] (long-term): เหมือน _RAG_CHUNKS_PER_STEP แต่สำหรับ long_term_memory.recall()
 # (ประวัติ task run อื่นก่อนหน้า แทนคู่มือที่ user ป้อน) — ดึงใหม่ทุก step เหมือนกัน
-_LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
+_LONG_TERM_MEMORY_CHUNKS_PER_STEP = 2  # W_token_trim (P1/Q2): 3 -> 2
 
 # W9[A] vision fallback (Gemini เท่านั้นตอนนี้ — ดูเหตุผล scope ที่ llm.py::
 # describe_screenshot()): action ประเภทเหล่านี้เท่านั้นที่ต้องพึ่ง element visibility
@@ -1795,8 +1798,70 @@ def _build_permission_query(cmd: dict, label: str) -> str:
 # _compact_groq_messages ด้านล่าง) ที่ต้องแยกตาม wire format ของแต่ละเจ้า — เลือกจาก
 # _llm_backend() เหมือน next_action/append_tool_result ที่มีอยู่แล้ว (ดู
 # Orchestrator._llm_backend())
-_COMPACT_AFTER_STEPS = 6
+# W_token_trim (P2/M1): 6 -> 4 — digest replay + stale-snapshot stub ด้านล่างจัดการ
+# bulk แล้ว compact ถี่ขึ้นเพื่อตัด raw turn เก่าออกเร็วขึ้น (_KEEP_RECENT_STEPS คงที่ 3)
+_COMPACT_AFTER_STEPS = 4
 _KEEP_RECENT_STEPS = 3
+
+# W_token_trim (P2/M1): stub เนื้อ "Current page:" ของ user turn เก่าทุกอันยกเว้น N
+# อันล่าสุด — page snapshot เก่าไร้ค่าทันทีที่มี snapshot ใหม่กว่า (SYSTEM_PROMPT W19
+# "Exact Element Matching"/"Action Trap" สั่งให้โมเดลยึดเฉพาะ snapshot ล่าสุดอยู่แล้ว
+# ไม่ให้อ้าง index เก่าข้าม step) — เก็บ 2 อันล่าสุดไว้เต็ม (อันก่อนหน้า + อันปัจจุบัน
+# ที่ next_action จะ append) เผื่อโมเดลต้องเทียบ "หน้าก่อน action ล่าสุด" กับ "หน้าตอนนี้"
+_STALE_SNAPSHOT_MARKER = "\n\nCurrent page:\n"
+_SUPERSEDED_SNAPSHOT_STUB = (
+    "[snapshot from an earlier step — superseded; act only on the latest snapshot below]"
+)
+
+
+def _stub_snapshot_in_text(text: str) -> Optional[str]:
+    """คืน text ที่แทนเนื้อ page snapshot ด้วย stub — None ถ้าไม่มี snapshot ในนี้เลย
+    page_text = "\\n".join(element lines) ไม่มี "\\n\\n" ข้างในเลย (perception.py) — block
+    จึงจบพอดีที่ "\\n\\n" ตัวถัดไป (section หน้าถัดไป) หรือท้าย string — parse ง่าย/ทน"""
+    i = text.find(_STALE_SNAPSHOT_MARKER)
+    if i == -1:
+        return None
+    start = i + len(_STALE_SNAPSHOT_MARKER)
+    j = text.find("\n\n", start)
+    end = len(text) if j == -1 else j
+    if text[start:end] == _SUPERSEDED_SNAPSHOT_STUB:
+        return None  # stubbed อยู่แล้ว — idempotent
+    return text[:start] + _SUPERSEDED_SNAPSHOT_STUB + text[end:]
+
+
+def _dedupe_stale_snapshots(messages: list, keep_last_full: int = 1) -> list:
+    """W_token_trim (P2/M1): provider-agnostic — จับ user turn ที่มี page snapshot
+    (content เป็น str ของ Anthropic/Groq/OpenAI หรือ parts[0].text ของ Gemini; tool_result
+    turn ของ Anthropic เป็น list ไม่ใช่ str จึงข้ามเอง) แล้ว stub ทุกอันยกเว้น
+    keep_last_full อันท้าย — ไม่แตะ turn อื่น ไม่ throw"""
+    hits: list[tuple[int, str, str]] = []
+    for k, m in enumerate(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            if _STALE_SNAPSHOT_MARKER in content:
+                hits.append((k, "content", content))
+        elif isinstance(m.get("parts"), list) and m["parts"]:
+            part_text = m["parts"][0].get("text") if isinstance(m["parts"][0], dict) else None
+            if isinstance(part_text, str) and _STALE_SNAPSHOT_MARKER in part_text:
+                hits.append((k, "parts", part_text))
+    if len(hits) <= keep_last_full:
+        return messages
+    targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+    out = list(messages)
+    for k, kind, text in targets:
+        stubbed = _stub_snapshot_in_text(text)
+        if stubbed is None:
+            continue
+        if kind == "content":
+            out[k] = {**messages[k], "content": stubbed}
+        else:
+            new_parts = list(messages[k]["parts"])
+            new_parts[0] = {**new_parts[0], "text": stubbed}
+            out[k] = {**messages[k], "parts": new_parts}
+    return out
+
 
 # W50 (delta history / bounded digest): เดิม _build_history_digest() ถูกเรียกซ้ำทุกรอบ
 # compaction ด้วย upto_step ที่โตขึ้นเรื่อยๆ แต่ from_step เริ่มที่ 1 เสมอ (implicit) —
@@ -1823,7 +1888,9 @@ def _build_history_digest(memory: ShortTermMemory, upto_step: int, from_step: in
     entries = [h for h in memory.all() if from_step <= h.get("step", 0) <= upto_step]
     if not entries:
         return ""
-    return "\n".join(f"- step {h['step']}: {h['cmd']} -> {h['result']}" for h in entries)
+    # W_token_trim (P1/Q1): clip result หัว+ท้ายเหมือน memory.py summaries — digest
+    # ค้างอยู่ทั้ง task ยิ่งต้องไม่ฝัง result เต็ม (เช่น ตาราง read_page_data)
+    return "\n".join(f"- step {h['step']}: {h['cmd']} -> {clip_result(h['result'])}" for h in entries)
 
 
 _DIGEST_PREFIX = "[Digest of earlier steps, compacted to keep the conversation from growing too long]"
@@ -2364,25 +2431,39 @@ def _focused_plan_context(plan_text: Optional[str], cursor: int) -> str:
     อ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไรเลย)
 
     ทำเครื่องหมายตามความจริงเท่านั้น: ข้อก่อน cursor = เสร็จแล้ว, ข้อที่ cursor = กำลังทำ,
-    ที่เหลือ = ยังไม่ถึง — ไม่ตัดข้อที่ยังไม่ถึงทิ้ง เพราะโมเดลต้องเห็นปลายทางถึงจะเลือก
-    วิธีของข้อปัจจุบันได้ถูก (บังคับ "ลำดับ" ไม่บังคับ "วิธี")
+    ที่เหลือ = ยังไม่ถึง — ไม่บังคับ "วิธี" บังคับแค่ "ลำดับ"
 
-    cursor เกินจำนวนข้อ = แผนจบครบแล้ว ยังคืนแผนเต็มพร้อมหมายเหตุ ไม่คืนค่าว่าง เพราะ
-    guard ที่ตามมายังต้องเห็นว่ามีแผนอยู่จริง"""
+    W_token_trim (P1/Q6): เดิมส่งทุกข้อของแผนเต็มๆ ทุก step (แค่สลับ marker [done]/
+    CURRENT/[not yet]) — แผนยาวๆ เปลืองซ้ำทุก step โดยไม่จำเป็น ตอนนี้ส่งแค่
+    CURRENT + NEXT + FINAL step แบบเต็มข้อความ ข้อที่ทำไปแล้วยุบเป็นบรรทัดนับเดียว
+    ข้อระหว่าง NEXT กับ FINAL ยุบเป็นบรรทัดช่วงเดียว — ยังคง "เห็นปลายทาง" (FINAL step
+    เต็มข้อความ) ตามเหตุผลเดิมที่โมเดลต้องรู้จุดหมายถึงจะเลือกวิธีของข้อปัจจุบันได้ถูก
+
+    cursor เกินจำนวนข้อ = แผนจบครบแล้ว ยังคืนค่าที่ไม่ว่าง (guard ที่ตามมายังต้องเห็นว่า
+    มีแผนอยู่จริง)"""
     steps = _plan_step_lines(plan_text)
     if not steps:
         return ""
     total = len(steps)
-    lines = []
-    for number, text in enumerate(steps, start=1):
-        if number < cursor:
-            lines.append(f"[done] {text}")
-        elif number == cursor:
-            lines.append(f">>> CURRENT STEP ({number}/{total}): {text}")
-        else:
-            lines.append(f"[not yet] {text}")
+    done = cursor - 1
+    lines: list[str] = []
+    if done > 0:
+        shown = min(done, total)
+        lines.append(f"[steps 1-{shown} already done ({shown}/{total})]")
     if cursor > total:
-        lines.append("(every step above is already complete)")
+        lines.append("(every step is already complete)")
+        return "\n".join(lines)
+    lines.append(f">>> CURRENT STEP ({cursor}/{total}): {steps[cursor - 1]}")
+    if cursor + 1 <= total:
+        lines.append(f"NEXT STEP ({cursor + 1}/{total}): {steps[cursor]}")
+    # ข้อระหว่าง NEXT (cursor+1) กับ FINAL (total) — ยุบเป็นบรรทัดเดียวถ้ามี >= 2 ข้อ
+    if total - (cursor + 1) >= 2:
+        lines.append(
+            f"[steps {cursor + 2}-{total - 1} not shown to save space — still do them in order]"
+        )
+    # FINAL step เต็มข้อความ (ถ้ายังไม่ถูกแสดงไปแล้วในบรรทัด CURRENT/NEXT)
+    if total >= cursor + 2:
+        lines.append(f"FINAL STEP ({total}/{total}): {steps[total - 1]}")
     return "\n".join(lines)
 
 
@@ -4321,6 +4402,11 @@ class Orchestrator:
                     prompt_sections, goal=goal, plan_text=plan_text, elements=elements,
                     allow_fill_secret=allow_fill_secret,
                 )
+
+                # W_token_trim (P2/M1): ยุบ page snapshot ของ turn เก่าใน history ก่อน
+                # ยิง LLM — เก็บอันก่อนหน้าไว้เต็ม 1 อัน (+ อันปัจจุบันที่ next_action จะ
+                # append) = เห็น snapshot เต็ม 2 อันล่าสุดในทุก request
+                messages = _dedupe_stale_snapshots(messages, keep_last_full=1)
 
                 tool_name, tool_input, tool_use_id, messages, usage = await asyncio.wait_for(
                     next_action(

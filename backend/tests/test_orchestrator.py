@@ -34,6 +34,8 @@ from backend.app.core.orchestrator import (
     _QA_SUMMARY_MAX_STEPS,
     _RAG_CHUNKS_PER_STEP,
     _build_history_digest,
+    _dedupe_stale_snapshots,
+    _SUPERSEDED_SNAPSHOT_STUB,
     _focused_plan_context,
     _field_names_match,
     _goal_is_about_the_signed_in_account,
@@ -4473,14 +4475,89 @@ def test_plan_stall_quota_constants_are_sane():
 
 
 def test_focused_plan_context_marks_done_current_and_upcoming_steps():
-    """โมเดลต้องเห็นทั้งแผน (จะได้เลือกวิธีของข้อปัจจุบันได้ถูก) แต่ต้องรู้ว่าตอนนี้อยู่ข้อไหน"""
+    """W_token_trim (P1/Q6): CURRENT + NEXT เต็มข้อความ, ข้อที่ทำแล้วยุบเป็นบรรทัดนับ
+    (แผน 3 ข้อ cursor=2 → NEXT คือข้อสุดท้ายพอดี ไม่มีบรรทัด FINAL แยก)"""
     text = _focused_plan_context("1. ไป Admin\n2. เลือก ESS\n3. กด Search", 2)
 
     assert text.splitlines() == [
-        "[done] 1. ไป Admin",
+        "[steps 1-1 already done (1/3)]",
         ">>> CURRENT STEP (2/3): 2. เลือก ESS",
-        "[not yet] 3. กด Search",
+        "NEXT STEP (3/3): 3. กด Search",
     ]
+
+
+def test_focused_plan_context_collapses_middle_and_shows_final_step_verbatim():
+    """แผนยาว: เห็น CURRENT + NEXT + FINAL เต็มข้อความ ข้อกลางยุบเป็นช่วงเดียว"""
+    text = _focused_plan_context(
+        "1. a\n2. b\n3. c\n4. d\n5. e\n6. f", 2
+    )
+
+    assert text.splitlines() == [
+        "[steps 1-1 already done (1/6)]",
+        ">>> CURRENT STEP (2/6): 2. b",
+        "NEXT STEP (3/6): 3. c",
+        "[steps 4-5 not shown to save space — still do them in order]",
+        "FINAL STEP (6/6): 6. f",
+    ]
+
+
+def test_focused_plan_context_when_every_step_done():
+    text = _focused_plan_context("1. a\n2. b", 3)
+    assert text.splitlines() == [
+        "[steps 1-2 already done (2/2)]",
+        "(every step is already complete)",
+    ]
+
+
+# --- W_token_trim (P2/M1): _dedupe_stale_snapshots() ---
+
+def _anthropic_page_turn(page_text: str, extra: str = "") -> dict:
+    return {"role": "user", "content": f"Goal: g\n\nCurrent page:\n{page_text}{extra}"}
+
+
+def test_dedupe_stale_snapshots_stubs_all_but_last_full():
+    messages = [
+        _anthropic_page_turn("[0] a\n[1] b"),
+        {"role": "assistant", "content": "x"},
+        _anthropic_page_turn("[0] c\n[1] d"),
+        {"role": "assistant", "content": "y"},
+        _anthropic_page_turn("[0] e\n[1] f"),
+    ]
+    out = _dedupe_stale_snapshots(messages, keep_last_full=1)
+
+    assert _SUPERSEDED_SNAPSHOT_STUB in out[0]["content"]
+    assert "[0] a" not in out[0]["content"]
+    assert _SUPERSEDED_SNAPSHOT_STUB in out[2]["content"]
+    assert out[4]["content"] == messages[4]["content"]  # newest kept full
+    assert out[1] is messages[1] and out[3] is messages[3]  # assistant turns untouched
+
+
+def test_dedupe_stale_snapshots_keeps_trailing_sections_and_is_idempotent():
+    turn = _anthropic_page_turn(
+        "[0] a\n[1] b",
+        extra="\n\nActions already tried that failed in this task:\n- {'type': 'click'} -> boom",
+    )
+    messages = [turn, _anthropic_page_turn("[0] c")]
+    once = _dedupe_stale_snapshots(messages, keep_last_full=1)
+    assert "Actions already tried that failed" in once[0]["content"]
+    assert _SUPERSEDED_SNAPSHOT_STUB in once[0]["content"]
+    twice = _dedupe_stale_snapshots(once, keep_last_full=1)
+    assert twice[0]["content"] == once[0]["content"]
+
+
+def test_dedupe_stale_snapshots_gemini_shape_and_noop_cases():
+    gem = [
+        {"role": "user", "parts": [{"text": "Goal: g\n\nCurrent page:\n[0] a"}]},
+        {"role": "user", "parts": [{"text": "Goal: g\n\nCurrent page:\n[0] b"}]},
+    ]
+    out = _dedupe_stale_snapshots(gem, keep_last_full=1)
+    assert _SUPERSEDED_SNAPSHOT_STUB in out[0]["parts"][0]["text"]
+    assert out[1]["parts"][0]["text"] == gem[1]["parts"][0]["text"]
+
+    # nothing to do: only one snapshot, or tool_result (list content) turns
+    assert _dedupe_stale_snapshots([gem[0]], keep_last_full=1) == [gem[0]]
+    tool_turn = {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}
+    assert _dedupe_stale_snapshots([tool_turn, tool_turn], keep_last_full=1) == [tool_turn, tool_turn]
 
 
 def test_focused_plan_context_is_empty_for_a_task_without_a_plan():
