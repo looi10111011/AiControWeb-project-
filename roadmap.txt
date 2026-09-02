@@ -5417,8 +5417,30 @@
              nudge แรกทุกครั้ง; ค่าของมันคือกันลูปจริงที่หายากกว่าที่ n=1 ของ baseline บอก
              (พิสูจน์ด้วย A/B สังเคราะห์ + unit test) เทสต์: +2, test_orchestrator 289 ผ่าน
 
-           ค้าง: W5 (history/compaction — ต้องมี long-task baseline ก่อน) · W6 (สรุปรวม)
            W4: ปิด — 0 no-tool retry ใน 18 call, kpi p95 = 0
+
+           W_prompt_audit (commit "per-LLM-call prompt payload breakdown" +
+             "decompose the other bucket") — เสร็จ:
+             token_usage.jsonl ได้ field payload_audit = 1 entry ต่อ LLM call มี char
+             count ของ request แยกตามหมวด + _input_tokens จริงของ call (แปลง char->token
+             โดยเทียบสัดส่วน — วัด chars/token = 4.23-4.36 คงที่ => _input_tokens ของ
+             endpoint openai = payload เต็ม *รวม cached* ไม่ใช่บวกกับ cache_read
+             => W1 avg_input_tokens_per_call ที่ใช้ (input+cache_read)/calls สูงไป ~1.5-2x)
+
+             ผลวัดจริง (6 task 16 call, mixed short+long):
+               system_prompt 41% (คงที่ทุก call ~5.8k tok, cache ได้ — W2 จัดการแล้ว
+                 เหลือแต่ call ที่ cache miss)
+               assistant conversation history 31% (0 ที่ call 0 แล้ว +~4.7k tok/call
+                 ไม่มีเพดาน — call 4 ของงาน 5-call = ~17.7k tok; _dedupe_stale_snapshots
+                 ของ W_token_trim stub แค่ user turn ไม่แตะ assistant turn) => W5
+               gated_prompt 14% (~700 tok ถ้ามีแค่ plan, ~3.9k เมื่อหน้ามีตาราง
+                 W2 ย้ายบล็อกกฎออกจาก system ที่ cache ได้ มาไว้ user turn ที่ cache ไม่ได้)
+               tool_schema 8% (cache ได้) · page_snapshot 4% · ที่เหลือ 1-2%/หมวด
+             dominant source: total = system_prompt แต่ cache ได้; growth/non-cacheable
+             = assistant history (คือเหตุผลที่งานยาว = 100k+)
+
+           ค้าง: W5 (history/compaction — ตอนนี้มีหลักฐานชัดแล้วว่านี่คือ lever จริง) ·
+             W6 (สรุปรวม)
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
