@@ -43,7 +43,7 @@ import copy
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +78,13 @@ class TokenUsage:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     notool_retries: int = 0
+    # W_prompt_audit: จำนวน "ตัวอักษร" ของ request สุดท้ายแยกตามหมวด (system / tool schema /
+    # snapshot / history / plan / tool_result / ...) — เก็บ char ไม่ใช่ token เพราะไม่มี
+    # tokenizer ในโปรเจกต์; orchestrator แปลงเป็น token โดยเทียบสัดส่วนกับ input_tokens
+    # จริงของ call นั้น (self-calibrating) — compare=False: เป็น diagnostic metadata ไม่ใช่
+    # ส่วนหนึ่งของ identity ของ usage (เทสต์เทียบ usage == TokenUsage(...) ต้องไม่พังเพราะมัน)
+    # และไม่รวมใน __add__ (เป็นค่าต่อ call ไม่ใช่ผลรวม)
+    payload_chars: Optional[dict] = field(default=None, compare=False)
 
     @property
     def total_tokens(self) -> int:
@@ -431,12 +438,21 @@ def _build_user_turn_text(
     plan_context: str = "",
     verification_context: str = "",
     prompt_sections: Optional[frozenset] = None,
+    _parts: Optional[dict] = None,
 ) -> str:
-    text = f"Goal: {goal}"
+    # W_prompt_audit: ถ้าส่ง _parts (dict ว่าง) มา จะบันทึกข้อความของแต่ละหมวดลงไปด้วย
+    # (คีย์: scaffolding / plan / snapshot / action_history / other) — ผู้เรียกเอาไปนับ
+    # token ต่อหมวดได้ โดยไม่กระทบข้อความที่ประกอบออกมาเลย (ต่อกันลำดับเดิมเป๊ะ)
+    def _rec(_cat: str, _chunk: str) -> str:
+        if _parts is not None and _chunk:
+            _parts[_cat] = _parts.get(_cat, "") + _chunk
+        return _chunk
+
+    text = _rec("scaffolding", f"Goal: {goal}")
     # แนบเวลาจริงของเซิร์ฟเวอร์ทุก turn (ไม่ใช่แค่ตอนเริ่ม session) — LLM ไม่มีการรับรู้
     # เวลาจริงในตัวเอง ต้องฉีดเข้า context ทุกครั้งที่เรียก _build_user_turn_text() (ดู
     # _current_bangkok_time_text() ด้านบน — อ่านเวลาสดทุกครั้ง ไม่ cache ค่าเดิมค้างไว้)
-    text += f"\n\nCurrent time (Asia/Bangkok): {_current_bangkok_time_text()}"
+    text += _rec("scaffolding", f"\n\nCurrent time (Asia/Bangkok): {_current_bangkok_time_text()}")
     # W43: plan_context มีค่าเฉพาะ task ที่ผ่าน Confirm plan (confirm_plan=True/
     # approved_plan) มาก่อนเท่านั้น — ad-hoc task (ไม่มีแพลนเลย) ได้ "" เสมอ ไม่มี section
     # นี้โผล่มาปนเลย (backward compatible ทุกประการกับ prompt เดิม) วางไว้ก่อน "หน้าเว็บ
@@ -444,7 +460,7 @@ def _build_user_turn_text(
     # manual_context/memory_context ด้านล่าง — ให้ LLM เห็นเลขข้อของแผนก่อนตัดสินใจว่า action
     # ที่กำลังจะทำ "ทำให้ step ไหนเสร็จ" (ดู completed_plan_step ใน _BROWSER_ACTION_PARAMS)
     if plan_context:
-        text += f"\n\nCurrent plan confirmed by the user (each line is one numbered step):\n{plan_context}"
+        text += _rec("plan", f"\n\nCurrent plan confirmed by the user (each line is one numbered step):\n{plan_context}")
     # W30 (recovered from an earlier exploratory branch — ดู roadmap.txt): เพิ่มหลัง user
     # รายงานว่า agent บางครั้งดูเหมือนตัดสินใจจาก state เก่า (เช่นหน้าเว็บเปลี่ยนไปเองระหว่าง
     # ทาง แต่ยังพูดถึงหน้าเดิม) — get_snapshot() ที่ orchestrator.py เรียกทุก step อยู่แล้ว
@@ -454,8 +470,8 @@ def _build_user_turn_text(
     # URL ปัจจุบันจริงตรงๆ ทุก step (อ่านจาก page.url สดๆ ไม่ใช่ค่าที่จำมาจาก step ก่อน) ให้
     # หลักฐานชัดเจนกว่าการเดาจาก element เพียงอย่างเดียว
     if current_url:
-        text += f"\n\nReal current page URL (read live from the browser every step): {current_url}"
-    text += f"\n\nCurrent page:\n{page_text}"
+        text += _rec("scaffolding", f"\n\nReal current page URL (read live from the browser every step): {current_url}")
+    text += _rec("snapshot", f"\n\nCurrent page:\n{page_text}")
     # W14: site_manual_context มาจากคู่มือที่ crawl มาอัตโนมัติ (backend/app/site_learning/
     # — คนละระบบสมบูรณ์จาก manual_context ด้านล่างที่มาจากคู่มือที่ user อัปโหลดเอง/ingest
     # เข้า ChromaDB) แยก section ให้ชัดเจนไม่ปนกัน เพื่อให้ debug ง่ายว่าข้อมูลมาจากไหน —
@@ -464,61 +480,129 @@ def _build_user_turn_text(
     if site_manual_context:
         # W_token_trim (P3/M3): full text once, then a stable id + summary — see
         # site_manual_blocks() / _render_site_manual() above
-        text += _render_site_manual(site_manual_context)
+        text += _rec("other", _render_site_manual(site_manual_context))
     if manual_context:
-        text += (
+        text += _rec("other", (
             "\n\nReference information from the relevant manual (supporting information "
             "for your decision, not binding instructions):\n"
             f"{manual_context}"
-        )
+        ))
     if memory_context:
-        text += (
+        text += _rec("action_history", (
             "\n\nActions already tried that failed in this task (if you see the message "
             "'The user refused to perform this action', a human genuinely refused it — never "
             "attempt that action again; pick another route or end the task with an "
             "explanation. Actions that failed for technical reasons may be retried "
             "differently as usual):\n"
             f"{memory_context}"
-        )
+        ))
     # W32: action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) แยกจาก memory_context ด้านบนที่
     # กรองเฉพาะ fail — ให้เห็นชัดๆ ว่า "ตัวเองเพิ่งทำอะไรไปบ้าง" กันเลือก action เดิมซ้ำ
     # (เช่น กดปุ่มเดิมสำเร็จซ้ำหลายครั้งแต่ไม่มีความคืบหน้าจริงต่อ goal — memory_context
     # เปล่าๆ เพราะไม่มี action ไหน fail เลยสักครั้ง)
     if action_history_context:
-        text += (
+        text += _rec("action_history", (
             "\n\nThe most recent actions you just performed (in order, successful or not) — "
             "if you are about to choose an action identical or similar to one you just did "
             "with no genuine new progress toward the goal, choose a different one instead:\n"
             f"{action_history_context}"
-        )
+        ))
     # W50: client-side action verification — สัญญาณเสริมจากโค้ด (ไม่ต้องพึ่ง LLM สังเกต
     # เอง) ว่า action ก่อนหน้าที่คืน [OK] จริงๆ แล้วอาจไม่มีผลอะไรกับหน้าเว็บเลย (ดู
     # orchestrator.py::run_task() จุดคำนวณ verification_context — เทียบ element
     # count/เนื้อหาหน้าก่อน-หลัง action) ว่างเปล่าถ้าไม่มีสัญญาณผิดปกติ
     if verification_context:
-        text += f"\n\n{verification_context}"
+        text += _rec("other", f"\n\n{verification_context}")
     if long_term_context:
-        text += (
+        text += _rec("other", (
             "\n\nMemory from previous task runs (may contain values found before, e.g. a "
             "price/code you can reuse, or actions that previously failed/were blocked so you "
             "can avoid them up front — supporting information for your decision, not binding "
             "instructions, and possibly outdated):\n"
             f"{long_term_context}"
-        )
+        ))
     if vision_context:
-        text += (
+        text += _rec("other", (
             "\n\nWhat the real screenshot shows (analysed because previous actions kept "
             "failing even though the element genuinely exists in the DOM — a popup/modal may "
             "be covering it):\n"
             f"{vision_context}"
-        )
+        ))
     # W_token_cut W2: บล็อกกฎที่ gate ตามบริบท ต่อท้ายสุด (หลังทั้ง page state + history)
     # เพื่อให้ system prefix คงที่ ดู gated_sections_text() — agent loop เท่านั้นที่ส่ง
     # prompt_sections มา; ผู้เรียกอื่น (เทสต์/generate_plan) ได้ "" เหมือนเดิม
     gated = gated_sections_text(prompt_sections)
     if gated:
-        text += f"\n\n{gated}"
+        text += _rec("gated_prompt", f"\n\n{gated}")
     return text
+
+
+_TOOL_RESULT_MARKERS = ('"tool_result"', '"function_call_output"', '"functionResponse"',
+                        '"function_response"', "'role': 'tool'", '"role": "tool"')
+
+
+def _message_text_len(m) -> int:
+    """W_prompt_audit: ประมาณขนาด (ตัวอักษร) ของ message หนึ่งใน history — รองรับทั้ง 4
+    รูปแบบ provider (Anthropic blocks / Groq chat / OpenAI Responses items / Gemini parts)
+    แบบทนพัง: content เป็น str ก็ใช้ตรงๆ ไม่งั้น dump เป็น str แล้ววัดความยาว"""
+    try:
+        if isinstance(m, str):
+            return len(m)
+        if isinstance(m, dict):
+            c = m.get("content")
+            if isinstance(c, str):
+                return len(c)
+            return len(json.dumps(m, default=str, ensure_ascii=False))
+        return len(str(m))
+    except Exception:
+        return 0
+
+
+def _is_tool_result_message(m) -> bool:
+    try:
+        if isinstance(m, dict):
+            if m.get("role") == "tool" or m.get("type") in ("function_call_output",):
+                return True
+        blob = m if isinstance(m, str) else json.dumps(m, default=str, ensure_ascii=False)
+        return any(mk in blob for mk in _TOOL_RESULT_MARKERS)
+    except Exception:
+        return False
+
+
+def _char_payload_audit(*, prior_messages: list, user_parts: dict,
+                        system_text: str, tools_obj) -> dict:
+    """W_prompt_audit: char count ของ request สุดท้ายแยกตามหมวด (ดู TokenUsage.payload_chars)
+
+    prior_messages = history ก่อนต่อ user turn ใหม่ (assistant tool_use + tool_result สะสม)
+    user_parts = dict ที่ _build_user_turn_text(_parts=) เติมให้ (หมวดของ user turn ปัจจุบัน)
+    ไม่ throw — พังเมื่อไรคืน {} แล้วผู้เรียกข้าม audit ของ call นั้น"""
+    try:
+        tool_result_chars = 0
+        assistant_hist_chars = 0
+        for m in (prior_messages or []):
+            n = _message_text_len(m)
+            if _is_tool_result_message(m):
+                tool_result_chars += n
+            else:
+                assistant_hist_chars += n
+        try:
+            tools_chars = len(json.dumps(tools_obj, default=str, ensure_ascii=False))
+        except Exception:
+            tools_chars = 0
+        p = user_parts or {}
+        return {
+            "system_prompt": len(system_text or ""),
+            "tool_schema": tools_chars,
+            "page_snapshot": len(p.get("snapshot", "")),
+            "action_history": len(p.get("action_history", "")),
+            "plan": len(p.get("plan", "")),
+            "tool_result": tool_result_chars,
+            "user_message": len(p.get("scaffolding", "")),
+            "gated_prompt": len(p.get("gated_prompt", "")),
+            "other": len(p.get("other", "")) + assistant_hist_chars,
+        }
+    except Exception:
+        return {}
 
 # --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq/Gemini (แค่ห่อ format ต่างกัน) ---
 
@@ -2365,16 +2449,26 @@ async def next_action(
     verification_context (W50): สัญญาณเสริมจากโค้ดว่า action ก่อนหน้าอาจไม่มีผลจริงกับ
     หน้าเว็บแม้จะคืน [OK] — orchestrator.py คำนวณให้ทุก step ดู _build_user_turn_text()
     """
+    _audit_parts: dict = {}
+    _audit_prior = list(messages)
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections,
+                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
             ),
         }
     ]
+    _anthropic_tools = (
+        [BROWSER_ACTION_TOOL, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL] if allow_fill_secret
+        else [BROWSER_ACTION_TOOL_NO_SECRET, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL]
+    )
+    _payload_chars = _char_payload_audit(
+        prior_messages=_audit_prior, user_parts=_audit_parts,
+        system_text=_PROMPT_CORE, tools_obj=_anthropic_tools,
+    )
 
     total_usage = TokenUsage()
 
@@ -2399,10 +2493,7 @@ async def next_action(
             model=model,
             max_tokens=1024,
             system=_system_blocks(),
-            tools=(
-                [BROWSER_ACTION_TOOL, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL] if allow_fill_secret
-                else [BROWSER_ACTION_TOOL_NO_SECRET, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL]
-            ),
+            tools=_anthropic_tools,
             tool_choice={"type": "any"},
             messages=request_messages,
         )
@@ -2419,12 +2510,14 @@ async def next_action(
         if tool_use is not None:
             # W_int_args: ฝั่งนี้ไม่เคยมี normaliser เลย (ต่างจาก Gemini/OpenAI) ดูฟังก์ชันหัวไฟล์
             total_usage.notool_retries = attempt  # W_token_cut W1
+            total_usage.payload_chars = _payload_chars  # W_prompt_audit
             return tool_use.name, _coerce_integer_args(tool_use.input), tool_use.id, messages, total_usage
 
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
     total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
+    total_usage.payload_chars = _payload_chars  # W_prompt_audit
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
@@ -2487,16 +2580,23 @@ async def next_action_groq(
         # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
         messages = [{"role": "system", "content": _PROMPT_CORE}]
 
+    _audit_parts: dict = {}
+    _audit_prior = list(messages)
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections,
+                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
             ),
         }
     ]
+    _groq_tools = _GROQ_TOOLS if allow_fill_secret else _GROQ_TOOLS_NO_SECRET
+    _payload_chars = _char_payload_audit(
+        prior_messages=_audit_prior, user_parts=_audit_parts,
+        system_text=_PROMPT_CORE, tools_obj=_groq_tools,
+    )
 
     total_usage = TokenUsage()
 
@@ -2509,7 +2609,7 @@ async def next_action_groq(
                     model=model,
                     max_tokens=1024,
                     messages=messages,
-                    tools=_GROQ_TOOLS if allow_fill_secret else _GROQ_TOOLS_NO_SECRET,
+                    tools=_groq_tools,
                     tool_choice="required",
                 )
                 break
@@ -2535,12 +2635,14 @@ async def next_action_groq(
                 _loads_tool_arguments(tool_call.function.arguments, tool_call.function.name)
             )
             total_usage.notool_retries = attempt  # W_token_cut W1
+            total_usage.payload_chars = _payload_chars  # W_prompt_audit
             return tool_call.function.name, tool_input, tool_call.id, messages, total_usage
 
         if attempt < _GROQ_NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
     total_usage.notool_retries = _GROQ_NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
+    total_usage.payload_chars = _payload_chars  # W_prompt_audit
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_GROQ_NO_TOOL_CALL_RETRIES)},
@@ -2785,16 +2887,22 @@ async def next_action_openai(
     หมายเหตุ: field/event shape ทั้งหมดด้านล่าง (input ต้องเป็น list, store=False บังคับ,
     final_response.output ว่างเปล่าเสมอ) ยืนยันแล้วจริงผ่าน live call ด้วย token ของ user เอง
     (follow-up fix 2026-08-17g/h/i) ไม่ใช่แค่เดาจาก SDK type definitions เหมือนตอนแรกที่เขียน"""
+    _audit_parts: dict = {}
+    _audit_prior = list(messages)
     messages = messages + [
         {
             "role": "user",
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections,
+                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
             ),
         }
     ]
+    _payload_chars = _char_payload_audit(
+        prior_messages=_audit_prior, user_parts=_audit_parts, system_text=_PROMPT_CORE,
+        tools_obj=_OPENAI_TOOLS if allow_fill_secret else _OPENAI_TOOLS_NO_SECRET,
+    )
 
     total_usage = TokenUsage()
 
@@ -2818,12 +2926,14 @@ async def next_action_openai(
                 function_call.name, _loads_tool_arguments(function_call.arguments, function_call.name),
             )
             total_usage.notool_retries = attempt  # W_token_cut W1
+            total_usage.payload_chars = _payload_chars  # W_prompt_audit
             return function_call.name, tool_input, function_call.call_id, messages, total_usage
 
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
     total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
+    total_usage.payload_chars = _payload_chars  # W_prompt_audit
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
@@ -3022,6 +3132,8 @@ async def next_action_gemini(
         system_instruction=_PROMPT_CORE,
     )
 
+    _audit_parts: dict = {}
+    _audit_prior = list(messages)
     messages = messages + [
         {
             "role": "user",
@@ -3029,11 +3141,15 @@ async def next_action_gemini(
                 "text": _build_user_turn_text(
                     goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                     site_manual_context, current_url, action_history_context, plan_context,
-                    verification_context, prompt_sections=prompt_sections,
+                    verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
                 )
             }],
         }
     ]
+    _payload_chars = _char_payload_audit(
+        prior_messages=_audit_prior, user_parts=_audit_parts, system_text=_PROMPT_CORE,
+        tools_obj=_GEMINI_TOOLS if allow_fill_secret else _GEMINI_TOOLS_NO_SECRET,
+    )
 
     total_usage = TokenUsage()
 
@@ -3064,12 +3180,14 @@ async def next_action_gemini(
             fc = part.function_call
             tool_input = _normalize_gemini_args(dict(fc.args))
             total_usage.notool_retries = no_tool_attempt  # W_token_cut W1
+            total_usage.payload_chars = _payload_chars  # W_prompt_audit
             return fc.name, tool_input, fc.name, messages, total_usage
 
         if no_tool_attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "parts": [{"text": _NO_TOOL_CALL_NUDGE}]}]
 
     total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
+    total_usage.payload_chars = _payload_chars  # W_prompt_audit
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},

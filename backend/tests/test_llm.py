@@ -1148,6 +1148,53 @@ def test_build_user_turn_text_omits_gated_blocks_by_default():
     assert llm._build_user_turn_text("goal", "page") == _EXPECTED_PREFIX
 
 
+# --- W_prompt_audit: char breakdown ของ request ต่อ call ---
+
+
+def test_build_user_turn_text_parts_collect_without_changing_output():
+    parts = {}
+    a = llm._build_user_turn_text(
+        "goal", "PAGE_SNAPSHOT", plan_context="1. step", current_url="http://x/y",
+        action_history_context="- did click", _parts=parts,
+    )
+    b = llm._build_user_turn_text(
+        "goal", "PAGE_SNAPSHOT", plan_context="1. step", current_url="http://x/y",
+        action_history_context="- did click",
+    )
+    assert a == b  # _parts ต้องไม่แตะข้อความที่ประกอบออกมา
+    assert "PAGE_SNAPSHOT" in parts["snapshot"]
+    assert "1. step" in parts["plan"]
+    assert "did click" in parts["action_history"]
+    assert parts["scaffolding"].startswith("Goal: goal")
+    # ทุกชิ้นส่วนต่อกันแล้วต้องเท่าข้อความเต็ม
+    assert sum(len(v) for v in parts.values()) == len(a)
+
+
+def test_char_payload_audit_categorises_and_splits_history():
+    parts = {"snapshot": "s" * 100, "plan": "p" * 30, "scaffolding": "g" * 20,
+             "action_history": "h" * 40, "other": "o" * 5}
+    prior = [
+        {"role": "assistant", "content": "a" * 60},
+        {"role": "tool", "content": "r" * 25},                     # tool result
+        {"content": [{"type": "tool_result", "content": "x" * 15}]},  # anthropic tool result
+    ]
+    a = llm._char_payload_audit(prior_messages=prior, user_parts=parts,
+                                system_text="S" * 1000, tools_obj=[{"k": "v"}])
+    assert a["system_prompt"] == 1000
+    assert a["page_snapshot"] == 100
+    assert a["plan"] == 30
+    assert a["user_message"] == 20
+    assert a["action_history"] == 40
+    assert a["tool_result"] >= 25 + 15   # both tool-result messages counted (plain + anthropic-shape)
+    assert a["other"] == 5 + 60          # other parts + assistant history
+    assert a["tool_schema"] == len(__import__("json").dumps([{"k": "v"}]))
+
+
+def test_char_payload_audit_never_raises():
+    assert llm._char_payload_audit(prior_messages=None, user_parts=None,
+                                   system_text=None, tools_obj=object()) != {"crash": True}
+
+
 @pytest.mark.asyncio
 async def test_next_action_groq_system_prefix_is_constant_regardless_of_sections():
     """W_token_cut W2: system message ต้องเป็น _PROMPT_CORE ตัวเดิมเป๊ะ ไม่ว่า sections

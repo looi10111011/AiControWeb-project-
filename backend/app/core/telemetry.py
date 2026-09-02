@@ -93,6 +93,10 @@ def write_token_usage(
             "guard_reason_counts": _stat("guard_reason_counts", {}),
             "repeated_guard_count": _stat("repeated_guard_count", 0),
             "finish_loop_prevented": _stat("finish_loop_prevented", 0),
+            # W_prompt_audit: 1 entry ต่อ LLM call — char count ของ request แยกตามหมวด
+            # (system / tool_schema / page_snapshot / action_history / plan / tool_result /
+            # user_message / gated_prompt / other) + _input_tokens/_cache_read ของ call นั้น
+            "payload_audit": _stat("payload_audit", []),
             "notool_retries": _stat("notool_retries", 0),
             "cache_hit_turns": _stat("cache_hit_turns", 0),
             "cache_miss_turns": _stat("cache_miss_turns", 0),

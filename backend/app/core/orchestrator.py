@@ -3617,6 +3617,21 @@ class Orchestrator:
         guard_rejections: dict[str, int] = {}
         cache_hit_turns = 0
         cache_miss_turns = 0
+        # W_prompt_audit: 1 entry ต่อการเรียก LLM — char count ของ request สุดท้ายแยกตาม
+        # หมวด + input/cache_read/output token จริงของ call นั้น (แปลง char->token ตอน
+        # วิเคราะห์โดยเทียบสัดส่วน ไม่เดา ratio ล่วงหน้า) ดู llm._char_payload_audit
+        payload_audits: list[dict] = []
+
+        def _record_payload_audit(_usage: "llm.TokenUsage") -> None:
+            pc = getattr(_usage, "payload_chars", None)
+            if not pc:
+                return
+            payload_audits.append({
+                **pc,
+                "_input_tokens": _usage.input_tokens,
+                "_cache_read": _usage.cache_read_tokens,
+                "_output_tokens": _usage.output_tokens,
+            })
 
         def _bump_guard(_name: str) -> None:
             guard_rejections[_name] = guard_rejections.get(_name, 0) + 1
@@ -3651,6 +3666,8 @@ class Orchestrator:
                 "cache_miss_turns": cache_miss_turns,
                 "avg_input_tokens_per_call": round((tok["input"] + tok["cache_read"]) / calls, 1),
                 "avg_output_tokens_per_call": round(tok["output"] / calls, 1),
+                # W_prompt_audit: char count ของทุก request แยกตามหมวด + token จริงต่อ call
+                "payload_audit": list(payload_audits),
             }
 
         premature_false_finish_count = 0
@@ -3984,6 +4001,7 @@ class Orchestrator:
                     )
                     total_usage += qa_usage
                     llm_turns += 1
+                    _record_payload_audit(qa_usage)  # W_prompt_audit
                     if qa_usage.cache_read_tokens > 0:  # W_token_cut W1
                         cache_hit_turns += 1
                     else:
@@ -4543,6 +4561,7 @@ class Orchestrator:
                 step_llm_seconds = last_llm_call_at - _llm_started_at
                 total_usage += usage
                 llm_turns += 1
+                _record_payload_audit(usage)  # W_prompt_audit
                 # W_token_cut W1: cache ติดไหมต่อเทิร์น — บน endpoint openai ที่รันจริงมีแค่
                 # cached_tokens ให้ดู (ดู W_token_cut ในหมายเหตุ) ตัวเลขนี้ x/llm_calls = hit ratio
                 if usage.cache_read_tokens > 0:
