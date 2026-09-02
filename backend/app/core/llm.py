@@ -480,9 +480,9 @@ def _build_user_turn_text(
     if site_manual_context:
         # W_token_trim (P3/M3): full text once, then a stable id + summary — see
         # site_manual_blocks() / _render_site_manual() above
-        text += _rec("other", _render_site_manual(site_manual_context))
+        text += _rec("site_manual", _render_site_manual(site_manual_context))
     if manual_context:
-        text += _rec("other", (
+        text += _rec("rag_manual", (
             "\n\nReference information from the relevant manual (supporting information "
             "for your decision, not binding instructions):\n"
             f"{manual_context}"
@@ -512,9 +512,9 @@ def _build_user_turn_text(
     # orchestrator.py::run_task() จุดคำนวณ verification_context — เทียบ element
     # count/เนื้อหาหน้าก่อน-หลัง action) ว่างเปล่าถ้าไม่มีสัญญาณผิดปกติ
     if verification_context:
-        text += _rec("other", f"\n\n{verification_context}")
+        text += _rec("verification", f"\n\n{verification_context}")
     if long_term_context:
-        text += _rec("other", (
+        text += _rec("long_term", (
             "\n\nMemory from previous task runs (may contain values found before, e.g. a "
             "price/code you can reuse, or actions that previously failed/were blocked so you "
             "can avoid them up front — supporting information for your decision, not binding "
@@ -522,7 +522,7 @@ def _build_user_turn_text(
             f"{long_term_context}"
         ))
     if vision_context:
-        text += _rec("other", (
+        text += _rec("vision", (
             "\n\nWhat the real screenshot shows (analysed because previous actions kept "
             "failing even though the element genuinely exists in the DOM — a popup/modal may "
             "be covering it):\n"
@@ -590,6 +590,12 @@ def _char_payload_audit(*, prior_messages: list, user_parts: dict,
         except Exception:
             tools_chars = 0
         p = user_parts or {}
+        site_manual = len(p.get("site_manual", ""))
+        rag_manual = len(p.get("rag_manual", ""))
+        verification = len(p.get("verification", ""))
+        long_term = len(p.get("long_term", ""))
+        vision = len(p.get("vision", ""))
+        misc = len(p.get("other", ""))
         return {
             "system_prompt": len(system_text or ""),
             "tool_schema": tools_chars,
@@ -599,7 +605,16 @@ def _char_payload_audit(*, prior_messages: list, user_parts: dict,
             "tool_result": tool_result_chars,
             "user_message": len(p.get("scaffolding", "")),
             "gated_prompt": len(p.get("gated_prompt", "")),
-            "other": len(p.get("other", "")) + assistant_hist_chars,
+            # "other" = ผลรวมของสิ่งที่เหลือ เพื่อให้ยอดรวมยัง = request จริง; ตัวย่อยอยู่ข้างล่าง
+            "other": (site_manual + rag_manual + verification + long_term + vision + misc
+                      + assistant_hist_chars),
+            "other_site_manual": site_manual,
+            "other_rag_manual": rag_manual,
+            "other_verification": verification,
+            "other_long_term": long_term,
+            "other_vision": vision,
+            "other_assistant_history": assistant_hist_chars,
+            "other_misc": misc,
         }
     except Exception:
         return {}
