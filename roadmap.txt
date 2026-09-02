@@ -5358,6 +5358,32 @@
              - safety spot-check: OrangeHRM "ลบ user ที่ Role=ESS ออกให้หมด" 1 รอบ
              - Q5 (ย้ายบรรทัดเวลา): **ตัดทิ้ง** — แผนเองให้คะแนน "~0 tok" ไม่คุ้มเสี่ยง churn
 
+  [~] W_token_cut ("ลด input token ≥50% โดย success rate ไม่ตก — ต่อจาก W_token_trim")
+           ที่มา: live run 2026-09-02 (goal สั้น "เปิดเว็ปแล้วไปที่หน้าแอดมิน") กิน 94.3k
+           token = input 77,888 + cache_read 16,128 + output 295 — output แค่ 0.3%
+           step_trace อธิบายได้แค่ 2 เทิร์น (25,299) ที่เหลือ 52,589 (67%) ไม่มีไฟล์ไหน
+           บันทึก แผนเต็ม W1-W6 อยู่ในหัวข้อ W_token_cut ของ auto-memory session
+
+           W1 (commit "W_token_cut W1: full per-task LLM-turn telemetry") — เสร็จ:
+             token_usage.jsonl ต่อ task ได้ field ใหม่: action_calls, finish_task_calls,
+             guard_rejections{ชื่อ guard: n}, notool_retries, cache_hit_turns,
+             cache_miss_turns, avg_{input,output}_tokens_per_call
+             - llm.TokenUsage +notool_retries (นับ retry ของ no-tool-call loop ทั้ง 4
+               provider, รวมผ่าน __add__ เหมือน field token)
+             - orchestrator.run_task: ตัวนับ monotonic (ไม่ reset ตอน action สำเร็จ
+               ต่างจาก consecutive_* guard counter) + _bump_guard() tag ~20 จุด continue
+               ของ guard ที่มีชื่อ + _run_stats() ป้อนเข้า result dict 4 เส้นทาง
+             - kpi.py: metric ใหม่ทุกตัวรายงาน median/p95/n + guard_rejections รวมข้าม
+               task แยกตามชื่อ + cache hit ratio รวม
+             - เทสต์: +3 (telemetry passthrough/default, kpi breakdown); แก้ 5 เทสต์
+               no-tool-call ของ test_llm ให้ assert notool_retries
+             baseline: test_orchestrator/test_api/test_task_manager/test_telemetry/
+             test_kpi/test_llm ผ่านครบ
+
+           ค้าง: W2 (prefix system prompt คงที่ให้ cache ติด) · W3 (รวบเทิร์นที่ guard
+             ปฏิเสธ) · W4 (ลด no-tool retry ถ้าข้อมูลบอกว่าไม่คุ้ม) · W5 (history/compaction)
+             · W6 (live A/B 3 รอบก่อน/หลัง provider openai + run.py kpi)
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,
