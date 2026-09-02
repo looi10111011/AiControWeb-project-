@@ -163,7 +163,7 @@ def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
 def test_system_prompt_requires_asking_for_missing_required_field_value():
     assert 'W65[1] ("Required-Field Validation")' in llm.SYSTEM_PROMPT
     assert '"[required]"' in llm.SYSTEM_PROMPT
-    assert "call request_user_input (see W_resume below)" in llm.SYSTEM_PROMPT
+    assert "call request_user_input (see W_resume below for full details)" in llm.SYSTEM_PROMPT
     assert "*** NEVER use finish_task(success=false) for this case ***" in llm.SYSTEM_PROMPT
 
 
@@ -175,7 +175,7 @@ def test_system_prompt_requires_asking_for_missing_required_field_value():
 def test_system_prompt_documents_request_user_input_tool():
     assert 'W_resume ("Mid-Task Input Request")' in llm.SYSTEM_PROMPT
     assert "request_user_input(prompt, sensitive)" in llm.SYSTEM_PROMPT
-    assert "Set sensitive: true for a password/secret" in llm.SYSTEM_PROMPT
+    assert "Set sensitive: true when the value you're asking for is a password/secret" in llm.SYSTEM_PROMPT
 
 
 def test_request_user_input_tool_registered_for_all_three_providers():
@@ -217,14 +217,14 @@ def test_plan_prompt_template_instructs_page_grouped_format():
 
 
 def test_system_prompt_requires_trying_search_before_reporting_not_found():
-    assert 'before calling finish_task with "no data"/"not found"/"couldn\'t find it"' in llm.SYSTEM_PROMPT
-    assert "invoke an available action" in llm.SYSTEM_PROMPT
-    assert 'Never conclude "there is no data"' in llm.SYSTEM_PROMPT
+    assert "before calling finish_task with a message along the lines of" in llm.SYSTEM_PROMPT
+    assert "you must invoke an available action" in llm.SYSTEM_PROMPT
+    assert "at least once before you may finish_task with \"not found\"" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
     assert 'must NOT be read as' in llm.SYSTEM_PROMPT
-    assert "an implicit instruction to search for it" in llm.SYSTEM_PROMPT
+    assert "counts as an implicit instruction to search for it" in llm.SYSTEM_PROMPT
 
 
 # --- W19 ("Table Data Extractor & Presenter"): DOM order for multi-field rows, A-Z only
