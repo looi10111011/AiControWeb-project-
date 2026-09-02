@@ -95,16 +95,18 @@ def test_w1_call_breakdown_is_summarised_with_median_p95_and_by_name():
     median+p95+n และ guard_rejections รวมข้ามทุก task แยกตามชื่อ guard"""
     rows = [
         _task(steps=3, llm_calls=10, action_calls=3, notool_retries=0,
-              cache_hit_turns=2, cache_miss_turns=8,
+              cache_hit_turns=2, cache_miss_turns=8, repeated_guard_count=1, finish_loop_prevented=1,
               avg_input_tokens_per_call=6000.0, avg_output_tokens_per_call=30.0,
               guard_rejections={"filter_scope": 2, "premature_true_finish": 1}),
         _task(steps=4, llm_calls=20, action_calls=4, notool_retries=1,
-              cache_hit_turns=6, cache_miss_turns=14,
+              cache_hit_turns=6, cache_miss_turns=14, repeated_guard_count=2, finish_loop_prevented=0,
               avg_input_tokens_per_call=6200.0, avg_output_tokens_per_call=35.0,
               guard_rejections={"filter_scope": 3}),
         _task(steps=0, duration_seconds=0.1),  # chat-shaped — ต้องไม่ถูกนับ
     ]
     summary = summarise_tasks(rows)
+    assert summary["finish_loops_prevented"] == 1
+    assert summary["repeated_guard_count"]["n"] == 2
 
     assert summary["llm_calls"]["n"] == 2
     # nearest-rank ไม่ interpolate: median ของ 2 ค่าคือค่าล่าง (ดู _percentile)

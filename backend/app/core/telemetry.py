@@ -87,6 +87,12 @@ def write_token_usage(
             "action_calls": _stat("action_calls", 0),
             "finish_task_calls": _stat("finish_task_calls", 0),
             "guard_rejections": _stat("guard_rejections", {}),
+            # W_token_cut W3: guard_reason_counts = alias ของ guard_rejections (ชื่อที่ชัดกว่า);
+            # repeated_guard_count = ผลรวม (count-1) ต่อเหตุผล = จำนวนเทิร์นที่ guard เตือน
+            # เรื่องเดิมซ้ำ; finish_loop_prevented = จำนวนครั้งที่ W3 ตัดวงจร finish->reject->LLM
+            "guard_reason_counts": _stat("guard_reason_counts", {}),
+            "repeated_guard_count": _stat("repeated_guard_count", 0),
+            "finish_loop_prevented": _stat("finish_loop_prevented", 0),
             "notool_retries": _stat("notool_retries", 0),
             "cache_hit_turns": _stat("cache_hit_turns", 0),
             "cache_miss_turns": _stat("cache_miss_turns", 0),

@@ -6560,6 +6560,69 @@ async def test_run_task_forces_verification_failed_when_table_verify_retries_exh
 
 
 @pytest.mark.asyncio
+async def test_w3_collapses_repeated_table_verify_finish_reject():
+    """W_token_cut W3: guard ตีกลับ finish_task ด้วยเหตุผล table_verify ไปแล้ว 1 ครั้ง —
+    ครั้งที่สองที่โมเดลกลับมาเรียก finish ด้วยสถานการณ์เดิม ต้องไม่เสียเทิร์น LLM เตือนซ้ำ
+    ตกไปเส้นทาง VERIFICATION_FAILED ทันที (เดิม _MAX_PREMATURE_TABLE_VERIFY_RETRIES=2 =
+    ปฏิเสธ 2 ครั้ง = 2 เทิร์นเปล่า)"""
+    mock_async_playwright, _, _ = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "สร้างแล้ว", "verify_text": "AutoUser_99"},
+         "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "สร้างแล้วจริงๆ", "verify_text": "AutoUser_99"},
+         "t2", [], llm.TokenUsage()),
+        # ตัวที่ 4 นี้ต้องไม่ถูกเรียก (W3 ตัดวงจรที่ตัวที่ 3)
+        ("finish_task", {"success": True, "message": "ครั้งที่สาม", "verify_text": "AutoUser_99"},
+         "t3", [], llm.TokenUsage()),
+    ]
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table", AsyncMock(return_value=False)), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mna:
+        result = await Orchestrator().run_task(
+            "https://example.com", "สร้าง user ใหม่ชื่อ AutoUser_99", provider="anthropic",
+        )
+    assert result["success"] is False
+    assert "VERIFICATION_FAILED: Item not found in results table." in result["message"]
+    assert mna.await_count == 3  # click + finish#1 (rejected) + finish#2 (collapsed) — ไม่มีตัวที่ 4
+    assert result["finish_loop_prevented"] == 1
+    assert result["guard_reason_counts"].get("table_verify") == 1  # bump แค่ครั้งเดียว
+
+
+@pytest.mark.asyncio
+async def test_w3_guard_loop_backstop_terminates_task():
+    """W_token_cut W3: guard เหตุผลเดียวโดนซ้ำเกิน _MAX_SAME_GUARD_REASON_REJECTIONS =
+    จบ task ตามความจริง ไม่เผา step budget ที่เหลือ — ใช้ unknown_tool (bump ทุกครั้ง
+    ไม่มี quota/ไม่ reset) เป็นตัวจุด"""
+    from backend.app.core.orchestrator import _MAX_SAME_GUARD_REASON_REJECTIONS
+    mock_async_playwright, _, _ = _patch_browser()
+    bogus = ("bogus_tool_name", {}, "t", [], llm.TokenUsage())
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=[bogus] * 40)) as mna:
+        result = await Orchestrator().run_task(
+            "https://example.com", "ทำอะไรสักอย่าง", provider="anthropic", max_steps=30,
+        )
+    assert result["success"] is False
+    assert "ปฏิเสธ action ของโมเดลซ้ำหลายครั้ง" in result["message"]
+    # backstop เช็คที่หัวลูป -> ยิง next_action ครบ _MAX_SAME_GUARD_REASON_REJECTIONS ครั้งแล้ว break
+    assert mna.await_count == _MAX_SAME_GUARD_REASON_REJECTIONS
+    assert result["guard_reason_counts"]["unknown_tool"] == _MAX_SAME_GUARD_REASON_REJECTIONS
+    assert result["repeated_guard_count"] == _MAX_SAME_GUARD_REASON_REJECTIONS - 1
+
+
+@pytest.mark.asyncio
 async def test_run_task_skips_table_verify_guard_when_verify_text_empty():
     """LLM ไม่ได้ระบุ verify_text มา (goal ไม่เกี่ยวกับการยืนยันรายการในตาราง) -> ไม่เรียก
     _scan_created_item_in_table() เลย"""

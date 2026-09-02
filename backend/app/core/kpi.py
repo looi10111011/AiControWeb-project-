@@ -124,6 +124,7 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
                 guard_by_name[name] += count
     cache_hits = sum(r.get("cache_hit_turns") or 0 for r in browser)
     cache_misses = sum(r.get("cache_miss_turns") or 0 for r in browser)
+    finish_loops_prevented = sum(r.get("finish_loop_prevented") or 0 for r in browser)  # W3
     return {
         "n": len(rows),
         "n_done": len(done),
@@ -142,6 +143,8 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "llm_calls": _stat_block([r.get("llm_calls") for r in browser]),
         "action_calls": _stat_block([r.get("action_calls") for r in browser]),
         "guard_rejections_total": _stat_block([_guard_total(r) for r in browser]),
+        "repeated_guard_count": _stat_block([r.get("repeated_guard_count") for r in browser]),
+        "finish_loops_prevented": finish_loops_prevented,  # W_token_cut W3
         "notool_retries": _stat_block([r.get("notool_retries") for r in browser]),
         "avg_input_tokens_per_call": _stat_block(
             [r.get("avg_input_tokens_per_call") for r in browser]
@@ -262,6 +265,7 @@ def format_kpi_report(report: dict[str, Any]) -> str:
                               ("input tokens", "input_tokens"),
                               ("llm_calls", "llm_calls"), ("action_calls", "action_calls"),
                               ("guard rejections", "guard_rejections_total"),
+                              ("repeated guard", "repeated_guard_count"),
                               ("notool_retries", "notool_retries"),
                               ("in tok/call", "avg_input_tokens_per_call"),
                               ("out tok/call", "avg_output_tokens_per_call")):
@@ -278,6 +282,9 @@ def format_kpi_report(report: dict[str, Any]) -> str:
         by_name = block.get("guard_rejections_by_name") or {}
         if by_name:
             lines.append(f"    guard rejections แยกตามชื่อ: {by_name}")
+        flp = block.get("finish_loops_prevented") or 0
+        if flp:
+            lines.append(f"    finish->reject->LLM loops ที่ W3 ตัดออก: {flp}")
         lines.append(f"    status: {block['status']}")
     steps_block = report["recent_steps"] if report["recent_steps"].get("n") else report["all_steps"]
     if steps_block.get("n"):

@@ -78,6 +78,17 @@ _MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
 # escape valve อื่นในไฟล์นี้)
 _MAX_REQUEST_USER_INPUT_CALLS = 3
 
+# W_token_cut W3 (หลักฐานจาก live baseline 2026-09-02): เทิร์น LLM ที่ไม่ได้ลงมือทำอะไร
+# เกือบทั้งหมดคือ guard ปฏิเสธ action ซ้ำ + finish_task ที่ถูกตีกลับด้วยเหตุผลเดิม —
+# ไม่ลดความปลอดภัย แค่ไม่ให้ "เตือนเรื่องเดิมซ้ำ" กินเทิร์น LLM เต็มๆ อีก
+#
+# _MAX_TASK_GUARD_REJECTIONS: guard ปฏิเสธรวมทุกเหตุผลทั้ง task เกินนี้ = โมเดลติดลูป
+#   แก้ตัวจริง จบ task ตามความจริงแทนการเผา step budget ต่อ (ตัวนับ guard_rejections เป็น
+#   monotonic ไม่ reset ต่างจากโควตาต่อ guard ที่ reset ตอน action สำเร็จ — ดู W1)
+# _MAX_SAME_GUARD_REASON_REJECTIONS: เหตุผลเดียวโดนซ้ำเกินนี้ (ข้ามรอบ reset ได้) = ลูป
+_MAX_TASK_GUARD_REJECTIONS = 9
+_MAX_SAME_GUARD_REASON_REJECTIONS = 4
+
 # W44: qa_summary เดิมตอบด้วย llm.summarize_page() ตัวเดียว (ไม่มี tool ให้เรียกเลย) เห็น
 # แค่ page_text จาก get_snapshot() (interactive elements ล้วนๆ ไม่มีเนื้อหาตาราง/list) —
 # คำถามแบบ "เห็นชื่อ X ในตารางไหม" เลยตอบไม่ได้เสมอแม้ read_page_data/extract_table_data()
@@ -3610,6 +3621,19 @@ class Orchestrator:
         def _bump_guard(_name: str) -> None:
             guard_rejections[_name] = guard_rejections.get(_name, 0) + 1
 
+        # W_token_cut W3: finish_task ที่ถูก guard ตีกลับด้วยเหตุผลไหนไปแล้ว 1 ครั้ง — ครั้งที่
+        # สองที่โมเดลกลับมาเรียก finish ด้วยสถานการณ์เดิม ไม่เตือนซ้ำ (เสียเทิร์น LLM ฟรี —
+        # หลักฐาน c2 ของ baseline: nudge รอบสองไม่เปลี่ยนผล) ตกไปเส้นทาง "ยอมรับพร้อม tag
+        # ความจริง" ที่ guard นั้นมีอยู่แล้วทันที — เฉพาะ guard ที่ไม่ใช่ safety ของข้อมูล
+        finish_reject_reasons_seen: set[str] = set()
+        finish_loop_prevented = 0
+
+        def _first_guard_hit(_reason: str) -> bool:
+            """W_token_cut W3: เรียก *หลัง* _bump_guard(_reason) แล้ว — 1 = ครั้งแรกของ
+            เหตุผลนี้ (แนบ user-turn nudge เสริมได้), >1 = ซ้ำ (tool_result อย่างเดียวพอ
+            ไม่ทบ history เปล่าๆ ทุกรอบ)"""
+            return guard_rejections.get(_reason, 0) <= 1
+
         def _run_stats() -> dict:
             calls = llm_turns or 1
             tok = _tokens_dict(total_usage)
@@ -3618,6 +3642,10 @@ class Orchestrator:
                 "action_calls": action_calls,
                 "finish_task_calls": finish_task_calls,
                 "guard_rejections": dict(guard_rejections),
+                # W_token_cut W3 telemetry
+                "guard_reason_counts": dict(guard_rejections),
+                "repeated_guard_count": sum(max(0, v - 1) for v in guard_rejections.values()),
+                "finish_loop_prevented": finish_loop_prevented,
                 "notool_retries": total_usage.notool_retries,
                 "cache_hit_turns": cache_hit_turns,
                 "cache_miss_turns": cache_miss_turns,
@@ -4184,6 +4212,27 @@ class Orchestrator:
             for _ in range(max_steps):
                 # W_step_budget: นับ "รอบ" แยกจาก steps_taken (ดูคำอธิบายที่จุดประกาศตัวแปร)
                 iterations_used += 1
+
+                # W_token_cut W3: backstop ลูปแก้ตัวไม่รู้จบ — guard ปฏิเสธ action ของโมเดล
+                # ซ้ำเกินเพดาน (รวมทุกเหตุผล หรือเหตุผลเดียวข้ามรอบ reset) โดยไม่คืบหน้า =
+                # จบ task ตามความจริง แทนการเผา step budget ที่เหลือทั้งหมด (เช็คที่หัวลูป
+                # จุดเดียวที่ break ได้โดยไม่มี tool_use ค้างไม่มี tool_result ตอบ)
+                if guard_rejections and (
+                    sum(guard_rejections.values()) >= _MAX_TASK_GUARD_REJECTIONS
+                    or max(guard_rejections.values()) >= _MAX_SAME_GUARD_REASON_REJECTIONS
+                ):
+                    _worst = max(guard_rejections, key=lambda k: guard_rejections[k])
+                    success = False
+                    final_message = (
+                        f"หยุด task: ระบบปฏิเสธ action ของโมเดลซ้ำหลายครั้งโดยไม่คืบหน้า "
+                        f"(guard '{_worst}' x{guard_rejections[_worst]}, รวมทุกเหตุผล "
+                        f"{sum(guard_rejections.values())} ครั้ง) — โมเดลหาวิธีทำงานที่ผ่าน"
+                        f"ข้อจำกัดไม่ได้"
+                    )
+                    completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+                    if verbose:
+                        print(f"[W3 guard-loop backstop] {final_message}", flush=True)
+                    break
 
                 # W_login_check_once (P4.7): _login_form_needs_password() ถูกเรียก 2 ครั้งต่อ
                 # รอบ (guard session-drift ก่อนเรียก LLM + guard login-form ก่อน dispatch) และ
@@ -4961,21 +5010,30 @@ class Orchestrator:
                         not table_item_found
                         and premature_table_verify_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES
                     ):
-                        premature_table_verify_count += 1
-                        _bump_guard("table_verify")  # W_token_cut W1
-                        if verbose:
-                            print(
-                                f"[finish_task(true) ไม่พบ verify_text ในตาราง "
-                                f"{premature_table_verify_count}/"
-                                f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] {verify_text}",
-                                flush=True,
-                            )
-                        nudge_text = _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE.format(text=verify_text)
-                        if any_toast_confirmed_this_task:
-                            nudge_text += _TOAST_CONFIRMED_NO_RECREATE_SUFFIX
-                        messages = append_tool_result(messages, tool_use_id, nudge_text)
-                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
-                        continue
+                        if "table_verify" in finish_reject_reasons_seen:
+                            # W_token_cut W3: เคยตีกลับ finish ด้วยเหตุผลนี้แล้ว 1 ครั้ง —
+                            # ไม่เสียเทิร์นเตือนซ้ำ ตกไปเส้นทาง "ยอมรับพร้อม tag ความจริง"
+                            # ด้านล่าง (EXECUTION_FAILED_NEEDS_REPAIR / OK_SAVE_CONFIRMED...)
+                            finish_loop_prevented += 1
+                            if verbose:
+                                print("[W3] finish_task(table_verify) collapse — ไม่เตือนซ้ำ", flush=True)
+                        else:
+                            premature_table_verify_count += 1
+                            finish_reject_reasons_seen.add("table_verify")
+                            _bump_guard("table_verify")  # W_token_cut W1
+                            if verbose:
+                                print(
+                                    f"[finish_task(true) ไม่พบ verify_text ในตาราง "
+                                    f"{premature_table_verify_count}/"
+                                    f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] {verify_text}",
+                                    flush=True,
+                                )
+                            nudge_text = _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE.format(text=verify_text)
+                            if any_toast_confirmed_this_task:
+                                nudge_text += _TOAST_CONFIRMED_NO_RECREATE_SUFFIX
+                            messages = append_tool_result(messages, tool_use_id, nudge_text)
+                            messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
+                            continue
                     if not table_item_found and any_toast_confirmed_this_task:
                         # W64[7.2]: มีหลักฐาน toast ยืนยันสำเร็จจริงมาก่อนหน้านี้ใน task
                         # เดียวกัน — ต่างจาก branch ด้านล่าง (ไม่มีหลักฐานอะไรเลยนอกจากคำยืนยัน
@@ -5030,13 +5088,16 @@ class Orchestrator:
                                 flush=True,
                             )
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_LOGIN_SKIP_NUDGE)
-                        messages.append(_build_nudge_message(
-                            resolved_provider,
-                            "⚠️ [Important system command]: this page still has an empty "
-                            "Password field. Do not move on to any other action (including "
-                            "wait) until both Username and Password are filled in. Look at "
-                            "the indexed elements and fill the empty field right now.",
-                        ))
+                        # W_token_cut W3: ครั้งแรกของเหตุผลนี้เท่านั้นที่แนบ user-turn nudge
+                        # เสริม (~500 tok) — ครั้งซ้ำ tool_result อย่างเดียวพอ ไม่ทบ history
+                        if _first_guard_hit("login_skip"):
+                            messages.append(_build_nudge_message(
+                                resolved_provider,
+                                "⚠️ [Important system command]: this page still has an empty "
+                                "Password field. Do not move on to any other action (including "
+                                "wait) until both Username and Password are filled in. Look at "
+                                "the indexed elements and fill the empty field right now.",
+                            ))
                         continue
                     # เกินโควตาเตือนแล้วยังไม่ยอมกรอก ปล่อยผ่านไปตามที่โมเดลเลือกแทนที่จะ
                     # ค้างไม่รู้จบ (เหมือน escape valve ของ premature-false-finish guard)
