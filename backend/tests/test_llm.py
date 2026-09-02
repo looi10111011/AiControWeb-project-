@@ -594,7 +594,8 @@ async def test_next_action_groq_returns_parsed_tool_call():
     assert tool_input == {"type": "click", "index": 2}
     assert tool_use_id == "call_1"
     # ส่ง [] เข้าไป (เทิร์นแรก) -> ต้องแทรก system prompt ไว้หน้าสุด
-    assert messages[0] == {"role": "system", "content": llm.SYSTEM_PROMPT}
+    # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
+    assert messages[0] == {"role": "system", "content": llm._PROMPT_CORE}
     assert messages[-1] == dumped
     assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
 
@@ -789,7 +790,7 @@ async def test_next_action_gemini_returns_parsed_function_call():
     _, kwargs = client.GenerativeModel.call_args
     assert kwargs["tools"] == llm._GEMINI_TOOLS
     assert kwargs["tool_config"] == {"function_calling_config": {"mode": "ANY"}}
-    assert kwargs["system_instruction"] == llm.SYSTEM_PROMPT
+    assert kwargs["system_instruction"] == llm._PROMPT_CORE  # W_token_cut W2
     # messages ต้องมี user turn ใหม่ + model turn (response content) ต่อท้าย
     assert messages[-2]["role"] == "user"
     assert messages[-1] is response.candidates[0].content
@@ -1114,6 +1115,53 @@ def test_build_user_turn_text_includes_plan_section_when_provided():
     assert "1. ทำ X\n2. ทำ Y" in result
     # อยู่ก่อน "หน้าเว็บปัจจุบัน" (เป็นบริบทระดับ task เหมือน Goal ไม่ใช่ข้อมูลเฉพาะ step นี้)
     assert result.index("Current plan confirmed by the user") < result.index("Current page")
+
+
+# --- W_token_cut W2: system prefix คงที่ + บล็อกที่ gate ย้ายไป user turn ---
+
+
+def test_gated_sections_text_empty_for_none_or_empty_set():
+    assert llm.gated_sections_text(None) == ""
+    assert llm.gated_sections_text(frozenset()) == ""
+
+
+def test_gated_sections_text_always_in_canonical_order():
+    a = llm.gated_sections_text(frozenset({"widget", "plan"}))
+    b = llm.gated_sections_text(frozenset({"plan", "widget"}))
+    assert a == b  # ลำดับที่ผู้เรียกส่งมาไม่มีผล — กัน prefix cache พลาดจากลำดับ
+    assert a.index(llm._PROMPT_PLAN) < a.index(llm._PROMPT_WIDGET)
+
+
+def test_build_user_turn_text_appends_gated_blocks_after_page_and_history():
+    result = llm._build_user_turn_text(
+        "goal", "page-text", action_history_context="- step 3: click -> [OK]",
+        prompt_sections=frozenset({"table"}),
+    )
+    assert llm._PROMPT_TABLE in result
+    # กฎที่ gate ต้องอยู่ท้ายสุด — หลัง page state และ history (ค่าที่เปลี่ยนทุกเทิร์น)
+    assert result.index("Current page:") < result.index(llm._PROMPT_TABLE)
+    assert result.index("step 3") < result.index(llm._PROMPT_TABLE)
+
+
+def test_build_user_turn_text_omits_gated_blocks_by_default():
+    """ผู้เรียกที่ไม่ส่ง prompt_sections (เทสต์เดิม/generate_plan) ต้องได้ prompt เดิมเป๊ะ"""
+    assert llm._build_user_turn_text("goal", "page") == _EXPECTED_PREFIX
+
+
+@pytest.mark.asyncio
+async def test_next_action_groq_system_prefix_is_constant_regardless_of_sections():
+    """W_token_cut W2: system message ต้องเป็น _PROMPT_CORE ตัวเดิมเป๊ะ ไม่ว่า sections
+    จะเป็นอะไร — prefix cache ของ provider จึงไม่ขาดกลาง task ตอนหน้าเว็บมีตารางโผล่"""
+    for sections in (None, frozenset(), frozenset({"table", "widget"}), llm.ALL_PROMPT_SECTIONS):
+        tc = _fake_tool_call("c", "browser_action", '{"type": "wait"}')
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_fake_response([tc], {"role": "assistant"})
+        )
+        _, _, _, messages, _ = await llm.next_action_groq(
+            client, "model", "goal", "page", [], prompt_sections=sections,
+        )
+        assert messages[0] == {"role": "system", "content": llm._PROMPT_CORE}
 
 
 # --- W_token_trim (P3/M3): site manual by stable id handle + summary bullet ---

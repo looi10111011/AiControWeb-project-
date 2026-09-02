@@ -3949,6 +3949,10 @@ class Orchestrator:
                         # (อนุญาตแค่ read_page_data/fill-ค้นหา/click อยู่แล้ว ดูด้านล่าง) —
                         # fill_secret ไม่มีวันถูกต้องที่นี่ ตัดออกจาก schema ไปเลย
                         allow_fill_secret=False,
+                        # W_token_cut W2: qa ไม่ได้วน _resolve_prompt_sections — ส่งบล็อก gate
+                        # ครบเหมือนที่เคยได้จาก build_system_prompt(None) เดิม (table สำคัญกับ
+                        # คำถามเชิงนับ/สรุปตาราง) แค่ย้ายไปอยู่ท้าย user turn
+                        prompt_sections=llm.ALL_PROMPT_SECTIONS,
                     )
                     total_usage += qa_usage
                     llm_turns += 1

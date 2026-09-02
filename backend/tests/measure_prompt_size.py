@@ -80,9 +80,11 @@ def _sizes(label: str) -> None:
     tool_json = json.dumps(llm._OPENAI_TOOLS, ensure_ascii=False)
     full_manual, ref_manual = llm.site_manual_blocks(_SITE_MANUAL, "orangehrmlive.com")
 
-    for section_label, sections in (("full (sections=None)", None),
+    # W_token_cut W2: agent loop ส่ง _PROMPT_CORE เป็น system เสมอ — บล็อกที่ gate ไปอยู่
+    # ท้าย user turn แทน (ผ่าน prompt_sections) นับรวมใน "user turn" ด้านล่างแล้ว
+    for section_label, sections in (("no gated blocks", frozenset()),
                                     ("{plan, table}", frozenset({"plan", "table"}))):
-        system = llm.build_system_prompt(sections)
+        system = llm._PROMPT_CORE
         # a mid-task step re-references the site manual by id (M3); step 1 sends it in full
         for manual_label, manual_block in (("mid-task step (manual by id)", ref_manual),
                                            ("first step (manual in full)", full_manual)):
@@ -96,6 +98,7 @@ def _sizes(label: str) -> None:
                 current_url="https://opensource-demo.orangehrmlive.com/web/index.php/admin/viewSystemUsers",
                 action_history_context=_ACTION_HISTORY,
                 plan_context=llm_focused_plan(),
+                prompt_sections=sections,
             )
             total = len(system) + len(tool_json) + len(user_turn)
             print(f"  [{section_label}] [{manual_label}]")

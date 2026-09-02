@@ -292,6 +292,26 @@ def build_system_prompt(sections: Optional[frozenset] = None) -> str:
 
 SYSTEM_PROMPT = build_system_prompt()
 
+# W_token_cut W2: ผู้เรียกที่อยากได้บล็อก gate ครบทุกอัน (qa_summary — ต่างจาก agent loop
+# ที่ให้ _resolve_prompt_sections ตัดสินตามหน้าเว็บ)
+ALL_PROMPT_SECTIONS = frozenset(_PROMPT_SECTION_ORDER)
+
+
+def gated_sections_text(sections: Optional[frozenset]) -> str:
+    """W_token_cut W2: ข้อความของบล็อก prompt ที่ gate ตามบริบท (plan/table/widget/password)
+
+    agent loop ย้ายบล็อกพวกนี้จาก system prompt มาต่อ *ท้าย* user turn แทน เพื่อให้ system
+    prefix (_PROMPT_CORE) เท่ากันทุกเทิร์นทุก task — prefix cache ของ provider จึงไม่ขาด
+    กลาง task ตอนหน้าเว็บมีตาราง/widget โผล่ (เดิม sections เปลี่ยน -> build_system_prompt
+    คืนคนละ string -> cache miss ทันที) การ gate ยังใช้ _resolve_prompt_sections เดิม
+    ทุกประการ ไม่เสียประโยชน์ของ W_prompt_sections
+
+    sections ว่าง/None -> "" (ไม่ต่อบล็อกไหนเลย); เรียงตาม _PROMPT_SECTION_ORDER เสมอ"""
+    if not sections:
+        return ""
+    names = tuple(n for n in _PROMPT_SECTION_ORDER if n in sections)
+    return "\n".join(_PROMPT_SECTIONS[n] for n in names)
+
 # W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
 # plain string content, Gemini เอาไปห่อเป็น parts[0]["text"] — สุดท้ายเป็น plain text
 # เหมือนกันหมด) — ต่อ section คู่มือ (จาก retriever.retrieve() ที่ orchestrator เรียกให้
@@ -410,6 +430,7 @@ def _build_user_turn_text(
     action_history_context: str = "",
     plan_context: str = "",
     verification_context: str = "",
+    prompt_sections: Optional[frozenset] = None,
 ) -> str:
     text = f"Goal: {goal}"
     # แนบเวลาจริงของเซิร์ฟเวอร์ทุก turn (ไม่ใช่แค่ตอนเริ่ม session) — LLM ไม่มีการรับรู้
@@ -491,6 +512,12 @@ def _build_user_turn_text(
             "be covering it):\n"
             f"{vision_context}"
         )
+    # W_token_cut W2: บล็อกกฎที่ gate ตามบริบท ต่อท้ายสุด (หลังทั้ง page state + history)
+    # เพื่อให้ system prefix คงที่ ดู gated_sections_text() — agent loop เท่านั้นที่ส่ง
+    # prompt_sections มา; ผู้เรียกอื่น (เทสต์/generate_plan) ได้ "" เหมือนเดิม
+    gated = gated_sections_text(prompt_sections)
+    if gated:
+        text += f"\n\n{gated}"
     return text
 
 # --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq/Gemini (แค่ห่อ format ต่างกัน) ---
@@ -2265,12 +2292,13 @@ _SYSTEM_BLOCKS = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"typ
 
 
 @lru_cache(maxsize=32)
-def _system_blocks(sections: Optional[frozenset] = None) -> list:
-    """W_prompt_sections: system block ของ Anthropic ต่อ prompt หนึ่งแบบ — cache ไว้ให้ object
-    เดิมถูกส่งซ้ำทุก step ที่ sections ไม่เปลี่ยน (สำคัญกับ prefix cache ของ provider)"""
+def _system_blocks() -> list:
+    """W_token_cut W2 (เดิม W_prompt_sections): system block ของ Anthropic — ตอนนี้เป็น
+    _PROMPT_CORE คงที่ทุกเทิร์นทุก task เสมอ บล็อกที่ gate ตามบริบทย้ายไปต่อท้าย user turn
+    (ดู gated_sections_text) prefix cache ของ provider จึงไม่ขาดกลาง task"""
     return [{
         "type": "text",
-        "text": build_system_prompt(sections),
+        "text": _PROMPT_CORE,
         "cache_control": {"type": "ephemeral"},
     }]
 
@@ -2343,7 +2371,7 @@ async def next_action(
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context,
+                verification_context, prompt_sections=prompt_sections,
             ),
         }
     ]
@@ -2370,7 +2398,7 @@ async def next_action(
         response = await client.messages.create(
             model=model,
             max_tokens=1024,
-            system=_system_blocks(prompt_sections),
+            system=_system_blocks(),
             tools=(
                 [BROWSER_ACTION_TOOL, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL] if allow_fill_secret
                 else [BROWSER_ACTION_TOOL_NO_SECRET, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL]
@@ -2456,7 +2484,8 @@ async def next_action_groq(
     จะเป็น "" เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน scope แค่ provider=gemini)
     """
     if not messages:
-        messages = [{"role": "system", "content": build_system_prompt(prompt_sections)}]
+        # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
+        messages = [{"role": "system", "content": _PROMPT_CORE}]
 
     messages = messages + [
         {
@@ -2464,7 +2493,7 @@ async def next_action_groq(
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context,
+                verification_context, prompt_sections=prompt_sections,
             ),
         }
     ]
@@ -2762,7 +2791,7 @@ async def next_action_openai(
             "content": _build_user_turn_text(
                 goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                 site_manual_context, current_url, action_history_context, plan_context,
-                verification_context,
+                verification_context, prompt_sections=prompt_sections,
             ),
         }
     ]
@@ -2773,7 +2802,7 @@ async def next_action_openai(
     # ยอมแพ้ทันทีเหมือนเดิม
     for attempt in range(_NO_TOOL_CALL_RETRIES):
         usage, function_call, messages = await _openai_one_turn(
-            client, model, messages, allow_fill_secret, prompt_sections,
+            client, model, messages, allow_fill_secret,
         )
         total_usage += usage
         if function_call is not None:
@@ -2806,15 +2835,18 @@ async def next_action_openai(
 
 async def _openai_one_turn(
     client: AsyncOpenAI, model: str, messages: list[dict], allow_fill_secret: bool,
-    prompt_sections: Optional[frozenset] = None,
 ) -> tuple[TokenUsage, Any, list[dict]]:
     """ยิง 1 request ไปที่ chatgpt.com/backend-api/codex แล้วคืน (usage, function_call, messages)
     — function_call เป็น None ถ้ารอบนี้โมเดลไม่เรียก tool เลย (ให้ผู้เรียกตัดสินใจว่าจะเตือน
     แล้วลองใหม่หรือยอมแพ้) messages คืนกลับไม่เปลี่ยนแปลง แยกออกมาเป็นฟังก์ชันเพื่อให้ลูป
-    retry ด้านบนอ่านง่าย ไม่ใช่เพราะมีผู้เรียกอื่น"""
+    retry ด้านบนอ่านง่าย ไม่ใช่เพราะมีผู้เรียกอื่น
+
+    W_token_cut W2: instructions = _PROMPT_CORE คงที่ทุกเทิร์น (endpoint นี้บังคับ
+    store=False อยู่แล้ว จึงพึ่ง prefix cache ผ่าน instructions+input ที่นิ่ง) บล็อกที่ gate
+    ตามบริบทถูกต่อท้าย user turn โดย _build_user_turn_text() แทน"""
     stream = await client.responses.create(
         model=model,
-        instructions=build_system_prompt(prompt_sections),
+        instructions=_PROMPT_CORE,
         input=messages,
         tools=_OPENAI_TOOLS if allow_fill_secret else _OPENAI_TOOLS_NO_SECRET,
         tool_choice="required",
@@ -2986,7 +3018,8 @@ async def next_action_gemini(
         model_name=model,
         tools=_GEMINI_TOOLS if allow_fill_secret else _GEMINI_TOOLS_NO_SECRET,
         tool_config={"function_calling_config": {"mode": "ANY"}},
-        system_instruction=build_system_prompt(prompt_sections),
+        # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
+        system_instruction=_PROMPT_CORE,
     )
 
     messages = messages + [
@@ -2996,7 +3029,7 @@ async def next_action_gemini(
                 "text": _build_user_turn_text(
                     goal, page_text, manual_context, memory_context, long_term_context, vision_context,
                     site_manual_context, current_url, action_history_context, plan_context,
-                    verification_context,
+                    verification_context, prompt_sections=prompt_sections,
                 )
             }],
         }
