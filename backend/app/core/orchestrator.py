@@ -3593,6 +3593,38 @@ class Orchestrator:
         last_rejected_finish_message = ""
         steps_taken = 0
         total_usage = llm.TokenUsage()
+        # W_llm_call_count: จำนวน "เทิร์น" ที่ยิงไปหา LLM จริง — ไม่เท่ากับจำนวน step เพราะ
+        # เทิร์นที่ถูก guard ปฏิเสธ/เทิร์นที่จบงาน ไม่ได้ลงมือทำ action จึงไม่มีบรรทัดใน
+        # step_trace (หนึ่งครั้งนี้อาจรวม retry ภายใน next_action ด้วย — ดู W_notoolcall)
+        llm_turns = 0
+        # W_token_cut W1: แยกให้เห็นว่าเทิร์น LLM ถูกใช้ไปกับอะไร — ไป token_usage.jsonl
+        # action_calls = browser_action ที่ dispatch จริง; finish_task_calls = ทุกครั้งที่
+        # โมเดลเรียก finish_task (รับหรือไม่ก็นับ); guard_rejections = {ชื่อ guard: จำนวนครั้ง}
+        # ที่เทิร์นถูกตีกลับโดยไม่ได้ลงมือ (W3 ใช้ตารางนี้ตัดสินว่าจะไปรวบเทิร์นตรงไหน)
+        action_calls = 0
+        finish_task_calls = 0
+        guard_rejections: dict[str, int] = {}
+        cache_hit_turns = 0
+        cache_miss_turns = 0
+
+        def _bump_guard(_name: str) -> None:
+            guard_rejections[_name] = guard_rejections.get(_name, 0) + 1
+
+        def _run_stats() -> dict:
+            calls = llm_turns or 1
+            tok = _tokens_dict(total_usage)
+            return {
+                "llm_calls": llm_turns,
+                "action_calls": action_calls,
+                "finish_task_calls": finish_task_calls,
+                "guard_rejections": dict(guard_rejections),
+                "notool_retries": total_usage.notool_retries,
+                "cache_hit_turns": cache_hit_turns,
+                "cache_miss_turns": cache_miss_turns,
+                "avg_input_tokens_per_call": round((tok["input"] + tok["cache_read"]) / calls, 1),
+                "avg_output_tokens_per_call": round(tok["output"] / calls, 1),
+            }
+
         premature_false_finish_count = 0
         premature_true_finish_count = 0
         premature_all_failed_count = 0
@@ -3919,7 +3951,13 @@ class Orchestrator:
                         allow_fill_secret=False,
                     )
                     total_usage += qa_usage
+                    llm_turns += 1
+                    if qa_usage.cache_read_tokens > 0:  # W_token_cut W1
+                        cache_hit_turns += 1
+                    else:
+                        cache_miss_turns += 1
                     if qa_tool_name == "finish_task":
+                        finish_task_calls += 1
                         qa_answer = qa_tool_input.get("message", "")
                         # W_count_answer_check: คำตอบต้องมีตัวเลขที่โค้ดนับไว้จริง ไม่งั้นตีกลับ
                         # ให้ตอบใหม่ (มีโควตา escape valve เหมือน guard อื่นในไฟล์นี้ — ตอบ
@@ -3953,6 +3991,7 @@ class Orchestrator:
 
                     qa_action_type = qa_tool_input.get("type")
                     if qa_action_type == "read_page_data":
+                        action_calls += 1  # W_token_cut W1
                         qa_result: ActionResult = await execute(
                             page, qa_tool_input, ask_user_func=ask_user_func, label="",
                             manual_guidance="", allowed_domains=effective_allowed_domains,
@@ -3987,6 +4026,7 @@ class Orchestrator:
                     ) if qa_index is not None else ""
                     qa_is_nav_click = qa_action_type == "click" and qa_region == "navigation"
                     if (qa_action_type in ("fill", "click") and _label_looks_like_search(qa_label)) or qa_is_nav_click:
+                        action_calls += 1  # W_token_cut W1
                         qa_result: ActionResult = await execute(
                             page, qa_tool_input, ask_user_func=ask_user_func, label=qa_label,
                             manual_guidance="", allowed_domains=effective_allowed_domains,
@@ -4025,6 +4065,7 @@ class Orchestrator:
                     "message": summary_text,
                     "history": self.memory.recent(max_steps),
                     "tokens": _tokens_dict(total_usage),
+                    **_run_stats(),
                     "plan": None,
                     "final_page_state": qa_page_text,
                 }
@@ -4066,6 +4107,7 @@ class Orchestrator:
                         "message": "ผู้ใช้ไม่ยืนยันแผน — ยกเลิกก่อนเริ่มทำงาน",
                         "history": self.memory.recent(max_steps),
                         "tokens": _tokens_dict(total_usage),
+                        **_run_stats(),
                         "plan": plan_text,
                         "final_page_state": plan_page_text,
                     }
@@ -4447,6 +4489,13 @@ class Orchestrator:
                 # ซึ่งเป็นการรอโดยตั้งใจ ไม่ใช่ความช้าของ provider)
                 step_llm_seconds = last_llm_call_at - _llm_started_at
                 total_usage += usage
+                llm_turns += 1
+                # W_token_cut W1: cache ติดไหมต่อเทิร์น — บน endpoint openai ที่รันจริงมีแค่
+                # cached_tokens ให้ดู (ดู W_token_cut ในหมายเหตุ) ตัวเลขนี้ x/llm_calls = hit ratio
+                if usage.cache_read_tokens > 0:
+                    cache_hit_turns += 1
+                else:
+                    cache_miss_turns += 1
                 if verbose:
                     print(
                         f"  [tokens] input={usage.input_tokens} output={usage.output_tokens}"
@@ -4463,6 +4512,7 @@ class Orchestrator:
                 # ซึ่งไม่ได้บอกโมเดลเลยว่า "ชื่อ tool ผิด" และมี tool อะไรให้ใช้บ้าง — เสีย step
                 # ฟรีๆ แล้ววนผิดซ้ำได้เรื่อยๆ ตอบให้ตรงจุดแทน แล้วไปต่อโดยไม่นับเป็น step
                 if tool_name not in _KNOWN_TOOL_NAMES:
+                    _bump_guard("unknown_tool")  # W_token_cut W1
                     if verbose:
                         print(f"[unknown-tool] โมเดลเรียก tool ที่ไม่มีอยู่จริง: {tool_name!r}", flush=True)
                     messages = append_tool_result(
@@ -4484,6 +4534,7 @@ class Orchestrator:
                     sensitive = bool(tool_input.get("sensitive", False))
 
                     if request_user_input_count >= _MAX_REQUEST_USER_INPUT_CALLS:
+                        _bump_guard("request_user_input_quota")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[request_user_input เกินโควตา {_MAX_REQUEST_USER_INPUT_CALLS} "
@@ -4522,11 +4573,13 @@ class Orchestrator:
                         "kind": "step", "step": steps_taken, "cmd": log_cmd,
                         "label": "", "result": result_text, "success": provided,
                         "tokens": _tokens_dict(total_usage),
+                        "llm_calls": llm_turns,
                     })
                     messages = append_tool_result(messages, tool_use_id, result_text)
                     continue
 
                 if tool_name == "finish_task":
+                    finish_task_calls += 1  # W_token_cut W1
                     claimed_success = bool(tool_input.get("success", False))
 
                     # ยังเหลือ step ให้ลอง + เป็น finish_task call จริง (มี tool_use_id ให้
@@ -4543,6 +4596,7 @@ class Orchestrator:
                         and premature_false_finish_count < _MAX_PREMATURE_FALSE_FINISH_RETRIES
                     ):
                         premature_false_finish_count += 1
+                        _bump_guard("premature_false_finish")  # W_token_cut W1
                         # W_step_budget: เก็บคำอธิบายของโมเดลไว้ เผื่อสุดท้ายลูปจบเพราะหมดรอบ
                         # จริงๆ — ดีกว่ารายงานแค่ "ครบ max_steps โดยยังไม่จบ task" ลอยๆ
                         last_rejected_finish_message = str(tool_input.get("message", "")).strip()
@@ -4576,6 +4630,7 @@ class Orchestrator:
                         and premature_true_finish_count < _MAX_PREMATURE_TRUE_FINISH_RETRIES
                     ):
                         premature_true_finish_count += 1
+                        _bump_guard("premature_true_finish")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[finish_task(true) ไม่ยอมรับทันที {premature_true_finish_count}/"
@@ -4605,6 +4660,7 @@ class Orchestrator:
                         and premature_all_failed_count < _MAX_PREMATURE_ALL_FAILED_RETRIES
                     ):
                         premature_all_failed_count += 1
+                        _bump_guard("premature_all_failed")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[finish_task(true) ไม่มี mutating action ไหนสำเร็จเลย "
@@ -4648,6 +4704,7 @@ class Orchestrator:
                         and premature_validation_error_count < _MAX_PREMATURE_VALIDATION_ERROR_RETRIES
                     ):
                         premature_validation_error_count += 1
+                        _bump_guard("validation_error")  # W_token_cut W1
                         errors_text = "; ".join(detected_errors)
                         if verbose:
                             print(
@@ -4709,6 +4766,7 @@ class Orchestrator:
                             and premature_delete_all_unverified_count < _MAX_DELETE_ALL_UNVERIFIED_RETRIES
                         ):
                             premature_delete_all_unverified_count += 1
+                            _bump_guard("delete_all_unverified")  # W_token_cut W1
                             if verbose:
                                 print(
                                     f"[ลบทั้งหมดยังพิสูจน์ไม่ได้ "
@@ -4739,6 +4797,7 @@ class Orchestrator:
                         and premature_deletion_incomplete_count < _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES
                     ):
                         premature_deletion_incomplete_count += 1
+                        _bump_guard("deletion_incomplete")  # W_token_cut W1
                         remaining_count, remaining_text = remaining_records
                         if verbose:
                             print(
@@ -4780,6 +4839,7 @@ class Orchestrator:
                             )
                         if problem:
                             premature_deletion_incomplete_count += 1
+                            _bump_guard("empty_table_wrong_filter")  # W_token_cut W1
                             nudge_text = _EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE.format(
                                 problem=problem,
                                 condition=" + ".join(
@@ -4841,6 +4901,7 @@ class Orchestrator:
                         )
                         if contradicted is not None:
                             premature_count_answer_mismatch_count += 1
+                            _bump_guard("count_answer_mismatch")  # W_token_cut W1
                             value, count = contradicted
                             if verbose:
                                 print(
@@ -4897,6 +4958,7 @@ class Orchestrator:
                         and premature_table_verify_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES
                     ):
                         premature_table_verify_count += 1
+                        _bump_guard("table_verify")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[finish_task(true) ไม่พบ verify_text ในตาราง "
@@ -4956,6 +5018,7 @@ class Orchestrator:
                 ):
                     if premature_login_skip_count < _MAX_PREMATURE_LOGIN_SKIP_RETRIES:
                         premature_login_skip_count += 1
+                        _bump_guard("login_skip")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[login-form ยังไม่ครบ {premature_login_skip_count}/"
@@ -4988,6 +5051,7 @@ class Orchestrator:
                 # ไว้ก่อนหน้าอาจ replay action นี้เข้ามาโดยไม่ผ่าน tool schema เลย
                 if tool_input.get("type") == "fill_secret" and not allow_fill_secret:
                     consecutive_fill_secret_context_reject_count += 1
+                    _bump_guard("fill_secret_context")  # W_token_cut W1
                     if verbose:
                         print(
                             f"[fill-secret-context {consecutive_fill_secret_context_reject_count}/"
@@ -5209,6 +5273,7 @@ class Orchestrator:
                 if goal_scope_satisfied_reason and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES:
                     if consecutive_goal_scope_reject_count < _MAX_PREMATURE_GOAL_SCOPE_RETRIES:
                         consecutive_goal_scope_reject_count += 1
+                        _bump_guard("goal_scope")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[goal-scope {consecutive_goal_scope_reject_count}/"
@@ -5343,6 +5408,7 @@ class Orchestrator:
                     ]
                     if dialog_labels:
                         obscured_click_reject_count += 1
+                        _bump_guard("obscured_click")  # W_token_cut W1
                         nudge_text = _OBSCURED_CLICK_NUDGE_TEMPLATE.format(
                             label=action_label,
                             dialog_hint=(
@@ -5374,6 +5440,7 @@ class Orchestrator:
                     and profile_menu_reject_count < _MAX_PROFILE_MENU_RETRIES
                 ):
                     profile_menu_reject_count += 1
+                    _bump_guard("profile_menu")  # W_token_cut W1
                     if verbose:
                         print(
                             f"[profile-menu {profile_menu_reject_count}/{_MAX_PROFILE_MENU_RETRIES}] "
@@ -5408,6 +5475,7 @@ class Orchestrator:
                     )
                     if delete_label:
                         prefer_row_delete_reject_count += 1
+                        _bump_guard("prefer_row_delete")  # W_token_cut W1
                         nudge_text = _PREFER_ROW_DELETE_NUDGE_TEMPLATE.format(
                             label=action_label, delete_label=delete_label,
                         )
@@ -5492,6 +5560,7 @@ class Orchestrator:
                     and consecutive_already_active_skip_count < _MAX_ALREADY_ACTIVE_SKIP_RETRIES
                 ):
                     consecutive_already_active_skip_count += 1
+                    _bump_guard("already_active_skip")  # W_token_cut W1
                     if verbose:
                         print(
                             f"[already-active {consecutive_already_active_skip_count}/"
@@ -5544,6 +5613,7 @@ class Orchestrator:
                     and filter_scope_reject_count < _MAX_FILTER_SCOPE_RETRIES
                 ):
                     filter_scope_reject_count += 1
+                    _bump_guard("filter_scope")  # W_token_cut W1
                     nudge_text = _FILTER_SCOPE_NUDGE_TEMPLATE.format(
                         label=action_label,
                         allowed=", ".join(goal_filter_fields),
@@ -5575,6 +5645,7 @@ class Orchestrator:
                 ):
                     if premature_row_action_before_search_count < _MAX_PREMATURE_ROW_ACTION_BEFORE_SEARCH_RETRIES:
                         premature_row_action_before_search_count += 1
+                        _bump_guard("row_action_before_search")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[row-action ก่อน search {premature_row_action_before_search_count}/"
@@ -5622,6 +5693,7 @@ class Orchestrator:
                         and premature_destructive_before_filter_count < _MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES
                     ):
                         premature_destructive_before_filter_count += 1
+                        _bump_guard("destructive_before_filter")  # W_token_cut W1
                         matching, total = row_match
                         if verbose:
                             print(
@@ -5741,6 +5813,7 @@ class Orchestrator:
                 except Exception:
                     tabs_before_action = []
                 _action_started_at = time.monotonic()
+                action_calls += 1  # W_token_cut W1
                 result: ActionResult = await execute(
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
                     manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
@@ -5903,6 +5976,7 @@ class Orchestrator:
                     # โชว์ token count สดๆ ตอน task ยัง "running" อยู่ (ก่อนหน้านี้มีแค่ใน
                     # result["tokens"] ตอนจบ task เท่านั้น ซึ่ง SSE consumer เห็นช้าเกินไป)
                     "tokens": _tokens_dict(total_usage),
+                    "llm_calls": llm_turns,
                 })
 
                 # W43: LLM ระบุว่า action นี้ทำให้ step ของแผนเสร็จสมบูรณ์แล้ว (ดู
@@ -6290,6 +6364,7 @@ class Orchestrator:
                 "message": final_message,
                 "history": self.memory.recent(max_steps),
                 "tokens": _tokens_dict(total_usage),
+                **_run_stats(),
                 "plan": plan_text,
                 "final_page_state": final_page_text,
                 "persona_message": persona_message,
@@ -6335,6 +6410,7 @@ class Orchestrator:
                 "message": final_message,
                 "history": self.memory.recent(max_steps),
                 "tokens": _tokens_dict(total_usage),
+                **_run_stats(),
                 "plan": plan_text,
                 "final_page_state": final_page_text,
                 "persona_message": "",

@@ -382,6 +382,8 @@ async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
     # usage ของทุกรอบต้องถูกรวม ไม่ใช่รายงานแค่รอบสุดท้าย
     assert usage == llm.TokenUsage(
         input_tokens=5 * llm._NO_TOOL_CALL_RETRIES, output_tokens=3 * llm._NO_TOOL_CALL_RETRIES,
+        # W_token_cut W1: เตือนครบโควตาแล้วยังไม่ได้ tool call = retry ไปเต็มจำนวน
+        notool_retries=llm._NO_TOOL_CALL_RETRIES - 1,
     )
     assert any(
         m.get("content") == llm._NO_TOOL_CALL_NUDGE for m in messages if isinstance(m, dict)
@@ -407,7 +409,7 @@ async def test_next_action_retries_after_no_tool_call_then_accepts_second_attemp
     assert client.messages.create.await_count == 2
     assert tool_name == "browser_action"
     assert tool_input == {"type": "wait"}
-    assert usage == llm.TokenUsage(input_tokens=12, output_tokens=5)
+    assert usage == llm.TokenUsage(input_tokens=12, output_tokens=5, notool_retries=1)  # W_token_cut W1
 
 
 @pytest.mark.asyncio
@@ -633,7 +635,7 @@ async def test_next_action_groq_nudges_and_retries_when_no_tool_calls_then_succe
     # ต้องมีข้อความเตือนแทรกอยู่ในบทสนทนาก่อนลองรอบถัดไป
     assert any(m.get("content") == llm._NO_TOOL_CALL_NUDGE for m in messages)
     # usage ต้องรวมทั้ง 2 request (รอบที่ไม่เรียก tool + รอบที่เรียกสำเร็จ) ไม่ใช่แค่รอบสุดท้าย
-    assert usage == llm.TokenUsage(input_tokens=20, output_tokens=10)
+    assert usage == llm.TokenUsage(input_tokens=20, output_tokens=10, notool_retries=1)  # W_token_cut W1
 
 
 @pytest.mark.asyncio
@@ -649,7 +651,10 @@ async def test_next_action_groq_falls_back_to_finish_task_after_no_tool_call_ret
     assert tool_use_id == ""
     assert client.chat.completions.create.await_count == llm._GROQ_NO_TOOL_CALL_RETRIES
     # usage ต้องรวมทุกรอบที่ยิงจริง แม้จะไม่มีรอบไหนเรียก tool สำเร็จเลย
-    assert usage == llm.TokenUsage(input_tokens=10 * llm._GROQ_NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._GROQ_NO_TOOL_CALL_RETRIES)
+    assert usage == llm.TokenUsage(
+        input_tokens=10 * llm._GROQ_NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._GROQ_NO_TOOL_CALL_RETRIES,
+        notool_retries=llm._GROQ_NO_TOOL_CALL_RETRIES - 1,  # W_token_cut W1
+    )
 
 
 @pytest.mark.asyncio
@@ -825,6 +830,7 @@ async def test_next_action_gemini_falls_back_to_finish_task_when_no_function_cal
     assert tool_use_id == ""
     assert usage == llm.TokenUsage(
         input_tokens=10 * llm._NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._NO_TOOL_CALL_RETRIES,
+        notool_retries=llm._NO_TOOL_CALL_RETRIES - 1,  # W_token_cut W1
     )
 
 

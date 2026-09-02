@@ -110,6 +110,20 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
     browser = [r for r in rows if (r.get("steps") or 0) > 0]
     browser_done = [r for r in browser if r.get("status") == "done"]
     browser_success = [r for r in browser_done if r.get("success") is True]
+
+    # W_token_cut W1: llm_calls vs steps — ส่วนต่างคือเทิร์นที่ยิง LLM แล้วไม่ได้ลงมือทำ
+    # (guard ปฏิเสธ / finish_task ที่ถูกตีกลับ / no-tool retry) ตัวเลขที่ W3 ใช้เล็งเป้า
+    def _guard_total(r: dict) -> int:
+        gr = r.get("guard_rejections") or {}
+        return sum(v for v in gr.values() if isinstance(v, (int, float)))
+
+    guard_by_name: Counter = Counter()
+    for r in browser:
+        for name, count in (r.get("guard_rejections") or {}).items():
+            if isinstance(count, (int, float)):
+                guard_by_name[name] += count
+    cache_hits = sum(r.get("cache_hit_turns") or 0 for r in browser)
+    cache_misses = sum(r.get("cache_miss_turns") or 0 for r in browser)
     return {
         "n": len(rows),
         "n_done": len(done),
@@ -124,6 +138,22 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "steps": _stat_block([r.get("steps") for r in browser]),
         "duration_seconds": _stat_block([r.get("duration_seconds") for r in browser]),
         "input_tokens": _stat_block([(r.get("tokens") or {}).get("input") for r in browser]),
+        # W_token_cut W1
+        "llm_calls": _stat_block([r.get("llm_calls") for r in browser]),
+        "action_calls": _stat_block([r.get("action_calls") for r in browser]),
+        "guard_rejections_total": _stat_block([_guard_total(r) for r in browser]),
+        "notool_retries": _stat_block([r.get("notool_retries") for r in browser]),
+        "avg_input_tokens_per_call": _stat_block(
+            [r.get("avg_input_tokens_per_call") for r in browser]
+        ),
+        "avg_output_tokens_per_call": _stat_block(
+            [r.get("avg_output_tokens_per_call") for r in browser]
+        ),
+        "cache_hit_ratio": (
+            cache_hits / (cache_hits + cache_misses)
+            if (cache_hits + cache_misses) else None
+        ),
+        "guard_rejections_by_name": dict(guard_by_name.most_common()),
     }
 
 
@@ -229,12 +259,25 @@ def format_kpi_report(report: dict[str, Any]) -> str:
             f"{'-' if rate is None else f'{rate:.0%}'}"
         )
         for label, metric in (("steps", "steps"), ("วินาที", "duration_seconds"),
-                              ("input tokens", "input_tokens")):
+                              ("input tokens", "input_tokens"),
+                              ("llm_calls", "llm_calls"), ("action_calls", "action_calls"),
+                              ("guard rejections", "guard_rejections_total"),
+                              ("notool_retries", "notool_retries"),
+                              ("in tok/call", "avg_input_tokens_per_call"),
+                              ("out tok/call", "avg_output_tokens_per_call")):
             # ทุกตัวคิดจากงานเบราว์เซอร์เท่านั้น
-            stat = block[metric]
+            stat = block.get(metric) or {"median": None, "p95": None, "n": 0}
             lines.append(
-                f"    {label:<14} median={_fmt(stat['median'])}  p95={_fmt(stat['p95'])}  n={stat['n']}"
+                f"    {label:<16} median={_fmt(stat['median'])}  p95={_fmt(stat['p95'])}  n={stat['n']}"
             )
+        ratio = block.get("cache_hit_ratio")
+        lines.append(
+            f"    cache hit ratio (เทิร์นที่ cache ติด / เทิร์นทั้งหมด): "
+            f"{'-' if ratio is None else f'{ratio:.0%}'}"
+        )
+        by_name = block.get("guard_rejections_by_name") or {}
+        if by_name:
+            lines.append(f"    guard rejections แยกตามชื่อ: {by_name}")
         lines.append(f"    status: {block['status']}")
     steps_block = report["recent_steps"] if report["recent_steps"].get("n") else report["all_steps"]
     if steps_block.get("n"):

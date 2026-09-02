@@ -66,12 +66,18 @@ class TokenUsage:
 
     cache_creation_tokens/cache_read_tokens มีความหมายเฉพาะฝั่ง Anthropic (prompt
     caching) — Groq ไม่ได้ extract ค่านี้ เลยเป็น 0 เสมอในฝั่งนั้น
+
+    W_token_cut W1: notool_retries = จำนวนครั้งที่ provider ตอบกลับมาโดยไม่เรียก tool
+    ในการเรียก next_action รอบนี้ แล้ว _NO_TOOL_CALL_RETRIES loop ต้องเตือนแล้วยิงซ้ำ
+    (0 = ได้ tool call ตั้งแต่ครั้งแรก) — token ของทุก retry ถูกนับรวมใน input/output
+    อยู่แล้ว ตัวนี้แยกออกมาเพื่อให้ W4 ตัดสินได้ว่า retry ชุดนี้ยังคุ้มไหม
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
+    notool_retries: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -83,6 +89,7 @@ class TokenUsage:
             self.output_tokens + other.output_tokens,
             self.cache_creation_tokens + other.cache_creation_tokens,
             self.cache_read_tokens + other.cache_read_tokens,
+            self.notool_retries + other.notool_retries,
         )
 
 # บาง Llama model บน Groq บางครั้ง generate tool call ผิดรูปแบบ (เช่น
@@ -2383,11 +2390,13 @@ async def next_action(
         tool_use = next((b for b in response.content if b.type == "tool_use"), None)
         if tool_use is not None:
             # W_int_args: ฝั่งนี้ไม่เคยมี normaliser เลย (ต่างจาก Gemini/OpenAI) ดูฟังก์ชันหัวไฟล์
+            total_usage.notool_retries = attempt  # W_token_cut W1
             return tool_use.name, _coerce_integer_args(tool_use.input), tool_use.id, messages, total_usage
 
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
+    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
@@ -2496,11 +2505,13 @@ async def next_action_groq(
             tool_input = _coerce_integer_args(
                 _loads_tool_arguments(tool_call.function.arguments, tool_call.function.name)
             )
+            total_usage.notool_retries = attempt  # W_token_cut W1
             return tool_call.function.name, tool_input, tool_call.id, messages, total_usage
 
         if attempt < _GROQ_NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
+    total_usage.notool_retries = _GROQ_NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_GROQ_NO_TOOL_CALL_RETRIES)},
@@ -2777,11 +2788,13 @@ async def next_action_openai(
             tool_input = _normalize_openai_args(
                 function_call.name, _loads_tool_arguments(function_call.arguments, function_call.name),
             )
+            total_usage.notool_retries = attempt  # W_token_cut W1
             return function_call.name, tool_input, function_call.call_id, messages, total_usage
 
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
+    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
@@ -3017,11 +3030,13 @@ async def next_action_gemini(
         if part is not None:
             fc = part.function_call
             tool_input = _normalize_gemini_args(dict(fc.args))
+            total_usage.notool_retries = no_tool_attempt  # W_token_cut W1
             return fc.name, tool_input, fc.name, messages, total_usage
 
         if no_tool_attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "parts": [{"text": _NO_TOOL_CALL_NUDGE}]}]
 
+    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
     return (
         "finish_task",
         {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},

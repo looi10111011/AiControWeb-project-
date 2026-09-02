@@ -61,6 +61,10 @@ def write_token_usage(
     result เป็น None ได้ (เส้นทาง exception/cancelled ที่ run_task() ไม่ได้คืน dict) —
     บันทึก tokens เป็นศูนย์แต่ยังเก็บ status/error ไว้"""
     try:
+        def _stat(key: str, default: Any) -> Any:
+            val = result.get(key) if result else None
+            return default if val is None else val
+
         entry: dict[str, Any] = {
             "timestamp": time.time(),
             "task_id": task_id,
@@ -74,6 +78,20 @@ def write_token_usage(
             "status": status,
             "error": error,
             "source": source,
+            # W_llm_call_count: กี่เทิร์นที่ยิงไปหา LLM จริง เทียบกับ steps ด้านบนแล้วเห็นทันที
+            # ว่าโดนเผาไปกับเทิร์นที่ไม่ได้ลงมือทำอะไรกี่ครั้ง (ดู orchestrator.py::llm_turns)
+            "llm_calls": _stat("llm_calls", 0),
+            # W_token_cut W1: แยกว่าเทิร์น LLM ถูกใช้ไปกับอะไร — action_calls + finish_task_calls
+            # + sum(guard_rejections) + notool_retries ควรเข้าใกล้ llm_calls (ส่วนต่างคือเทิร์น
+            # อื่นที่ยังไม่ได้ tag) kpi.py สรุป median/p95 ของกลุ่มนี้
+            "action_calls": _stat("action_calls", 0),
+            "finish_task_calls": _stat("finish_task_calls", 0),
+            "guard_rejections": _stat("guard_rejections", {}),
+            "notool_retries": _stat("notool_retries", 0),
+            "cache_hit_turns": _stat("cache_hit_turns", 0),
+            "cache_miss_turns": _stat("cache_miss_turns", 0),
+            "avg_input_tokens_per_call": _stat("avg_input_tokens_per_call", 0),
+            "avg_output_tokens_per_call": _stat("avg_output_tokens_per_call", 0),
         }
         if run_id:
             entry["run_id"] = run_id

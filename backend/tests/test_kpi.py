@@ -90,6 +90,33 @@ def test_browser_tasks_are_separated_from_chat_shaped_ones():
     assert summary["steps"]["n"] == 1
 
 
+def test_w1_call_breakdown_is_summarised_with_median_p95_and_by_name():
+    """W_token_cut W1: llm_calls / guard_rejections / cache hit ratio ต้องสรุปแบบ
+    median+p95+n และ guard_rejections รวมข้ามทุก task แยกตามชื่อ guard"""
+    rows = [
+        _task(steps=3, llm_calls=10, action_calls=3, notool_retries=0,
+              cache_hit_turns=2, cache_miss_turns=8,
+              avg_input_tokens_per_call=6000.0, avg_output_tokens_per_call=30.0,
+              guard_rejections={"filter_scope": 2, "premature_true_finish": 1}),
+        _task(steps=4, llm_calls=20, action_calls=4, notool_retries=1,
+              cache_hit_turns=6, cache_miss_turns=14,
+              avg_input_tokens_per_call=6200.0, avg_output_tokens_per_call=35.0,
+              guard_rejections={"filter_scope": 3}),
+        _task(steps=0, duration_seconds=0.1),  # chat-shaped — ต้องไม่ถูกนับ
+    ]
+    summary = summarise_tasks(rows)
+
+    assert summary["llm_calls"]["n"] == 2
+    # nearest-rank ไม่ interpolate: median ของ 2 ค่าคือค่าล่าง (ดู _percentile)
+    assert summary["llm_calls"]["median"] == 10
+    assert summary["llm_calls"]["p95"] == 20
+    assert summary["guard_rejections_total"]["median"] == 3  # 3 กับ 3
+    assert summary["guard_rejections_by_name"] == {"filter_scope": 5, "premature_true_finish": 1}
+    # cache hit ratio = (2+6) / (2+6+8+14)
+    assert summary["cache_hit_ratio"] == 8 / 30
+    assert summary["notool_retries"]["p95"] == 1
+
+
 def test_success_rate_counts_only_finished_tasks():
     """task ที่ถูก cancel/error ไม่ควรนับเป็น "ล้มเหลว" ของ agent — มันไม่เคยได้ทำจนจบ"""
     rows = [

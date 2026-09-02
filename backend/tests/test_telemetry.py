@@ -128,6 +128,41 @@ def test_write_token_usage_records_source_and_run_id(logs):
     assert row["duration_seconds"] == 1.23
 
 
+def test_write_token_usage_records_w1_call_breakdown(logs):
+    """W_token_cut W1: ตัวนับทั้งชุดต้องลงไฟล์ตามที่ run_task() คืนมา และ result ที่ไม่มี
+    field พวกนี้ (task รุ่นเก่า / เส้นทาง exception) ต้อง default เป็น 0/{} ไม่ใช่ KeyError"""
+    _, tokens = logs
+    result = _fake_result()
+    result.update({
+        "llm_calls": 9, "action_calls": 3, "finish_task_calls": 2,
+        "guard_rejections": {"filter_scope": 2, "premature_true_finish": 1},
+        "notool_retries": 1, "cache_hit_turns": 4, "cache_miss_turns": 5,
+        "avg_input_tokens_per_call": 6100.0, "avg_output_tokens_per_call": 40.0,
+    })
+    write_token_usage(
+        task_id="t1", url="https://x/", goal="g", provider="openai",
+        result=result, status="done", error=None, duration_seconds=1.0,
+    )
+    row = _read_lines(tokens)[0]
+    assert row["llm_calls"] == 9
+    assert row["action_calls"] == 3
+    assert row["finish_task_calls"] == 2
+    assert row["guard_rejections"] == {"filter_scope": 2, "premature_true_finish": 1}
+    assert row["notool_retries"] == 1
+    assert row["cache_hit_turns"] == 4 and row["cache_miss_turns"] == 5
+    assert row["avg_input_tokens_per_call"] == 6100.0
+
+    # result ที่ไม่มี field W1 เลย
+    write_token_usage(
+        task_id="t2", url="https://x/", goal="g", provider="openai",
+        result=_fake_result(), status="done", error=None, duration_seconds=1.0,
+    )
+    old = _read_lines(tokens)[1]
+    assert old["llm_calls"] == 0
+    assert old["guard_rejections"] == {}
+    assert old["action_calls"] == 0
+
+
 def test_write_token_usage_defaults_to_api_source_and_zero_tokens_without_result(logs):
     """เส้นทาง cancelled/exception ที่ run_task() ไม่ได้คืน dict — ยังต้องมีแถวไว้ ไม่งั้น
     success rate ที่คำนวณจากไฟล์นี้เป็นเพดานบน ไม่ใช่ค่าจริง"""
