@@ -5380,9 +5380,20 @@
              baseline: test_orchestrator/test_api/test_task_manager/test_telemetry/
              test_kpi/test_llm ผ่านครบ
 
-           ค้าง: W2 (prefix system prompt คงที่ให้ cache ติด) · W3 (รวบเทิร์นที่ guard
-             ปฏิเสธ) · W4 (ลด no-tool retry ถ้าข้อมูลบอกว่าไม่คุ้ม) · W5 (history/compaction)
-             · W6 (live A/B 3 รอบก่อน/หลัง provider openai + run.py kpi)
+           W2 (commit "W_token_cut W2: constant system prefix ...") — เสร็จ:
+             build_system_prompt(sections) คืนคนละ string ทุกครั้งที่ชุด gate เปลี่ยน
+             (ตารางโผล่กลาง task = +บล็อก table) -> prefix cache ของ provider ขาดทั้ง
+             conversation (cache_read ติดครั้งเดียว ~6.5k แล้ว 0 ตลอด)
+             - ทั้ง 4 provider ส่ง _PROMPT_CORE เป็น system เป๊ะทุกเทิร์นทุก task
+             - บล็อก plan/table/widget/password ย้ายไปต่อ *ท้าย* user turn ผ่าน
+               _build_user_turn_text(prompt_sections=) — gate เดิม ข้อความเดิม แค่ย้ายที่
+             - qa_summary ส่ง ALL_PROMPT_SECTIONS (คงกฎครบเท่า build_system_prompt(None))
+             token รวมต่อ step เท่าเดิม แต่ prefix ~7.6k คงที่ -> cache ติดตั้งแต่เทิร์น 2
+             เทสต์: +5 / แก้ 3 (assert system = _PROMPT_CORE)
+
+           ค้าง (ต้องมี live baseline W1 ก่อน): W3 (รวบเทิร์นที่ guard ปฏิเสธ) ·
+             W4 (ลด no-tool retry ถ้าข้อมูลบอกว่าไม่คุ้ม) · W5 (history/compaction) ·
+             W6 (live A/B 3 รอบก่อน/หลัง provider openai + run.py kpi)
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
