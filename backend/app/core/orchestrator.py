@@ -3760,7 +3760,12 @@ class Orchestrator:
                 "notool_retries": total_usage.notool_retries,
                 "cache_hit_turns": cache_hit_turns,
                 "cache_miss_turns": cache_miss_turns,
-                "avg_input_tokens_per_call": round((tok["input"] + tok["cache_read"]) / calls, 1),
+                # W_prompt_audit calibration (2026-09-02): the provider's input_tokens IS the
+                # full prompt count (cached portion included) — measured 4.23-4.36 chars/token
+                # against input_tokens alone; adding cache_read double-counted ~1.5-2x. Use
+                # input alone. cache_read reported separately below for the discount view.
+                "avg_input_tokens_per_call": round(tok["input"] / calls, 1),
+                "avg_cached_tokens_per_call": round(tok["cache_read"] / calls, 1),
                 "avg_output_tokens_per_call": round(tok["output"] / calls, 1),
                 # W_prompt_audit: char count ของทุก request แยกตามหมวด + token จริงต่อ call
                 "payload_audit": list(payload_audits),

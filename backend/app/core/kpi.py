@@ -156,6 +156,9 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "avg_input_tokens_per_call": _stat_block(
             [r.get("avg_input_tokens_per_call") for r in browser]
         ),
+        "avg_cached_tokens_per_call": _stat_block(
+            [r.get("avg_cached_tokens_per_call") for r in browser]
+        ),
         "avg_output_tokens_per_call": _stat_block(
             [r.get("avg_output_tokens_per_call") for r in browser]
         ),
@@ -275,6 +278,7 @@ def format_kpi_report(report: dict[str, Any]) -> str:
                               ("repeated guard", "repeated_guard_count"),
                               ("notool_retries", "notool_retries"),
                               ("in tok/call", "avg_input_tokens_per_call"),
+                              ("cached tok/call", "avg_cached_tokens_per_call"),
                               ("out tok/call", "avg_output_tokens_per_call")):
             # ทุกตัวคิดจากงานเบราว์เซอร์เท่านั้น
             stat = block.get(metric) or {"median": None, "p95": None, "n": 0}

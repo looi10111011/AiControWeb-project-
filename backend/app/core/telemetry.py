@@ -107,6 +107,7 @@ def write_token_usage(
             "cache_hit_turns": _stat("cache_hit_turns", 0),
             "cache_miss_turns": _stat("cache_miss_turns", 0),
             "avg_input_tokens_per_call": _stat("avg_input_tokens_per_call", 0),
+            "avg_cached_tokens_per_call": _stat("avg_cached_tokens_per_call", 0),
             "avg_output_tokens_per_call": _stat("avg_output_tokens_per_call", 0),
         }
         if run_id:

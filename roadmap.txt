@@ -5464,7 +5464,34 @@
              history อยู่แล้ว W5 เพิ่มอีก ~10-15% (trim บล็อกกฎใน 3 turn ที่รอด)
              เทสต์: +3, test_orchestrator 292 ผ่าน
 
-           ค้าง: W6 (สรุปรวม W1-W5 + live A/B 3+3 ตามแผนเดิม)
+           W6 (commit "W_token_cut W6: rollup ...") — เสร็จ:
+             live A/B 6+6 รอบ (goal เดิม, openai): BEFORE = checkout 3731b11 (ก่อน
+             W_token_cut, มี W_token_trim อยู่แล้ว) / AFTER = HEAD (W1-W5 ครบ)
+             - success: 6/6 -> 6/6
+             - total input: 388,126 -> 199,155 (-48.7% แต่ step-mix ปน: BEFORE มี run
+               5-step 151k เป็น outlier)
+             - matched by step: 1-step ~เท่าเดิม (+2%, งาน 2-call ไม่มีอะไรให้ตัด) ·
+               2-step 63,561 -> 42,892 (-33%) · 5-step BEFORE 151k ไม่มีคู่ AFTER
+             - AFTER runs นิ่งมาก (2-step 42-43k ทุกครั้ง) BEFORE แกว่ง 34-98k = W3 +
+               ลูปที่แน่นขึ้นตัด friction tail
+             - cache hit ratio 62->75-80% (W2 อุ่นเครื่องสะสม)
+             - deterministic full-stack A/B (anthropic, ไม่มี real cache): BEFORE~=AFTER
+               (-0.3% ถึง -3.5%) => W_token_cut ไม่เพิ่ม overhead; win จริงมาจาก provider
+               prefix cache (W2, เห็นเฉพาะ API จริง) + W5 stub บล็อกกฎใน turn เก่า
+
+             AFTER payload breakdown (6 run 15 call, 199k tok): system_prompt 44% ·
+             gated_prompt 19% (W2 ย้ายออกจาก cacheable prefix) · other 18%
+             (assistant_history 15%, W5 bound ไว้แล้ว) · tool_schema 8% · snapshot 6%
+
+             cleanup: avg_input_tokens_per_call แก้จาก (input+cache_read)/calls เป็น
+             input/calls (W_prompt_audit พิสูจน์ว่า input_tokens รวม cached แล้ว) +
+             เพิ่ม avg_cached_tokens_per_call
+
+           สรุป W_token_cut ทั้งชุด: input token ต่อ task ลด ~33% บนงานทั่วไป (2-step),
+           ~49% บน batch รวม (ปน outlier), ~0% บนงาน 1-step ที่ถูกอยู่แล้ว · success
+           ไม่ตก · W4 ปิด (0 retry) · เป้า >=50% ยังไม่ถึงแบบ matched — ต้องปิดช่อง
+           cache-miss (system prompt 44% ยัง full price บน call ที่ cache ไม่ติด) +
+           ลด gated_prompt ต่อ
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
