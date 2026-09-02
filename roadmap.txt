@@ -5439,8 +5439,32 @@
              dominant source: total = system_prompt แต่ cache ได้; growth/non-cacheable
              = assistant history (คือเหตุผลที่งานยาว = 100k+)
 
-           ค้าง: W5 (history/compaction — ตอนนี้มีหลักฐานชัดแล้วว่านี่คือ lever จริง) ·
-             W6 (สรุปรวม)
+           W5 (commit "W_token_cut W5: assistant / conversation history compaction") — เสร็จ:
+             _compact_stale_user_turns(messages, goal): user turn ของ step เก่า (ขึ้นต้น
+             "Goal: " + มี snapshot marker) เกิน keep_last_full=1 อันท้าย -> เหลือ
+             "Goal: <goal>\n\n<stub>". รันทุก step ต่อจาก _dedupe_stale_snapshots.
+             idempotent, provider-agnostic, ไม่แตะ tool_result/function_call/nudge.
+             telemetry: history_compaction_events, history_chars_saved, history_tokens_saved
+             (chars/4.3), assistant_history_tokens/_compacted_tokens (apportion จาก payload_audit)
+
+             ผล (deterministic A/B, digest-compaction ปิด = สถานการณ์ของงาน <=4 step ที่
+             เป็นส่วนใหญ่, gated block ขนาดจริง):
+               2 step: assistant history 12,598 -> 9,997 tok  (-21%)
+               3 step: 19,789 -> 13,886  (-30%)
+               5 step: 35,788 -> 21,846  (-39%)
+             => ยิ่งงานยาว ยิ่งลดมาก ผ่านเกณฑ์ >=30% ที่ >=3 step
+             deterministic char test (บทสนทนา 6 step จริง): 102k -> 21k chars = ตัด
+             ~19k tok ของบล็อกกฎ/plan/scaffolding ที่ค้างใน turn เก่า
+
+             live 6 run (openai, goal เดิม): success 6/6 -> 6/6 · llm_calls 16 -> 16 (ไม่เพิ่ม)
+             · cache hit 62% -> 75% (W2 อุ่นเครื่อง ไม่ใช่ W5) · 3-call run matched:
+             assistant_history 9,785 -> ~7,834 tok (-20%) · งานส่วนใหญ่ 2 call = W5 ไม่ทำงาน
+             (ยังไม่มีอะไรสะสม)
+             หมายเหตุ: task > 4 step มี digest compaction (_compact_*_messages) bound
+             history อยู่แล้ว W5 เพิ่มอีก ~10-15% (trim บล็อกกฎใน 3 turn ที่รอด)
+             เทสต์: +3, test_orchestrator 292 ผ่าน
+
+           ค้าง: W6 (สรุปรวม W1-W5 + live A/B 3+3 ตามแผนเดิม)
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
