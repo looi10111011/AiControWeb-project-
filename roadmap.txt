@@ -5487,11 +5487,27 @@
              input/calls (W_prompt_audit พิสูจน์ว่า input_tokens รวม cached แล้ว) +
              เพิ่ม avg_cached_tokens_per_call
 
-           สรุป W_token_cut ทั้งชุด: input token ต่อ task ลด ~33% บนงานทั่วไป (2-step),
-           ~49% บน batch รวม (ปน outlier), ~0% บนงาน 1-step ที่ถูกอยู่แล้ว · success
-           ไม่ตก · W4 ปิด (0 retry) · เป้า >=50% ยังไม่ถึงแบบ matched — ต้องปิดช่อง
-           cache-miss (system prompt 44% ยัง full price บน call ที่ cache ไม่ติด) +
-           ลด gated_prompt ต่อ
+           W7 (commit "W_token_cut W7: dereference stale gated-rule blocks ...") — เสร็จ:
+             W7b: บล็อกกฎที่ gate ใน turn เก่า (history) เหลือ 1 บรรทัดอ้างอิง — header
+               line ใน _build_user_turn_text + _dedupe_stale_gated (รันทุก step ต่อจาก
+               _dedupe_stale_snapshots/W5) turn ปัจจุบันยังส่งเต็ม -> model เห็นกฎเต็ม 1 ชุด
+             W7a: openai prompt_cache_key คงที่ (route ไป cache slot เดิม — endpoint codex
+               ปฏิเสธ prompt_cache_retention ยืด TTL ไม่ได้) · anthropic cache_control
+               ttl "1h" (จาก 5m)
+             live A/B 6+6 (matched step-mix) vs W6-AFTER:
+               success 6/6 -> 6/6 · total input 199,155 -> 175,866 (-11.7%)
+               2-step avg 42,892 -> 35,937 (-16.2%) · accumulated history ("other")
+               36,505 -> 19,662 tok (-46%) · cache hit 80% -> 93% (prompt_cache_key ใช้ได้
+               จริงบน codex) · llm_calls 15 -> 15
+
+           สรุป W_token_cut ทั้งชุด (W1-W7 vs 3731b11):
+             - 2-step task (median): input -43% matched (63,561 -> 35,937)
+             - 1-step task: ~0% (งาน 2-call เป็น cacheable prefix เกือบล้วน ไม่มีอะไรตัด)
+             - batch รวม -49% (ปน outlier 5-step ของ before)
+             - success ไม่ตก · llm_calls ไม่เพิ่ม · W4 ปิด (0 retry)
+             - เป้า >=50% matched ยังไม่ถึง — ที่เหลือ: system_prompt (44%) ยัง full
+               price บน cache miss (turn 0 + TTL), gated_prompt (turn ปัจจุบัน ~3k tok
+               ต่อ call บนหน้าตาราง — บีบข้อความไม่ได้ ดู W_token_trim CORE revert)
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
