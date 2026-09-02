@@ -125,6 +125,8 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
     cache_hits = sum(r.get("cache_hit_turns") or 0 for r in browser)
     cache_misses = sum(r.get("cache_miss_turns") or 0 for r in browser)
     finish_loops_prevented = sum(r.get("finish_loop_prevented") or 0 for r in browser)  # W3
+    history_events = sum(r.get("history_compaction_events") or 0 for r in browser)  # W5
+    history_tokens_saved = sum(r.get("history_tokens_saved") or 0 for r in browser)  # W5
     return {
         "n": len(rows),
         "n_done": len(done),
@@ -145,6 +147,11 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "guard_rejections_total": _stat_block([_guard_total(r) for r in browser]),
         "repeated_guard_count": _stat_block([r.get("repeated_guard_count") for r in browser]),
         "finish_loops_prevented": finish_loops_prevented,  # W_token_cut W3
+        "history_compaction_events": history_events,  # W_token_cut W5
+        "history_tokens_saved": history_tokens_saved,  # W_token_cut W5
+        "assistant_history_tokens": _stat_block(
+            [r.get("assistant_history_tokens") for r in browser]
+        ),
         "notool_retries": _stat_block([r.get("notool_retries") for r in browser]),
         "avg_input_tokens_per_call": _stat_block(
             [r.get("avg_input_tokens_per_call") for r in browser]
@@ -285,6 +292,14 @@ def format_kpi_report(report: dict[str, Any]) -> str:
         flp = block.get("finish_loops_prevented") or 0
         if flp:
             lines.append(f"    finish->reject->LLM loops ที่ W3 ตัดออก: {flp}")
+        hce = block.get("history_compaction_events") or 0
+        if hce or block.get("history_tokens_saved"):
+            ah = block.get("assistant_history_tokens") or {}
+            lines.append(
+                f"    W5 history compaction: {hce} ครั้ง, ~{block.get('history_tokens_saved', 0):,} "
+                f"tok ตัดออก · assistant history ที่เหลือ median={_fmt(ah.get('median'))} "
+                f"p95={_fmt(ah.get('p95'))}"
+            )
         lines.append(f"    status: {block['status']}")
     steps_block = report["recent_steps"] if report["recent_steps"].get("n") else report["all_steps"]
     if steps_block.get("n"):

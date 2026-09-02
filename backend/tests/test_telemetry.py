@@ -146,6 +146,9 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
              "gated_prompt": 700, "other": 50, "_input_tokens": 9000, "_cache_read": 6000,
              "_output_tokens": 50},
         ],
+        "history_compaction_events": 3, "history_chars_saved": 60000,
+        "history_tokens_saved": 13953, "assistant_history_tokens": 4200,
+        "assistant_history_compacted_tokens": 4200,
     })
     write_token_usage(
         task_id="t1", url="https://x/", goal="g", provider="openai",
@@ -165,6 +168,9 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
     assert len(row["payload_audit"]) == 1
     assert row["payload_audit"][0]["system_prompt"] == 25146
     assert row["payload_audit"][0]["_input_tokens"] == 9000
+    assert row["history_compaction_events"] == 3
+    assert row["history_tokens_saved"] == 13953
+    assert row["assistant_history_tokens"] == 4200
 
     # result ที่ไม่มี field W1/W3 เลย
     write_token_usage(
@@ -178,6 +184,8 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
     assert old["repeated_guard_count"] == 0
     assert old["finish_loop_prevented"] == 0
     assert old["payload_audit"] == []
+    assert old["history_compaction_events"] == 0
+    assert old["history_tokens_saved"] == 0
 
 
 def test_write_token_usage_defaults_to_api_source_and_zero_tokens_without_result(logs):

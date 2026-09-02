@@ -4560,6 +4560,53 @@ def test_dedupe_stale_snapshots_gemini_shape_and_noop_cases():
     assert _dedupe_stale_snapshots([tool_turn, tool_turn], keep_last_full=1) == [tool_turn, tool_turn]
 
 
+# --- W_token_cut W5: _compact_stale_user_turns() ---
+
+def test_w5_compact_stale_user_turns_stubs_old_step_turns_keeps_recent():
+    from backend.app.core.orchestrator import _compact_stale_user_turns, _W5_SUPERSEDED_TURN_STUB
+    big = "\n\nCurrent page:\n[0] a\n[1] b\n\n" + ("RULES " * 300)
+    messages = [
+        {"role": "user", "content": f"Goal: do X{big}v1"},
+        {"type": "function_call", "call_id": "c1", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "[OK]"},
+        {"role": "user", "content": f"Goal: do X{big}v2"},
+        {"type": "function_call", "call_id": "c2", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c2", "output": "[OK]"},
+        {"role": "user", "content": f"Goal: do X{big}v3"},
+    ]
+    out, removed = _compact_stale_user_turns(messages, "do X", keep_last_full=1)
+
+    assert removed > 1500                       # two old step turns collapsed
+    assert out[0]["content"] == f"Goal: do X\n\n{_W5_SUPERSEDED_TURN_STUB}"
+    assert out[3]["content"] == f"Goal: do X\n\n{_W5_SUPERSEDED_TURN_STUB}"
+    assert out[6]["content"] == messages[6]["content"]   # newest step turn kept full
+    # function_call / function_call_output pairs untouched (API needs matched call_id)
+    assert out[1] is messages[1] and out[2] is messages[2]
+    # idempotent
+    out2, removed2 = _compact_stale_user_turns(out, "do X", keep_last_full=1)
+    assert removed2 == 0
+
+
+def test_w5_compact_ignores_nudges_tool_results_and_gemini_shape():
+    from backend.app.core.orchestrator import _compact_stale_user_turns
+    nudge = {"role": "user", "content": "⚠️ [Important system command]: fill the field"}
+    tool_res = {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}
+    gem = [
+        {"role": "user", "parts": [{"text": "Goal: g\n\nCurrent page:\n[0] a\n\n" + "R" * 400}]},
+        {"role": "user", "parts": [{"text": "Goal: g\n\nCurrent page:\n[0] b\n\n" + "R" * 400}]},
+    ]
+    out, removed = _compact_stale_user_turns([nudge, tool_res, *gem], "g", keep_last_full=1)
+    assert out[0] is nudge and out[1] is tool_res     # not step turns — untouched
+    assert "[an earlier step" in out[2]["parts"][0]["text"]
+    assert out[3]["parts"][0]["text"] == gem[1]["parts"][0]["text"]
+    assert removed > 100
+
+
+def test_w5_compact_never_raises_on_garbage():
+    from backend.app.core.orchestrator import _compact_stale_user_turns
+    assert _compact_stale_user_turns([None, 5, {"x": 1}], "g") == ([None, 5, {"x": 1}], 0)
+
+
 def test_focused_plan_context_is_empty_for_a_task_without_a_plan():
     """ad-hoc task ที่ไม่มีแผนต้องไม่มี plan_context เลย (พฤติกรรมเดิม)"""
     assert _focused_plan_context(None, 1) == ""

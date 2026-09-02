@@ -1874,6 +1874,84 @@ def _dedupe_stale_snapshots(messages: list, keep_last_full: int = 1) -> list:
     return out
 
 
+# W_token_cut W5 (หลักฐาน W_prompt_audit 2026-09-02): "assistant history" (turn เก่าที่สะสม
+# ใน messages) โตขึ้น ~4.5-5k tok ต่อ LLM call แบบไม่มีเพดาน และเป็น component ที่ใหญ่ที่สุด
+# ใน task ยาว — _dedupe_stale_snapshots ยุบแค่บล็อก "Current page:" ของ user turn เก่า ส่วน
+# ที่เหลือ (บล็อกกฎ gated ~3.9k tok, plan, scaffolding, manual, action-history) ยังค้างเต็ม
+# ทุก turn เก่า ทั้งที่ทุกอย่างถูกส่ง "สด" ใหม่ใน turn ปัจจุบันอยู่แล้ว + digest เก็บสิ่งที่
+# เกิดขึ้นไว้ครบ -> สำเนาเก่าไม่มีค่าเชิงข้อมูล มีแต่กิน token
+#
+# W5 = ยุบ user turn ของ step เก่า (เกิน _W5_KEEP_RECENT_FULL_TURNS อันท้าย) ให้เหลือแค่
+# บรรทัด Goal + stub สั้นๆ. idempotent, provider-agnostic (str content ของ Anthropic/Groq/
+# OpenAI + parts[0].text ของ Gemini), ไม่ throw. ไม่แตะ tool_result / assistant function_call
+# (API ต้องการ call_id ที่จับคู่กัน) และไม่แตะ nudge turn (ไม่มี snapshot marker)
+#
+# keep_last_full=1: เก็บ turn ของ step ล่าสุดใน messages ไว้เต็ม 1 อัน + turn ปัจจุบันที่
+# next_action จะ append เต็มอีก 1 = โมเดลเห็น 2 turn ล่าสุดครบทั้ง rules/plan/snapshot
+# (นโยบายเดียวกับ _dedupe_stale_snapshots) ทุกอย่างในนั้นถูกส่งสดใหม่ทุก turn อยู่แล้ว
+_W5_KEEP_RECENT_FULL_TURNS = 1
+_W5_SUPERSEDED_TURN_STUB = (
+    "[an earlier step's full context — page snapshot, indexed elements, rules, plan, "
+    "recent-action list — has been omitted here to keep the conversation short. It is "
+    "superseded. Act only on the latest turn below plus the digest of earlier steps.]"
+)
+# user turn ของ step จริงขึ้นต้นด้วยบรรทัดนี้เสมอ (ดู llm._build_user_turn_text) และมี
+# snapshot marker (หรือ stub ของมันหลัง _dedupe_stale_snapshots) อยู่ข้างใน — ใช้แยกออกจาก
+# nudge turn / _NO_TOOL_CALL_NUDGE / tool_result ที่ไม่ควรแตะ
+_W5_STEP_TURN_PREFIX = "Goal: "
+
+
+def _w5_step_turn_text(m) -> tuple[Optional[str], Optional[str]]:
+    """คืน (kind, text) ถ้า m คือ user turn ของ step จริงที่ยุบได้ — ไม่งั้น (None, None)"""
+    if not isinstance(m, dict) or m.get("role") != "user":
+        return None, None
+    content = m.get("content")
+    if isinstance(content, str):
+        text = content
+        kind = "content"
+    elif isinstance(m.get("parts"), list) and m["parts"] and isinstance(m["parts"][0], dict):
+        text = m["parts"][0].get("text")
+        kind = "parts"
+    else:
+        return None, None
+    if not isinstance(text, str) or not text.startswith(_W5_STEP_TURN_PREFIX):
+        return None, None
+    has_snapshot = (_STALE_SNAPSHOT_MARKER in text) or (_SUPERSEDED_SNAPSHOT_STUB in text)
+    if not has_snapshot:
+        return None, None  # nudge/other user turn — ไม่แตะ
+    return kind, text
+
+
+def _compact_stale_user_turns(messages: list, goal: str,
+                              keep_last_full: int = _W5_KEEP_RECENT_FULL_TURNS) -> tuple[list, int]:
+    """W_token_cut W5: ยุบ user turn ของ step เก่าให้เหลือ "Goal: ...\\n\\n<stub>"
+
+    คืน (messages_ใหม่, จำนวนตัวอักษรที่ตัดออกได้จริงรอบนี้). idempotent — turn ที่ยุบแล้ว
+    (content == goal+stub) ถูกข้าม ไม่ throw"""
+    try:
+        stub_body = f"{_W5_STEP_TURN_PREFIX}{goal}\n\n{_W5_SUPERSEDED_TURN_STUB}"
+        hits = [k for k, m in enumerate(messages) if _w5_step_turn_text(m)[0] is not None]
+        if len(hits) <= keep_last_full:
+            return messages, 0
+        targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+        out = list(messages)
+        removed = 0
+        for k in targets:
+            kind, text = _w5_step_turn_text(messages[k])
+            if text is None or text == stub_body:
+                continue
+            removed += len(text) - len(stub_body)
+            if kind == "content":
+                out[k] = {**messages[k], "content": stub_body}
+            else:
+                new_parts = list(messages[k]["parts"])
+                new_parts[0] = {**new_parts[0], "text": stub_body}
+                out[k] = {**messages[k], "parts": new_parts}
+        return out, max(0, removed)
+    except Exception:
+        return messages, 0
+
+
 # W50 (delta history / bounded digest): เดิม _build_history_digest() ถูกเรียกซ้ำทุกรอบ
 # compaction ด้วย upto_step ที่โตขึ้นเรื่อยๆ แต่ from_step เริ่มที่ 1 เสมอ (implicit) —
 # แปลว่า task ที่ยาวพอจะมีหลายรอบ compaction (ทุก _COMPACT_AFTER_STEPS step) แต่ละรอบ
@@ -3621,6 +3699,10 @@ class Orchestrator:
         # หมวด + input/cache_read/output token จริงของ call นั้น (แปลง char->token ตอน
         # วิเคราะห์โดยเทียบสัดส่วน ไม่เดา ratio ล่วงหน้า) ดู llm._char_payload_audit
         payload_audits: list[dict] = []
+        # W_token_cut W5: การยุบ user turn ของ step เก่า (ดู _compact_stale_user_turns)
+        history_compaction_events = 0
+        history_chars_saved = 0
+        _W5_CHARS_PER_TOKEN = 4.3  # calibrated จาก W_prompt_audit (4.23-4.36 คงที่)
 
         def _record_payload_audit(_usage: "llm.TokenUsage") -> None:
             pc = getattr(_usage, "payload_chars", None)
@@ -3649,6 +3731,20 @@ class Orchestrator:
             ไม่ทบ history เปล่าๆ ทุกรอบ)"""
             return guard_rejections.get(_reason, 0) <= 1
 
+        _AUDIT_BASE_CATS = (
+            "system_prompt", "tool_schema", "page_snapshot", "action_history", "plan",
+            "tool_result", "user_message", "gated_prompt", "other",
+        )
+
+        def _apportion_audit_tokens(_cat: str) -> int:
+            """W_prompt_audit/W5: รวม token ของหมวดหนึ่งข้ามทุก call โดย apportion char
+            ของหมวดนั้นเทียบ char รวมของ call แล้วคูณ _input_tokens จริงของ call"""
+            total = 0.0
+            for _c in payload_audits:
+                _ct = sum(_c.get(k, 0) for k in _AUDIT_BASE_CATS) or 1
+                total += _c.get(_cat, 0) / _ct * _c.get("_input_tokens", 0)
+            return round(total)
+
         def _run_stats() -> dict:
             calls = llm_turns or 1
             tok = _tokens_dict(total_usage)
@@ -3668,6 +3764,14 @@ class Orchestrator:
                 "avg_output_tokens_per_call": round(tok["output"] / calls, 1),
                 # W_prompt_audit: char count ของทุก request แยกตามหมวด + token จริงต่อ call
                 "payload_audit": list(payload_audits),
+                # W_token_cut W5 telemetry
+                "history_compaction_events": history_compaction_events,
+                "history_chars_saved": history_chars_saved,
+                "history_tokens_saved": round(history_chars_saved / _W5_CHARS_PER_TOKEN),
+                # assistant_history ที่โมเดลเห็นจริง (หลัง W5) — apportion char->token ต่อ
+                # call จาก payload_audit; compacted = ค่านี้ (post), saved = ที่ตัดออกไป
+                "assistant_history_tokens": _apportion_audit_tokens("other_assistant_history"),
+                "assistant_history_compacted_tokens": _apportion_audit_tokens("other_assistant_history"),
             }
 
         premature_false_finish_count = 0
@@ -4529,6 +4633,15 @@ class Orchestrator:
                 # ยิง LLM — เก็บอันก่อนหน้าไว้เต็ม 1 อัน (+ อันปัจจุบันที่ next_action จะ
                 # append) = เห็น snapshot เต็ม 2 อันล่าสุดในทุก request
                 messages = _dedupe_stale_snapshots(messages, keep_last_full=1)
+
+                # W_token_cut W5: ยุบ *ทั้ง* user turn ของ step เก่า (เกิน 2 อันท้าย) เหลือ
+                # แค่ Goal + stub — บล็อกกฎ/plan/scaffolding/manual ในนั้นถูกส่งสดใหม่ทุก
+                # turn อยู่แล้ว + digest เก็บผลลัพธ์ไว้ครบ (หลักฐาน W_prompt_audit: turn เก่า
+                # ที่สะสม = component ที่ใหญ่ที่สุดในงานยาว โต ~4.5-5k tok/call ไม่มีเพดาน)
+                messages, _w5_removed = _compact_stale_user_turns(messages, goal)
+                if _w5_removed:
+                    history_compaction_events += 1
+                    history_chars_saved += _w5_removed
 
                 # W_token_trim (P3/M3): full manual on the first step and on the first step
                 # after any compaction (which would have spliced the earlier full copy

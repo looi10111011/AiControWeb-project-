@@ -97,6 +97,12 @@ def write_token_usage(
             # (system / tool_schema / page_snapshot / action_history / plan / tool_result /
             # user_message / gated_prompt / other) + _input_tokens/_cache_read ของ call นั้น
             "payload_audit": _stat("payload_audit", []),
+            # W_token_cut W5: การยุบ user turn ของ step เก่า (assistant history compaction)
+            "history_compaction_events": _stat("history_compaction_events", 0),
+            "history_chars_saved": _stat("history_chars_saved", 0),
+            "history_tokens_saved": _stat("history_tokens_saved", 0),
+            "assistant_history_tokens": _stat("assistant_history_tokens", 0),
+            "assistant_history_compacted_tokens": _stat("assistant_history_compacted_tokens", 0),
             "notool_retries": _stat("notool_retries", 0),
             "cache_hit_turns": _stat("cache_hit_turns", 0),
             "cache_miss_turns": _stat("cache_miss_turns", 0),
