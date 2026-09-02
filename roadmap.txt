@@ -5318,28 +5318,45 @@
                เก็บทุก directive + trigger literal + W-tag ตัด "ทำไม"/ประวัติบั๊ก/
                ตัวอย่างที่แค่พูดกฎซ้ำ/cross-ref; **ไม่แตะเลยแม้แต่ byte เดียว** (ยืนยันจาก
                diff): bullet ที่ tag W21/W50/W63/W64 ทั้งหมด + format spec ของ card list
+               *** ตามด้วย commit "P4/M2 follow-up: revert _PROMPT_CORE compression" —
+               live A/B (openai, opensource-demo.orangehrmlive.com) พบว่า CORE ที่บีบแล้ว
+               ทำให้โมเดลเล็ก "เปราะ" ขึ้นแบบ probabilistic บน edge case เดียว: ช่องค่า
+               search เจอ validation "Invalid" (autocomplete ของ OrangeHRM ปฏิเสธชื่อที่
+               ไม่มีจริง) โมเดลบางครั้งเรียก request_user_input ขอค่าใหม่แทนที่จะอ่านว่า
+               "Invalid = ไม่มี record = นั่นแหละคำตอบ" — task search_no_results ทั้งวัน:
+               ก่อน M2 (87d42a0) ผ่าน 6/6, มี M2 (5addd80) ผ่าน 3/9 (MiniWoB ยัง 100%/100%
+               −7% token จึงเป็นปัญหาเฉพาะ CORE ตรงตามที่ risk table ของแผนทำนายไว้)
+               => คืน _PROMPT_CORE เป็นข้อความก่อน M2 ทุก byte, เก็บ P4 ของ PLAN/WIDGET/
+               PASSWORD/TABLE (MiniWoB สะอาด เสี่ยงน้อยกว่า) + M4 ไว้ ต้อง retry CORE บน
+               self-hosted OrangeHRM (public demo noisy เกินจะ bisect — ดู optimize.txt)
            P5/M4  (commit W_token_trim P5/M4): compress _PLAN_PROMPT_TEMPLATE วิธีเดียวกัน
                ไม่แตะ 2 บล็อก W21 + Page-Grouped Format spec + format placeholder
 
            วัดด้วย backend/tests/measure_prompt_size.py (script ใหม่ ไม่ใช่ pytest —
-           ประกอบ input ต่อ step ของ step กลาง task สังเคราะห์แล้วพิมพ์ char + char//4):
-             {plan,table} mid-task step: 13,606 -> 12,026 tok proxy (system prompt
-             38,368 -> 32,712 char)
-           *** ตัวเลขนี้เห็นแค่ผลของ M2/M3/Q ต่อ 1 turn — ผลหลักของ M1/Q1 อยู่ที่
-           conversation history ที่โตขึ้นเรื่อยๆ ตลอด task ยาว (stub snapshot ทบต้น 15-25
-           step + compact ถี่ขึ้น) ซึ่ง scoreboard 1-step ไม่จับ ต้องดู
-           data/step_trace.jsonl tokens.input จาก live run จริง ***
+           ประกอบ input ต่อ step ของ step กลาง task สังเคราะห์แล้วพิมพ์ char + char//4),
+           {plan,table} mid-task step:
+             baseline 13,606 tok proxy (system prompt 38,368 char)
+             หลัง M2 เต็ม     12,026 (32,712)
+             หลัง revert CORE 13,152 (37,216)  <- สถานะปัจจุบัน
+           *** ตัวเลขนี้เห็นแค่ผลต่อ 1 turn — ผลหลักของ M1/Q1 อยู่ที่ conversation history
+           ที่โตขึ้นเรื่อยๆ ตลอด task ยาว (stub snapshot ทบต้น 15-25 step + compact ถี่ขึ้น)
+           ซึ่ง scoreboard 1-step ไม่จับ ต้องดู data/step_trace.jsonl tokens.input จาก live
+           run จริง ***
 
-           ค้าง (ต้องรัน live A/B — user จะรันเอง):
-             - run.py miniwob + orangehrm + release-gate เทียบก่อน/หลัง P4/M2 ราย
-               section, revert กฎที่ทำ task regress
+           live A/B ที่รันแล้ว (provider openai):
+             - MiniWoB (87d42a0 vs 5addd80): 100% -> 100%, avg token 73,239 -> 68,297
+               (−6.7%; −14–15% บน task 1-step ที่ noise ต่ำ) — สะอาด
+             - OrangeHRM: พบ regression ของ M2 CORE (ด้านบน) แก้แล้วด้วย revert
+             - add_candidate ล้มทุก run ทุกฝั่ง (Save ไม่มี toast บน shared demo — pre-existing
+               ไม่เกี่ยว token trim)
+
+           ค้าง:
+             - retry CORE compression บน self-hosted OrangeHRM
+             - run.py release-gate A/B สำหรับ M2 (non-CORE) + M4
              - 1 live run.py agent บนเว็บที่มี learned manual — ยืนยัน [PRE_LEARNED_MANUAL]
                ยังถึงโมเดลทุก compaction window (M3)
-             - safety spot-check: OrangeHRM "ลบ user ที่ Role=ESS ออกให้หมด" 1 รอบ —
-               ยืนยัน filter-verification/batch-protocol/dropdown-safety ยังทำงาน และ diff
-               ไม่แตะ bullet W21/W50/W63/W64
-             - Q5 (ย้ายบรรทัดเวลา): **ตัดทิ้ง** — แผนเองให้คะแนน "~0 tok" และ turn ใหม่
-               ทุก step ไม่เคย cache hit ข้าม step อยู่แล้ว ไม่คุ้มเสี่ยง churn
+             - safety spot-check: OrangeHRM "ลบ user ที่ Role=ESS ออกให้หมด" 1 รอบ
+             - Q5 (ย้ายบรรทัดเวลา): **ตัดทิ้ง** — แผนเองให้คะแนน "~0 tok" ไม่คุ้มเสี่ยง churn
 
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
