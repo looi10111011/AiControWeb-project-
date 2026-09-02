@@ -4881,6 +4881,111 @@ async def test_no_site_manual_means_every_step_passes_an_empty_string_as_before(
     assert all(c.args[9] == "" for c in mock_next_action.await_args_list)
 
 
+@pytest.mark.asyncio
+async def test_site_manual_is_re_injected_in_full_on_the_first_step_after_a_compaction():
+    """W_token_trim (P3/M3) — production blocker #1: prove the post-compaction re-inject
+    path end to end. Full manual on step 1, id-reference on steps 2..N, and the moment a
+    history compaction splices the earlier full copy away the NEXT step must send the full
+    manual again — with [PRE_LEARNED_MANUAL] still at the top of the body, so W21 strict
+    mode keeps reaching the model every compaction window.
+
+    Uses the same real-compaction harness as
+    test_run_task_compacts_anthropic_history_once_step_count_exceeds_threshold: messages
+    grow for real (side_effect appends turns, real append_tool_result adds tool_result
+    turns) so _compact_anthropic_messages genuinely removes turns -> force_full_site_manual
+    -> full block next step."""
+    mock_async_playwright, _, _ = _patch_browser()
+    click_result = ActionResult(True, "click", "สำเร็จ")
+
+    # _COMPACT_AFTER_STEPS + 2 distinct browser actions guarantees at least one compaction
+    # (distinct indices so no repeat-loop guard interferes). The compaction fires at the
+    # end of step (_COMPACT_AFTER_STEPS + 1); the step right after it is what we check.
+    total_action_steps = _COMPACT_AFTER_STEPS + 2
+    step_actions = [
+        ("browser_action", {"type": "click", "index": i}, f"call_{i}")
+        for i in range(total_action_steps)
+    ]
+    step_actions.append(("finish_task", {"success": True, "message": "done"}, ""))
+
+    manual = (
+        "[PRE_LEARNED_MANUAL]\n"
+        "Target Page: Admin > User Management — /web/index.php/admin/viewSystemUsers\n"
+        "Recorded buttons on this page (label — selector):\n"
+        "  - Search — button.oxd-button--secondary\n"
+        "  - Add — button.oxd-button--main\n"
+    )
+
+    captured_manual_per_call: list[str] = []
+    captured_messages_per_call: list[list] = []
+
+    async def _next_action_side_effect(
+        client, model, goal, page_text, messages, manual_context="", memory_context="",
+        long_term_context="", vision_context="", site_manual_context="",
+        current_url="", action_history_context="", plan_context="",
+        verification_context="", allow_fill_secret=True, prompt_sections=None,
+    ):
+        captured_manual_per_call.append(site_manual_context)
+        captured_messages_per_call.append(messages)
+        i = len(captured_manual_per_call) - 1
+        tool_name, tool_input, tool_use_id = step_actions[i]
+        # messages grow for real (same as the sibling compaction tests); real
+        # append_tool_result adds one more tool_result turn per step
+        new_messages = messages + [
+            {"role": "user", "content": f"Goal: {goal}\n\nCurrent page:\n{page_text} #{i}"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": tool_use_id, "name": tool_name, "input": tool_input}
+            ]},
+        ]
+        return tool_name, tool_input, tool_use_id, new_messages, llm.TokenUsage()
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.llm.build_client", return_value="fake-client"), \
+         patch("backend.app.core.orchestrator.llm.next_action",
+               AsyncMock(side_effect=_next_action_side_effect)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic",
+            site_manual_context=manual, max_steps=total_action_steps + 2,
+        )
+
+    assert result["success"] is True
+    assert result["steps"] == total_action_steps
+
+    # a history compaction genuinely ran: its digest turn is present in the conversation
+    # sent to the step right after the threshold was crossed (same proof the sibling
+    # compaction tests use)
+    post_compaction_call = captured_messages_per_call[_COMPACT_AFTER_STEPS + 1]
+    assert any(
+        isinstance(m.get("content"), str) and "Digest of earlier steps" in m["content"]
+        for m in post_compaction_call
+    )
+
+    # step 1: full manual
+    assert captured_manual_per_call[0].startswith(llm._SITE_MANUAL_FULL_MARK)
+
+    # steps 2 .. (_COMPACT_AFTER_STEPS + 1): id-reference only, no full body
+    for ref in captured_manual_per_call[1:_COMPACT_AFTER_STEPS + 1]:
+        assert ref.startswith(llm._SITE_MANUAL_REF_MARK)
+        assert "Recorded buttons on this page" not in ref
+
+    # first step after the compaction: full manual re-injected. This can ONLY be a full
+    # block if force_full_site_manual was set, which happens ONLY inside `if removed > 0`
+    # in the compaction branch — so this assertion is itself proof the re-inject fired.
+    after_compaction = captured_manual_per_call[_COMPACT_AFTER_STEPS + 1]
+    assert after_compaction.startswith(llm._SITE_MANUAL_FULL_MARK)
+    assert "Recorded buttons on this page" in after_compaction
+
+    # ...and [PRE_LEARNED_MANUAL] survives to the rendered prompt (W21 strict mode)
+    rendered = llm._build_user_turn_text("goal", "page", site_manual_context=after_compaction)
+    assert "[PRE_LEARNED_MANUAL]" in rendered
+    body = rendered.split("):\n", 1)[1]
+    assert body.startswith("[PRE_LEARNED_MANUAL]")
+
+
 # --- W_plan_keeps_goal_verb / W_prompt_example_leak / W_prefer_row_delete (P7 ขั้น 4) ---
 
 
