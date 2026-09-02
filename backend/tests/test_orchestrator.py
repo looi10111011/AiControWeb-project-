@@ -4607,6 +4607,48 @@ def test_w5_compact_never_raises_on_garbage():
     assert _compact_stale_user_turns([None, 5, {"x": 1}], "g") == ([None, 5, {"x": 1}], 0)
 
 
+# --- W_token_cut W7: _dedupe_stale_gated() ---
+
+def test_w7_dedupe_stale_gated_leaves_one_full_copy():
+    from backend.app.core.orchestrator import _dedupe_stale_gated
+    from backend.app.core import llm
+    turn = llm._build_user_turn_text("go X", "[0] a\n[1] b",
+                                     prompt_sections=frozenset({"plan", "table", "widget"}))
+    assert llm.GATED_BLOCK_HEADER in turn
+    assert llm._PROMPT_TABLE[:50] in turn
+    msgs = [
+        {"role": "user", "content": turn + "\n\n(v1)"},
+        {"type": "function_call_output", "call_id": "c1", "output": "[OK]"},
+        {"role": "user", "content": turn + "\n\n(v2)"},
+    ]
+    out, removed = _dedupe_stale_gated(msgs, keep_last_full=0)
+    assert removed > 5000                        # both old turns' rule blocks stripped
+    # the deref marker replaces everything from the header onward
+    for i in (0, 2):
+        assert llm._GATED_BLOCK_DEREF in out[i]["content"]
+        assert llm._PROMPT_TABLE[:50] not in out[i]["content"]
+    assert out[1] is msgs[1]                     # tool result untouched
+    # idempotent
+    out2, r2 = _dedupe_stale_gated(out, keep_last_full=0)
+    assert r2 == 0
+
+
+def test_w7_dedupe_stale_gated_keep_last_and_gemini_shape_and_garbage():
+    from backend.app.core.orchestrator import _dedupe_stale_gated
+    from backend.app.core import llm
+    body = f"Goal: g\n\nCurrent page:\n[0] a\n\n{llm.GATED_BLOCK_HEADER}\n{llm._PROMPT_PLAN}"
+    gem = [
+        {"role": "user", "parts": [{"text": body + " v1"}]},
+        {"role": "user", "parts": [{"text": body + " v2"}]},
+    ]
+    out, removed = _dedupe_stale_gated(gem, keep_last_full=1)
+    assert llm._GATED_BLOCK_DEREF in out[0]["parts"][0]["text"]
+    assert out[1]["parts"][0]["text"] == gem[1]["parts"][0]["text"]  # last one kept
+    assert removed > 100
+    # never raises
+    assert _dedupe_stale_gated([None, 7, {"role": "user"}], 0) == ([None, 7, {"role": "user"}], 0)
+
+
 def test_focused_plan_context_is_empty_for_a_task_without_a_plan():
     """ad-hoc task ที่ไม่มีแผนต้องไม่มี plan_context เลย (พฤติกรรมเดิม)"""
     assert _focused_plan_context(None, 1) == ""

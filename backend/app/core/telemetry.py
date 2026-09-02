@@ -103,6 +103,9 @@ def write_token_usage(
             "history_tokens_saved": _stat("history_tokens_saved", 0),
             "assistant_history_tokens": _stat("assistant_history_tokens", 0),
             "assistant_history_compacted_tokens": _stat("assistant_history_compacted_tokens", 0),
+            # W_token_cut W7: บล็อกกฎที่ gate ใน turn เก่าถูกยุบเหลือ 1 บรรทัดอ้างอิง
+            "gated_deref_events": _stat("gated_deref_events", 0),
+            "gated_tokens_saved": _stat("gated_tokens_saved", 0),
             "notool_retries": _stat("notool_retries", 0),
             "cache_hit_turns": _stat("cache_hit_turns", 0),
             "cache_miss_turns": _stat("cache_miss_turns", 0),

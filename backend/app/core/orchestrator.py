@@ -1952,6 +1952,52 @@ def _compact_stale_user_turns(messages: list, goal: str,
         return messages, 0
 
 
+# W_token_cut W7: บล็อกกฎที่ gate (~3.9k tok บนหน้าตาราง) ถูก W2 ย้ายจาก system prompt
+# (cache ได้) มาต่อท้าย user turn ทุก turn — เนื้อเหมือนกันหมด model ถูกสั่งให้ยึด turn
+# ล่าสุดอยู่แล้ว (W19 Action Trap) สำเนาใน turn เก่าจึงไม่มีค่า ตัดออกเหลือ 1 บรรทัดอ้างอิง
+# บล็อกอยู่ท้ายสุดของ user turn เสมอ (ดู llm._build_user_turn_text) หา header line แล้วตัด
+# ตั้งแต่ตรงนั้นถึงจบ string — keep_last_full=0 = ทุก turn ใน messages (turn ปัจจุบันที่
+# next_action จะ append ยังส่งเต็ม) idempotent, provider-agnostic, ไม่ throw
+def _dedupe_stale_gated(messages: list, keep_last_full: int = 0) -> tuple[list, int]:
+    try:
+        hdr = llm.GATED_BLOCK_HEADER
+        deref = llm._GATED_BLOCK_DEREF
+
+        def _turn_text(m):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                return None, None
+            c = m.get("content")
+            if isinstance(c, str):
+                return ("content", c) if ("\n\n" + hdr + "\n") in c else (None, None)
+            if isinstance(m.get("parts"), list) and m["parts"] and isinstance(m["parts"][0], dict):
+                t = m["parts"][0].get("text")
+                return ("parts", t) if (isinstance(t, str) and ("\n\n" + hdr + "\n") in t) else (None, None)
+            return None, None
+
+        hits = [k for k, m in enumerate(messages) if _turn_text(m)[0] is not None]
+        if len(hits) <= keep_last_full:
+            return messages, 0
+        targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+        out = list(messages)
+        removed = 0
+        for k in targets:
+            kind, text = _turn_text(messages[k])
+            cut = text.find("\n\n" + hdr + "\n")
+            new_text = text[:cut] + "\n\n" + deref
+            if new_text == text:
+                continue
+            removed += len(text) - len(new_text)
+            if kind == "content":
+                out[k] = {**messages[k], "content": new_text}
+            else:
+                new_parts = list(messages[k]["parts"])
+                new_parts[0] = {**new_parts[0], "text": new_text}
+                out[k] = {**messages[k], "parts": new_parts}
+        return out, max(0, removed)
+    except Exception:
+        return messages, 0
+
+
 # W50 (delta history / bounded digest): เดิม _build_history_digest() ถูกเรียกซ้ำทุกรอบ
 # compaction ด้วย upto_step ที่โตขึ้นเรื่อยๆ แต่ from_step เริ่มที่ 1 เสมอ (implicit) —
 # แปลว่า task ที่ยาวพอจะมีหลายรอบ compaction (ทุก _COMPACT_AFTER_STEPS step) แต่ละรอบ
@@ -3703,6 +3749,9 @@ class Orchestrator:
         history_compaction_events = 0
         history_chars_saved = 0
         _W5_CHARS_PER_TOKEN = 4.3  # calibrated จาก W_prompt_audit (4.23-4.36 คงที่)
+        # W_token_cut W7: การยุบบล็อกกฎที่ gate ใน turn เก่า (ดู _dedupe_stale_gated)
+        gated_deref_events = 0
+        gated_chars_saved = 0
 
         def _record_payload_audit(_usage: "llm.TokenUsage") -> None:
             pc = getattr(_usage, "payload_chars", None)
@@ -3773,6 +3822,9 @@ class Orchestrator:
                 "history_compaction_events": history_compaction_events,
                 "history_chars_saved": history_chars_saved,
                 "history_tokens_saved": round(history_chars_saved / _W5_CHARS_PER_TOKEN),
+                # W_token_cut W7 telemetry
+                "gated_deref_events": gated_deref_events,
+                "gated_tokens_saved": round(gated_chars_saved / _W5_CHARS_PER_TOKEN),
                 # assistant_history ที่โมเดลเห็นจริง (หลัง W5) — apportion char->token ต่อ
                 # call จาก payload_audit; compacted = ค่านี้ (post), saved = ที่ตัดออกไป
                 "assistant_history_tokens": _apportion_audit_tokens("other_assistant_history"),
@@ -4647,6 +4699,14 @@ class Orchestrator:
                 if _w5_removed:
                     history_compaction_events += 1
                     history_chars_saved += _w5_removed
+
+                # W_token_cut W7: บล็อกกฎที่ gate ใน turn เก่าทุกอันเหลือ 1 บรรทัดอ้างอิง
+                # (turn ปัจจุบันที่ next_action จะ append ยังส่งเต็ม) — เนื้อกฎเหมือนเดิม
+                # ทุก turn, model ถูกสั่งให้ยึด turn ล่าสุด
+                messages, _w7_removed = _dedupe_stale_gated(messages, keep_last_full=0)
+                if _w7_removed:
+                    gated_deref_events += 1
+                    gated_chars_saved += _w7_removed
 
                 # W_token_trim (P3/M3): full manual on the first step and on the first step
                 # after any compaction (which would have spliced the earlier full copy

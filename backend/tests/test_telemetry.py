@@ -149,6 +149,7 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
         "history_compaction_events": 3, "history_chars_saved": 60000,
         "history_tokens_saved": 13953, "assistant_history_tokens": 4200,
         "assistant_history_compacted_tokens": 4200,
+        "gated_deref_events": 4, "gated_tokens_saved": 9100,
     })
     write_token_usage(
         task_id="t1", url="https://x/", goal="g", provider="openai",
@@ -165,6 +166,8 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
     assert row["repeated_guard_count"] == 1
     assert row["finish_loop_prevented"] == 1
     assert row["guard_reason_counts"] == {"filter_scope": 2, "premature_true_finish": 1}
+    assert row["gated_deref_events"] == 4
+    assert row["gated_tokens_saved"] == 9100
     assert len(row["payload_audit"]) == 1
     assert row["payload_audit"][0]["system_prompt"] == 25146
     assert row["payload_audit"][0]["_input_tokens"] == 9000
@@ -186,6 +189,8 @@ def test_write_token_usage_records_w1_call_breakdown(logs):
     assert old["payload_audit"] == []
     assert old["history_compaction_events"] == 0
     assert old["history_tokens_saved"] == 0
+    assert old["gated_deref_events"] == 0
+    assert old["gated_tokens_saved"] == 0
 
 
 def test_write_token_usage_defaults_to_api_source_and_zero_tokens_without_result(logs):

@@ -296,8 +296,9 @@ async def test_next_action_sends_cache_control_on_system_and_tools():
     assert usage == llm.TokenUsage(input_tokens=20, output_tokens=8)
 
     _, kwargs = client.messages.create.call_args
-    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    # W_token_cut W7: ttl "1h" ยืดอายุ prefix cache จาก default 5m
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 @pytest.mark.asyncio

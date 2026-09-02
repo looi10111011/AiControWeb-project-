@@ -533,8 +533,19 @@ def _build_user_turn_text(
     # prompt_sections มา; ผู้เรียกอื่น (เทสต์/generate_plan) ได้ "" เหมือนเดิม
     gated = gated_sections_text(prompt_sections)
     if gated:
-        text += _rec("gated_prompt", f"\n\n{gated}")
+        # W_token_cut W7: header line ทำให้ dedup ของ turn เก่าหา "จุดเริ่มบล็อกกฎ" ได้ชัด
+        # (ดู _dedupe_stale_gated ใน orchestrator) บล็อกนี้อยู่ท้ายสุดของ user turn เสมอ
+        text += _rec("gated_prompt", f"\n\n{GATED_BLOCK_HEADER}\n{gated}")
     return text
+
+
+# W_token_cut W7: บล็อกกฎที่ gate (plan/table/widget/password) ~3.9k tok ต่อ turn บนหน้า
+# ที่มีตาราง และ W2 ย้ายมันจาก system prompt (cache ได้) มาไว้ user turn (cache ไม่ได้)
+# เนื้อกฎเหมือนเดิมทุก turn — turn ปัจจุบันส่งเต็มเสมอ, turn เก่าใน history แทนด้วย 1 บรรทัด
+GATED_BLOCK_HEADER = "[[Context-specific rules for this page — apply these]]"
+_GATED_BLOCK_DEREF = (
+    "[[Context-specific rules were given in the latest turn below — they are still in effect.]]"
+)
 
 
 _TOOL_RESULT_MARKERS = ('"tool_result"', '"function_call_output"', '"functionResponse"',
@@ -804,7 +815,9 @@ FINISH_TASK_TOOL = {
     "name": "finish_task",
     "description": _FINISH_TASK_DESC,
     "input_schema": _FINISH_TASK_PARAMS,
-    "cache_control": {"type": "ephemeral"},
+    # W_token_cut W7: ttl "1h" ยืดอายุ prefix cache จาก default 5 นาที -> 1 ชม.
+    # กัน cache-miss ตอน user เว้นช่วงระหว่าง task (system+tools ~7.6k tok คงที่)
+    "cache_control": {"type": "ephemeral", "ttl": "1h"},
 }
 
 # --- OpenAI-compatible (Groq) tool format ---
@@ -2398,7 +2411,7 @@ def _system_blocks() -> list:
     return [{
         "type": "text",
         "text": _PROMPT_CORE,
-        "cache_control": {"type": "ephemeral"},
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},  # W_token_cut W7
     }]
 
 
@@ -2981,6 +2994,11 @@ async def _openai_one_turn(
         # Responses API ที่ default store=True (server เก็บ conversation ไว้ให้ดึงต่อทีหลัง
         # ผ่าน previous_response_id) endpoint นี้ปฏิเสธ default นั้นตรงๆ
         store=False,
+        # W_token_cut W7: instructions+tools (~7.6k tok) นิ่งทุก request — prompt_cache_key
+        # คงที่ช่วยให้ทุก request route ไป cache slot เดิม (cache-miss ที่เหลือคือ call แรก
+        # ของ task + หลัง TTL หมด) หมายเหตุ: endpoint codex ปฏิเสธ prompt_cache_retention
+        # ("Unsupported parameter") — ยืด TTL ฝั่งนี้ไม่ได้ ทำได้แค่ key
+        prompt_cache_key="aiagent-browser-loop-v1",
         extra_headers=await _openai_oauth_headers(),
     )
 

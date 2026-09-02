@@ -127,6 +127,8 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
     finish_loops_prevented = sum(r.get("finish_loop_prevented") or 0 for r in browser)  # W3
     history_events = sum(r.get("history_compaction_events") or 0 for r in browser)  # W5
     history_tokens_saved = sum(r.get("history_tokens_saved") or 0 for r in browser)  # W5
+    gated_deref_events = sum(r.get("gated_deref_events") or 0 for r in browser)  # W7
+    gated_tokens_saved = sum(r.get("gated_tokens_saved") or 0 for r in browser)  # W7
     return {
         "n": len(rows),
         "n_done": len(done),
@@ -149,6 +151,8 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "finish_loops_prevented": finish_loops_prevented,  # W_token_cut W3
         "history_compaction_events": history_events,  # W_token_cut W5
         "history_tokens_saved": history_tokens_saved,  # W_token_cut W5
+        "gated_deref_events": gated_deref_events,  # W_token_cut W7
+        "gated_tokens_saved": gated_tokens_saved,  # W_token_cut W7
         "assistant_history_tokens": _stat_block(
             [r.get("assistant_history_tokens") for r in browser]
         ),
@@ -303,6 +307,11 @@ def format_kpi_report(report: dict[str, Any]) -> str:
                 f"    W5 history compaction: {hce} ครั้ง, ~{block.get('history_tokens_saved', 0):,} "
                 f"tok ตัดออก · assistant history ที่เหลือ median={_fmt(ah.get('median'))} "
                 f"p95={_fmt(ah.get('p95'))}"
+            )
+        gde = block.get("gated_deref_events") or 0
+        if gde or block.get("gated_tokens_saved"):
+            lines.append(
+                f"    W7 gated-rule deref: {gde} ครั้ง, ~{block.get('gated_tokens_saved', 0):,} tok ตัดออก"
             )
         lines.append(f"    status: {block['status']}")
     steps_block = report["recent_steps"] if report["recent_steps"].get("n") else report["all_steps"]
