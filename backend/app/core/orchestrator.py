@@ -679,6 +679,7 @@ def _resolve_prompt_sections(
     plan_text: Optional[str],
     elements: list[dict],
     allow_fill_secret: bool,
+    manual_context: str = "",
 ) -> frozenset:
     sections = set(previous)
     if plan_text:
@@ -702,6 +703,12 @@ def _resolve_prompt_sections(
         or _goal_asks_for_a_count(goal)
     ):
         sections.add("table")
+    # W_core_carries_situational_rules: บล็อกที่ย้ายออกจาก core มา gate ตาม marker ที่กฎนั้น
+    # พูดถึงเอง — ทริกเกอร์ตรงตัวกับสิ่งที่อยู่บนหน้าจริง ไม่ใช่การเดาจากถ้อยคำของ goal จึงไม่มี
+    # ทางส่งไม่ทันเวลาที่ต้องใช้ (marker มาพร้อม snapshot ของ step เดียวกับที่โมเดลจะตัดสินใจ)
+    # sections สะสมข้าม step อยู่แล้ว เห็นครั้งเดียวก็อยู่ยาวทั้ง task
+    if manual_context and "[PRE_LEARNED_MANUAL]" in manual_context:
+        sections.add("manual")
     for element in elements:
         label = str(element.get("label", "")).lower()
         tag = element.get("tag")
@@ -709,6 +716,16 @@ def _resolve_prompt_sections(
             sections.add("widget")
         if any(h in label for h in _TABLE_ELEMENT_LABEL_HINTS):
             sections.add("table")
+        if "[already active]" in label:
+            sections.add("marker_active")
+        if "[disabled]" in label:
+            sections.add("marker_disabled")
+        if "[required]" in label:
+            sections.add("marker_required")
+        if _RECORD_COMMIT_LABEL_RE.search(label) or any(
+            k in label for k in _FORM_SUBMIT_LABEL_KEYWORDS
+        ):
+            sections.add("save_toast")
     return frozenset(sections)
 
 
@@ -4985,6 +5002,9 @@ class Orchestrator:
                 prompt_sections = _resolve_prompt_sections(
                     prompt_sections, goal=goal, plan_text=plan_text, elements=elements,
                     allow_fill_secret=allow_fill_secret,
+                    # site_manual_context เป็นพารามิเตอร์ของ run_task จึงมีค่าเสมอ —
+                    # ห้ามใช้ effective_site_manual ตรงนี้ มันถูกกำหนดค่าทีหลังในลูป
+                    manual_context=site_manual_context or manual_context or "",
                 )
 
                 # W_token_trim (P2/M1): ยุบ page snapshot ของ turn เก่าใน history ก่อน

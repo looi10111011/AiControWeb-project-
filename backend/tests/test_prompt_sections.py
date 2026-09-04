@@ -8,7 +8,10 @@ import pytest
 from backend.app.core import llm
 from backend.app.core.orchestrator import _resolve_prompt_sections
 
-_ALL = frozenset({"plan", "table", "widget", "password"})
+# ผูกกับทะเบียนจริงเสมอ ไม่ hardcode ชื่อ section — ตอนเพิ่ม section ใหม่ (W_core_carries_
+# situational_rules ย้ายกฎ 5 ก้อนออกจาก core) ลิสต์ที่ hardcode ไว้ค้างอยู่ที่ 4 ตัวเดิม
+# แล้วเทสต์ fidelity ก็ล้มทันทีทั้งที่ prompt ครบถ้วนดี
+_ALL = llm.ALL_PROMPT_SECTIONS
 _NONE = frozenset()
 
 
@@ -510,3 +513,44 @@ async def test_pages_that_are_not_change_password_forms_are_never_blocked():
     """หลักฐานนี้ต้องพูดเฉพาะเรื่องที่มันรู้จริง — งานอื่นทุกชนิดต้องไม่ถูกกันไม่ให้จบ"""
     assert await _still_unfilled("<html><body><input type='text'></body></html>") is False
     assert await _still_unfilled(_ADD_USER_SHAPED_FORM) is False
+
+
+# W_core_carries_situational_rules (วัดจากงานจริง 2026-09-04): core ที่ส่งทุก call คือก้อนที่
+# ใหญ่ที่สุดของ payload (6,286 tok เทียบกับ snapshot ~275 tok) และ 36% ของมันเป็นกฎที่ใช้ได้
+# เฉพาะสถานการณ์ ย้ายออกมา gate ตาม marker ที่กฎนั้นพูดถึงเอง
+
+
+def test_the_core_no_longer_carries_the_marker_rules():
+    core = llm.build_system_prompt(frozenset())
+    for marker in ("[required]", "[disabled]", "[already active]", "PRE_LEARNED_MANUAL"):
+        assert marker not in core, marker
+    assert len(core) < 20000          # เดิม 25,146 ตัวอักษร
+
+
+def test_marker_rules_arrive_exactly_when_the_marker_is_on_the_page():
+    assert "marker_required" in _resolve(elements=[{"label": "Username [required]"}])
+    assert "marker_disabled" in _resolve(elements=[{"label": "Save [disabled]"}])
+    assert "marker_active" in _resolve(elements=[{"label": "Admin [already active]"}])
+    assert "save_toast" in _resolve(elements=[{"label": "Save"}])
+
+
+def test_a_page_without_those_markers_pays_for_none_of_them():
+    """เหตุผลทั้งหมดของการย้ายคือราคาต่อเทิร์น — หน้าที่ไม่มี marker ต้องไม่ถูกแถมสักบล็อก"""
+    sections = _resolve(elements=[{"label": "Dashboard"}, {"label": "Search"}])
+    for name in ("marker_required", "marker_disabled", "marker_active", "manual"):
+        assert name not in sections, name
+
+
+def test_the_manual_block_arrives_only_with_a_strict_manual():
+    from backend.app.core.orchestrator import _resolve_prompt_sections
+
+    with_manual = _resolve_prompt_sections(
+        _NONE, goal="ไปหน้าแอดมิน", plan_text=None, elements=(), allow_fill_secret=False,
+        manual_context="[PRE_LEARNED_MANUAL]\nroute: /admin",
+    )
+    assert "manual" in with_manual
+    plain = _resolve_prompt_sections(
+        _NONE, goal="ไปหน้าแอดมิน", plan_text=None, elements=(), allow_fill_secret=False,
+        manual_context="สรุปคู่มือทั่วไปของเว็บนี้",
+    )
+    assert "manual" not in plain
