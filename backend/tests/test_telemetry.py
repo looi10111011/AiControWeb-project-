@@ -282,3 +282,37 @@ async def test_run_evaluation_still_returns_results_when_logging_path_is_unwrita
 
     assert len(report.results) == 2
     assert report.success_rate == 1.0
+
+
+def test_write_token_usage_records_goal_language_and_intent(logs):
+    """T1/T3: ทุกแถวต้องมีรูปร่างของ goal + intent ที่ถอดได้ ไม่งั้นคำถาม "งานภาษาไทยแย่กว่า
+    ภาษาอังกฤษไหม" ก็ยังตอบไม่ได้เหมือนเดิม — ค่าพวกนี้คำนวณจาก goal ตรงๆ ใน telemetry
+    ไม่ได้รอให้ orchestrator ส่งมา แถวจากเส้นทาง exception จึงมีครบเหมือนกัน"""
+    _, tokens = logs
+    write_token_usage(
+        task_id="t-goal", url="https://x/", goal="เปิดเว็ป แล้บลบuserole=ess ออกให้หมด",
+        provider="openai", result=_fake_result(), status="done", error=None,
+        duration_seconds=1.0,
+    )
+
+    row = _read_lines(tokens)[0]
+    assert row["goal_script"] == "mixed"
+    assert row["goal_word_count"] == 3
+    assert row["goal_operation"] == "delete"
+    assert row["goal_scope"] == "all"
+    assert row["goal_has_condition"] is True
+
+
+def test_write_token_usage_still_writes_goal_fields_when_the_task_crashed(logs):
+    """เส้นทาง exception ไม่มี result dict — field ของ goal ต้องยังครบ ไม่งั้นตอนกรองเทียบ
+    ตามภาษาจะมีรูตรงแถวที่พังพอดี ซึ่งเป็นแถวที่อยากดูที่สุด"""
+    _, tokens = logs
+    write_token_usage(
+        task_id="t-crash", url="https://x/", goal="delete all users with userrole=ess",
+        provider="openai", result=None, status="error", error="boom", duration_seconds=0.5,
+    )
+
+    row = _read_lines(tokens)[0]
+    assert row["goal_script"] == "latin"
+    assert row["goal_operation"] == "delete"
+    assert row["status"] == "error"

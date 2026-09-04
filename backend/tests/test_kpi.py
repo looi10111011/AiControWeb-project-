@@ -189,3 +189,28 @@ def _tmp():
     if not _TMP:
         _TMP.append(tempfile.mkdtemp())
     return _TMP[0]
+
+
+def test_report_splits_by_goal_script(tmp_path):
+    """T1: คำถาม "งานภาษาไทยสำเร็จ/แพงต่างจากภาษาอังกฤษไหม" ต้องอ่านออกจากรายงานได้ตรงๆ
+    แถวเก่าที่ยังไม่มี goal_script ต้องไปอยู่กลุ่ม unknown ตามความจริง ไม่เดาย้อนหลังให้"""
+    usage = tmp_path / "token_usage.jsonl"
+    rows = [
+        {"timestamp": 1000, "source": "api", "url": "https://real.example-site.io/", "status": "done",
+         "success": True, "steps": 3, "goal_script": "thai", "tokens": {"input": 90000}},
+        {"timestamp": 1001, "source": "api", "url": "https://real.example-site.io/", "status": "done",
+         "success": True, "steps": 2, "goal_script": "latin", "tokens": {"input": 30000}},
+        {"timestamp": 1002, "source": "api", "url": "https://real.example-site.io/", "status": "done",
+         "success": False, "steps": 4, "tokens": {"input": 50000}},
+    ]
+    usage.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    report = build_kpi_report(
+        token_usage_path=str(usage), step_trace_path=str(tmp_path / "missing.jsonl"), now=2000,
+    )
+
+    by_script = report["by_goal_script"]
+    assert set(by_script) == {"thai", "latin", "unknown"}
+    assert by_script["thai"]["input_tokens"]["median"] == 90000
+    assert by_script["latin"]["input_tokens"]["median"] == 30000
+    assert "แยกตามภาษาของ goal" in format_kpi_report(report)

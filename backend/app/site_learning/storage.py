@@ -31,6 +31,7 @@ from typing import Optional
 from cryptography.fernet import InvalidToken
 
 from backend.app.config import settings
+from backend.app.core import goal_intent
 from backend.app.core.crypto_store import get_fernet
 from backend.app.site_learning.schema import ButtonInfo, FormFieldInfo, PageInfo, SiteManual
 
@@ -408,7 +409,13 @@ def find_matching_page(manual: SiteManual, goal: str, min_score: int = 1) -> Opt
     W67: เพิ่ม min_score ให้ caller ที่ต้องการความมั่นใจสูงกว่า (เช่น nav-fastpath auto-decide
     ที่ลงมือคลิกจริงตาม match ไม่ใช่แค่โชว์ context ให้ LLM อ่านเฉยๆ) ปรับ threshold เข้มขึ้นได้
     โดยไม่กระทบ caller เดิมที่ยังใช้ default 1"""
+    # T2: ภาษาไทยไม่มีเว้นวรรค การตัดคำด้วย [^\w]+ จึงได้ token ก้อนเดียวยาวๆ ต่อประโยค ซึ่ง
+    # ไม่มีทางตรงกับชื่อหน้า/breadcrumb ของคู่มือเลย = หา page ไม่เจอสำหรับ goal ภาษาไทยทุกอัน
+    # goal_intent.matching_tokens() เติม token ที่เป็น ASCII จากคู่ field=value เข้ามาให้ ซึ่ง
+    # เป็นส่วนที่เป็นภาษาอังกฤษเสมอแม้ประโยครอบๆ จะเป็นภาษาไทย — union ไม่ใช่แทนที่ เพื่อไม่ให้
+    # พฤติกรรมของ goal ภาษาอังกฤษเดิมเปลี่ยนแม้แต่นิดเดียว
     goal_tokens = {t for t in re.split(r"[^\w]+", (goal or "").lower()) if len(t) >= 3}
+    goal_tokens |= goal_intent.matching_tokens(goal or "")
     if not goal_tokens:
         return None
 

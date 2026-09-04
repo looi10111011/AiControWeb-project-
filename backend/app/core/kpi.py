@@ -234,6 +234,14 @@ def build_kpi_report(
         "rows_by_source": dict(source_counts.most_common()),
         # โชว์ให้เห็นเสมอว่าตัดอะไรออกไปเท่าไร — การกรองเงียบๆ ทำให้คนอ่านเชื่อตัวเลขผิด
         "excluded_reserved_test_urls": excluded_reserved,
+        # T1: แยกตามภาษาของ goal — คำถามที่ตอบไม่ได้เลยก่อนหน้านี้คือ "งานภาษาไทยสำเร็จ/แพง
+        # ต่างจากภาษาอังกฤษไหม" ซึ่งสำคัญกับโปรเจกต์นี้เป็นพิเศษ เพราะกลไกจำ goal ทุกตัวถูก
+        # ออกแบบมาสำหรับภาษาอังกฤษ (ดู goal_intent.py) แถวเก่าที่ยังไม่มี field นี้จะไปอยู่
+        # กลุ่ม "unknown" ตามความจริง ไม่เดาย้อนหลังให้
+        "by_goal_script": {
+            script: summarise_tasks([r for r in scoped if (r.get("goal_script") or "unknown") == script])
+            for script in sorted({(r.get("goal_script") or "unknown") for r in scoped})
+        },
         "all_time": summarise_tasks(scoped),
         "recent": summarise_tasks(recent),
         "previous": summarise_tasks(previous),
@@ -314,6 +322,19 @@ def format_kpi_report(report: dict[str, Any]) -> str:
                 f"    W7 gated-rule deref: {gde} ครั้ง, ~{block.get('gated_tokens_saved', 0):,} tok ตัดออก"
             )
         lines.append(f"    status: {block['status']}")
+    by_script = report.get("by_goal_script") or {}
+    if len(by_script) > 1:
+        lines += ["", "แยกตามภาษาของ goal (ทั้งหมดเท่าที่มี):"]
+        for script, block in by_script.items():
+            if not block.get("n"):
+                continue
+            rate = block.get("browser_success_rate")
+            tok = block.get("input_tokens") or {"median": None, "n": 0}
+            lines.append(
+                f"    {script:<8} {block['n']} task (เบราว์เซอร์ {block.get('n_browser', 0)}) — "
+                f"สำเร็จ {'-' if rate is None else f'{rate:.0%}'} · "
+                f"input tok median={_fmt(tok.get('median'))} n={tok.get('n', 0)}"
+            )
     steps_block = report["recent_steps"] if report["recent_steps"].get("n") else report["all_steps"]
     if steps_block.get("n"):
         scope = "ช่วงล่าสุด" if report["recent_steps"].get("n") else "ทั้งหมด"

@@ -181,3 +181,95 @@ def test_save_confirmed_plan_skips_saving_entirely_for_thai_goal():
 
         assert result is None
         mock_get.assert_not_called()
+
+
+# --- T3: lineage ด้วย intent key สำหรับสคริปต์ที่ embedding แยกไม่ออก ---
+# เหตุผลเดิม (ไม่เชื่อ semantic distance ของภาษากลุ่มนี้) ยังจริงทุกประการ — ที่เปลี่ยนคือ
+# เมื่อถอด intent ออกมาเป็นกุญแจตายตัวได้ ก็จับคู่ได้โดยไม่แตะ embedding เลย
+
+
+def test_find_matching_plan_uses_intent_key_for_thai_goal_with_a_condition():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.get.return_value = {
+            "metadatas": [
+                {"intent_key": "delete:all:userrole=ess", "version": 1, "plan": "1. เก่า"},
+                {"intent_key": "delete:all:userrole=ess", "version": 2, "plan": "1. ใหม่ล่าสุด"},
+            ]
+        }
+
+        result = find_matching_plan("opensource-demo.orangehrmlive.com", "ลบ userrole=ess ออกให้หมด")
+
+        assert result == {
+            "intent_key": "delete:all:userrole=ess",
+            "version": 2,
+            "plan": "1. ใหม่ล่าสุด",
+            "distance": 0.0,   # ตรงกันแบบตายตัว ไม่ใช่ความใกล้เคียงเชิงความหมาย
+        }
+        collection.query.assert_not_called()   # ห้ามพึ่ง embedding สำหรับภาษากลุ่มนี้
+
+
+def test_thai_goals_with_different_conditions_do_not_share_a_lineage():
+    """เคสที่ทำให้ต้องปิด Plan Memory ตั้งแต่แรก: goal ไทยคนละเรื่องดัน match กัน —
+    กุญแจต้องแยก userrole=ess ออกจาก userrole=admin"""
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        mock_get.return_value.get.return_value = {"metadatas": []}
+
+        find_matching_plan("example.org", "ลบ userrole=ess ออกให้หมด")
+        find_matching_plan("example.org", "ลบ userrole=admin ออกให้หมด")
+
+        keys = [
+            call.kwargs["where"]["$and"][1]["intent_key"]
+            for call in mock_get.return_value.get.call_args_list
+        ]
+        assert keys[0] != keys[1]
+
+
+def test_save_confirmed_plan_stores_thai_goal_under_its_intent_key():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.get.return_value = {"metadatas": []}
+
+        result = save_confirmed_plan(
+            "opensource-demo.orangehrmlive.com", "ลบ userrole=ess ออกให้หมด", "1. ค้นหา\n2. ลบ",
+        )
+
+        assert result is not None
+        assert result["intent_key"] == "delete:all:userrole=ess"
+        assert result["version"] == 1
+        collection.query.assert_not_called()
+
+
+def test_save_confirmed_plan_adds_a_version_to_an_existing_thai_lineage():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.get.return_value = {
+            "metadatas": [{"intent_key": "delete:all:userrole=ess", "version": 4, "plan": "1. เก่า"}]
+        }
+
+        result = save_confirmed_plan(
+            "opensource-demo.orangehrmlive.com", "ลบ userrole=ess ออกให้หมด", "1. แผนที่แก้แล้ว",
+        )
+
+        assert result["version"] == 5
+        assert result["created"] is True
+
+
+def test_save_confirmed_plan_does_not_create_a_duplicate_version_for_an_unchanged_plan():
+    with patch("backend.app.core.plan_memory.get_plan_memory_collection") as mock_get:
+        collection = mock_get.return_value
+        collection.get.return_value = {
+            "metadatas": [{"intent_key": "delete:all:userrole=ess", "version": 2, "plan": "1. เหมือนเดิม"}]
+        }
+
+        result = save_confirmed_plan(
+            "opensource-demo.orangehrmlive.com", "ลบ userrole=ess ออกให้หมด", "1. เหมือนเดิม",
+        )
+
+        assert result == {
+            "intent_key": "delete:all:userrole=ess",
+            "version": 2,
+            "plan": "1. เหมือนเดิม",
+            "created": False,
+        }
+        collection.add.assert_not_called()

@@ -113,6 +113,21 @@ def write_token_usage(
             "avg_cached_tokens_per_call": _stat("avg_cached_tokens_per_call", 0),
             "avg_output_tokens_per_call": _stat("avg_output_tokens_per_call", 0),
         }
+        # T1/T3: รูปร่างของ goal ที่ user พิมพ์ + intent ที่ถอดได้จากมัน — คำนวณตรงนี้แทนที่จะ
+        # ให้ orchestrator ส่งมา เพราะเป็น pure function ของ goal ล้วนๆ และเส้นทาง exception
+        # ที่ไม่มี result dict ก็ยังได้ field ชุดนี้ครบ ทำให้ทุกแถวเทียบกันได้ไม่มีรู
+        # ห้าม throw เด็ดขาด — ตัวเขียน telemetry ต้องไม่ทำให้ task ที่เสร็จไปแล้วพัง (กฎเดิม
+        # ของไฟล์นี้) จึงห่อ try/except ไว้แม้ทั้งสองฟังก์ชันจะเป็น pure function
+        try:
+            from backend.app.core import goal_intent as _goal_intent
+
+            language = _goal_intent.detect_goal_language(goal)
+            entry["goal_script"] = language["script"]
+            entry["goal_chars"] = language["chars"]
+            entry["goal_word_count"] = language["word_count"]
+            entry.update(_goal_intent.canonical_intent(goal).as_telemetry())
+        except Exception:
+            pass
         if run_id:
             entry["run_id"] = run_id
         path = Path(settings.token_usage_log_path)
