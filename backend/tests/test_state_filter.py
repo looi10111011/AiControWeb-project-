@@ -390,7 +390,9 @@ async def _page_with(html):
 async def test_submit_button_reports_the_empty_password_fields_of_its_own_form():
     pw, browser, page = await _page_with(_TWO_FORMS_HTML)
     try:
-        assert await state_filter.empty_password_indexes_in_same_form(page, 4) == ["1", "2"]
+        assert await state_filter.password_form_submit_problem(page, 4) == {
+            "kind": "empty", "indexes": ["1", "2"],
+        }
     finally:
         await browser.close()
         await pw.stop()
@@ -402,7 +404,7 @@ async def test_nothing_is_reported_once_the_password_fields_are_filled():
     try:
         await page.fill('[data-ai-index="1"]', "a")
         await page.fill('[data-ai-index="2"]', "a")
-        assert await state_filter.empty_password_indexes_in_same_form(page, 4) == []
+        assert await state_filter.password_form_submit_problem(page, 4) is None
     finally:
         await browser.close()
         await pw.stop()
@@ -414,9 +416,29 @@ async def test_cancel_other_forms_and_buttons_outside_any_form_are_left_alone():
     (และปุ่มอย่าง Upgrade ที่อยู่นอกฟอร์ม) จะโดนบล็อกทั้งที่ไม่เกี่ยวกันเลย"""
     pw, browser, page = await _page_with(_TWO_FORMS_HTML)
     try:
-        assert await state_filter.empty_password_indexes_in_same_form(page, 3) == []
-        assert await state_filter.empty_password_indexes_in_same_form(page, 6) == []
-        assert await state_filter.empty_password_indexes_in_same_form(page, 7) == []
+        assert await state_filter.password_form_submit_problem(page, 3) is None
+        assert await state_filter.password_form_submit_problem(page, 6) is None
+        assert await state_filter.password_form_submit_problem(page, 7) is None
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_password_confirm_mismatch: เคสที่เจอจริงในรันสดสองเทิร์น — ช่อง Confirm ไม่ได้ว่าง แต่ค้าง
+# ค่าเดิมจากเทิร์นก่อนไว้ ตัวตรวจที่ดูแค่ "ว่างหรือไม่" จึงปล่อยผ่านแล้วได้ Passwords do not match
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_field_left_holding_an_older_value_is_caught():
+    pw, browser, page = await _page_with(_TWO_FORMS_HTML)
+    try:
+        await page.fill('[data-ai-index="1"]', "Abcd1234")
+        await page.fill('[data-ai-index="2"]', "12345678")
+        assert await state_filter.password_form_submit_problem(page, 4) == {
+            "kind": "mismatch", "indexes": ["1", "2"],
+        }
+        await page.fill('[data-ai-index="2"]', "Abcd1234")
+        assert await state_filter.password_form_submit_problem(page, 4) is None
     finally:
         await browser.close()
         await pw.stop()

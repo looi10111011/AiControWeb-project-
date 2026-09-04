@@ -1664,6 +1664,32 @@ async def execute(
             # เห็นอยู่แล้ว" เป็น 1 คำสั่งได้ตรงๆ แทนที่จะเดาว่า Enter ใช้ได้ไหม — ทางเลือกที่
             # เชื่อถือได้กว่า key:"Enter" เสมอเมื่อเห็นปุ่ม submit จริงอยู่ในหน้า (ดู
             # SYSTEM_PROMPT ใน llm.py สำหรับลำดับความสำคัญที่แนะนำ agent)
+            # W_chained_submit_after_fill (บั๊กจริงจากรันสดสองเทิร์น 2026-09-04): เช็ค
+            # *หลัง* fill เท่านั้น — ก่อน fill ช่องยังถือค่าเก่าอยู่ทั้งคู่ซึ่ง "ตรงกัน" พอดี
+            # guard ที่เช็คก่อน dispatch จึงมองไม่เห็นปัญหาเลย เทิร์นที่สองกรอกทับเฉพาะช่อง
+            # Password ช่องเดียว ช่อง Confirm ยังค้างค่าจากเทิร์นแรก แล้ว chained click ก็กด
+            # Save ต่อทันที -> 'Passwords do not match'
+            # (guard ฝั่ง orchestrator คุมได้เฉพาะ action type "click" ที่โมเดลสั่งแยก —
+            # การส่งฟอร์มที่พ่วงมากับ fill ไม่เคยผ่านตรงนั้นเลย)
+            if result.success and cmd.get("then_click_index") is not None:
+                chained_problem = await state_filter.password_form_submit_problem(
+                    page, cmd["then_click_index"],
+                )
+                if chained_problem is not None:
+                    fields = ", ".join(str(i) for i in chained_problem.get("indexes") or [])
+                    reason = (
+                        f"password fields {fields} are still empty"
+                        if chained_problem.get("kind") == "empty"
+                        else f"the new-password fields {fields} do not hold the same value "
+                             "(the confirmation field may still hold a value typed earlier)"
+                    )
+                    return replace(
+                        result,
+                        message=(
+                            f"{result.message} (did not submit the form: {reason} — type the "
+                            "SAME new password into every one of them, then submit)"
+                        ),
+                    )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,

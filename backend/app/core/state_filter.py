@@ -471,30 +471,96 @@ async def check_fill_submits_with_password_fields_left_empty(
 # กับช่อง password ทั้งสามอยู่ใน form เดียวกัน ส่วนปุ่ม Upgrade/เมนูอยู่นอก form — การนับทั้งหน้า
 # จะบล็อกปุ่ม Save ของฟอร์มอื่นที่ไม่เกี่ยวข้องกันเลย
 # ปุ่มที่ type="button" (เช่น Cancel) ไม่นับเป็นการส่งฟอร์ม จึงไม่โดนแตะ
-_EMPTY_PASSWORDS_IN_SAME_FORM_JS = """(el) => {
+# W_password_confirm_mismatch (บั๊กจริงจากรันสดสองเทิร์นผ่าน REST API 2026-09-04): เทิร์นแรก
+# กรอก 12345678 ลงทั้งช่อง Password และ Confirm Password แล้วเว็บปฏิเสธเพราะไม่มีตัวพิมพ์เล็ก
+# เทิร์นที่สอง user ตอบกลับด้วยรหัสที่ผ่านนโยบาย โมเดลกรอกทับเฉพาะช่อง Password ช่องเดียว ช่อง
+# Confirm ยังค้างค่าเดิมอยู่ -> 'Passwords do not match' guard ที่มีอยู่มองแค่ "ว่างหรือไม่ว่าง"
+# จึงปล่อยผ่าน ทั้งที่ฟอร์มผิดตั้งแต่ก่อนส่งแล้ว
+#
+# เทียบค่าภายใน page context ทั้งหมด คืนออกมาแค่ kind กับ index — ห้ามส่งค่าจริงของช่องรหัสผ่าน
+# ออกมานอกหน้าเว็บเด็ดขาด (เหตุผลเดียวกับ W_password_value_leaks_into_label)
+#
+# ช่อง "รหัสผ่านปัจจุบัน" ถูกคัดออกก่อนเทียบเสมอ — ค่าของมันไม่มีเหตุผลใดที่ต้องตรงกับรหัสใหม่
+CURRENT_PASSWORD_LABEL_HINTS = (
+    "current password", "old password", "existing password",
+    "รหัสผ่านปัจจุบัน", "รหัสผ่านเดิม",
+)
+
+# W_password_field_has_no_label_attributes: ช่องรหัสผ่านของบางเว็บไม่มี label/name/id เลย
+# <label> เป็นพี่น้องอยู่ในกล่องครอบ จึงต้องเดินขึ้น ancestor หา — orchestrator ใช้ตัวเดียวกันนี้
+PASSWORD_FIELD_LABEL_JS = r"""el => {
+    const direct = (
+        (el.labels && el.labels[0] && el.labels[0].innerText) ||
+        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+        el.getAttribute('name') || el.id || ''
+    );
+    if (direct.trim()) return direct.toLowerCase();
+    const byIds = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+        .map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+    if (byIds.trim()) return byIds.toLowerCase();
+    let node = el;
+    for (let i = 0; i < 4 && node; i++) {
+        node = node.parentElement;
+        if (!node) break;
+        const lab = node.querySelector('label');
+        if (lab && lab.innerText.trim()) return lab.innerText.toLowerCase();
+    }
+    return '';
+}"""
+
+_PASSWORD_FORM_SUBMIT_PROBLEM_JS = r"""(el, hints) => {
     const tag = (el.tagName || '').toLowerCase();
     const type = (el.getAttribute('type') || '').toLowerCase();
     const submits = (tag === 'button' && type !== 'button' && type !== 'reset')
         || (tag === 'input' && (type === 'submit' || type === 'image'));
-    if (!submits) return [];
+    if (!submits) return null;
     const form = el.closest('form');
-    if (!form) return [];
-    return Array.from(form.querySelectorAll('input[type="password"]'))
-        .filter(f => f.getClientRects().length > 0 && !(f.value || '').trim())
+    if (!form) return null;
+    const labelOf = el => {
+    const direct = (
+        (el.labels && el.labels[0] && el.labels[0].innerText) ||
+        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+        el.getAttribute('name') || el.id || ''
+    );
+    if (direct.trim()) return direct.toLowerCase();
+    const byIds = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+        .map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+    if (byIds.trim()) return byIds.toLowerCase();
+    let node = el;
+    for (let i = 0; i < 4 && node; i++) {
+        node = node.parentElement;
+        if (!node) break;
+        const lab = node.querySelector('label');
+        if (lab && lab.innerText.trim()) return lab.innerText.toLowerCase();
+    }
+    return '';
+};
+    const fields = Array.from(form.querySelectorAll('input[type="password"]'))
+        .filter(f => f.getClientRects().length > 0);
+    if (!fields.length) return null;
+    const empty = fields.filter(f => !(f.value || '').trim())
         .map(f => f.getAttribute('data-ai-index'));
+    if (empty.length) return {kind: 'empty', indexes: empty};
+    const fresh = fields.filter(f => !hints.some(h => labelOf(f).includes(h)));
+    if (fresh.length >= 2 && !fresh.every(f => f.value === fresh[0].value)) {
+        return {kind: 'mismatch', indexes: fresh.map(f => f.getAttribute('data-ai-index'))};
+    }
+    return null;
 }"""
 
 
-async def empty_password_indexes_in_same_form(page: Page, index: int) -> list:
-    """index ของช่อง password ที่ยังว่างอยู่ใน <form> เดียวกับปุ่มส่งฟอร์มที่กำลังจะคลิก
+async def password_form_submit_problem(page: Page, index: int):
+    """เหตุผลที่ยังส่งฟอร์มรหัสผ่านนี้ไม่ได้ — {"kind": "empty"|"mismatch", "indexes": [...]}
 
-    คืน [] ถ้าไม่ใช่ปุ่มส่งฟอร์ม ไม่มี <form> ครอบ หรืออ่าน DOM ไม่ได้ (fail-safe เหมือนทุกตัว
-    ในไฟล์นี้ — ปล่อยให้ทำตามที่โมเดลสั่งดีกว่าบล็อกเพราะเราอ่านสถานะไม่ออกเอง)"""
+    คืน None ถ้าไม่ใช่ปุ่มส่งฟอร์ม ไม่มี <form> ครอบ ฟอร์มไม่มีช่องรหัสผ่าน หรืออ่าน DOM ไม่ได้
+    (fail-safe เหมือนทุกตัวในไฟล์นี้)"""
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         return await target.locator(selector).evaluate(
-            _EMPTY_PASSWORDS_IN_SAME_FORM_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+            _PASSWORD_FORM_SUBMIT_PROBLEM_JS,
+            list(CURRENT_PASSWORD_LABEL_HINTS),
+            timeout=_STATE_CHECK_TIMEOUT_MS,
         )
     except Exception:
-        return []
+        return None

@@ -4076,6 +4076,12 @@ class Orchestrator:
         # change-password context (รีเซ็ตทันทีที่ dispatch อย่างอื่นผ่าน — ดู guard ในลูป)
         consecutive_fill_secret_context_reject_count = 0
         secret_refill_reject_count = 0
+        # W_retry_value_has_no_home: label ของช่องที่ agent กรอกค่าเองในงานนี้ ตามลำดับ
+        # ที่กรอก — ใช้บอก user ตอนขอค่าใหม่ว่าจะเอาไปแทนที่ช่องไหน (label ไม่ใช่ index
+        # เพราะ index ถูกแจกใหม่ทุก snapshot จึงข้ามเทิร์นไม่ได้)
+        agent_filled_field_labels: list[str] = []
+        # ว่าง = ไม่ได้กำลังรอค่าใหม่จาก user
+        retry_value_field_labels: list[str] = []
         empty_password_submit_count = 0
         # W_goal_precheck: จำนวนครั้งติดกันที่ข้ามการคลิก element ที่มี marker "[already active]"
         consecutive_already_active_skip_count = 0
@@ -5141,6 +5147,7 @@ class Orchestrator:
                             print(f"[finish_task(true) พบ fatal validation error — ข้าม retry] {fatal_text}", flush=True)
                         completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
                         claimed_success = False
+                        retry_value_field_labels = list(agent_filled_field_labels)
                         tool_input["message"] = (
                             "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
                             f"ของระบบ: {fatal_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
@@ -5604,10 +5611,11 @@ class Orchestrator:
                 # W_click_submits_with_empty_password_fields: กดส่งฟอร์มทั้งที่ช่องรหัสผ่าน
                 # ในฟอร์มเดียวกันยังว่าง = ล้ม validation แน่นอน แล้วบดบัง error จริงที่ต้องแก้
                 if tool_input.get("type") == "click":
-                    _empty_pw = await state_filter.empty_password_indexes_in_same_form(
+                    _pw_problem = await state_filter.password_form_submit_problem(
                         page, tool_input.get("index"),
                     )
-                    if _empty_pw and empty_password_submit_count < _MAX_EMPTY_PASSWORD_SUBMIT_RETRIES:
+                    _empty_pw = (_pw_problem or {}).get("indexes") or []
+                    if _pw_problem and empty_password_submit_count < _MAX_EMPTY_PASSWORD_SUBMIT_RETRIES:
                         empty_password_submit_count += 1
                         _bump_guard("empty_password_submit")  # W_token_cut W1
                         _empty_pw_desc = ", ".join(
@@ -5616,8 +5624,14 @@ class Orchestrator:
                         _empty_pw_nudge = (
                             "[Rejected] This button submits a form whose password field(s) are "
                             f"still empty: {_empty_pw_desc}. Submitting now fails validation "
-                            "('passwords do not match') and hides the real problem. Fill every "
-                            "one of those fields first, then submit."
+                            "and hides the real problem. Fill every one of those fields first, "
+                            "then submit."
+                        ) if _pw_problem.get("kind") == "empty" else (
+                            "[Rejected] The new-password fields on this form do not hold the "
+                            f"same value: {_empty_pw_desc}. Submitting now fails with "
+                            "'Passwords do not match'. Type the SAME new password into every "
+                            "one of them — including the confirmation field, which may still "
+                            "hold a value you typed earlier — then submit."
                         )
                         if verbose:
                             print(
@@ -6393,6 +6407,17 @@ class Orchestrator:
                 # actions.py และ wait ต่างๆ ที่ execute() ทำเอง)
                 step_action_seconds = time.monotonic() - _action_started_at
 
+                # W_retry_value_has_no_home: จำ label ของช่องที่ agent กรอกค่าเอง ไว้บอก user
+                # ตอนขอค่าใหม่ว่าจะเอาไปแทนที่ตรงไหน — เก็บเฉพาะ fill ธรรมดา เพราะ fill_secret
+                # คือรหัสปัจจุบันที่ระบบกรอกให้เอง ไม่ใช่ค่าที่ user จะเปลี่ยน
+                if (
+                    result.success
+                    and tool_input.get("type") == "fill"
+                    and action_label
+                    and action_label not in agent_filled_field_labels
+                ):
+                    agent_filled_field_labels.append(action_label)
+
                 # W_tab_rebind: เปลี่ยน page ที่ลูปถืออยู่ *ก่อน* อย่างอื่นจะอ่านหน้าเว็บต่อ
                 # (W30 url-changed check, wait_stable, get_snapshot ของ step ถัดไป) — ผูก
                 # dialog handler ให้แท็บใหม่ด้วย ไม่งั้น alert() บนแท็บนั้นจะค้างไม่มีใครปิด
@@ -6703,6 +6728,7 @@ class Orchestrator:
                         errors_text = " | ".join(f"'{e}'" for e in validation_errors)
                         success = False
                         completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
+                        retry_value_field_labels = list(agent_filled_field_labels)
                         final_message = (
                             "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
                             f"ของระบบ: {errors_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
@@ -6974,6 +7000,11 @@ class Orchestrator:
                 "persona_message": persona_message,
                 "persona_status": persona_status,
                 "completion_verification": completion_verification,
+                # W_retry_value_has_no_home: ข้อความ TASK_FAILED_USER_INPUT_ERROR สัญญากับ user
+                # ว่า "ตอบค่าใหม่มาแล้วระบบจะกรอกแทนที่ในช่องเดิมให้ทันที" — ฟิลด์นี้คือสิ่งที่
+                # ทำให้คำสัญญานั้นเป็นจริงได้ ผู้เรียก (api/routes.py) จำไว้กับ session แล้วเทิร์น
+                # ถัดไปที่ user ตอบมาเป็น "ค่า" เปล่าๆ จะถูกแปลงเป็นคำสั่งที่ระบุช่องชัดเจน
+                "retry_value_field_labels": retry_value_field_labels,
             }
         except Exception as e:
             # W_loop_crash: เดิม try ก้อนนี้มีแต่ finally ไม่มี except เลยสักตัว — exception

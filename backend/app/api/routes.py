@@ -52,6 +52,7 @@ from backend.app.api.schemas import (
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
 from backend.app.core import llm, openai_oauth, plan_memory, procedural_memory
+from backend.app.core.goal_intent import detect_goal_language
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.perception import get_snapshot
 from backend.app.core.session_registry import SessionOwnershipError
@@ -643,13 +644,63 @@ async def _run_with_resolved_browser(
         )
 
 
+# W_retry_value_has_no_home (บั๊กจริงที่ user เจอบน Test Console 2026-09-04): task ที่จบด้วย
+# TASK_FAILED_USER_INPUT_ERROR ส่งข้อความบอก user ว่า "กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน
+# ระบบจะกรอกค่านั้นแทนที่ในช่องเดิมแล้วดำเนินการต่อให้ทันที" และหน้าเว็บมีช่องให้กรอกตอบด้วย —
+# แต่ไม่มีโค้ดส่วนไหนรับค่านั้นไปทำอะไรเลย มันถูกส่งเป็น goal ใหม่ดิบๆ agent จึงตอบว่า
+# "I can't determine the intended task ... the user's goal is only 'Abcd1234'" ซึ่งถูกต้องตาม
+# ข้อมูลที่มันได้รับ — คำสัญญาในข้อความต่างหากที่ไม่มีของจริงรองรับ
+#
+# แปลง goal ที่ endpoint ก่อนใครทั้งหมด เพื่อให้ _run_with_resolved_browser() และ
+# _will_use_browser() (ซึ่งต้องตัดสินใจตรงกันเสมอ ดู docstring ของทั้งคู่) เห็น goal เดียวกัน
+# ตัดสินด้วย keyword ล้วน ไม่เรียก LLM ตามกฎเดิมของเส้นทางนี้
+_MAX_BARE_VALUE_CHARS = 64
+
+
+def _goal_is_a_bare_replacement_value(goal: str) -> bool:
+    """ข้อความที่ user ตอบกลับมาเป็น "ค่า" เฉยๆ ไม่ใช่คำสั่งใหม่
+
+    ต้องเป็น token เดียวไม่มีช่องว่างเลย: เกณฑ์ "ไม่เกิน 4 คำ" ที่ลองก่อนหน้าใช้ไม่ได้กับ
+    ภาษาไทย เพราะไทยไม่มีเว้นวรรคระหว่างคำ — goal จริงอย่าง "เปิดเว็ปแล้วเปลี่ยนรหัสผ่านเป็น
+    12345678" นับได้แค่ 2 คำ แล้วถูกเข้าใจผิดว่าเป็นค่าเปล่าทันที (บทเรียนเดียวกับ
+    W_thai_keyword_space) ค่าที่ user พิมพ์ตอบช่องนี้เป็นรหัสผ่าน/ตัวเลข/ชื่อสั้นๆ ซึ่งไม่มี
+    ช่องว่างอยู่แล้วโดยธรรมชาติ — เดาผิดทางนี้แค่ทำให้ไม่แปลง goal (พฤติกรรมเดิม) ไม่เสียหาย"""
+    text = (goal or "").strip()
+    if not text or len(text) > _MAX_BARE_VALUE_CHARS or len(text.split()) != 1:
+        return False
+    # token เดียวที่มีอักษรไทยปนอยู่มักเป็น "คำสั่ง" ไม่ใช่ "ค่า" — "ลบuserrole=ess" ผ่านเกณฑ์
+    # ข้างบนครบทุกข้อทั้งที่เป็นคำสั่งเต็มรูป ส่วนค่าที่พิมพ์ตอบช่องนี้ในโปรเจกต์นี้เป็นรหัสผ่าน/
+    # ตัวเลข/รหัสอ้างอิงซึ่งเป็น latin หรือตัวเลขล้วนเสมอ เดาผิดทางนี้แค่ไม่แปลง goal = พฤติกรรมเดิม
+    if detect_goal_language(text)["script"] not in ("latin", "other"):
+        return False
+    return not llm.goal_mentions_web_action(text)
+
+
+def _replacement_value_goal(value: str, labels: list) -> str:
+    """คำสั่งต้องระบุช่องแบบไม่กำกวม — รันสด 2026-09-04: คำสั่งเวอร์ชันแรกเขียนว่าให้กรอกช่อง
+    "Password" แล้วโมเดลไปกรอกช่อง "Current Password" แทน เพราะชื่อหนึ่งเป็น substring ของอีก
+    ชื่อหนึ่งพอดี ผลคือรหัสปัจจุบันถูกเขียนทับ ส่วนช่องที่ผิดจริงยังค้างค่าเดิมไว้เหมือนเดิม"""
+    fields = ", ".join(f'"{label}"' for label in labels)
+    return (
+        f'กรอกค่า "{value.strip()}" ลงในช่องที่มี label ตรงตัวว่า {fields} '
+        "ให้ตรงกันทุกช่อง (แทนที่ค่าเดิมที่ระบบปฏิเสธ) "
+        "ห้ามแก้ช่องอื่นเด็ดขาด โดยเฉพาะช่องรหัสผ่านปัจจุบัน (Current Password) "
+        "ซึ่งกรอกถูกอยู่แล้ว แล้วจึงบันทึกฟอร์ม"
+    )
+
+
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
 @limiter.limit("10/minute")
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
     file_chat_memory = request.app.state.file_chat_memory
+    pending_value_request: dict = request.app.state.pending_value_request
     task_manager: TaskManager = request.app.state.task_manager
+    # W_retry_value_has_no_home: เทิร์นนี้เป็นการ "ตอบค่าใหม่" ให้ task ก่อนหน้าหรือเปล่า
+    pending_labels = (pending_value_request.get(req.session_id) or {}).get("labels") or []
+    if pending_labels and _goal_is_a_bare_replacement_value(req.goal):
+        req.goal = _replacement_value_goal(req.goal, pending_labels)
     orchestrator = Orchestrator()
     task_id = task_manager.new_task_id()
     ask_user_func = _make_ask_user_func(task_manager, task_id, req.auto_approve)
@@ -658,10 +709,18 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
         await task_manager.push_event(task_id, event)
 
     async def _run() -> dict:
-        return await _run_with_resolved_browser(
+        result = await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
             extra_run_task_kwargs={"confirm_plan": req.confirm_plan}, file_chat_memory=file_chat_memory,
         )
+        # W_retry_value_has_no_home: จำไว้ว่ารอค่าใหม่อยู่ (หรือเลิกรอ ถ้ารอบนี้ไม่ได้จบแบบนั้น)
+        if req.session_id:
+            labels = (result or {}).get("retry_value_field_labels") or []
+            if labels:
+                pending_value_request[req.session_id] = {"labels": labels}
+            else:
+                pending_value_request.pop(req.session_id, None)
+        return result
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
     record = task_manager.submit(

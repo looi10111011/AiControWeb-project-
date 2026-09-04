@@ -2074,3 +2074,60 @@ async def test_ordinary_click_gets_no_extra_note():
     finally:
         await browser.close()
         await pw.stop()
+
+
+# W_chained_submit_after_fill (บั๊กจริงจากรันสดสองเทิร์นผ่าน REST API 2026-09-04): เทิร์นแรก
+# กรอก 12345678 ทั้งช่อง Password และ Confirm แล้วเว็บปฏิเสธเพราะไม่มีตัวพิมพ์เล็ก เทิร์นที่สอง
+# user ตอบด้วยรหัสที่ผ่านนโยบาย โมเดลกรอกทับเฉพาะช่อง Password แล้วพ่วง click Save มาด้วย
+# ช่อง Confirm ยังค้างค่าเดิม -> 'Passwords do not match'
+#
+# ต้องเช็คหลัง fill เท่านั้น: ก่อน fill ทั้งสองช่องยังถือค่าเก่าซึ่ง "ตรงกัน" พอดี guard ที่
+# เช็คก่อน dispatch จึงมองไม่เห็นปัญหาเลย
+
+_CHANGE_PASSWORD_HTML = """
+<html><body>
+  <form onsubmit="document.title='SUBMITTED'; return false;">
+    <div><label>Current Password</label><input data-ai-index="1" type="password" /></div>
+    <div><label>Password</label><input data-ai-index="2" type="password" /></div>
+    <div><label>Confirm Password</label><input data-ai-index="3" type="password" /></div>
+    <button data-ai-index="4" type="submit">Save</button>
+  </form>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_chained_submit_is_dropped_when_the_confirmation_still_holds_the_old_value():
+    pw, browser, page = await _with_page(_CHANGE_PASSWORD_HTML)
+    try:
+        for i, v in [(1, "old"), (2, "12345678"), (3, "12345678")]:
+            await page.fill(f'[data-ai-index="{i}"]', v)
+        result = await execute(
+            page, {"type": "fill", "index": 2, "text": "Abcd1234",
+                   "key": "Tab", "then_click_index": 4},
+        )
+        assert result.success is True                     # การกรอกยังต้องสำเร็จ
+        assert "do not hold the same value" in result.message
+        assert await page.title() != "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_chained_submit_goes_through_once_both_fields_agree():
+    """ห้ามตัดการส่งฟอร์มทิ้งเสมอ — ไม่งั้นงานเปลี่ยนรหัสผ่านจะจบไม่ได้เลย"""
+    pw, browser, page = await _with_page(_CHANGE_PASSWORD_HTML)
+    try:
+        for i, v in [(1, "old"), (2, "Abcd1234"), (3, "12345678")]:
+            await page.fill(f'[data-ai-index="{i}"]', v)
+        result = await execute(
+            page, {"type": "fill", "index": 3, "text": "Abcd1234",
+                   "key": "Tab", "then_click_index": 4},
+        )
+        assert result.success is True
+        assert "did not submit the form" not in result.message
+        assert await page.title() == "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()

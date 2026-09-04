@@ -12,6 +12,8 @@ start/shutdown/acquire) ก่อนเข้า TestClient context เสมอ
 
 import asyncio
 import json
+
+from backend.app.api import routes
 from contextlib import asynccontextmanager
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -2087,3 +2089,32 @@ def test_delete_site_credentials_endpoint_removes_them(client, isolated_manuals_
 def test_delete_site_credentials_endpoint_is_idempotent_when_none_exist(client, isolated_manuals_dir):
     resp = client.delete("/api/site-manual/does-not-exist.com/credentials")
     assert resp.status_code == 204
+
+
+# W_retry_value_has_no_home (บั๊กจริงที่ user เจอบน Test Console 2026-09-04): task ที่จบด้วย
+# TASK_FAILED_USER_INPUT_ERROR บอก user ว่า "ตอบค่าใหม่มา ระบบจะกรอกแทนที่ในช่องเดิมให้ทันที"
+# แต่ไม่มีอะไรรับค่านั้นเลย มันถูกส่งเป็น goal ใหม่ดิบๆ agent จึงตอบว่าไม่รู้จะทำอะไรกับ "Abcd1234"
+
+
+def test_a_single_token_value_is_recognised_as_a_reply_not_a_new_command():
+    assert routes._goal_is_a_bare_replacement_value("Abcd1234") is True
+    assert routes._goal_is_a_bare_replacement_value("12345678") is True
+
+
+def test_thai_instructions_are_never_mistaken_for_a_bare_value():
+    """ไทยไม่มีเว้นวรรคระหว่างคำ เกณฑ์ "ไม่เกิน N คำ" จึงนับคำสั่งเต็มประโยคได้แค่ 2 คำ
+    (บทเรียนเดียวกับ W_thai_keyword_space) — ต้องเป็น token เดียวและเป็น latin/ตัวเลขเท่านั้น"""
+    assert routes._goal_is_a_bare_replacement_value(
+        "เปิดเว็ปแล้วเปลี่ยนรหัสผ่านเป็น 12345678") is False
+    assert routes._goal_is_a_bare_replacement_value("ลบuserrole=ess") is False
+    assert routes._goal_is_a_bare_replacement_value("สมชาย") is False
+
+
+def test_the_rewritten_goal_names_the_fields_and_rules_out_the_current_password():
+    """คำสั่งเวอร์ชันแรกเขียนแค่ช่อง "Password" แล้วโมเดลไปกรอก "Current Password" แทน
+    เพราะชื่อหนึ่งเป็น substring ของอีกชื่อ — รหัสปัจจุบันถูกเขียนทับ (รันสดยืนยันแล้ว)"""
+    goal = routes._replacement_value_goal("Abcd1234", ["Password", "Confirm Password"])
+    assert "Abcd1234" in goal
+    assert '"Password"' in goal and '"Confirm Password"' in goal
+    assert "Current Password" in goal          # บอกให้เว้นช่องนี้ไว้อย่างชัดเจน
+    assert "ตรงตัว" in goal                     # ต้องเทียบ label แบบตรงตัว ไม่ใช่แค่มีคำนั้น

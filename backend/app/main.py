@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
     # browser/process resource ผูกอยู่เลย ไม่ต้องปิด/cleanup ตอน shutdown เหมือน
     # session_registry ด้านบน (แค่ text ในหน่วยความจำ)
     app.state.file_chat_memory = {}
+    # W_retry_value_has_no_home: session_id -> {"labels": [...]} ของช่องที่รอค่าใหม่จาก user
+    # หลัง task จบด้วย TASK_FAILED_USER_INPUT_ERROR (เว็บปฏิเสธค่าที่กรอกไป) ข้อความที่ส่งให้
+    # user บอกไว้เองว่า "ตอบค่าใหม่มา ระบบจะกรอกแทนที่ในช่องเดิมให้ทันที" — dict นี้คือสิ่งที่
+    # ทำให้คำสัญญานั้นเป็นจริง ไม่มี resource ผูกอยู่ ไม่ต้อง cleanup ตอน shutdown
+    app.state.pending_value_request = {}
     yield
     await app.state.session_registry.close_all()
     await app.state.browser_pool.shutdown()
