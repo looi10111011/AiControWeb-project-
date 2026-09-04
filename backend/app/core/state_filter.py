@@ -258,6 +258,37 @@ _CHAIN_HINT_BY_KIND = {
 }
 
 
+# W_menu_open_note_needs_no_chain (บั๊กจริงจากรันสด 2026-09-03 พร้อม log เต็ม): โมเดลสั่ง
+# click(36) ที่เมนูโปรไฟล์ แล้วสั่ง click(36) ซ้ำอีก **4 ครั้งติด** จนโดน loop detector บังคับ
+# recovery — เสียไป 5 step ก่อนจะเจอ "Change Password" ที่อยู่ในเมนูที่มันเปิดค้างไว้เอง
+#
+# สาเหตุ: ข้อความ _CHAIN_HINT_BY_KIND ที่อธิบายเรื่องนี้ไว้ครบอยู่แล้ว ถูกแนบเฉพาะตอนที่คำสั่ง
+# มี then_click_index เท่านั้น คลิกเปล่าจึงได้ผลลัพธ์แค่ "click succeeded" ซึ่งไม่ได้บอกเลยว่า
+# เมนูเปิดอยู่และ index ทั้งชุดเลื่อนไปแล้ว โมเดลจึงใช้ index เดิมซ้ำอย่างสมเหตุสมผลจากข้อมูล
+# เท่าที่มัน "เห็น" — ความจริงเรื่อง index เลื่อนไม่ได้ขึ้นกับว่ามี chained click หรือไม่
+# ต้องเขียนคนละสำนวนกับชุด chain ข้างบน (ชุดนั้นขึ้นต้นด้วยเหตุผลที่ *ไม่ chain ต่อ*
+# ซึ่งไม่มีความหมายเลยเมื่อโมเดลไม่ได้ขอ chain มาตั้งแต่แรก)
+_INDEX_SHIFT_NOTE_BY_KIND = {
+    "trigger": (
+        "this element opens a dropdown/menu and it is now OPEN. Its items only came into "
+        "existence with this click, so every index you were given before it is stale — do NOT "
+        "reuse the index you just clicked (clicking it again only closes the menu). Read the "
+        "new indexed elements and click the item whose label matches what you want"
+    ),
+    "option": (
+        "that was an option inside an open dropdown. Choosing it CLOSES the menu and removes "
+        "every option from the page, so the indexes have shifted. Your selection was applied — "
+        "read the new indexed elements before your next action"
+    ),
+}
+
+
+def index_shift_note_for_kind(kind: Optional[str]) -> Optional[str]:
+    """W_menu_open_note_needs_no_chain: ข้อความเดียวกันในเชิงข้อเท็จจริงกับ chain_hint_for_kind()
+    แต่สำหรับคลิกที่ *ไม่มี* then_click_index — ดูเหตุผลเต็มในคอมเมนต์เหนือตารางด้านบน"""
+    return _INDEX_SHIFT_NOTE_BY_KIND.get(kind) if kind else None
+
+
 def chain_hint_for_kind(kind: Optional[str]) -> Optional[str]:
     """W_dropdown_sets_filter_dirty: แปลง kind ที่ classify_click_index_disturbance() คืน
     เป็นข้อความอธิบายให้โมเดล — แยกออกมาเพื่อให้ actions.py เรียก classify ครั้งเดียวแล้วเอา
@@ -385,3 +416,46 @@ async def check_scroll_redundant(page: Page, direction: str) -> Optional[str]:
         edge_label = "bottom" if direction == "down" else "top"
         return f"Already scrolled to the {edge_label} of the page"
     return None
+
+
+# W_submit_before_confirm_password (บั๊กจริงจากรันสด 2026-09-03): โมเดลสั่ง
+# {'type': 'fill', 'index': 22, 'text': '12345678', 'key': 'Enter', 'then_click_index': 25}
+# ขณะที่ช่อง "Confirm Password" (index 23) ยังว่าง — ฟอร์มจึงถูกส่งไปทั้งที่กรอกไม่ครบ แล้วเว็บ
+# ตอบ 'Passwords do not match' เพิ่มมาอีกข้อนอกเหนือจาก error จริงที่ต้องแก้ ทำให้ข้อความที่
+# ส่งกลับไปให้ user กำกวมว่าต้องแก้อะไรกันแน่
+#
+# การ "กรอก" นั้นถูกแล้ว ผิดแค่ส่วนที่พ่วงมาส่งฟอร์ม — จึงตัดเฉพาะส่วนที่พ่วง ไม่ปฏิเสธทั้ง
+# action (pattern เดียวกับ W_chain_stale_index ที่ตัด then_click_index ทิ้งแล้วบอกเหตุผล)
+# ตัดสินจาก DOM ล้วน ไม่ต้องรู้ goal และไม่อ่านค่าในช่องไหนทั้งสิ้น อ่านแค่ "ว่างหรือไม่ว่าง"
+_OTHER_EMPTY_PASSWORD_FIELDS_JS = """(el) => {
+    if (!el || (el.getAttribute('type') || '').toLowerCase() !== 'password') return 0;
+    return Array.from(document.querySelectorAll('input[type="password"]')).filter(
+        other => other !== el
+            && other.getClientRects().length > 0
+            && !(other.value || '').trim()
+    ).length;
+}"""
+
+
+async def check_fill_submits_with_password_fields_left_empty(
+    page: Page, index: int,
+) -> Optional[str]:
+    """เหตุผลที่ต้องตัดส่วนที่พ่วงมากับ fill นี้ทิ้ง — None ถ้าไม่มีปัญหา
+
+    fail-safe คืน None ถ้าอ่าน DOM ไม่ได้ (เหมือนทุกตัวในไฟล์นี้): ปล่อยให้ทำตามที่โมเดลสั่ง
+    ดีกว่าตัดคำสั่งของมันทิ้งเพราะเราอ่านสถานะไม่ออกเอง"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        remaining = await target.locator(selector).evaluate(
+            _OTHER_EMPTY_PASSWORD_FIELDS_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+    if not remaining:
+        return None
+    return (
+        f"the value was typed in, but this form still has {remaining} empty password field(s) "
+        "— submitting now would fail validation ('passwords do not match') and hide the real "
+        "problem. Fill every remaining password field first, then submit as a separate step"
+    )

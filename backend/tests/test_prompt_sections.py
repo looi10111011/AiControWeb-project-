@@ -60,12 +60,16 @@ def test_each_block_is_absent_from_core_and_present_when_requested(name, needle)
     assert needle in llm.build_system_prompt(frozenset({name}))
 
 
-def test_anthropic_system_blocks_keep_cache_control_and_are_cached_per_variant():
-    blocks = llm._system_blocks(_NONE)
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
-    assert blocks[0]["text"] == llm.build_system_prompt(_NONE)
+def test_anthropic_system_block_is_one_fixed_prefix_with_cache_control():
+    """W_token_cut W2 เปลี่ยน _system_blocks() ให้ไม่รับ sections อีกต่อไป — system ของ
+    Anthropic เป็น _PROMPT_CORE คงที่ทุกเทิร์นทุก task ส่วนบล็อกที่ gate ย้ายไปต่อท้าย user
+    turn เพื่อไม่ให้ prefix cache ขาดกลาง task (เทสต์เดิมยังเรียกด้วยอาร์กิวเมนต์เก่าอยู่จึง
+    ตกมาตั้งแต่ commit นั้น — TypeError ไม่ใช่ assertion)"""
+    blocks = llm._system_blocks()
+    assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert blocks[0]["text"] == llm._PROMPT_CORE
     # object เดิมซ้ำ — สำคัญกับ prefix cache ของ provider
-    assert llm._system_blocks(_NONE) is blocks
+    assert llm._system_blocks() is blocks
 
 
 # ---------------- ตัวตัดสินว่าจะฉีดบล็อกไหน ----------------
@@ -90,6 +94,61 @@ def test_plan_block_tracks_whether_a_plan_actually_exists():
 def test_password_block_reuses_the_fill_secret_gate_already_computed():
     assert "password" in _resolve(allow_fill_secret=True)
     assert "password" not in _resolve(allow_fill_secret=False)
+
+
+# W_password_rules_arrive_too_late (บั๊กจริงพร้อมภาพหน้าจอ 2026-09-03): goal "เปลี่ยนรหัสผ่าน
+# ใหม่เป็น 12345678" แต่ agent เดินไป PIM > Update Password ของพนักงาน แทนที่จะกดเมนูโปรไฟล์
+# มุมขวาบน > Change Password — บล็อกนี้มีกฎ W20 สั่งเรื่องนี้ไว้ตรงตัว แต่เดิมส่งเฉพาะตอน
+# allow_fill_secret ซึ่งเป็นจริงก็ต่อเมื่อ *ยืนอยู่บนฟอร์มเปลี่ยนรหัสผ่านแล้ว* คือหลังจากเลือก
+# ทางผิดไปแล้ว โมเดลจึงไม่เคยเห็นกฎในจังหวะที่ต้องตัดสินใจเลือกทาง
+
+
+def test_password_block_arrives_as_soon_as_the_goal_mentions_a_password_change():
+    assert "password" in _resolve(
+        goal="เปิดเว็บแล้วเปลี่ยนรหัสผ่านใหม่เป็น 12345678 ให้หน่อย", allow_fill_secret=False,
+    )
+
+
+def test_password_block_survives_thai_spacing():
+    """W_thai_keyword_space: goal จริงของ user มีเว้นวรรคกลางคำ ("เปลี่ยน รหัสผ่าน") ซึ่งเดิม
+    ทำให้ keyword match พลาดทั้งชุด บล็อก W20 จึงไม่ถูกส่งตอนโมเดลกำลังเลือกทาง"""
+    assert "password" in _resolve(
+        goal="เปิดเว็ป แล้วเปลี่ยน รหัสผ่านเป็น 12345678", allow_fill_secret=False,
+    )
+
+
+def test_password_block_also_arrives_when_only_the_plan_mentions_it():
+    assert "password" in _resolve(
+        goal="ทำตามแผน", plan_text="1. เลือก Change Password จากเมนูโปรไฟล์",
+        allow_fill_secret=False,
+    )
+
+
+# W_secret_gate_stays_page_only (regression 2026-09-03): ตอนแก้ W_password_rules_arrive_too_late
+# ผมไปเปิด `allow_fill_secret` จาก goal ด้วย ซึ่งเป็นคนละธงกัน — ธงตัวนั้นคุม *tool schema*
+# ไม่ใช่ prompt พอเปิดตั้งแต่หน้า login แล้ว gpt-5.4-mini (ซึ่งกรอกทุก property ในสคีมาเสมอ)
+# ก็ยิง fill_secret ใส่ index มั่วทั้ง task รันสดล้ม 2/2 รอบโดยไม่เคยกดเมนูโปรไฟล์เลย
+# เทสต์นี้ตรึงไว้ว่าบล็อก prompt กับ schema gate ต้องแยกจากกัน: บล็อกมาจาก goal ได้ (ข้างบน)
+# แต่ธง schema ต้องมาจากหน้าเว็บอย่างเดียว
+
+
+def test_the_schema_gate_never_opens_from_the_goal_text_alone():
+    """อ่านซอร์สตรงๆ เพราะสิ่งที่ต้องกันคือ *ที่มาของค่า* ไม่ใช่ผลลัพธ์ — pattern เดียวกับ
+    เทสต์กัน drift ของ marker registry (W108)"""
+    import re
+    from pathlib import Path
+
+    src = Path("backend/app/core/orchestrator.py").read_text(encoding="utf-8")
+    assignment = re.search(r"^\s*allow_fill_secret = (.+)$", src, re.M)
+    assert assignment is not None, "หา assignment ของ allow_fill_secret ไม่เจอ"
+    assert "_page_looks_like_change_password_form" in assignment.group(1)
+    assert "_goal_or_plan_requests_password_change" not in assignment.group(1)
+
+
+def test_unrelated_goals_still_do_not_pay_for_the_password_block():
+    """เหตุผลที่ gate นี้มีอยู่คือลด token — วัดแล้วบล็อกนี้ +2,548 ตัวอักษร (~640 token)
+    ต่อ *ทุกเทิร์น* ของ task งานที่ไม่เกี่ยวกับรหัสผ่านจึงต้องไม่ถูกแถม"""
+    assert "password" not in _resolve(goal="ลบ userrole=ess ออกให้หมด", allow_fill_secret=False)
 
 
 @pytest.mark.parametrize("goal", [
@@ -341,3 +400,72 @@ async def test_modal_confirm_button_is_found_on_dialogs_that_are_not_orangehrm(h
         await browser.close()
 
     assert label == expected_label
+
+
+# W_password_field_has_no_label_attributes (บั๊กจริงที่วัดกับหน้าเว็บจริง 2026-09-03): ช่อง
+# รหัสผ่านของ OrangeHRM ไม่มี label/aria-label/placeholder/name/id เลยสักตัว <label> เป็น
+# พี่น้องอยู่ใน div.oxd-input-group ไม่ได้ผูกด้วย for= gate จึงคืน False บนหน้าเปลี่ยนรหัสผ่าน
+# จริง -> fill_secret ถูกตัดจาก tool schema -> โมเดลกรอกรหัสปัจจุบันไม่ได้ ยิง fill(21, "")
+# ซ้ำจนโดน loop detector ฆ่า (รันสด: 8 steps จบด้วย Failed)
+#
+# เทสต์นี้ทดสอบกับ Chromium จริง ไม่ mock — บั๊กนี้เกิดจากพฤติกรรมของ DOM API (el.labels ว่าง
+# เมื่อ label ไม่ได้ผูกด้วย for=) ซึ่ง mock จะพิสูจน์ไม่ได้เลย เป็นบทเรียนเดียวกับ
+# W_fill_wrapper_resolves_to_inner_input
+
+_ORANGEHRM_SHAPED_FORM = """
+<html><body><form>
+  <div class="oxd-input-group">
+    <label class="oxd-label">Current Password</label>
+    <div class="oxd-input-group__label-wrapper"></div>
+    <input type="password" />
+  </div>
+  <div class="oxd-input-group">
+    <label class="oxd-label">Password</label>
+    <input type="password" />
+  </div>
+  <div class="oxd-input-group">
+    <label class="oxd-label">Confirm Password</label>
+    <input type="password" />
+  </div>
+</form></body></html>
+"""
+
+# ฟอร์ม Add User: 2 ช่องเหมือนกันเป๊ะ แต่ไม่มี "Current Password" — ต้องยัง False
+_ADD_USER_SHAPED_FORM = """
+<html><body><form>
+  <div class="oxd-input-group">
+    <label class="oxd-label">Password</label>
+    <input type="password" />
+  </div>
+  <div class="oxd-input-group">
+    <label class="oxd-label">Confirm Password</label>
+    <input type="password" />
+  </div>
+</form></body></html>
+"""
+
+
+async def _gate_on(html):
+    from playwright.async_api import async_playwright
+
+    from backend.app.core.orchestrator import _page_looks_like_change_password_form
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.set_content(html)
+            return await _page_looks_like_change_password_form(page)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_gate_finds_the_label_when_it_is_only_a_sibling_in_the_wrapper():
+    assert await _gate_on(_ORANGEHRM_SHAPED_FORM) is True
+
+
+@pytest.mark.asyncio
+async def test_add_user_form_is_still_not_mistaken_for_a_change_password_form():
+    """W_add_user_form_false_positive ต้องไม่หายไปกับการมองหา label ที่กว้างขึ้น"""
+    assert await _gate_on(_ADD_USER_SHAPED_FORM) is False

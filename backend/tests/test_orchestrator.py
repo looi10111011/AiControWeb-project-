@@ -55,6 +55,7 @@ from backend.app.core.orchestrator import (
     _table_columns_are_addressable,
     _action_matches_plan_step,
     _MAX_ACTIONS_MISMATCHING_PLAN_STEP,
+    _MAX_BLOCKED_CURSOR_ADVANCES,
     _plan_drops_goal_operation,
     _build_nudge_message,
     _compact_anthropic_messages,
@@ -4260,10 +4261,17 @@ async def test_empty_table_is_still_accepted_when_the_filter_is_right():
     """ตัวกรองถูกต้อง + ตารางว่าง = จบงานจริง ต้องยังยอมรับเหมือนเดิม ไม่งั้น guard นี้
     จะทำให้งานลบที่สำเร็จจริงจบไม่ได้เลยสักครั้ง"""
     mock_async_playwright, _, _ = _patch_browser()
-    elements = [{"index": 1, "tag": "div", "type": "", "label": "User Role: ESS"}]
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "User Role: ESS"},
+        {"index": 2, "tag": "button", "type": "", "label": "Search"},
+    ]
 
+    # W_filter_already_satisfied: action แรกเคยเป็นการกดตัวกรองที่ถือค่า ESS อยู่แล้ว ซึ่งตอนนี้
+    # ถูกปฏิเสธเพราะเป็น no-op — เปลี่ยนเป็นกด Search ซึ่งเป็นสิ่งที่ต้องทำจริงในสถานการณ์นี้อยู่
+    # แล้ว (ไม่งั้นตารางจะไม่มีทางว่างให้ตรวจ) สิ่งที่เทสต์นี้พิสูจน์ยังเหมือนเดิมทุกประการ:
+    # ตัวกรองถูก + ตารางว่าง = ยอมรับ finish_task(success=true)
     next_action_calls = [
-        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t1", ["m"], llm.TokenUsage()),
         ("finish_task", {"success": True, "message": "ลบครบแล้ว"}, "t2", ["m"], llm.TokenUsage()),
     ]
 
@@ -5073,6 +5081,114 @@ async def test_site_manual_is_re_injected_in_full_on_the_first_step_after_a_comp
     assert "[PRE_LEARNED_MANUAL]" in rendered
     body = rendered.split("):\n", 1)[1]
     assert body.startswith("[PRE_LEARNED_MANUAL]")
+
+
+@pytest.mark.asyncio
+async def test_reopening_a_filter_that_already_holds_the_goal_value_is_rejected():
+    """บั๊กจริงที่ user กด Stop เอง 2026-09-03 (13 step / 256.3k token): agent กด
+    "User Role: -- Select --" 3 ครั้ง เลือก ESS แล้วกลับไปกด "User Role: ESS" ซ้ำอีก 3 ครั้ง
+
+    guard เดิมมองไม่เห็นทั้งชุด: loop detector คาบ 1 เทียบ (type, index) ซึ่งเปลี่ยนทุก
+    snapshot, ตัวนับ label ซ้ำตั้งไว้ที่ 4 (ลดไม่ได้ เพราะ "Select row" ต้องกดซ้ำหลายแถวได้จริง)
+    และ W_filter_scope_guard คุมแค่ช่องที่ goal ไม่ได้พูดถึง ไม่ได้คุมช่องที่ถูกตั้งไว้แล้ว
+    """
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [
+        {"index": 1, "tag": "div", "type": "", "label": "User Role: ESS"},
+        {"index": 2, "tag": "button", "type": "", "label": "Search"},
+    ]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    # การกดตัวกรองที่ถือค่า ESS อยู่แล้วต้องไม่ถูกส่งออกไป เหลือแต่ Search
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [2]
+
+
+@pytest.mark.asyncio
+async def test_a_filter_holding_a_different_value_is_still_clickable():
+    """ทิศตรงข้าม: ช่องเดียวกันแต่ค่ายังไม่ใช่ที่ goal ขอ ต้องกดได้ตามปกติ ไม่งั้น agent จะ
+    ตั้งค่า filter ไม่ได้เลยตั้งแต่แรก"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "div", "type": "", "label": "User Role: -- Select --"}]
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))) as mock_execute, \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m + [r]), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "ลบ userrole=ess ออกให้หมด", provider="anthropic",
+        )
+
+    assert [c.args[1]["index"] for c in mock_execute.await_args_list] == [1]
+
+
+@pytest.mark.asyncio
+async def test_plan_cursor_still_advances_when_actions_never_look_like_the_current_step():
+    """บั๊กจริงที่ user เจอทันทีหลังรอบแรกของ W_plan_cursor_needs_a_matching_action (2026-09-03):
+    แผนค้างอยู่ข้อ 1 หมุนยาวๆ ทั้งที่ log เดินไปถึง step 13 แล้ว
+
+    สาเหตุคือล็อกตัวเอง: cursor ไม่ขยับ -> step ปัจจุบันยังเป็นข้อเดิม -> action ถัดไปยิ่งไม่ตรง
+    กับข้อเดิมนั้น วนแบบนี้ตลอด task ตัวเทียบนี้ถูกเขียนไว้ตั้งแต่ต้นว่าเป็น "สัญญาณอ่อน ห้าม
+    เอาไปบล็อก" จึงต้องใช้เป็นตัวหน่วงที่มีเพดาน ไม่ใช่ประตูแข็ง"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "button", "type": "", "label": "Delete Selected"}]
+    plan = "1. หน้าเข้าสู่ระบบ: กรอกชื่อผู้ใช้และรหัสผ่าน\n2. หน้าจัดการผู้ใช้: กด Search"
+
+    # ทุก action เป็น "Delete Selected" ซึ่งไม่ตรงกับข้อ 1 ("เข้าสู่ระบบ") เลยสักครั้ง
+    calls = [
+        ("browser_action", {"type": "click", "index": 1, "completed_plan_step": 1},
+         f"t{i}", ["m"], llm.TokenUsage())
+        for i in range(_MAX_BLOCKED_CURSOR_ADVANCES + 1)
+    ] + [("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage())]
+    seen_steps = []
+
+    async def _emit(event):
+        if event.get("kind") == "plan_step_done":
+            seen_steps.append(event["step"])
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute",\
+               AsyncMock(return_value=ActionResult(True, "click", "ok"))), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, t, r: m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        await Orchestrator().run_task(
+            "https://app.example.com", "goal", provider="anthropic",
+            approved_plan=plan, on_event=_emit,
+        )
+
+    # ถูกหน่วงได้ แต่ต้องขยับในที่สุด — ไม่งั้นแผนค้างที่ข้อ 1 ตลอดทั้ง task
+    assert seen_steps, "cursor ไม่เคยขยับเลย = ล็อกตายแบบเดียวกับบั๊กที่ user เจอ"
 
 
 # --- W_plan_keeps_goal_verb / W_prompt_example_leak / W_prefer_row_delete (P7 ขั้น 4) ---
@@ -8266,3 +8382,47 @@ async def test_a_goal_that_is_not_a_counting_question_is_never_checked_for_numbe
 
     assert mock_next.await_count == 2
     assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_sensitive_answer_reaches_the_model_but_not_the_log():
+    """W_secret_answer_not_logged: agent ขอรหัสผ่านใหม่ -> ค่าที่ผู้ใช้พิมพ์ต้องไปถึงโมเดล
+    (ไม่งั้นกรอกลงฟอร์มไม่ได้เลย ซึ่งคืออาการที่ user รายงาน) แต่ต้องไม่ไปโผล่ใน LOG บนหน้าจอ
+    / step_trace บนดิสก์ / ShortTermMemory ที่ถูกสรุปกลับเข้า prompt ทุก step"""
+    mock_async_playwright, _, _ = _patch_browser()
+    elements = [{"index": 1, "tag": "input", "type": "password", "label": "New Password"}]
+
+    calls = [
+        ("request_user_input",
+         {"prompt": "รหัสผ่านใหม่ที่ต้องการตั้งคืออะไร", "sensitive": True}, "t1", ["m"], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "พอ"}, "", ["m"], llm.TokenUsage()),
+    ]
+    tool_results = []
+    events = []
+
+    async def _ask(cmd):
+        cmd["answer"] = "NewPass123!"
+        return True
+
+    async def _emit(event):
+        events.append(event)
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "snapshot"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result",\
+               side_effect=lambda m, tid, r: tool_results.append(r) or m), \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        result = await Orchestrator().run_task(
+            "https://app.example.com", "เปลี่ยนรหัสผ่าน", provider="anthropic",
+            ask_user_func=_ask, on_event=_emit,
+        )
+
+    # โมเดลต้องเห็นค่าจริง ไม่งั้นเอาไปกรอกไม่ได้
+    assert any("NewPass123!" in r for r in tool_results)
+    # แต่ log/หน้าจอ/หน่วยความจำต้องไม่มีค่าจริง
+    step_events = [e for e in events if e.get("kind") == "step"]
+    assert step_events and all("NewPass123!" not in str(e.get("result")) for e in step_events)
+    assert all("NewPass123!" not in str(h.get("result")) for h in result["history"])

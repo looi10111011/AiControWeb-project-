@@ -748,9 +748,20 @@ _COLLECT_JS = r"""
       // ("Male"/"Female" จาก <label> ที่ห่อ) ชนะ value ก่อน แล้วค่อย fallback ไป value ถ้า
       // ไม่มี label จริงๆ (ดีกว่าไม่มี label อะไรเลย)
       const isToggleInputType = type === 'radio' || type === 'checkbox';
+      // W_password_value_leaks_into_label (บั๊กจริงจากรันสด 2026-09-03 พร้อม ground truth):
+      // หลัง fill_secret กรอกรหัสที่บันทึกไว้ลงช่อง Current Password ตัว label ของ element
+      // นั้นกลายเป็น 'Current Password: admin123' แล้วถูกส่งเข้า prompt ทุก step ต่อจากนั้น
+      // — รหัสผ่านจริงของ user ถึงมือ LLM ของบุคคลที่สามแบบข้อความล้วน ซึ่งลบล้างเหตุผล
+      // ทั้งหมดที่ fill_secret มีอยู่ ("ระบบกรอกให้ โมเดลไม่มีทางเห็นค่า") และ crypto_store
+      // ที่เข้ารหัสไว้ตอนพักก็ไร้ความหมายไปด้วย
+      //
+      // สถานะของช่อง (ว่าง/กรอกแล้ว) ยังจำเป็นกับโมเดลจริง จึงแทนด้วยหมุดคงที่ ไม่ใช่ตัดทิ้ง
+      const safeValue = type === 'password'
+        ? ((el.value || '') ? '[filled]' : '')
+        : el.value;
       label = (
         trimmedText ||
-        (isToggleInputType ? (associatedLabel || el.value) : (el.value || associatedLabel)) ||
+        (isToggleInputType ? (associatedLabel || safeValue) : (safeValue || associatedLabel)) ||
         el.getAttribute('placeholder') ||
         semantic ||
         ''

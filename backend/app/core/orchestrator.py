@@ -37,6 +37,7 @@ from backend.app.core.actions import _KEY_VALUE_IN_QUERY_RE
 # บ่งบอกว่า goal เป็นคำถามเชิงนับ อยู่ที่ actions.py ที่เดียวกับที่สร้างข้อความนั้นขึ้นมา —
 # import ชื่อมาใช้ ไม่ก็อป format/keyword มาไว้อีกที่
 from backend.app.core.actions import _COUNT_QUERY_KEYWORDS, system_counted_conditions
+from backend.app.core.goal_intent import contains_keyword
 from backend.app.core.memory import ShortTermMemory, clip_result
 from backend.app.core.perception import get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
@@ -336,6 +337,9 @@ def _is_deletion_intent_goal(goal: str) -> bool:
 # กำกวมได้ตลอด การเอาไปบล็อก action จะพังงานที่ถูกต้อง — เป้าหมายคือเตือนโมเดลให้กลับไปอ่าน step
 _MIN_PLAN_STEP_WORDS_TO_JUDGE = 3
 _MAX_ACTIONS_MISMATCHING_PLAN_STEP = 5
+# W_plan_cursor_needs_a_matching_action: หน่วงการเดินหน้า cursor ได้มากสุดกี่ครั้งติดกัน —
+# 2 พอที่จะกันการไล่ติ๊กรวดเดียว แต่ไม่มากจนแผนดูค้างในสายตาคนดู
+_MAX_BLOCKED_CURSOR_ADVANCES = 2
 _MAX_PLAN_MISMATCH_NOTES = 1
 
 _PLAN_MISMATCH_NOTE_TEMPLATE = (
@@ -678,7 +682,17 @@ def _resolve_prompt_sections(
     sections = set(previous)
     if plan_text:
         sections.add("plan")
-    if allow_fill_secret:
+    # W_password_rules_arrive_too_late (บั๊กจริงที่ user รายงานพร้อมภาพหน้าจอ 2026-09-03:
+    # goal "เปลี่ยนรหัสผ่านใหม่เป็น ..." แต่ agent เดินไป PIM > Update Password ของพนักงาน
+    # แทนที่จะกดเมนูโปรไฟล์มุมขวาบน > Change Password): บล็อกกฎเรื่องรหัสผ่านมี W20 ที่สั่ง
+    # เรื่องนี้ไว้ตรงตัวอยู่แล้ว ("ห้ามคลิก My Info — ให้กด User Dropdown มุมขวาบนก่อน") แต่
+    # เดิมส่งเฉพาะตอน allow_fill_secret ซึ่งเป็น True ก็ต่อเมื่อ *ยืนหน้าฟอร์มเปลี่ยนรหัสผ่าน
+    # อยู่แล้ว* — คือหลังจากเลือกทางผิดไปแล้ว โมเดลจึงไม่เคยเห็นกฎตอนที่ต้องตัดสินใจเลือกทาง
+    # ส่งตั้งแต่ตอนที่ goal/แผนพูดถึงการเปลี่ยนรหัสผ่าน (sections สะสมข้าม step อยู่แล้ว
+    # ส่งครั้งเดียวก็อยู่ยาวทั้ง task)
+    if allow_fill_secret or _goal_or_plan_requests_password_change(
+        f"{goal} {plan_text or ''}"
+    ):
         sections.add("password")
     if (
         _is_deletion_intent_goal(goal)
@@ -1012,6 +1026,18 @@ _EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE = (
 
 
 _MAX_FILTER_SCOPE_RETRIES = 2
+
+# W_filter_already_satisfied: โควตาเท่ากับ guard พี่น้องด้วยเหตุผลเดียวกัน — บางเว็บต้องเปิด
+# dropdown ซ้ำจริงๆ (ค่าที่โชว์อยู่เป็นค่า default ที่ยังไม่ถูก apply) การบล็อกตายจะทำให้เว็บ
+# กลุ่มนั้นใช้งานไม่ได้เลย
+_MAX_FILTER_SATISFIED_RETRIES = 2
+
+_FILTER_SATISFIED_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' already holds the value the goal asked for ({field}={value}), so "
+    "clicking it again cannot change anything — you have re-opened this same filter "
+    "{count} times already. The filter is set: press Search now (or, if you already "
+    "searched, work on the rows in the result table)."
+)
 
 _FILTER_SCOPE_NUDGE_TEMPLATE = (
     "[Rejected] This action sets the field '{label}', but the goal only asks you to filter "
@@ -2179,8 +2205,18 @@ async def _login_form_needs_password(page: Page) -> bool:
 
     W19 (latency): .input_value() ไม่ระบุ timeout เองจะ default เป็น 30000ms ของ
     Playwright — ใส่ _DOM_CHECK_TIMEOUT_MS (3s) ตรงๆ กันรอนานเกินจำเป็นถ้า element หลุด/
-    detach ระหว่างทาง"""
+    detach ระหว่างทาง
+
+    W_change_password_form_is_not_a_login_form (บั๊กจริงจากรันสด 2026-09-03): หน้าเปลี่ยน
+    รหัสผ่านมีช่อง password ว่าง 3 ช่อง ตัวตรวจนี้จึงตอบ True แล้วผู้เรียกทั้งสองรายเข้าใจผิด
+    ว่าหลุดกลับมาหน้า login — guard session-drift ยิง auto-login ซ้ำ 2 รอบ และ guard
+    login-form ปฏิเสธทุก action ที่ไม่ใช่ fill/goto อีก 4 ครั้งจน backstop ฆ่า task ทิ้ง
+    (4 steps, ไม่มี action ไหนผิดเลยสักตัว) — ฟอร์มเปลี่ยนรหัสผ่านไม่ใช่ฟอร์ม login และ
+    หน้า login จริงมีช่อง password ช่องเดียวจึงไม่มีทางเข้าเงื่อนไขนี้ ความปลอดภัยเดิมคงอยู่ครบ
+    """
     try:
+        if await _page_looks_like_change_password_form(page):
+            return False
         password_inputs = page.locator('input[type="password"]:visible')
         count = await password_inputs.count()
         for i in range(count):
@@ -2954,8 +2990,42 @@ _CURRENT_PASSWORD_LABEL_HINTS = (
 
 
 def _goal_or_plan_requests_password_change(text: str) -> bool:
-    lower = (text or "").lower()
-    return any(kw in lower for kw in _PASSWORD_CHANGE_INTENT_KEYWORDS)
+    # W_thai_keyword_space: เทียบผ่าน contains_keyword() ที่ทนการเว้นวรรคของภาษาไทย —
+    # ดูเหตุผลเต็ม (พร้อมบั๊กจริงที่มันแก้) ใน goal_intent.contains_keyword()
+    return contains_keyword(text, _PASSWORD_CHANGE_INTENT_KEYWORDS)
+
+
+# W_password_field_has_no_label_attributes (บั๊กจริงที่วัดกับหน้าเว็บจริงแล้ว 2026-09-03):
+# ช่องรหัสผ่านของ OrangeHRM บนหน้า /web/pim/updatePassword ไม่มี label/aria-label/placeholder/
+# name/id เลยสักตัว (วัดแล้วได้ '' ทั้ง 3 ช่อง) เพราะ <label> เป็น *พี่น้อง* อยู่ใน
+# div.oxd-input-group ไม่ได้ผูกด้วย for= และไม่ได้ห่อ input ไว้ el.labels จึงว่างเปล่า
+# ผลคือ gate ด้านล่างคืน False บนหน้าเปลี่ยนรหัสผ่านจริง -> fill_secret ถูกตัดออกจาก tool
+# schema -> โมเดลไม่มีทางกรอกรหัสปัจจุบันได้เลย จึงยิง fill(21, "") ซ้ำจนโดน loop detector
+# ฆ่าทิ้ง (รันสด 2026-09-03: 8 steps, จบด้วย Failed)
+#
+# เดินขึ้น ancestor หา <label> ตัวแรก — วิธีเดียวกับที่ perception.py ใช้อยู่แล้ว
+# (getPrecedingSiblingLabelText) จำกัด 4 ชั้นเพื่อไม่ให้ไปคว้า label ของ field อื่นในฟอร์ม
+# ความเข้มงวดของ W_add_user_form_false_positive ไม่หายไป: ยืนยันกับหน้า Add User จริงแล้วว่า
+# ได้ 'password' / 'confirm password' เท่านั้น ไม่มี 'current password' -> ยัง False ตามเดิม
+_PASSWORD_FIELD_LABEL_JS = r"""el => {
+    const direct = (
+        (el.labels && el.labels[0] && el.labels[0].innerText) ||
+        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+        el.getAttribute('name') || el.id || ''
+    );
+    if (direct.trim()) return direct.toLowerCase();
+    const byIds = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+        .map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+    if (byIds.trim()) return byIds.toLowerCase();
+    let node = el;
+    for (let i = 0; i < 4 && node; i++) {
+        node = node.parentElement;
+        if (!node) break;
+        const lab = node.querySelector('label');
+        if (lab && lab.innerText.trim()) return lab.innerText.toLowerCase();
+    }
+    return '';
+}"""
 
 
 async def _page_looks_like_change_password_form(page: Page) -> bool:
@@ -2973,18 +3043,74 @@ async def _page_looks_like_change_password_form(page: Page) -> bool:
         if len(password_inputs) < 2:
             return False
         for el in password_inputs:
-            label = await el.evaluate(
-                """el => (
-                    (el.labels && el.labels[0] && el.labels[0].innerText) ||
-                    el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
-                    el.getAttribute('name') || el.id || ''
-                ).toLowerCase()"""
-            )
+            label = await el.evaluate(_PASSWORD_FIELD_LABEL_JS)
             if any(hint in label for hint in _CURRENT_PASSWORD_LABEL_HINTS):
                 return True
         return False
     except Exception:
         return False
+
+
+async def _current_password_field_is_empty(page: Page) -> bool:
+    """True ถ้าหน้านี้เป็นฟอร์มเปลี่ยนรหัสผ่าน *และ* ช่อง Current Password ยังว่างอยู่
+
+    W_secret_stays_in_schema_forever (บั๊กจริง วัดจาก debug ของรันสด 2026-09-03 รอบที่ 5):
+    บนหน้าเปลี่ยนรหัสผ่าน ทุก tool call ที่โมเดลส่งมาคือ
+    {'secret': 'current_password', 'type': 'fill_secret', 'index': 21} เหมือนกันหมดทุกเทิร์น
+    แม้ระบบจะปฏิเสธพร้อมชี้ index ของช่องที่ยังว่าง ([22] Password, [23] Confirm Password)
+    ไปแล้ว 2 ครั้งติด — นี่คืออาการเดิมที่ W_fill_secret_schema_gate บันทึกไว้เป๊ะ: gpt-5.4-mini
+    กรอกทุก property ในสคีมาเสมอ พอ `secret` มี enum ค่าเดียวมันจึงส่งมาทุกครั้งแล้วลาก `type`
+    เป็น fill_secret ไปด้วย หลักฐานยืนยัน: step ที่โมเดลเลือก click ได้ปกติ ล้วนเป็น step บน
+    หน้าที่ fill_secret ไม่อยู่ในสคีมา
+    บทสรุปเดิมของ W_fill_secret_schema_gate จึงใช้ได้ตรงตัว — nudge เอาไม่อยู่ ต้อง *ตัดออกจาก
+    สคีมา* และตัดทันทีที่ช่อง Current Password ถูกกรอกแล้ว เพราะจากจุดนั้นไปมันไม่มีประโยชน์อีก"""
+    try:
+        password_inputs = await page.locator('input[type="password"]:visible').all()
+        if len(password_inputs) < 2:
+            return False
+        for el in password_inputs:
+            label = await el.evaluate(_PASSWORD_FIELD_LABEL_JS)
+            if any(hint in label for hint in _CURRENT_PASSWORD_LABEL_HINTS):
+                return not (await el.input_value(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+        return False
+    except Exception:
+        return False
+
+
+# W_secret_refilled_forever (บั๊กจริงจากรันสด 2026-09-03 ซ้ำ 2 รอบติดด้วยผลเหมือนกันเป๊ะ):
+# พอ fill_secret กรอกช่อง Current Password สำเร็จ โมเดลสั่ง fill_secret ที่ index เดิมซ้ำทันที
+# ทุกครั้ง ไม่เคยขยับไปช่อง Password/Confirm Password (ซึ่งอยู่ใน snapshot ครบพร้อม index ที่
+# ถูกต้อง — ยืนยันด้วย probe หน้าจริงแล้ว) จนโดน same-label-loop ฆ่าที่ step 12 ทั้งสองรอบ
+# ทุก action "สำเร็จ" หมดแต่ไม่มีความคืบหน้าเลยแม้แต่นิดเดียว
+#
+# รูปแบบเดียวกับ W_state_guard_shortcut: บอกว่า "อย่าทำซ้ำ" ไม่พอ ต้องชี้ index จริงของช่อง
+# ถัดไปให้ ความว่าง/ไม่ว่างอ่านจาก DOM ตรงๆ ไม่ใช่จาก label (label ปิดค่าไว้แล้วตาม
+# W_password_value_leaks_into_label) และไม่ส่งค่าจริงของช่องไหนออกไปทั้งสิ้น
+_MAX_SECRET_REFILL_RETRIES = 2
+
+_PASSWORD_FIELD_STATE_JS = """() => Array.from(
+    document.querySelectorAll('input[type="password"]')
+).filter(
+    el => el.getClientRects().length > 0
+).map(el => ({
+    index: el.getAttribute('data-ai-index'),
+    filled: !!(el.value || '').trim(),
+}))"""
+
+
+async def _password_field_states(page: Page) -> list[dict]:
+    """[{index, filled}] ของช่อง password ที่มองเห็นได้ — ห้าม raise ตามกฎของไฟล์นี้"""
+    try:
+        return await page.evaluate(_PASSWORD_FIELD_STATE_JS)
+    except Exception:
+        return []
+
+
+def _label_for_index(elements: list[dict], index) -> str:
+    for el in elements or []:
+        if str(el.get("index")) == str(index):
+            return str(el.get("label") or "")
+    return ""
 
 
 # W_state_guard_shortcut ("Point at the actual answer, not just 'try something else'" — real
@@ -3921,6 +4047,7 @@ class Orchestrator:
         # W_fill_secret_hardening: จำนวนครั้งติดกันที่ fill_secret ถูกปฏิเสธเพราะไม่ใช่
         # change-password context (รีเซ็ตทันทีที่ dispatch อย่างอื่นผ่าน — ดู guard ในลูป)
         consecutive_fill_secret_context_reject_count = 0
+        secret_refill_reject_count = 0
         # W_goal_precheck: จำนวนครั้งติดกันที่ข้ามการคลิก element ที่มี marker "[already active]"
         consecutive_already_active_skip_count = 0
         # W_goal_scope: sticky ทั้งคู่ — ไม่ reset กลับ False อีกเลยตลอด task ("แผนเสร็จครบแล้ว"/
@@ -3933,6 +4060,9 @@ class Orchestrator:
         # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
         # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
         plan_cursor = 1
+        # W_plan_cursor_needs_a_matching_action: กี่ครั้งติดกันแล้วที่ไม่ยอมให้ cursor เดินหน้า
+        # เพราะ action ดู "ไม่ตรง" กับ step ปัจจุบัน — ต้องมีเพดาน ไม่งั้นล็อกตาย (ดูจุดใช้งาน)
+        blocked_cursor_advances = 0
         # W_plan_progress_stall: กี่ action ที่สำเร็จแล้วผ่านไปโดย plan_cursor ไม่ขยับเลย
         actions_since_plan_progress = 0
         plan_stall_notes_sent = 0
@@ -3941,6 +4071,10 @@ class Orchestrator:
         plan_mismatch_notes_sent = 0
         # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
         goal_filter_fields = _goal_condition_fields(goal)
+        # W_filter_already_satisfied: คู่ field=value เต็มๆ (ไม่ใช่แค่ชื่อ field) — ใช้ตัวเดียว
+        # กับที่ _goal_condition_fields() อ่านมา ไม่เรียก regex ซ้ำทุก step
+        goal_condition_pairs = _goal_condition_pairs(goal)
+        filter_satisfied_reject_count = 0
         filter_scope_reject_count = 0
         prefer_row_delete_reject_count = 0
         profile_menu_reject_count = 0
@@ -4671,9 +4805,28 @@ class Orchestrator:
                 # เงื่อนไขเดียวกันเป๊ะกับ guard ด้านล่าง และคำนวณที่นี่ที่เดียว แล้ว guard
                 # ใช้ค่าเดิมซ้ำ — schema กับ guard จึงพูดตรงกันเสมอ และไม่ต้องยิง DOM check
                 # ซ้ำสองรอบต่อ step
-                allow_fill_secret = (
-                    _goal_or_plan_requests_password_change(f"{goal} {plan_text or ''}")
-                    or await _page_looks_like_change_password_form(page)
+                #
+                # W_secret_gate_stays_page_only (regression 2026-09-03 ที่ผมทำเองแล้ว user
+                # เจอจากการรันสด 2 รอบติด): เคยแก้บรรทัดนี้ให้เปิด fill_secret ตั้งแต่ตอน
+                # goal/แผน *พูดถึง* การเปลี่ยนรหัสผ่าน เพื่อให้กฎ W20 ถูกส่งเร็วขึ้น — ผิดจุด
+                # และรื้อ W_fill_secret_schema_gate ทิ้งพอดี: gpt-5.4-mini บน endpoint
+                # ChatGPT OAuth กรอกทุก property ในสคีมาทุกครั้ง พอ `secret` มี enum ค่าเดียว
+                # มันจึงส่งมาตลอดแล้วลาก `type` เป็น fill_secret ไปด้วย ผลคือ agent ยิง
+                # fill_secret ใส่ index มั่วตั้งแต่หน้า login (หลุดไปถึงหน้า Help & Support)
+                # ไม่เคยกดเมนูโปรไฟล์เลยสักรอบ — คือ 5/5 failure แบบเดิมเป๊ะ
+                #
+                # กฎ W20 ไม่ต้องพึ่งธงตัวนี้อยู่แล้ว: _resolve_prompt_sections() เปิดบล็อก
+                # password จาก _goal_or_plan_requests_password_change() ของมันเองแยกต่างหาก
+                # (ดู W_password_rules_arrive_too_late) ธงตัวนี้จึงกลับไปถามแค่ข้อเดียวตามเดิม
+                # — "ตอนนี้ยืนอยู่บนฟอร์มเปลี่ยนรหัสผ่านจริงไหม"
+                allow_fill_secret = await _page_looks_like_change_password_form(page)
+                # W_secret_stays_in_schema_forever: สคีมาแคบกว่าบริบทหนึ่งขั้น — พอช่อง Current
+                # Password ถูกกรอกแล้ว fill_secret ไม่มีประโยชน์อีกเลย ตัดออกทันทีเพื่อให้โมเดล
+                # ไม่มีทางส่งมันมาซ้ำได้ ส่วน guard/บล็อก prompt ยังใช้ allow_fill_secret ตัวกว้าง
+                # ต่อไป (ไม่งั้น guard hardening จะเข้าใจผิดว่า "ไม่ใช่หน้าเปลี่ยนรหัสผ่าน" แล้ว
+                # บังคับ recovery ทั้งที่หน้าถูกแล้ว)
+                fill_secret_in_schema = (
+                    allow_fill_secret and await _current_password_field_is_empty(page)
                 )
 
                 # W_steptimeout: ครอบ timeout เหมือนที่ routes.py::generate_plan ทำกับ
@@ -4728,7 +4881,7 @@ class Orchestrator:
                         # W_plan_step_cursor: ส่งแผนพร้อมเครื่องหมายว่าอยู่ข้อไหน แทนแผนดิบ
                         _focused_plan_context(plan_text, plan_cursor),
                         verification_context=verification_context,
-                        allow_fill_secret=allow_fill_secret,
+                        allow_fill_secret=fill_secret_in_schema,
                         prompt_sections=prompt_sections,
                     ),
                     timeout=settings.llm_step_timeout_seconds,
@@ -4808,20 +4961,28 @@ class Orchestrator:
                         f"the user answered: {answer}" if provided
                         else "[No answer] the user declined or did not answer within the time limit"
                     )
+                    # W_secret_answer_not_logged: คำตอบต้องไปถึงโมเดล (ไม่งั้นกรอกไม่ได้) แต่ไม่
+                    # ควรไปโผล่ในที่ที่ถูกเก็บไว้ยาวๆ — panel LOG บนหน้าจอ, data/step_trace.jsonl
+                    # บนดิสก์ และ ShortTermMemory ที่ถูกสรุปกลับเข้า prompt ทุก step ล้วนไม่จำเป็น
+                    # ต้องรู้ค่าจริง (ค่าจริงอยู่ใน messages ของเทิร์นนี้อยู่แล้ว) — ปิดบังเฉพาะตอน
+                    # sensitive=True เท่านั้น คำตอบทั่วไป (ชื่อ/ตัวเลข) ยังเห็นได้เหมือนเดิม
+                    logged_result_text = (
+                        "the user answered: [hidden]" if provided and sensitive else result_text
+                    )
                     if verbose:
-                        print(f"[request_user_input] {prompt_text!r} -> {result_text}", flush=True)
+                        print(f"[request_user_input] {prompt_text!r} -> {logged_result_text}", flush=True)
                     self.memory.record({
                         "step": steps_taken,
                         "cmd": log_cmd,
                         "label": "",
-                        "result": result_text,
+                        "result": logged_result_text,
                         "success": provided,
                         "tokens": _tokens_dict(usage),
                         "locator_descriptor": None,
                     })
                     await _emit({
                         "kind": "step", "step": steps_taken, "cmd": log_cmd,
-                        "label": "", "result": result_text, "success": provided,
+                        "label": "", "result": logged_result_text, "success": provided,
                         "tokens": _tokens_dict(total_usage),
                         "llm_calls": llm_turns,
                     })
@@ -5271,8 +5432,11 @@ class Orchestrator:
                 # แก้เส้นทางที่ผิด, หรือ multi-hop กว่าจะถึงฟอร์ม login จริง) ห้ามดักเช็ค
                 # สถานะฟอร์มของหน้าปัจจุบันจนบล็อก goto ไม่ให้ออกจากหน้านั้นได้เลย —
                 # ปล่อยผ่านทันทีเสมอไม่ว่า password จะว่างอยู่หรือไม่ ***
+                # W_secret_fill_is_a_fill: fill_secret คือ *วิธีเดียว* ที่ระบบเปิดให้กรอก
+                # ช่องรหัสผ่านด้วยค่าที่เก็บไว้ การไม่มีชื่อมันอยู่ในรายการนี้แปลว่า guard ที่
+                # ตั้งใจบังคับ "กรอกรหัสผ่านให้ครบก่อน" กลับไปปฏิเสธการกรอกรหัสผ่านเสียเอง
                 if (
-                    tool_input.get("type") not in ("fill", "goto")
+                    tool_input.get("type") not in ("fill", "fill_secret", "goto")
                     and await _login_form_needs_password_cached()
                 ):
                     if premature_login_skip_count < _MAX_PREMATURE_LOGIN_SKIP_RETRIES:
@@ -5358,6 +5522,48 @@ class Orchestrator:
                     ))
                     continue
                 consecutive_fill_secret_context_reject_count = 0
+
+                # W_secret_refilled_forever: ช่องที่ fill_secret เล็งอยู่ถูกกรอกไปแล้ว การกรอกซ้ำ
+                # จึงไม่ใช่ความคืบหน้า — ปฏิเสธแล้วชี้ index ของช่องที่ยังว่างอยู่จริงให้
+                if tool_input.get("type") == "fill_secret":
+                    _pw_states = await _password_field_states(page)
+                    _target_index = str(tool_input.get("index"))
+                    _already_filled = any(
+                        str(st.get("index")) == _target_index and st.get("filled")
+                        for st in _pw_states
+                    )
+                    _still_empty = [
+                        st for st in _pw_states if not st.get("filled") and st.get("index")
+                    ]
+                    if (
+                        _already_filled
+                        and _still_empty
+                        and secret_refill_reject_count < _MAX_SECRET_REFILL_RETRIES
+                    ):
+                        secret_refill_reject_count += 1
+                        _bump_guard("secret_refill")  # W_token_cut W1
+                        _empty_desc = ", ".join(
+                            f"[{st['index']}] {_label_for_index(elements, st['index'])}"
+                            for st in _still_empty
+                        )
+                        _refill_nudge = (
+                            f"[Rejected] The Current Password field (index {_target_index}) is "
+                            "ALREADY filled — the system typed the saved password into it and it "
+                            "worked. Filling it again changes nothing and wastes a step. The "
+                            "password fields still EMPTY right now are: "
+                            f"{_empty_desc}. Put the new password into those with a normal "
+                            "'fill' action (fill_secret only ever works on Current Password), "
+                            "then submit the form."
+                        )
+                        if verbose:
+                            print(
+                                f"[secret-refill {secret_refill_reject_count}/"
+                                f"{_MAX_SECRET_REFILL_RETRIES}] ปฏิเสธ กรอกซ้ำช่องที่เต็มแล้ว "
+                                f"— ช่องที่ยังว่าง: {_empty_desc}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _refill_nudge)
+                        continue
 
                 # loop-detection: action เดิมเป๊ะๆ ติดกันกี่ครั้งแล้ว (นับรวมทั้ง success/fail
                 # เพราะแม้ execute() สำเร็จทุกครั้ง แต่ถ้า LLM สั่งซ้ำเดิมไม่เปลี่ยน ก็ไม่ใช่
@@ -5865,6 +6071,43 @@ class Orchestrator:
                 touched_field = _filter_field_from_label(
                     action_label or "", str(tool_input.get("type") or ""),
                 )
+                # W_filter_already_satisfied: ตัวกรองตัวนี้ถือค่าที่ goal ขอไว้อยู่แล้ว การกด
+                # ซ้ำจึงเป็น no-op — เป็นวงวนที่ guard เดิมมองไม่เห็น (ดู scratchpad/บันทึกของ
+                # W_filter_already_satisfied: loop detector เทียบ index ที่เปลี่ยนทุก snapshot
+                # และตัวนับ label ซ้ำตั้งไว้ที่ 4 เพราะ "Select row" ต้องกดซ้ำหลายแถวได้จริง)
+                # อ่านค่าจาก label ที่ perception เติมให้อยู่แล้ว ไม่ต้องถาม LLM และไม่ต้องอ่าน DOM
+                satisfied_pair = None
+                if touched_field and tool_input.get("type") in ("click", "press_key"):
+                    _current_value = _filter_value_from_label(action_label or "")
+                    if _current_value:
+                        satisfied_pair = next(
+                            (
+                                (f, v) for f, v in goal_condition_pairs
+                                if _field_names_match(f, touched_field)
+                                and _cell_matches_value(_current_value, v)
+                            ),
+                            None,
+                        )
+                if satisfied_pair and filter_satisfied_reject_count < _MAX_FILTER_SATISFIED_RETRIES:
+                    filter_satisfied_reject_count += 1
+                    nudge_text = _FILTER_SATISFIED_NUDGE_TEMPLATE.format(
+                        label=action_label,
+                        field=satisfied_pair[0],
+                        value=satisfied_pair[1],
+                        count=filter_satisfied_reject_count,
+                    )
+                    if verbose:
+                        print(
+                            f"[filter ถูกตั้งไว้แล้ว {filter_satisfied_reject_count}/"
+                            f"{_MAX_FILTER_SATISFIED_RETRIES}] label={action_label!r}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
                 if (
                     goal_filter_fields
                     and touched_field
@@ -6264,9 +6507,44 @@ class Orchestrator:
                     and result.success
                     and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
                 )
+                # W_plan_cursor_needs_a_matching_action: completed_plan_step เป็น self-report
+                # ล้วนๆ และ W111 วัดมาแล้วว่าโมเดลแนบมากับแทบทุก action — cursor จึงวิ่งจนแผน
+                # ติ๊กครบก่อนงานจริงจะเสร็จ (user รายงานพร้อมภาพหน้าจอ 2026-09-03: แผนติ๊กครบ
+                # 5 ข้อขณะที่ยังลบไม่เสร็จ) ใช้ตัวเทียบตัวเดียวกับ W111 เป็นประตู: ถ้า action
+                # ที่เพิ่งทำ "ไม่ตรงกับ step ปัจจุบัน" อย่างชัดเจน (False) ห้ามเดินหน้า cursor
+                # ส่วน None = ตัดสินไม่ได้ ยังปล่อยผ่านเหมือนเดิม เพราะตัวเทียบนี้เป็นสัญญาณอ่อน
+                # โดยเจตนา (step ที่ LLM เขียนกว้าง/กำกวมได้เสมอ — ดู docstring ของมัน)
+                # การบล็อกทุกเคสที่อ่านไม่ออกจะทำให้แผนไม่มีวันติ๊กเลยบนงานจริงส่วนใหญ่
+                _cursor_step_text = ""
+                if plan_text:
+                    _cursor_steps = _plan_step_lines(plan_text)
+                    if 0 < plan_cursor <= len(_cursor_steps):
+                        _cursor_step_text = _cursor_steps[plan_cursor - 1]
+                _cursor_action_matches = _action_matches_plan_step(
+                    _cursor_step_text, action_label or "", str(tool_input.get("type") or ""),
+                ) if _cursor_step_text else None
+
+                # W_plan_cursor_needs_a_matching_action (แก้รอบสอง — บั๊กจริงที่ user เจอทันที
+                # หลังรอบแรก 2026-09-03): รอบแรกบล็อกการเดินหน้าทุกครั้งที่ตัวเทียบตอบ "ไม่ตรง"
+                # ซึ่งกลายเป็น **ล็อกตาย** — พอ cursor ไม่ขยับ step ปัจจุบันก็ยังเป็นข้อเดิม
+                # action ถัดไปก็ยิ่งไม่ตรงกับข้อเดิมนั้น วนแบบนี้ตลอด task (หน้าจอ: แผนค้างอยู่
+                # ข้อ 1 หมุนยาวๆ ทั้งที่ log เดินไปถึง step 13 แล้ว)
+                #
+                # ต้นเหตุที่แท้จริงคือเอาสัญญาณที่ docstring ของ _action_matches_plan_step()
+                # เขียนไว้เองว่าเป็น "สัญญาณอ่อน ห้ามเอาไปบล็อก" มาใช้เป็นประตูแข็ง — ใช้เป็น
+                # ตัวหน่วงแทน: บล็อกได้ไม่เกิน _MAX_BLOCKED_CURSOR_ADVANCES ครั้งติดกัน แล้ว
+                # ปล่อยผ่าน ทำให้ยังกันโมเดลไล่ติ๊กแผนรวดเดียวได้ (ปัญหาเดิม) โดยไม่มีทางค้าง
                 if plan_progressing_action and completed_plan_step is not None:
-                    plan_cursor = min(plan_cursor + 1, _total_plan_steps(plan_text) + 1)
-                    actions_since_plan_progress = 0
+                    if (
+                        _cursor_action_matches is False
+                        and blocked_cursor_advances < _MAX_BLOCKED_CURSOR_ADVANCES
+                    ):
+                        blocked_cursor_advances += 1
+                        actions_since_plan_progress += 1
+                    else:
+                        blocked_cursor_advances = 0
+                        plan_cursor = min(plan_cursor + 1, _total_plan_steps(plan_text) + 1)
+                        actions_since_plan_progress = 0
                 elif plan_progressing_action:
                     actions_since_plan_progress += 1
 

@@ -687,6 +687,43 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
 # การกดจริงของมนุษย์ trigger keyboard event ที่ widget พวกนี้ฟังอยู่จริง) แล้วค่อย .fill()
 # ข้อความใหม่ลงในช่องที่ว่างแล้ว (เร็วกว่า/เชื่อถือได้กว่าการพิมพ์ทีละตัวอักษร เพราะช่อง
 # ว่างเปล่าแล้วไม่มีอะไรให้ .fill() ต้องเคลียร์ซ้ำอีก)
+# W_fill_wrapper_resolves_to_inner_input: element ที่กรอกได้จริงตามนิยามของ Playwright เอง
+# (ข้อความ error ของมันบอกไว้ตรงๆ ว่ารับอะไรบ้าง) — เช็คกับตัว element ก่อน ไม่ใช่เดาจาก tag
+# ที่ perception รายงาน เพราะ index ชี้ไปที่ DOM node จริงเสมอ
+_IS_FILLABLE_JS = """(el) => {
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'select') return true;
+    if (tag === 'input') return (el.type || 'text').toLowerCase() !== 'hidden';
+    return !!el.isContentEditable;
+}"""
+
+# ช่องกรอกตัวแรกที่อยู่ *ข้างใน* ตัวห่อ — เรียง input ก่อน textarea/contenteditable ตามความถี่
+# ที่พบจริงบนฟอร์ม และตัด hidden ออกเพราะกรอกไม่ได้อยู่แล้ว
+_INNER_FILLABLE_SELECTOR = 'input:not([type="hidden"]), textarea, [contenteditable="true"]'
+
+
+async def _effective_fill_selector(
+    target: Union[Page, Frame], selector: str, timeout: int,
+) -> str:
+    """คืน selector ของ element ที่กรอกได้จริง — ตัวเดิมถ้ามันกรอกได้อยู่แล้ว
+
+    ถ้า element ที่ index ชี้ไปเป็นแค่กล่องครอบ (พบบ่อยบน SPA ที่ห่อ <input> ไว้ใน div ที่ถือ
+    label ของช่องนั้น) ให้เล็งช่องกรอกตัวแรกข้างในแทน — ถ้าไม่มีข้างในเลยก็คืนตัวเดิมไป ให้
+    Playwright เป็นคนบอก error ตามความจริง ไม่ใช่เงียบไปเฉยๆ (fail-safe เหมือนทุกตัวในไฟล์นี้)"""
+    try:
+        fillable = await target.locator(selector).evaluate(_IS_FILLABLE_JS, timeout=timeout)
+    except Exception:
+        return selector
+    if fillable:
+        return selector
+    inner = f"{selector} :is({_INNER_FILLABLE_SELECTOR})"
+    try:
+        found = await target.query_selector(inner)
+    except Exception:
+        return selector
+    return inner if found is not None else selector
+
+
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index — เคลียร์ข้อความเดิมด้วย
     focus -> select-all -> Backspace ก่อนเสมอ (ดู module comment ด้านบน)
@@ -714,6 +751,8 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
+        # W_fill_wrapper_resolves_to_inner_input: index อาจชี้ที่กล่องครอบ ไม่ใช่ช่องกรอก
+        selector = await _effective_fill_selector(target, selector, timeout)
         await target.click(selector, timeout=timeout)
         await target.press(selector, "ControlOrMeta+a", timeout=timeout)
         await target.press(selector, "Backspace", timeout=timeout)
@@ -774,6 +813,9 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
+        # W_fill_wrapper_resolves_to_inner_input (บั๊กจริงหน้า Update Password ของ OrangeHRM:
+        # "Element is not an <input>, <textarea>, <select> or [contenteditable]")
+        selector = await _effective_fill_selector(target, selector, timeout)
         await target.click(selector, timeout=timeout)
         await target.press(selector, "ControlOrMeta+a", timeout=timeout)
         await target.press(selector, "Backspace", timeout=timeout)
@@ -1549,6 +1591,11 @@ async def execute(
             result = await _dispatch_click_with_retry(page, cmd["index"], label)
             if result.success and disturb_kind == "option":
                 result = replace(result, dropdown_option_selected=True)
+            # W_menu_open_note_needs_no_chain: คลิกที่ไม่มี chain ก็ต้องรู้ว่า index เลื่อนแล้ว
+            if stale_chain_note is None and result.success:
+                shift_note = state_filter.index_shift_note_for_kind(disturb_kind)
+                if shift_note is not None:
+                    result = replace(result, message=f"{result.message} ({shift_note})")
             if stale_chain_note is not None:
                 # คลิกหลักสำเร็จจริง (เปิด dropdown/เลือกตัวเลือกได้ตามต้องการ) — รายงานตาม
                 # ความจริง แล้วบอก
@@ -1577,7 +1624,21 @@ async def execute(
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
                 return ActionResult(True, f"fill({cmd['index']})", f"[Skipped] {redundant}")
+            # W_submit_before_confirm_password: ตัดเฉพาะส่วนที่พ่วงมาส่งฟอร์ม ถ้าฟอร์มยังมี
+            # ช่องรหัสผ่านอื่นว่างอยู่ — การกรอกยังทำตามปกติ ดูเหตุผลเต็มใน state_filter
+            early_submit = None
+            if cmd.get("key") == "Enter" or cmd.get("then_click_index") is not None:
+                early_submit = await state_filter.check_fill_submits_with_password_fields_left_empty(
+                    page, cmd["index"],
+                )
+            if early_submit is not None:
+                cmd = {k: v for k, v in cmd.items() if k not in ("key", "then_click_index")}
             result = await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+            if early_submit is not None and result.success:
+                result = replace(
+                    result,
+                    message=f"{result.message} (did not submit the form: {early_submit})",
+                )
             # W_chain ("Compound Actions"): "key" (เดิมมีไว้ใช้กับ press_key เท่านั้น) ใช้
             # ร่วมกับ fill ได้ด้วย — กด key นี้ (ปกติ "Enter") ทันทีหลัง fill สำเร็จ รวม
             # "Focus + Type + Press Enter" เป็น 1 step เดียว (fill() เองก็ focus element

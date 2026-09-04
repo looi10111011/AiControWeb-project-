@@ -24,6 +24,7 @@ from backend.app.core.actions import (
     fill_secret,
     resolve_confirmation_modal,
 )
+from backend.app.core import actions
 from backend.app.core.perception import get_snapshot
 
 
@@ -1914,3 +1915,162 @@ def test_column_matching_ignores_spacing_and_case_in_the_header():
     note = _deterministic_count_note(_MIXED_COLUMN_TABLE, "how many user_role=admin")
 
     assert "1 of those 2 entries contain 'admin' in the 'User Role' column" in note
+
+
+# ---------------- W_fill_wrapper_resolves_to_inner_input ----------------
+# บั๊กจริงหน้า Update Password ของ OrangeHRM (2026-09-03): fill_secret(40) ล้มด้วย
+# "Element is not an <input>, <textarea>, <select> or [contenteditable]" เพราะ index ชี้ที่
+# div ที่ห่อ <input> ไว้ (perception ติด index ให้ตัวห่อเพราะมันคือตัวที่มี label อ่านได้)
+
+
+def _fill_target(is_fillable, inner_found=object()):
+    target = AsyncMock()
+    locator = MagicMock()
+    locator.evaluate = AsyncMock(return_value=is_fillable)
+    target.locator = MagicMock(return_value=locator)
+    target.query_selector = AsyncMock(return_value=inner_found)
+    return target
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_points_at_the_input_inside_a_wrapper():
+    target = _fill_target(is_fillable=False)
+
+    selector = await actions._effective_fill_selector(target, '[data-ai-index="40"]', 3000)
+
+    assert selector.startswith('[data-ai-index="40"] ')
+    assert "input" in selector
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_leaves_a_real_input_untouched():
+    """ช่องกรอกปกติต้องไม่ถูกแตะเลย — ไม่งั้น selector ยาวขึ้นโดยไม่จำเป็นทุก fill"""
+    target = _fill_target(is_fillable=True)
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="2"]', 3000,
+    ) == '[data-ai-index="2"]'
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_gives_up_honestly_when_nothing_is_fillable_inside():
+    """ไม่มีช่องกรอกข้างในเลย = คืน selector เดิม ให้ Playwright บอก error ตามความจริง
+    ดีกว่าเดาไปเรื่อยแล้วกรอกผิดที่ (หลักการเดียวกับ W_confident_zero)"""
+    target = _fill_target(is_fillable=False, inner_found=None)
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="3"]', 3000,
+    ) == '[data-ai-index="3"]'
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_fails_open_when_the_dom_cannot_be_read():
+    target = _fill_target(is_fillable=False)
+    target.locator.return_value.evaluate = AsyncMock(side_effect=Exception("detached"))
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="9"]', 3000,
+    ) == '[data-ai-index="9"]'
+
+
+# ---------------------------------------------------------------------------
+# W_submit_before_confirm_password + W_menu_open_note_needs_no_chain
+#
+# ทั้งสองบั๊กมาจากรันสด 2026-09-03 บน OrangeHRM และทั้งคู่เป็นพฤติกรรมของ DOM จริง
+# (ค่าในช่อง password ว่างหรือไม่ / เมนูที่เพิ่งเปิดสร้าง element ใหม่) — mock พิสูจน์ไม่ได้
+# จึงใช้ Chromium จริง เหมือน W_fill_wrapper_resolves_to_inner_input
+# ---------------------------------------------------------------------------
+
+_PASSWORD_FORM_HTML = """
+<html><body>
+  <form onsubmit="document.title='SUBMITTED'; return false;">
+    <input data-ai-index="1" type="password" />
+    <input data-ai-index="2" type="password" />
+    <input data-ai-index="3" type="password" />
+    <button data-ai-index="4" type="submit">Save</button>
+  </form>
+</body></html>
+"""
+
+_MENU_HTML = """
+<html><body>
+  <div data-ai-index="1" role="button" aria-haspopup="true"
+       onclick="document.getElementById('m').hidden = !document.getElementById('m').hidden">Profile</div>
+  <ul id="m" role="menu" hidden>
+    <li data-ai-index="2" role="menuitem">About</li>
+    <li data-ai-index="3" role="menuitem">Change Password</li>
+  </ul>
+  <button data-ai-index="4">Elsewhere</button>
+</body></html>
+"""
+
+
+async def _with_page(html):
+    """context manager แบบง่ายๆ ไม่ได้ — คืน (playwright, browser, page) ให้ปิดเอง"""
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch()
+    page = await browser.new_page()
+    await page.set_content(html)
+    return pw, browser, page
+
+
+@pytest.mark.asyncio
+async def test_fill_does_not_submit_while_other_password_fields_are_empty():
+    pw, browser, page = await _with_page(_PASSWORD_FORM_HTML)
+    try:
+        result = await execute(
+            page, {"type": "fill", "index": 1, "text": "abc",
+                   "key": "Enter", "then_click_index": 4},
+        )
+        assert result.success is True          # การกรอกยังต้องสำเร็จตามปกติ
+        assert "did not submit the form" in result.message
+        assert await page.title() != "SUBMITTED"
+        assert await page.input_value('[data-ai-index="1"]') == "abc"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_fill_still_submits_once_it_is_the_last_empty_password_field():
+    """ห้ามตัดการส่งฟอร์มทิ้งเสมอ — ไม่งั้นงานเปลี่ยนรหัสผ่านจะกดบันทึกไม่ได้เลย"""
+    pw, browser, page = await _with_page(_PASSWORD_FORM_HTML)
+    try:
+        await execute(page, {"type": "fill", "index": 1, "text": "abc"})
+        await execute(page, {"type": "fill", "index": 2, "text": "abc"})
+        result = await execute(
+            page, {"type": "fill", "index": 3, "text": "abc",
+                   "key": "Enter", "then_click_index": 4},
+        )
+        assert result.success is True
+        assert "did not submit the form" not in result.message
+        assert await page.title() == "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_click_that_opens_a_menu_says_the_indexes_are_stale_without_a_chained_click():
+    pw, browser, page = await _with_page(_MENU_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 1})
+        assert result.success is True
+        assert "now OPEN" in result.message
+        assert "do NOT reuse the index you just clicked" in result.message
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_click_gets_no_extra_note():
+    """โน้ตนี้กินโควตา token ทุก step ที่แนบ — ต้องไม่แถมให้คลิกที่ไม่เกี่ยวกับเมนู"""
+    pw, browser, page = await _with_page(_MENU_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 4})
+        assert result.success is True
+        assert result.message.strip() == "click succeeded"
+    finally:
+        await browser.close()
+        await pw.stop()
