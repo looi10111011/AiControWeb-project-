@@ -8426,3 +8426,43 @@ async def test_a_sensitive_answer_reaches_the_model_but_not_the_log():
     step_events = [e for e in events if e.get("kind") == "step"]
     assert step_events and all("NewPass123!" not in str(e.get("result")) for e in step_events)
     assert all("NewPass123!" not in str(h.get("result")) for h in result["history"])
+
+
+# W_verify_text_needs_a_write (บั๊กจริงที่ user เจอจากตัวเลข token 2026-09-04): goal
+# "เปิดเว็ปแล้วไปที่หน้าแอดมิน" ใช้ LLM 4 ครั้งเพื่อ action เดียว หนึ่งในเทิร์นที่เสียไปคือ
+# finish_task ที่ถูก guard ตาราง (W63[7.2]) ตีกลับ เพราะโมเดลส่ง verify_text มาด้วยทั้งที่งานนี้
+# เป็นการนำทางล้วน — gpt-5.4-mini กรอกทุก property ในสคีมาเสมอ (เหตุผลเดียวกับ
+# W_fill_secret_schema_gate) สมมติฐานเดิมของ guard ที่ว่า "โมเดลใส่มาเมื่อจำเป็นเท่านั้น" จึงผิด
+
+
+@pytest.mark.asyncio
+async def test_navigation_goal_does_not_pay_a_turn_for_the_table_verify_guard():
+    """งานนำทางล้วน: ไม่มี action ไหนเขียนค่า และ goal ไม่ได้สั่งสร้าง/แก้ record
+    -> verify_text ที่โมเดลแถมมาต้องถูกเมิน finish_task ต้องผ่านตั้งแต่ครั้งแรก"""
+    mock_async_playwright, mock_browser, mock_playwright_ctx = _patch_browser()
+    click_result = ActionResult(True, "click(1)", "คลิกสำเร็จ")
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t0", [], llm.TokenUsage()),
+        ("finish_task",
+         {"success": True, "message": "ไปหน้า Admin แล้ว", "verify_text": "Admin"},
+         "t1", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), \
+         patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), \
+         patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), \
+         patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), \
+         patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), \
+         patch("backend.app.core.orchestrator.execute", AsyncMock(return_value=click_result)), \
+         patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m), \
+         patch("backend.app.core.orchestrator._scan_created_item_in_table",
+               AsyncMock(return_value=False)) as scan, \
+         patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        result = await Orchestrator().run_task(
+            "https://example.com", "เปิดเว็ปแล้วไปที่หน้าแอดมิน", provider="anthropic",
+        )
+
+    assert result["success"] is True
+    assert scan.await_count == 0          # ไม่ต้องแตะตารางเลย
+    assert result["llm_calls"] == 2       # ไม่มีเทิร์นที่เสียไปกับการถูกตีกลับ

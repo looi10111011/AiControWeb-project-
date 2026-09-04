@@ -689,6 +689,21 @@ def _replacement_value_goal(value: str, labels: list) -> str:
     )
 
 
+def _apply_pending_replacement_value(req, pending_value_request: dict) -> None:
+    """แปลง goal ที่เป็น "ค่าเปล่า" ให้เป็นคำสั่งที่ระบุช่องชัดเจน ถ้าเทิร์นก่อนหน้าขอค่าใหม่ไว้
+
+    ต้องเรียกจาก **ทุก** endpoint ที่รับ goal ของ user: หน้า Test Console ไม่ได้ยิง
+    POST /tasks เลยเมื่อมีแผน — ปุ่ม "ส่ง" ของช่องกรอกค่าใหม่เรียก requestPlan() ซึ่งไปที่
+    /api/generate_plan แล้วต่อด้วย /api/execute_plan (ดู index.html::submitCorrectionValue)
+    เวอร์ชันแรกต่อท่อไว้ที่ create_task ที่เดียว ค่าที่ user ตอบจึงยังหลุดไปเป็น goal ดิบๆ
+    เหมือนเดิมทุกประการเมื่อใช้ผ่านหน้าเว็บจริง (สคริปต์ทดสอบของผมยิง /tasks ตรงจึงไม่เจอ)
+    และ generate_plan ต้องแปลงด้วย ไม่ใช่แค่ execute_plan — ไม่งั้นแผนถูกร่างจากคำว่า
+    "Abcd1234" ล้วนๆ ตั้งแต่ต้น"""
+    labels = (pending_value_request.get(req.session_id) or {}).get("labels") or []
+    if labels and _goal_is_a_bare_replacement_value(req.goal):
+        req.goal = _replacement_value_goal(req.goal, labels)
+
+
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
 @limiter.limit("10/minute")
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
@@ -697,10 +712,7 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
     file_chat_memory = request.app.state.file_chat_memory
     pending_value_request: dict = request.app.state.pending_value_request
     task_manager: TaskManager = request.app.state.task_manager
-    # W_retry_value_has_no_home: เทิร์นนี้เป็นการ "ตอบค่าใหม่" ให้ task ก่อนหน้าหรือเปล่า
-    pending_labels = (pending_value_request.get(req.session_id) or {}).get("labels") or []
-    if pending_labels and _goal_is_a_bare_replacement_value(req.goal):
-        req.goal = _replacement_value_goal(req.goal, pending_labels)
+    _apply_pending_replacement_value(req, pending_value_request)
     orchestrator = Orchestrator()
     task_id = task_manager.new_task_id()
     ask_user_func = _make_ask_user_func(task_manager, task_id, req.auto_approve)
@@ -789,6 +801,8 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     if req.attached_file_content_base64:
         return GeneratePlanResponse(plan="", is_qa=True)
 
+    # W_retry_value_has_no_home: แปลงก่อนร่างแผน ไม่งั้นแผนถูกร่างจากค่าเปล่าๆ
+    _apply_pending_replacement_value(req, request.app.state.pending_value_request)
     file_chat_memory: dict = request.app.state.file_chat_memory
     remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
     # W_file_followup_with_sticky_url: เดิมบังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอค้าง
@@ -911,6 +925,8 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
     Orchestrator.run_fastpath() docstring — รองรับแค่ page=/browser=, ไม่รองรับ
     use_user_browser/visible-window เอง) — โหมดที่ไม่รองรับ fallback ไปที่ slow-path
     ปกติเงียบๆ (ไม่ error) เหมือนไม่มี fast-path feature นี้เลย"""
+    pending_value_request: dict = request.app.state.pending_value_request
+    _apply_pending_replacement_value(req, pending_value_request)
     is_fastpath = bool(
         settings.enable_procedural_memory
         and req.execution_mode == "fastpath"
@@ -954,10 +970,19 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
                     slot_values=req.slot_values or {}, max_steps=req.max_steps, provider=req.provider,
                     ask_user_func=ask_user_func, on_event=_on_event, browser=browser,
                 )
-        return await _run_with_resolved_browser(
+        result = await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
             extra_run_task_kwargs={"approved_plan": req.plan}, file_chat_memory=file_chat_memory,
         )
+        # W_retry_value_has_no_home: จำไว้ว่ารอค่าใหม่อยู่ (หรือเลิกรอ ถ้ารอบนี้ไม่ได้จบแบบนั้น)
+        # — เส้นทางนี้คือเส้นทางที่หน้า Test Console ใช้จริงเมื่อมีแผน
+        if req.session_id:
+            labels = (result or {}).get("retry_value_field_labels") or []
+            if labels:
+                pending_value_request[req.session_id] = {"labels": labels}
+            else:
+                pending_value_request.pop(req.session_id, None)
+        return result
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
     record = task_manager.submit(

@@ -38,7 +38,7 @@ from backend.app.core.actions import _KEY_VALUE_IN_QUERY_RE
 # บ่งบอกว่า goal เป็นคำถามเชิงนับ อยู่ที่ actions.py ที่เดียวกับที่สร้างข้อความนั้นขึ้นมา —
 # import ชื่อมาใช้ ไม่ก็อป format/keyword มาไว้อีกที่
 from backend.app.core.actions import _COUNT_QUERY_KEYWORDS, system_counted_conditions
-from backend.app.core.goal_intent import contains_keyword
+from backend.app.core.goal_intent import canonical_intent, contains_keyword
 from backend.app.core.memory import ShortTermMemory, clip_result
 from backend.app.core.perception import get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
@@ -2656,6 +2656,27 @@ _MAX_PREMATURE_GOAL_SCOPE_RETRIES = 1
 # elsewhere (see _MUTATING_ACTION_TYPES's docstring above: "ไม่นับ read_page_data/wait/hover/
 # scroll").
 _GOAL_SCOPE_ALLOWED_ACTION_TYPES = {"read_page_data", "wait", "scroll", "hover"}
+
+# W_verify_text_needs_a_write (บั๊กจริงที่ user เจอจาก token 2026-09-04): goal "เปิดเว็ปแล้วไป
+# ที่หน้าแอดมิน" ใช้ LLM ไป 4 ครั้งเพื่อให้ได้ action เดียว หนึ่งในเทิร์นที่เสียไปคือ finish_task
+# ที่ถูก guard ตาราง (W63[7.2]) ตีกลับ เพราะโมเดลส่ง verify_text มาด้วยทั้งที่งานนี้เป็นการ
+# นำทางล้วน ไม่เคยสร้าง/แก้อะไรให้ไปโผล่ในตารางได้เลย
+#
+# comment เดิมของ guard นั้นเขียนไว้ว่า "เช็คเฉพาะตอนที่ LLM ระบุ verify_text มาเอง" ซึ่งตั้งอยู่
+# บนสมมติฐานว่าโมเดลจะใส่มาเมื่อจำเป็นเท่านั้น — สมมติฐานนี้ผิดกับ gpt-5.4-mini บน endpoint
+# ChatGPT OAuth ซึ่งกรอกทุก property ในสคีมาเสมอ (เหตุผลเดียวกับ W_fill_secret_schema_gate
+# และ W_secret_stays_in_schema_forever) verify_text จึงมาทุกครั้งไม่ว่างานจะเป็นชนิดไหน
+#
+# หลักฐานที่ใช้แทนคือ "งานนี้เคยเขียนค่าลงฟอร์มไหม" — ถ้าไม่เคย ก็ไม่มีอะไรที่จะไปโผล่ในตาราง
+# ต้องใช้สองสัญญาณ ไม่ใช่สัญญาณเดียว: เกณฑ์ "เคยเขียนค่าลงฟอร์มไหม" อย่างเดียวไม่พอ เพราะงาน
+# สร้าง record ที่เดินด้วยการคลิกล้วนก็มีจริง (เทสต์ 5 ตัวที่ตรึงสัญญาหลักของ guard นี้ใช้ลำดับ
+# แบบนั้นพอดี) จึงเช็คเจตนาของ goal ก่อน แล้วค่อยตกมาที่หลักฐานจาก action
+#   - operation เป็น create/edit -> guard ทำงานเสมอ ไม่ว่าจะเดินด้วย action ชนิดไหน
+#   - operation อ่านไม่ออก (unknown) -> เชื่อหลักฐาน: เคยเขียนค่าลงฟอร์มจริงไหม
+# เลือกให้ปลอดภัยไว้ก่อนโดยตั้งใจ — ปิด guard เฉพาะตอนที่มั่นใจทั้งสองทางว่างานนี้ไม่มีอะไร
+# ไปโผล่ในตารางได้เลย
+_VALUE_WRITING_ACTION_TYPES = {"fill", "fill_secret", "select", "check"}
+_TABLE_VERIFY_RELEVANT_OPERATIONS = {"create", "edit"}
 _GOAL_SCOPE_GATE_NUDGE_TEMPLATE = (
     "[Rejected] The goal appears to already be satisfied ({reason}) — this action "
     "({action_type}) is outside what the goal actually asked for. Never explore other "
@@ -4082,6 +4103,11 @@ class Orchestrator:
         agent_filled_field_labels: list[str] = []
         # ว่าง = ไม่ได้กำลังรอค่าใหม่จาก user
         retry_value_field_labels: list[str] = []
+        # W_verify_text_needs_a_write: งานนี้เคยเขียนค่าลงฟอร์มจริงไหม
+        wrote_a_value_this_task = False
+        goal_wants_a_record_change = (
+            canonical_intent(goal).operation in _TABLE_VERIFY_RELEVANT_OPERATIONS
+        )
         empty_password_submit_count = 0
         # W_goal_precheck: จำนวนครั้งติดกันที่ข้ามการคลิก element ที่มี marker "[already active]"
         consecutive_already_active_skip_count = 0
@@ -5381,7 +5407,10 @@ class Orchestrator:
                     # guard ด้านบน)
                     verify_text = str(tool_input.get("verify_text") or "").strip()
                     table_item_found = True
-                    if claimed_success and tool_use_id and verify_text:
+                    if (
+                        claimed_success and tool_use_id and verify_text
+                        and (goal_wants_a_record_change or wrote_a_value_this_task)
+                    ):
                         # W_verify_text_on_delete_goal (บั๊กจริง live stability check 2026-08-31):
                         # verify_text ถูกออกแบบมาสำหรับงาน *สร้าง* รายการ ("ชื่อที่เพิ่งสร้างต้อง
                         # โผล่ในตารางจริง") — SYSTEM_PROMPT (W63[7.2]) ก็สั่งไว้ตรงตัวว่างานลบให้
@@ -6410,6 +6439,8 @@ class Orchestrator:
                 # W_retry_value_has_no_home: จำ label ของช่องที่ agent กรอกค่าเอง ไว้บอก user
                 # ตอนขอค่าใหม่ว่าจะเอาไปแทนที่ตรงไหน — เก็บเฉพาะ fill ธรรมดา เพราะ fill_secret
                 # คือรหัสปัจจุบันที่ระบบกรอกให้เอง ไม่ใช่ค่าที่ user จะเปลี่ยน
+                if result.success and tool_input.get("type") in _VALUE_WRITING_ACTION_TYPES:
+                    wrote_a_value_this_task = True  # W_verify_text_needs_a_write
                 if (
                     result.success
                     and tool_input.get("type") == "fill"
