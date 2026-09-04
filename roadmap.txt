@@ -5509,6 +5509,48 @@
                price บน cache miss (turn 0 + TTL), gated_prompt (turn ปัจจุบัน ~3k tok
                ต่อ call บนหน้าตาราง — บีบข้อความไม่ได้ ดู W_token_trim CORE revert)
 
+  [x] T1-T3 ("goal ภาษาไทยไม่มีความจำ ไม่มีตัวเลข และไม่มี intent กลาง" — core/goal_intent.py)
+           หลักฐานที่ทำให้ต้องทำ ทั้งสามข้ออยู่ในโค้ดอยู่แล้ว ไม่ใช่การคาดเดา:
+             - plan_memory._UNSUPPORTED_SCRIPT_RE ปิด Plan Memory ทั้ง find และ save สำหรับ
+               ไทย/จีน/ญี่ปุ่น/เกาหลี/อาหรับ/ซีริลลิก (embedding เป็น English-only tokenizer —
+               goal ไทยสองอันที่ไม่เกี่ยวกันเลยได้ cosine distance ~ 0) => งานภาษาไทยจ่ายค่า
+               ร่างแผนใหม่ทุกครั้งตลอดไป
+             - site_learning/storage.find_matching_page() ตัดคำด้วย [^\w]+ แล้วทิ้ง token ที่
+               สั้นกว่า 3 ตัวอักษร ภาษาไทยไม่มีเว้นวรรค => ได้ token ก้อนเดียว หา page ไม่เจอเลย
+             - orchestrator มี predicate ที่อ่าน goal 15 ตัว ไม่มีที่ไหนรวมคำตอบไว้เป็นก้อนเดียว
+               และ token_usage.jsonl ไม่มี field ไหนบอกภาษาของ goal เลย
+
+           T1 detect_goal_language() -> goal_script/goal_chars/goal_word_count ลง
+             token_usage.jsonl (คำนวณใน telemetry จาก goal ตรงๆ เส้นทาง exception จึงมีครบ
+             เหมือนกัน) + kpi.py แยกรายงานตาม goal_script
+             หมายเหตุที่ตั้งใจให้เห็น: goal ไทยได้ word_count = 1 เสมอ นั่นคือสาเหตุของข้อ 2
+             ไม่ใช่ข้อบกพร่องของตัววัด
+
+           T2 normalize_goal_for_matching()/matching_tokens() — ดึงคู่ field=value ออกมาเป็น
+             token ของตัวเอง (goal จริงคือ "แล้บลบuserole=ess" ไม่มีเว้นวรรคเลย) แล้ว union
+             เข้ากับ token เดิมใน find_matching_page() (ไม่ใช่แทนที่ — พฤติกรรมของ goal
+             ภาษาอังกฤษต้องไม่เปลี่ยนแม้แต่นิดเดียว)
+             จงใจไม่แก้คำสะกดด้วยพจนานุกรม: _field_names_match() ทนพิมพ์ผิดอยู่แล้ว การเดา
+             สองชั้นทำให้ debug ไม่ออกว่าชั้นไหนเดาผิด
+
+           T3 canonical_intent() -> GoalIntent(operation/scope/conditions/about_own_account/
+             asks_for_count/script) **ประกอบจาก predicate เดิมทั้งหมด ไม่มี logic ตัดสินใหม่**
+             (จึงไม่กระทบ guard ที่ใช้ predicate เหล่านั้นอยู่) + plan_memory_intent_key()
+             ปลดล็อก Plan Memory ให้ภาษาไทยโดยไม่ต้องมี multilingual embedding: ใช้กุญแจ
+             "operation:scope:field=value" ผ่าน where filter ล้วน ไม่แตะ query() เลย
+             เงื่อนไขเข้มโดยตั้งใจ — ต้องรู้ operation และมี field=value อย่างน้อย 1 คู่ ไม่งั้น
+             คืน None = พฤติกรรมเดิมเป๊ะ (ยอมไม่ match ดีกว่า match ผิดเจตนา ซึ่งคือบั๊กที่ทำให้
+             ต้องปิดระบบตั้งแต่แรก)
+             ที่ไม่มี operation "navigate": ต้องสร้างคลังคำชุดที่ 16 ซึ่งขัดกับกฎของไฟล์นี้
+
+           ข้อจำกัดที่ยอมรับและบันทึกไว้: key ไม่ทนคำสะกดผิด — "userole" กับ "userrole" เป็นคนละ
+           lineage แล้วอันที่ไม่ตรง fallback ไปให้ LLM ร่างใหม่ = พฤติกรรมเดิม ไม่มีแผนผิด
+           เจตนาถูกเสิร์ฟ
+
+           เทสต์: test_goal_intent.py (ใหม่ 14) + plan_memory 5 + telemetry 2 + storage 3 +
+           kpi 1 — เทสต์เดิมที่ยืนยันว่า "goal ไทยไม่แตะ ChromaDB เลย" ยังผ่านครบ เพราะ goal
+           ที่ไม่มี field=value ยังคืน None ก่อนแตะ collection เหมือนเดิม
+
   [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
            — W_gate_noise_floor)
            รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,
