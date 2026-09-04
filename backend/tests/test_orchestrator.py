@@ -8466,3 +8466,34 @@ async def test_navigation_goal_does_not_pay_a_turn_for_the_table_verify_guard():
     assert result["success"] is True
     assert scan.await_count == 0          # ไม่ต้องแตะตารางเลย
     assert result["llm_calls"] == 2       # ไม่มีเทิร์นที่เสียไปกับการถูกตีกลับ
+
+
+# W_open_site_prefix_blocks_nav_gate + W_thai_nav_target_never_matches_url (วัดจากงานจริงของ
+# user 2026-09-04): goal "เปิดเว็ปแล้วไปที่หน้าแอดมิน" ไม่เคยได้ nav target เลย เพราะ clause แรก
+# เป็น "เปิดเว็ป" ซึ่งไม่ใช่ login และต่อให้ได้ target มา ตัวมันเป็นภาษาไทยจึงไม่มีวันตรงกับ URL
+# ที่เป็นอังกฤษ ผลคือ goal-scope gate ไม่เคยปิดงานให้ ต้องเสียเทิร์นเพิ่มทุกครั้ง
+
+
+def test_open_website_prefix_is_treated_like_the_login_prefix():
+    f = orchestrator_module._extract_goal_navigation_target
+    assert f("เปิดเว็ปแล้วไปที่หน้าแอดมิน") == "แอดมิน"
+    assert f("open the website then go to the admin page") == "admin"
+    assert f("login then go to the admin page") == "admin"   # ของเดิมต้องไม่เปลี่ยน
+
+
+def test_a_prefix_that_is_real_work_still_blocks_the_gate():
+    """clause นำหน้าที่เป็นงานจริงต้องไม่ถูกนับเป็น no-op — ไม่งั้น gate จะตัดงานกลางคัน"""
+    f = orchestrator_module._extract_goal_navigation_target
+    assert f("เปิดเว็บแล้วลบ userrole=ess") is None
+    assert f("go to the admin page and delete the ESS users") is None
+
+
+def test_a_thai_target_matches_an_english_url_path():
+    reached = orchestrator_module._navigation_target_reached
+    record = [{"success": True, "cmd": {"type": "click"}}]
+    url = "https://opensource-demo.orangehrmlive.com/web/admin/viewSystemUsers"
+    assert reached("แอดมิน", url, record) is True
+    assert reached("admin", url, record) is True
+    # หลักฐานยังต้องครบเหมือนเดิม: ต้องมี action นำทางที่สำเร็จ และต้องอยู่หน้านั้นจริง
+    assert reached("แอดมิน", url, []) is False
+    assert reached("แอดมิน", "https://x/web/pim/viewEmployeeList", record) is False

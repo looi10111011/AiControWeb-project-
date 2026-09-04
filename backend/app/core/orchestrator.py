@@ -2759,6 +2759,21 @@ def _extract_simple_navigation_target(goal: str) -> Optional[str]:
     return None
 
 
+# W_thai_nav_target_never_matches_url (วัดจากงานจริง 2026-09-04): user เขียน goal เป็นภาษาไทย
+# ("ไปที่หน้าแอดมิน") แต่ URL ของเว็บเป็นอังกฤษเสมอ (/web/admin/viewSystemUsers) การเทียบ
+# target กับ path ตรงๆ จึงเป็นเท็จตลอดกาลสำหรับ goal ภาษาไทย — gate ที่ควรปิดงานให้เองไม่เคย
+# ทำงานเลย แล้วงานก็ต้องจ่ายเทิร์นเพิ่มให้โมเดลเรียก finish_task เอง (และมักเสียอีกเทิร์นให้
+# guard already_active_skip ระหว่างนั้น)
+#
+# ตารางนี้ตั้งใจให้เล็กและเพิ่มจากหลักฐานเท่านั้น — ใส่เฉพาะคำที่เจอในงานจริงแล้ว ห้ามเดาเติม
+# ล่วงหน้าเป็นพจนานุกรม (บทเรียนเดียวกับที่ normalize_goal_for_matching เขียนไว้ว่าไม่แก้คำสะกด
+# ด้วยพจนานุกรม) ถ้าวันหลังเจอคำใหม่ในรันจริง ค่อยเติมพร้อมอ้างรันนั้น
+_NAV_TARGET_URL_ALIASES = {
+    "แอดมิน": "admin",
+    "ผู้ดูแลระบบ": "admin",
+}
+
+
 def _navigation_target_reached(target: str, page_url: str, last_action_record: list[dict]) -> bool:
     """W_goal_scope: หลักฐานว่าถึงหน้าเป้าหมายจริง (ไม่ใช่แค่เดา) — ต้องมีทั้ง (1) action
     ล่าสุดที่ execute() จริง (self.memory.recent(1)) สำเร็จและเป็นประเภท navigate จริงๆ
@@ -2773,8 +2788,13 @@ def _navigation_target_reached(target: str, page_url: str, last_action_record: l
         return False
     if (record.get("cmd") or {}).get("type") not in ("click", "goto"):
         return False
-    path = urllib.parse.urlparse(page_url or "").path
-    return target.lower() in path.lower()
+    path = urllib.parse.urlparse(page_url or "").path.lower()
+    # W_thai_nav_target_never_matches_url: เทียบทั้งคำเดิมและคำที่ map เป็นอังกฤษแล้ว
+    candidates = {target.lower()}
+    for thai, english in _NAV_TARGET_URL_ALIASES.items():
+        if thai in target.lower():
+            candidates.add(english)
+    return any(c in path for c in candidates)
 
 
 # W_goal_scope_compound_login (ส่วนที่ backup ไม่มี — เพิ่มหลัง live-reproduce บั๊กเดิมซ้ำด้วย goal
@@ -2805,6 +2825,39 @@ def _is_login_only_clause(clause: str) -> bool:
     return not re.search(r"[a-zA-Z\u0e00-\u0e7f0-9]", lower)
 
 
+# W_open_site_prefix_blocks_nav_gate (วัดจากงานจริงของ user 2026-09-04): goal
+# "เปิดเว็ปแล้วไปที่หน้าแอดมิน" ไม่เคยได้ nav target เลย เพราะ clause แรกคือ "เปิดเว็ป" ซึ่งไม่ใช่
+# login จึงตกเงื่อนไขของ W_goal_scope_compound_login ทั้งที่เป็น no-op แบบเดียวกันเป๊ะ —
+# run_task() ยิง goto ไปที่ url ให้ตั้งแต่ก่อนเข้า loop อยู่แล้ว โมเดลไม่ต้องทำอะไรกับ clause นี้
+#
+# ผลของการไม่มี nav target: goal-scope gate ไม่เคยปิดงานให้เอง พอโมเดลกดเมนูซ้ำที่ตัวเอง
+# ยืนอยู่แล้วก็เสียเทิร์นไปกับ guard already_active_skip (วัดได้ 2 ใน 6 รอบ ครั้งละ ~15k token)
+# แล้วต้องรออีกเทิร์นให้โมเดลเรียก finish_task เอง
+_OPEN_SITE_ONLY_CLAUSE_KEYWORDS = (
+    "open the website", "open the site", "open the page", "open website", "open site",
+    "go to the website", "go to the site", "visit the site", "visit the website",
+    "เปิดเว็ปไซต์", "เปิดเว็บไซต์", "เปิดหน้าเว็บ", "เปิดเว็ป", "เปิดเว็บ",
+)
+
+
+def _is_open_site_only_clause(clause: str) -> bool:
+    """True ถ้า clause นี้แค่บอกให้ "เปิดเว็บ" เฉยๆ — รูปแบบเดียวกับ _is_login_only_clause()
+    เป๊ะ (ตัดคำออกแล้วต้องไม่เหลืออะไรที่สื่อถึงงานอื่น) จึงกัน "เปิดเว็บแล้วลบ user" ได้เหมือนกัน"""
+    lower = (clause or "").strip().lower()
+    if not lower:
+        return False
+    if not any(kw in lower for kw in _OPEN_SITE_ONLY_CLAUSE_KEYWORDS):
+        return False
+    for kw in _OPEN_SITE_ONLY_CLAUSE_KEYWORDS:
+        lower = lower.replace(kw, " ")
+    return not re.search(r"[a-zA-Z฀-๿0-9]", lower)
+
+
+def _is_noop_prefix_clause(clause: str) -> bool:
+    """clause นำหน้าที่ระบบทำให้เองอยู่แล้ว ไม่ใช่งานที่โมเดลต้องลงมือ — login หรือ เปิดเว็บ"""
+    return _is_login_only_clause(clause) or _is_open_site_only_clause(clause)
+
+
 def _extract_goal_navigation_target(goal: str) -> Optional[str]:
     """W_goal_scope_compound_login (ดู comment ด้านบน): ลอง _extract_simple_navigation_target()
     ก่อนเสมอ (พฤติกรรมเดิมทุกประการ) — ถ้าไม่ผ่านค่อยตัด goal ตาม compound marker แล้วรับเฉพาะ
@@ -2819,7 +2872,7 @@ def _extract_goal_navigation_target(goal: str) -> Optional[str]:
     clauses = [c.strip() for c in re.split(pattern, text, flags=re.IGNORECASE) if c.strip()]
     if len(clauses) < 2:
         return None
-    if not all(_is_login_only_clause(c) for c in clauses[:-1]):
+    if not all(_is_noop_prefix_clause(c) for c in clauses[:-1]):
         return None
     return _extract_simple_navigation_target(clauses[-1])
 
