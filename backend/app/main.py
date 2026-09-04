@@ -86,6 +86,16 @@ async def config_check():
     return {
         "primary_llm_provider": settings.primary_llm_provider,
         "fallback_llm_provider": settings.fallback_llm_provider,
+        # Console UI แสดง model/provider ที่ task ถัดไปจะใช้จริงไว้ท้ายแถบข้าง — ส่งทั้ง
+        # provider ที่เป็นค่าตั้งต้นและตารางชื่อ model ของทุก provider ไปเลย เพราะผู้ใช้
+        # สลับ provider ได้เองใน Settings และหน้าเว็บต้องอัปเดตชื่อ model ตามโดยไม่ต้องถามซ้ำ
+        "llm_provider": settings.llm_provider,
+        "models": {
+            "anthropic": settings.anthropic_model,
+            "gemini": settings.gemini_model,
+            "groq": settings.groq_model,
+            "openai": settings.openai_model,
+        },
         "chroma_collection_name": settings.chroma_collection_name,
         "browser_headless": settings.browser_headless,
         "browser_pool_size": settings.browser_pool_size,
