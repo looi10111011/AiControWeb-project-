@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from backend.app.core import state_filter
 from backend.app.core.state_filter import (
     check_checkbox_redundant,
     check_click_invalidates_indexes,
@@ -350,3 +351,72 @@ async def test_ordinary_full_page_scrolling_still_works_as_before():
             assert await check_scroll_redundant(page, "up") is not None
         finally:
             await browser.close()
+
+
+# W_click_submits_with_empty_password_fields (บั๊กจริงจากรันสดผ่าน REST API 2026-09-04):
+# guard ตัวก่อนหน้าปิดทางไว้เฉพาะ fill ที่พ่วงคำสั่งส่งฟอร์ม โมเดลจึงเลี่ยงด้วยการกด Save เป็น
+# action แยก แล้วได้ 'Passwords do not match' เพราะช่อง Password/Confirm ยังว่างทั้งคู่
+#
+# ใช้ Chromium จริงเพราะสิ่งที่ต้องพิสูจน์คือขอบเขต <form> และค่าในช่อง input ซึ่ง mock ตอบแทนไม่ได้
+
+_TWO_FORMS_HTML = """
+<html><body>
+  <form>
+    <input data-ai-index="1" type="password" />
+    <input data-ai-index="2" type="password" />
+    <button data-ai-index="3" type="button">Cancel</button>
+    <button data-ai-index="4" type="submit">Save</button>
+  </form>
+  <form>
+    <input data-ai-index="5" type="text" />
+    <button data-ai-index="6" type="submit">Search</button>
+  </form>
+  <button data-ai-index="7">Upgrade</button>
+</body></html>
+"""
+
+
+async def _page_with(html):
+    from playwright.async_api import async_playwright
+
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch()
+    page = await browser.new_page()
+    await page.set_content(html)
+    return pw, browser, page
+
+
+@pytest.mark.asyncio
+async def test_submit_button_reports_the_empty_password_fields_of_its_own_form():
+    pw, browser, page = await _page_with(_TWO_FORMS_HTML)
+    try:
+        assert await state_filter.empty_password_indexes_in_same_form(page, 4) == ["1", "2"]
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_reported_once_the_password_fields_are_filled():
+    pw, browser, page = await _page_with(_TWO_FORMS_HTML)
+    try:
+        await page.fill('[data-ai-index="1"]', "a")
+        await page.fill('[data-ai-index="2"]', "a")
+        assert await state_filter.empty_password_indexes_in_same_form(page, 4) == []
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancel_other_forms_and_buttons_outside_any_form_are_left_alone():
+    """ขอบเขตต้องเป็น <form> เดียวกันเท่านั้น — ไม่งั้นปุ่มบันทึกของฟอร์มอื่นในหน้าเดียวกัน
+    (และปุ่มอย่าง Upgrade ที่อยู่นอกฟอร์ม) จะโดนบล็อกทั้งที่ไม่เกี่ยวกันเลย"""
+    pw, browser, page = await _page_with(_TWO_FORMS_HTML)
+    try:
+        assert await state_filter.empty_password_indexes_in_same_form(page, 3) == []
+        assert await state_filter.empty_password_indexes_in_same_form(page, 6) == []
+        assert await state_filter.empty_password_indexes_in_same_form(page, 7) == []
+    finally:
+        await browser.close()
+        await pw.stop()

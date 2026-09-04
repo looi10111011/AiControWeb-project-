@@ -469,3 +469,44 @@ async def test_gate_finds_the_label_when_it_is_only_a_sibling_in_the_wrapper():
 async def test_add_user_form_is_still_not_mistaken_for_a_change_password_form():
     """W_add_user_form_false_positive ต้องไม่หายไปกับการมองหา label ที่กว้างขึ้น"""
     assert await _gate_on(_ADD_USER_SHAPED_FORM) is False
+
+
+# W_plan_counter_claims_a_password_change (บั๊กจริงจากรันสดผ่าน REST API 2026-09-04): task จบ
+# ด้วย success=true ที่ step 4 ทั้งที่ยังไม่เคยกรอก Confirm Password และไม่เคยกดบันทึก —
+# ground truth ด้วยสคริปต์ไม่ใช้ LLM ยืนยันว่ารหัสผ่านเดโมไม่ถูกเปลี่ยน goal-scope hard stop
+# เชื่อ completed_plan_step ที่โมเดลรายงานเอง คลาสเดียวกับ W_plan_cursor_not_proof
+
+
+async def _still_unfilled(html):
+    from playwright.async_api import async_playwright
+
+    from backend.app.core.orchestrator import _change_password_form_still_unfilled
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.set_content(html)
+            return await _change_password_form_still_unfilled(page)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_change_password_form_with_an_empty_field_is_proof_the_work_is_not_done():
+    assert await _still_unfilled(_ORANGEHRM_SHAPED_FORM) is True
+
+
+@pytest.mark.asyncio
+async def test_nothing_blocks_completion_once_every_password_field_is_filled():
+    filled = _ORANGEHRM_SHAPED_FORM.replace(
+        '<input type="password" />', '<input type="password" value="x" />',
+    )
+    assert await _still_unfilled(filled) is False
+
+
+@pytest.mark.asyncio
+async def test_pages_that_are_not_change_password_forms_are_never_blocked():
+    """หลักฐานนี้ต้องพูดเฉพาะเรื่องที่มันรู้จริง — งานอื่นทุกชนิดต้องไม่ถูกกันไม่ให้จบ"""
+    assert await _still_unfilled("<html><body><input type='text'></body></html>") is False
+    assert await _still_unfilled(_ADD_USER_SHAPED_FORM) is False

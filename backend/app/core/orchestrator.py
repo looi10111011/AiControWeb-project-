@@ -21,6 +21,7 @@ from backend.app.core import fastpath_executor
 from backend.app.core import llm
 from backend.app.core import long_term_memory
 from backend.app.core import procedural_memory
+from backend.app.core import state_filter
 from backend.app.core.actions import (
     REJECTED_BY_USER_MESSAGE,
     ActionResult,
@@ -3077,6 +3078,28 @@ async def _current_password_field_is_empty(page: Page) -> bool:
         return False
 
 
+async def _change_password_form_still_unfilled(page: Page) -> bool:
+    """True ถ้ายังยืนอยู่บนฟอร์มเปลี่ยนรหัสผ่านที่มีช่องว่างเหลือ — หลักฐานตรงๆ ว่างานยังไม่จบ
+
+    W_plan_counter_claims_a_password_change (บั๊กจริงจากรันสดผ่าน REST API 2026-09-04):
+    task จบด้วย **success=true** ที่ step 4 ทั้งที่ยังไม่เคยกรอกช่อง Confirm Password และไม่เคย
+    กดบันทึกเลย — ground truth ด้วยสคริปต์ไม่ใช้ LLM ยืนยันว่ารหัสผ่านของเดโมไม่ถูกเปลี่ยน
+    (รหัสเดิมยังล็อกอินได้ ส่วน 12345678 ไม่ได้) สาเหตุคือ goal-scope hard stop เชื่อ
+    plan_fully_completed ซึ่งมาจาก completed_plan_step ที่ *โมเดลรายงานเอง*
+
+    นี่คือบั๊กคลาสเดียวกับ W_plan_cursor_not_proof เป๊ะ ต่างแค่ชนิดงาน — และกฎเดียวกันใช้ได้:
+    "การวัดต้องชนะตัวนับเสมอ" งานเปลี่ยนรหัสผ่านมีการวัดตรงๆ อยู่แล้วเหมือนที่งานลบแบบมีเงื่อนไขมี
+    คือ "ฟอร์มยังมีช่องรหัสผ่านว่างอยู่ไหม" ซึ่งอ่านจาก DOM ได้ตรงๆ ไม่ต้องเชื่อใคร
+
+    ห้าม raise ตามกฎของไฟล์นี้ — คืน False (= ไม่ขัดขวาง) ถ้าอ่านไม่ได้"""
+    try:
+        if not await _page_looks_like_change_password_form(page):
+            return False
+        return any(not st.get("filled") for st in await _password_field_states(page))
+    except Exception:
+        return False
+
+
 # W_secret_refilled_forever (บั๊กจริงจากรันสด 2026-09-03 ซ้ำ 2 รอบติดด้วยผลเหมือนกันเป๊ะ):
 # พอ fill_secret กรอกช่อง Current Password สำเร็จ โมเดลสั่ง fill_secret ที่ index เดิมซ้ำทันที
 # ทุกครั้ง ไม่เคยขยับไปช่อง Password/Confirm Password (ซึ่งอยู่ใน snapshot ครบพร้อม index ที่
@@ -3087,6 +3110,11 @@ async def _current_password_field_is_empty(page: Page) -> bool:
 # ถัดไปให้ ความว่าง/ไม่ว่างอ่านจาก DOM ตรงๆ ไม่ใช่จาก label (label ปิดค่าไว้แล้วตาม
 # W_password_value_leaks_into_label) และไม่ส่งค่าจริงของช่องไหนออกไปทั้งสิ้น
 _MAX_SECRET_REFILL_RETRIES = 2
+
+# W_click_submits_with_empty_password_fields: โควตาเหมือน guard อื่นในไฟล์นี้ ไม่บล็อกตาย —
+# ฟอร์มบางแบบมีช่องรหัสผ่านที่ "เว้นว่างได้" จริง (หน้าแก้โปรไฟล์ที่รวมการเปลี่ยนรหัสผ่านไว้
+# ด้วย) ถ้าบล็อกถาวรจะทำให้เว็บกลุ่มนั้นกดบันทึกไม่ได้เลย
+_MAX_EMPTY_PASSWORD_SUBMIT_RETRIES = 2
 
 _PASSWORD_FIELD_STATE_JS = """() => Array.from(
     document.querySelectorAll('input[type="password"]')
@@ -4048,6 +4076,7 @@ class Orchestrator:
         # change-password context (รีเซ็ตทันทีที่ dispatch อย่างอื่นผ่าน — ดู guard ในลูป)
         consecutive_fill_secret_context_reject_count = 0
         secret_refill_reject_count = 0
+        empty_password_submit_count = 0
         # W_goal_precheck: จำนวนครั้งติดกันที่ข้ามการคลิก element ที่มี marker "[already active]"
         consecutive_already_active_skip_count = 0
         # W_goal_scope: sticky ทั้งคู่ — ไม่ reset กลับ False อีกเลยตลอด task ("แผนเสร็จครบแล้ว"/
@@ -4584,7 +4613,14 @@ class Orchestrator:
                     # goal ลบแบบมีเงื่อนไขมี "การวัดตรงๆ" อยู่แล้ว (เหลือกี่แถวที่ตรงเงื่อนไข)
                     # การวัดต้องชนะตัวนับเสมอ จึงข้าม shortcut ของแผนไปใช้เส้นทางที่อ่านหลักฐาน
                     # จริงด้านล่างแทน — goal อื่นที่ไม่มีวิธีวัดตรงๆ ยังใช้ธงของแผนเหมือนเดิม
-                    if plan_fully_completed and not delete_all_condition_values:
+                    # W_plan_counter_claims_a_password_change: ฟอร์มเปลี่ยนรหัสผ่านที่ยังกรอก
+                    # ไม่ครบคือหลักฐานตรงๆ ว่างานยังไม่จบ — ต้องชนะตัวนับของแผนเช่นเดียวกับที่
+                    # การนับแถวที่เหลือชนะมันในงานลบ (ดู docstring ของ helper)
+                    if (
+                        plan_fully_completed
+                        and not delete_all_condition_values
+                        and not await _change_password_form_still_unfilled(page)
+                    ):
                         goal_scope_satisfied_reason = "the confirmed plan's last step is already complete"
                     else:
                         if not nav_target_reached_confirmed and goal_nav_target and _navigation_target_reached(
@@ -5563,6 +5599,34 @@ class Orchestrator:
                                 flush=True,
                             )
                         messages = append_tool_result(messages, tool_use_id, _refill_nudge)
+                        continue
+
+                # W_click_submits_with_empty_password_fields: กดส่งฟอร์มทั้งที่ช่องรหัสผ่าน
+                # ในฟอร์มเดียวกันยังว่าง = ล้ม validation แน่นอน แล้วบดบัง error จริงที่ต้องแก้
+                if tool_input.get("type") == "click":
+                    _empty_pw = await state_filter.empty_password_indexes_in_same_form(
+                        page, tool_input.get("index"),
+                    )
+                    if _empty_pw and empty_password_submit_count < _MAX_EMPTY_PASSWORD_SUBMIT_RETRIES:
+                        empty_password_submit_count += 1
+                        _bump_guard("empty_password_submit")  # W_token_cut W1
+                        _empty_pw_desc = ", ".join(
+                            f"[{idx}] {_label_for_index(elements, idx)}" for idx in _empty_pw
+                        )
+                        _empty_pw_nudge = (
+                            "[Rejected] This button submits a form whose password field(s) are "
+                            f"still empty: {_empty_pw_desc}. Submitting now fails validation "
+                            "('passwords do not match') and hides the real problem. Fill every "
+                            "one of those fields first, then submit."
+                        )
+                        if verbose:
+                            print(
+                                f"[empty-password-submit {empty_password_submit_count}/"
+                                f"{_MAX_EMPTY_PASSWORD_SUBMIT_RETRIES}] ปฏิเสธ กดส่งฟอร์มทั้งที่"
+                                f"ช่องรหัสผ่านยังว่าง: {_empty_pw_desc}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _empty_pw_nudge)
                         continue
 
                 # loop-detection: action เดิมเป๊ะๆ ติดกันกี่ครั้งแล้ว (นับรวมทั้ง success/fail

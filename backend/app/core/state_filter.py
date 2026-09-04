@@ -459,3 +459,42 @@ async def check_fill_submits_with_password_fields_left_empty(
         "— submitting now would fail validation ('passwords do not match') and hide the real "
         "problem. Fill every remaining password field first, then submit as a separate step"
     )
+
+
+# W_click_submits_with_empty_password_fields (บั๊กจริงจากรันสดผ่าน REST API 2026-09-04):
+# W_submit_before_confirm_password ปิดทางไว้เฉพาะ fill ที่พ่วง key="Enter"/then_click_index
+# โมเดลจึงเลี่ยงด้วยการกด Save เป็น action แยกต่างหาก — step trace: fill_secret ช่อง Current
+# Password แล้ว click(25) "Save" ทันที โดยไม่เคยกรอกช่อง Password/Confirm Password เลย ได้
+# 'Passwords do not match' กลับมา (ทั้งสองช่องว่าง) task จบที่ 4 steps
+#
+# ผูกขอบเขตด้วย <form> เดียวกันเสมอ ไม่ใช่ทั้งหน้า: วัดกับหน้าจริงแล้วปุ่ม Save (type=submit)
+# กับช่อง password ทั้งสามอยู่ใน form เดียวกัน ส่วนปุ่ม Upgrade/เมนูอยู่นอก form — การนับทั้งหน้า
+# จะบล็อกปุ่ม Save ของฟอร์มอื่นที่ไม่เกี่ยวข้องกันเลย
+# ปุ่มที่ type="button" (เช่น Cancel) ไม่นับเป็นการส่งฟอร์ม จึงไม่โดนแตะ
+_EMPTY_PASSWORDS_IN_SAME_FORM_JS = """(el) => {
+    const tag = (el.tagName || '').toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const submits = (tag === 'button' && type !== 'button' && type !== 'reset')
+        || (tag === 'input' && (type === 'submit' || type === 'image'));
+    if (!submits) return [];
+    const form = el.closest('form');
+    if (!form) return [];
+    return Array.from(form.querySelectorAll('input[type="password"]'))
+        .filter(f => f.getClientRects().length > 0 && !(f.value || '').trim())
+        .map(f => f.getAttribute('data-ai-index'));
+}"""
+
+
+async def empty_password_indexes_in_same_form(page: Page, index: int) -> list:
+    """index ของช่อง password ที่ยังว่างอยู่ใน <form> เดียวกับปุ่มส่งฟอร์มที่กำลังจะคลิก
+
+    คืน [] ถ้าไม่ใช่ปุ่มส่งฟอร์ม ไม่มี <form> ครอบ หรืออ่าน DOM ไม่ได้ (fail-safe เหมือนทุกตัว
+    ในไฟล์นี้ — ปล่อยให้ทำตามที่โมเดลสั่งดีกว่าบล็อกเพราะเราอ่านสถานะไม่ออกเอง)"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        return await target.locator(selector).evaluate(
+            _EMPTY_PASSWORDS_IN_SAME_FORM_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return []
