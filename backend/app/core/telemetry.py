@@ -84,6 +84,10 @@ def write_token_usage(
             # W_token_cut W1: แยกว่าเทิร์น LLM ถูกใช้ไปกับอะไร — action_calls + finish_task_calls
             # + sum(guard_rejections) + notool_retries ควรเข้าใกล้ llm_calls (ส่วนต่างคือเทิร์น
             # อื่นที่ยังไม่ได้ tag) kpi.py สรุป median/p95 ของกลุ่มนี้
+            # W_auto_login_outcome_is_invisible: "skipped" | "ok" | "failed" — จับคู่กับ
+            # guard_rejections["login_skip"] แล้วตอบได้ว่าเทิร์นที่เสียไปกับ guard นั้น
+            # เกิดตอน auto-login ล้มเหลวจริงหรือเกิดทั้งที่ล็อกอินสำเร็จแล้ว
+            "auto_login": _stat("auto_login", "skipped"),
             "action_calls": _stat("action_calls", 0),
             "finish_task_calls": _stat("finish_task_calls", 0),
             "guard_rejections": _stat("guard_rejections", {}),

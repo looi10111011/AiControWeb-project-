@@ -2475,7 +2475,9 @@ async def _dismiss_consent_banner(page: Page, verbose: bool = False) -> Optional
 
 
 
-async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
+async def _maybe_auto_login(
+    page: Page, verbose: bool, outcome: Optional[dict] = None,
+) -> Optional[str]:
     """W17: เติม username/password ให้อัตโนมัติถ้ามี credential เก็บไว้สำหรับโดเมนนี้แล้ว
     (จาก POST /api/site-manual/learn หรือ .../credentials — ดู site_learning/storage.py::
     save_credentials) และหน้าปัจจุบัน (หลัง goto/skip_initial_goto ตอนต้น run_task())
@@ -2495,7 +2497,23 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
     เด็ดขาด) ถ้าเจอ credential + เป็นหน้า login จริง แต่ login ไม่ผ่านแม้ retry แล้ว — ให้
     caller (run_task ด้านล่าง) ยิง SSE event แจ้ง user ต่อ ไม่ throw ในทุกกรณี (agent ยัง
     fallback ไปกรอกเองผ่าน action ปกติได้อยู่แล้วถ้า auto-login ไม่สำเร็จ — แค่ต้องให้ user
-    รู้ตัวว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว ไม่ใช่ปล่อยผ่านเงียบๆ เหมือนเดิม)"""
+    รู้ตัวว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว ไม่ใช่ปล่อยผ่านเงียบๆ เหมือนเดิม)
+
+    W_auto_login_outcome_is_invisible: reason ที่คืนออกไปเป็น None ได้ทั้งกรณี "ข้าม" และ
+    "สำเร็จ" แยกสองกรณีนี้ออกจากกันไม่ได้เลย และบรรทัด log ที่มีอยู่ก็ผูกกับ verbose ซึ่ง
+    เส้นทาง API ส่ง False เสมอ ผลคือเวลา guard login_skip ยิงในงานจริง (เจอ 2 ใน 3 รอบของ
+    goal เดียวกัน ห่างกันไม่กี่นาที) ตอบไม่ได้ว่า auto-login ล้มเหลวหรือทำงานปกติ —
+    วัดก่อนแก้ตามกฎเดิมของโปรเจกต์นี้
+
+    รายงานผลผ่าน dict `outcome` ที่ผู้เรียกส่งเข้ามา (คีย์ "result": "skipped"/"ok"/"failed")
+    **โดยเจตนา ไม่เปลี่ยนชนิดของค่าที่คืน** — ลองเปลี่ยนเป็น tuple มาแล้วและเทสต์ล้ม 166 เคส
+    เพราะมี 13 จุดที่ patch ฟังก์ชันนี้ด้วย AsyncMock ที่คืนค่าเดี่ยว การ unpack จึงพังตั้งแต่
+    ก่อนเข้า try ของ run_task แล้วลามเป็นลูกโซ่ไปทั้งไฟล์ พารามิเตอร์ที่มีค่า default ทำให้
+    ผู้เรียกเดิมและ mock เดิมใช้ได้เหมือนเดิมทุกประการ"""
+    def _report(result: str) -> None:
+        if outcome is not None:
+            outcome["result"] = result
+
     try:
         from backend.app.site_learning import storage as site_storage
         from backend.app.site_learning.auto_login import find_login_fields, login_with_verification
@@ -2504,10 +2522,12 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
         domain = extract_domain(page.url)
         creds = site_storage.load_credentials(domain)
         if not creds:
+            _report("skipped")
             return None
         page_info, _ = await site_extract_page(page)
         username_selector, password_selector = find_login_fields(page_info)
         if not username_selector or not password_selector:
+            _report("skipped")
             return None
         if verbose:
             print(f"[auto-login] พบ credential ที่เก็บไว้สำหรับ {domain} — ลอง login อัตโนมัติ", flush=True)
@@ -2518,10 +2538,13 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
             page, page_info, creds["username"], creds["password"], retries=1,
         )
         if not did_login:
+            _report("failed")
             return reason or "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้"
         await wait_stable(page)
+        _report("ok")
         return None
     except Exception:
+        _report("skipped")
         return None
 
 
@@ -4103,6 +4126,8 @@ class Orchestrator:
         agent_filled_field_labels: list[str] = []
         # ว่าง = ไม่ได้กำลังรอค่าใหม่จาก user
         retry_value_field_labels: list[str] = []
+        # W_auto_login_outcome_is_invisible: ค่าเริ่มต้นสำหรับ path ที่ไม่เคยเรียก auto-login
+        auto_login_outcome = "skipped"
         # W_verify_text_needs_a_write: งานนี้เคยเขียนค่าลงฟอร์มจริงไหม
         wrote_a_value_this_task = False
         goal_wants_a_record_change = (
@@ -4249,7 +4274,9 @@ class Orchestrator:
             # W_consent_banner: ปิดแบนเนอร์คุกกี้ก่อนเสมอ — ถ้ามันบังอยู่ _maybe_auto_login()
             # จะหาฟอร์ม login ไม่เจอแล้วไม่ล็อกอินให้ ทั้งที่มี credential เก็บไว้จริง
             await _dismiss_consent_banner(page, verbose)
-            auto_login_failure_reason = await _maybe_auto_login(page, verbose)
+            _auto_login_box: dict = {}
+            auto_login_failure_reason = await _maybe_auto_login(page, verbose, _auto_login_box)
+            auto_login_outcome = _auto_login_box.get("result", "skipped")
             # W_consent_banner (รอบสอง): CMP หลายเจ้าโหลด script แบบ async แล้ว render
             # แบนเนอร์ "หลัง" wait_stable คืนค่าไปแล้ว — ยิงซ้ำอีกรอบตรงนี้จึงจับเคสนั้นได้
             # (ยืนยันจาก live run: เรียกครั้งเดียวก่อน auto-login คืน None เพราะยังไม่มีแบนเนอร์
@@ -7036,6 +7063,8 @@ class Orchestrator:
                 # ทำให้คำสัญญานั้นเป็นจริงได้ ผู้เรียก (api/routes.py) จำไว้กับ session แล้วเทิร์น
                 # ถัดไปที่ user ตอบมาเป็น "ค่า" เปล่าๆ จะถูกแปลงเป็นคำสั่งที่ระบุช่องชัดเจน
                 "retry_value_field_labels": retry_value_field_labels,
+                # W_auto_login_outcome_is_invisible: "skipped" | "ok" | "failed"
+                "auto_login": auto_login_outcome,
             }
         except Exception as e:
             # W_loop_crash: เดิม try ก้อนนี้มีแต่ finally ไม่มี except เลยสักตัว — exception
