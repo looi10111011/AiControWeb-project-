@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -2598,3 +2599,155 @@ async def test_normalize_extraction_query_groq_parses_result_from_model():
 
     assert result["normalized_target_scope"] == "div.oxd-table-body"
     assert result["data_fields"] == ["Username", "User Role", "Employee Name", "Status"]
+
+
+# --- W_context_knows_the_goal: /context ต้องไม่ตอบว่า "Not specified" กับสิ่งที่ระบบรู้อยู่แล้ว ---
+
+
+def _context_card(goal_line: str = "Not specified", target_line: str = "Not specified") -> str:
+    return (
+        "🎯 Agent Understanding\n\n"
+        f"Goal:\n{goal_line}\n\n"
+        f"Target System:\n{target_line}\n\n"
+        "Extracted Parameters:\n- Requested action: remove entries\n\n"
+        "💡 Plan\n\nStrategy:\nNot specified\n"
+    )
+
+
+def test_fill_known_context_fields_uses_the_goal_the_user_actually_typed():
+    """บั๊กจริง 2026-09-03: การ์ดตอบ "Goal: Not specified" ทั้งที่ user พิมพ์ goal มาเต็มประโยค
+    — goal คือข้อความที่โค้ดถืออยู่ในมือ ไม่ใช่สิ่งที่ต้องให้โมเดลเดา"""
+    goal = "เปิดเว็ป แล้วไปที่หน้าแอดมิน และลบ userrole=ess ออกให้หมด"
+
+    out = llm._fill_known_context_fields(_context_card(), goal, "https://demo.example-site.io/login")
+
+    assert f"Goal:\n{goal}" in out
+    assert "Target System:\nhttps://demo.example-site.io/login" in out
+
+
+def test_fill_known_context_fields_never_overwrites_what_the_model_answered():
+    """แทนที่เฉพาะบรรทัดที่โมเดลยอมแพ้ ("Not specified") — ถ้ามันตอบอะไรมาแล้วถือเป็นคำตอบของมัน"""
+    card = _context_card(goal_line="Delete every ESS user", target_line="OrangeHRM demo")
+
+    out = llm._fill_known_context_fields(card, "ลบ userrole=ess", "https://other.example-site.io/")
+
+    assert "Goal:\nDelete every ESS user" in out
+    assert "Target System:\nOrangeHRM demo" in out
+
+
+def test_fill_known_context_fields_leaves_the_judgement_fields_alone():
+    """Strategy / Expected Output คือสิ่งที่เรียกโมเดลมาทำ — โค้ดไม่มีคำตอบให้ จึงต้องไม่ไปแตะ"""
+    out = llm._fill_known_context_fields(_context_card(), "ลบ userrole=ess", "")
+
+    assert "Strategy:\nNot specified" in out
+
+
+def test_fill_known_context_fields_skips_target_system_when_no_url_was_given():
+    """task ที่ไม่มี URL (แชทล้วน) ต้องไม่ถูกเติมข้อมูลมั่ว — ปล่อย Not specified ตามความจริง"""
+    out = llm._fill_known_context_fields(_context_card(), "สวัสดี", "")
+
+    assert "Target System:\nNot specified" in out
+
+
+# --- W_file_followup_with_sticky_url: คำถามต่อยอดจากไฟล์ ต้องไม่หลุดไปเปิดเบราว์เซอร์ ---
+
+
+def test_file_followup_request_recognises_asks_about_the_data_just_returned():
+    """บั๊กจริง 2026-09-03: เทิร์น "อ่านไฟล์นี้หน่อย" ตอบจากไฟล์สำเร็จ แต่ "สรุปเป็นตาราง"
+    เทิร์นถัดมาเข้า agent loop ของเบราว์เซอร์แล้วตอบ "มีทั้งหมด 0 รายการ" (telemetry: steps=1,
+    llm_calls=4, 47 วินาที) เพราะเงื่อนไขเดิมบังคับว่า req.url ต้องว่าง ทั้งที่ช่อง URL บนหน้าจอ
+    ค้างค่าไว้จากงานก่อนหน้า"""
+    assert llm.is_file_followup_request("สรุปเป็นตาราง") is True
+    assert llm.is_file_followup_request("แยกเฉพาะชื่อกับอีเมล") is True
+    assert llm.is_file_followup_request("ดึงเบอร์โทรมาให้หน่อย") is True
+    assert llm.is_file_followup_request("summarize as a table") is True
+
+
+def test_file_followup_request_leaves_real_browser_work_alone():
+    """ทิศที่แพงกว่า: คำสั่งงานเว็บจริงต้องไม่ถูกตอบจากไฟล์เก่า — "ลบ userrole=ess ออกให้หมด"
+    ไม่มีคำที่อ้างถึงข้อมูลที่เพิ่งได้มา จึงต้องคืน False แล้วไปเข้าเส้นทางเบราว์เซอร์ตามเดิม"""
+    assert llm.is_file_followup_request("ลบ userrole=ess ออกให้หมด") is False
+    assert llm.is_file_followup_request("เปิดเว็บแล้วไปหน้าแอดมิน") is False
+    assert llm.is_file_followup_request("") is False
+
+
+# ---------------- W_openai_plain_text_cap ----------------
+# user รายงานว่า "provider openai อ่านไฟล์นานมากทั้งที่ข้อมูลไม่เยอะ" — branch openai เป็นที่
+# เดียวที่ไม่เคยส่งเพดาน output ทั้งที่ provider อื่นตั้ง max_tokens=1024 ไว้ทุกจุด
+
+
+def _openai_client_capture():
+    calls = []
+
+    class _Stream:
+        def __aiter__(self):
+            async def _gen():
+                yield SimpleNamespace(type="response.output_text.delta", delta="ok")
+                yield SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(usage=None, output_text=""),
+                )
+            return _gen()
+
+    async def _create(**kwargs):
+        calls.append(kwargs)
+        return _Stream()
+
+    client = MagicMock()
+    client.responses.create = _create
+    return client, calls
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_sends_the_same_cap_other_providers_use():
+    client, calls = _openai_client_capture()
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        text = await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+
+    assert text == "ok"
+    assert calls[0]["max_output_tokens"] == llm._OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS
+    assert calls[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_retries_without_the_cap_if_the_endpoint_rejects_it():
+    """endpoint chatgpt.com/backend-api/codex เคยปฏิเสธพารามิเตอร์มาแล้ว 2 ตัว (store=True,
+    prompt_cache_retention) — ถ้ามันไม่รับตัวนี้ด้วย ต้องยังตอบได้ ไม่ใช่พังทั้งเส้นทาง"""
+    client, calls = _openai_client_capture()
+    original_create = client.responses.create
+    llm._openai_accepts_max_output_tokens = True
+
+    async def _create(**kwargs):
+        if "max_output_tokens" in kwargs:
+            raise RuntimeError("Unsupported parameter: max_output_tokens")
+        return await original_create(**kwargs)
+
+    client.responses.create = _create
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        text = await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+        # ครั้งถัดไปต้องไม่เสีย round-trip กับพารามิเตอร์ที่รู้แล้วว่าไม่รองรับ
+        await llm._openai_plain_text_reply(client, "m", "sys", "again")
+
+    assert text == "ok"
+    assert llm._openai_accepts_max_output_tokens is False
+    assert all("max_output_tokens" not in c for c in calls)
+    llm._openai_accepts_max_output_tokens = True   # คืนสถานะให้เทสต์อื่น
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_does_not_swallow_unrelated_errors():
+    """error อื่นต้องเด้งออกไปตามเดิม ไม่ใช่ถูกตีความว่าเป็นเรื่องพารามิเตอร์แล้วยิงซ้ำเงียบๆ"""
+    client, _ = _openai_client_capture()
+    llm._openai_accepts_max_output_tokens = True
+
+    async def _create(**kwargs):
+        raise RuntimeError("401 authentication_error")
+
+    client.responses.create = _create
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        with pytest.raises(RuntimeError, match="401"):
+            await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+    assert llm._openai_accepts_max_output_tokens is True

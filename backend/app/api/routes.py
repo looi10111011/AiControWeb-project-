@@ -227,6 +227,9 @@ async def _context_inspection_result(req, on_event, client, model: str, resolved
             learned_flow_text = build_learned_page_flow_text(matched_page)
     reply = await llm.context_inspection_reply(
         client, model, real_goal, resolved_provider, learned_flow_text=learned_flow_text,
+        # W_context_knows_the_goal: URL เป้าหมายเป็นข้อเท็จจริงที่ request พกมาอยู่แล้ว ไม่มี
+        # เหตุผลให้โมเดลต้องเดาหรือตอบว่า "Not specified"
+        target_url=req.url or "",
     )
     await on_event({"kind": "chat_reply", "message": reply})
     return _chat_shaped_result(reply)
@@ -323,6 +326,7 @@ async def _file_query_result(
         await on_event({"kind": "chat_reply", "message": reply})
         return _chat_shaped_result(reply)
 
+    _extract_started_at = time.monotonic()
     try:
         file_text = load_manual_bytes(content, req.attached_file_name)
     except Exception as e:
@@ -334,11 +338,27 @@ async def _file_query_result(
         await on_event({"kind": "chat_reply", "message": error_message})
         return _chat_shaped_result(error_message)
 
+    _extract_seconds = time.monotonic() - _extract_started_at
     if req.session_id:
-        file_chat_memory[req.session_id] = {"filename": req.attached_file_name, "text": file_text}
+        file_chat_memory[req.session_id] = {
+            "filename": req.attached_file_name, "text": file_text,
+            # W_file_followup_with_sticky_url: "เทิร์นล่าสุดของเซสชันนี้คือเทิร์นไฟล์" — ล้างเป็น
+            # False ทันทีที่เซสชันนี้ไปรันงานเบราว์เซอร์ (ดูจุดล้างใน _run_with_resolved_browser)
+            "is_latest_turn": True,
+        }
 
+    # W_file_answer_timing: user รายงานว่า "provider openai อ่านไฟล์นานมากทั้งที่ข้อมูลไม่เยอะ"
+    # (telemetry มีแค่ duration รวมของทั้งเทิร์น = 21.8 วินาที บอกไม่ได้ว่าหมดไปกับ *แกะไฟล์*
+    # หรือ *รอโมเดล*) — แยกสองช่วงให้เห็นใน console ก่อน แล้วค่อยแก้ตรงจุดที่ช้าจริง ไม่เดา
+    _answer_started_at = time.monotonic()
     reply = await llm.answer_file_query(
         client, model, req.goal, file_text, req.attached_file_name, resolved_provider,
+    )
+    print(
+        f"[file-query] {req.attached_file_name}: extract {_extract_seconds:.1f}s "
+        f"({len(file_text):,} chars) + llm {time.monotonic() - _answer_started_at:.1f}s "
+        f"({resolved_provider})",
+        flush=True,
     )
     await on_event({"kind": "chat_reply", "message": reply})
     return _chat_shaped_result(reply)
@@ -466,10 +486,24 @@ async def _run_with_resolved_browser(
         return await _general_chat_result(req, on_event, client, model, resolved_provider)
 
     remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
-    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+    # W_file_followup_with_sticky_url: เดิมบังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอค้าง
+    # ค่าไว้จากงานก่อนหน้าในเซสชันเดียวกัน คำถามต่อยอดจากไฟล์ ("สรุปเป็นตาราง") จึงหลุดไปเข้า
+    # agent loop ของเบราว์เซอร์แล้วตอบว่า "มีทั้งหมด 0 รายการ" — ยอมให้ผ่านได้ทั้งที่มี url ถ้า
+    # (ก) เทิร์นล่าสุดของเซสชันนี้เป็นเทิร์นไฟล์จริง และ (ข) ถ้อยคำอ้างถึงข้อมูลที่เพิ่งได้มา
+    # ไม่ใช่การกระทำบนหน้าเว็บ (ดู llm.is_file_followup_request)
+    if remembered_file and not llm.goal_mentions_web_action(req.goal) and (
+        not req.url
+        or (remembered_file.get("is_latest_turn") and llm.is_file_followup_request(req.goal))
+    ):
         resolved_provider = req.provider or settings.llm_provider
         client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
         return await _file_chat_memory_reply(req, on_event, client, model, resolved_provider, remembered_file)
+
+    # W_file_followup_with_sticky_url: ผ่านสี่ทางลัดมาถึงตรงนี้ = เทิร์นนี้จะใช้เบราว์เซอร์จริง
+    # ไฟล์ที่จำไว้จึงไม่ใช่ "สิ่งที่เพิ่งคุยกัน" อีกต่อไป คำถามต่อยอดหลังจากนี้ต้องแนบไฟล์ใหม่หรือ
+    # ถามแบบไม่มี url ถึงจะกลับไปเส้นทางไฟล์ได้ (กันไม่ให้คำสั่งงานเว็บถูกตอบจากไฟล์เก่า)
+    if remembered_file is not None:
+        remembered_file["is_latest_turn"] = False
 
     wants_visible_browser = req.headless is False
     # W14: โหลดคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติครั้งเดียวตรงนี้ (ถ้ามี) แล้วส่งต่อเข้า
@@ -698,7 +732,15 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
 
     file_chat_memory: dict = request.app.state.file_chat_memory
     remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
-    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+    # W_file_followup_with_sticky_url: เดิมบังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอค้าง
+    # ค่าไว้จากงานก่อนหน้าในเซสชันเดียวกัน คำถามต่อยอดจากไฟล์ ("สรุปเป็นตาราง") จึงหลุดไปเข้า
+    # agent loop ของเบราว์เซอร์แล้วตอบว่า "มีทั้งหมด 0 รายการ" — ยอมให้ผ่านได้ทั้งที่มี url ถ้า
+    # (ก) เทิร์นล่าสุดของเซสชันนี้เป็นเทิร์นไฟล์จริง และ (ข) ถ้อยคำอ้างถึงข้อมูลที่เพิ่งได้มา
+    # ไม่ใช่การกระทำบนหน้าเว็บ (ดู llm.is_file_followup_request)
+    if remembered_file and not llm.goal_mentions_web_action(req.goal) and (
+        not req.url
+        or (remembered_file.get("is_latest_turn") and llm.is_file_followup_request(req.goal))
+    ):
         return GeneratePlanResponse(plan="", is_qa=True)
 
     domain = extract_domain(req.url)

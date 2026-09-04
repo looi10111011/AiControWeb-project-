@@ -2714,6 +2714,47 @@ async def _openai_oauth_headers() -> dict:
     }
 
 
+# W_openai_plain_text_cap: เพดาน output ของเส้นทางตอบข้อความล้วน — ค่าเดียวกับ max_tokens ที่
+# provider อื่นใช้อยู่แล้วทุกจุด (1024) ไม่ใช่ตัวเลขที่ตั้งขึ้นใหม่
+_OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS = 1024
+# endpoint นี้เคยปฏิเสธ store=True และ prompt_cache_retention มาแล้ว — ถ้ามันไม่รับ
+# max_output_tokens ด้วย ให้เลิกส่งตลอด process แทนที่จะเสีย round-trip ซ้ำทุกครั้ง
+_openai_accepts_max_output_tokens = True
+
+
+async def _openai_plain_text_reply(client, model: str, instructions: str, prompt: str) -> str:
+    """ยิง responses.create แบบข้อความล้วน + เก็บผลจาก stream — จุดเดียวที่ทุก branch openai
+    ที่ไม่ใช่ tool-calling ใช้ร่วมกัน (chat/ไฟล์/รูป//context) เพื่อให้เพดาน output และ
+    header/store ตั้งที่เดียว ไม่ต้องไล่แก้ทีละจุดเวลาข้อจำกัดของ endpoint เปลี่ยน"""
+    global _openai_accepts_max_output_tokens
+
+    async def _create(with_cap: bool):
+        kwargs = {
+            "model": model,
+            "instructions": instructions,
+            "input": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "store": False,
+            "extra_headers": await _openai_oauth_headers(),
+        }
+        if with_cap:
+            kwargs["max_output_tokens"] = _OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS
+        return await client.responses.create(**kwargs)
+
+    if _openai_accepts_max_output_tokens:
+        try:
+            return await _consume_openai_text_stream(await _create(True))
+        except Exception as e:
+            if "max_output_tokens" not in str(e):
+                raise
+            _openai_accepts_max_output_tokens = False
+            print(
+                "⚠️ endpoint ไม่รับ max_output_tokens — เลิกส่งพารามิเตอร์นี้ตลอด process นี้",
+                flush=True,
+            )
+    return await _consume_openai_text_stream(await _create(False))
+
+
 async def _consume_openai_text_stream(stream) -> str:
     """W_openai_oauth (follow-up fix 2026-08-17i, ยืนยันจริงจาก live call): primitive ใช้
     ร่วมกันทุกจุดที่ยิง client.responses.create(stream=True) แบบ plain-text ล้วนๆ (ไม่ใช่
@@ -3545,6 +3586,29 @@ def goal_mentions_web_action(goal: str) -> bool:
     return any(kw in lower for kw in _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS)
 
 
+# W_file_followup_with_sticky_url (บั๊กจริง 2026-09-03): เทิร์น "อ่านไฟล์นี้หน่อย" ตอบจากไฟล์
+# สำเร็จ (steps=0) แต่เทิร์นถัดมา "สรุปเป็นตาราง" กลับเข้า agent loop ของเบราว์เซอร์แล้วตอบว่า
+# "มีทั้งหมด 0 รายการ" (telemetry: steps=1, llm_calls=4, 47 วินาที, url=orangehrmlive) — สาเหตุ
+# คือเงื่อนไขเส้นทาง file-follow-up บังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอ *ค้างค่าไว้*
+# จากงานก่อนหน้าในเซสชันเดียวกัน จึงไม่มีวันว่างเลยเมื่อผู้ใช้เคยสั่งงานเว็บมาก่อน
+#
+# คำที่ลิสต์ไว้คือคำที่อ้างถึง "ข้อมูลที่เพิ่งได้มา" ไม่ใช่การกระทำบนหน้าเว็บ — จงใจแคบและไม่ทับ
+# กับ _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS (ถ้า goal มีคำสั่งงานเว็บปนอยู่ goal_mentions_web_action()
+# จะตัดออกไปก่อนอยู่แล้ว) ผู้ใช้ที่ต้องการงานเว็บจริงยังพิมพ์ "เปิดเว็บ..."/"ไปที่หน้า..." ได้ตามปกติ
+_FILE_FOLLOWUP_PHRASES = (
+    "สรุป", "ตาราง", "แยก", "ดึง", "จัดกลุ่ม", "เรียง", "นับ", "แปลง", "รวม", "เฉพาะ",
+    "summarize", "summary", "table", "extract", "group", "sort", "count", "convert", "only",
+)
+
+
+def is_file_followup_request(goal: str) -> bool:
+    """True ถ้า goal พูดถึง "ข้อมูลที่เพิ่งได้มา" (สรุป/แยก/ดึง/ทำเป็นตาราง) ไม่ใช่การกระทำบน
+    หน้าเว็บ — ใช้คู่กับ file_chat_memory เพื่อให้คำถามต่อยอดจากไฟล์ไม่หลุดไปเปิดเบราว์เซอร์
+    เมื่อช่อง URL ยังค้างค่าเดิมไว้ (ดู comment ด้านบน)"""
+    lower = (goal or "").strip().lower()
+    return any(p in lower for p in _FILE_FOLLOWUP_PHRASES)
+
+
 def is_general_chat_query(goal: str) -> bool:
     """True ถ้า goal เป็นคำถามทั่วไป/ทักทาย/ถามวันเวลา/คำนวณเลข/ขอคำแนะนำจากความรู้ทั่วไป
     ที่ตอบได้โดยไม่ต้องแตะ browser เลยแม้แต่นิดเดียว — deterministic ล้วนๆ ไม่เรียก LLM
@@ -3671,8 +3735,42 @@ STRICT RULES
 - Output only the six fields above in that exact format. No extra headings, no markdown beyond the 🎯/💡 lines shown."""
 
 
+# W_context_knows_the_goal (บั๊กจริงที่ user รายงานพร้อมภาพหน้าจอ 2026-09-03): /context ตอบว่า
+# "Goal: Not specified" ทั้งที่ user พิมพ์ goal มาเต็มประโยค และการ์ดใบเดียวกันนั้นยังอ้างประโยค
+# นั้นไว้ในช่อง "Data Source" ด้วยซ้ำ — สาเหตุคือ system prompt ย้ำเรื่อง "ไม่มีหลักฐาน ->
+# Not specified" ถึง 7 ชั้น พอ goal เป็นภาษาไทย โมเดลเล็กจึงเลือกทางปลอดภัยที่สุดคือไม่ตอบเลย
+#
+# สองช่องนี้ไม่ใช่เรื่องที่ต้องถามโมเดลตั้งแต่แรก: Goal คือข้อความที่ผู้ใช้พิมพ์ (โค้ดถืออยู่ใน
+# มือ) และ Target System คือ URL ที่มากับ request — เติมจากของจริงหลังโมเดลตอบ ดีกว่าไปแก้
+# prompt ให้ "มั่นใจขึ้น" ซึ่งจะไปคลาย hallucination guard ทั้งชุดที่ตั้งใจเขียนให้เข้ม
+_CONTEXT_NOT_SPECIFIED = "Not specified"
+
+
+def _fill_known_context_fields(reply: str, goal: str, target_url: str = "") -> str:
+    """เติมช่องที่ระบบรู้คำตอบอยู่แล้วกลับเข้าไปในการ์ด /context
+
+    แทนที่เฉพาะบรรทัดที่โมเดลตอบว่า "Not specified" เท่านั้น — ถ้าโมเดลตอบอะไรมาแล้วถือว่าเป็น
+    คำตอบของมัน ไม่เขียนทับ และไม่แตะช่องที่เป็นการตีความ (Strategy / Expected Output) เพราะ
+    นั่นคือสิ่งที่เรียกโมเดลมาทำจริงๆ"""
+    known = [("Goal:", (goal or "").strip())]
+    if target_url:
+        known.append(("Target System:", target_url.strip()))
+    for header, value in known:
+        if not value:
+            continue
+        reply = re.sub(
+            rf"({re.escape(header)}\s*\n)[ \t]*{re.escape(_CONTEXT_NOT_SPECIFIED)}[ \t]*$",
+            lambda m, v=value: f"{m.group(1)}{v}",
+            reply,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    return reply
+
+
 async def context_inspection_reply(
     client, model: str, user_input: str, provider: str, learned_flow_text: str = "",
+    target_url: str = "",
 ) -> str:
     """W20 (MODULE 0, "Context Extraction and Validation Agent", hidden-reasoning revision):
     วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context ผ่าน 7-phase extraction/validation/hallucination-
@@ -3728,17 +3826,12 @@ async def context_inspection_reply(
             # pass, so "/context" specifically still fell through to "ขออภัยครับ ระบบไม่รู้จัก
             # provider นี้" on provider=openai, not a real LLM error) — mirrors chat_response's
             # openai branch exactly (Responses API via ChatGPT OAuth, not api.openai.com).
-            stream = await client.responses.create(
-                model=model,
-                instructions=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
-                input=[{"role": "user", "content": user_input}],
-                stream=True,
-                store=False,
-                extra_headers=await _openai_oauth_headers(),
-            )
-            reply = (await _consume_openai_text_stream(stream)).strip()
+            reply = (await _openai_plain_text_reply(
+                client, model, _CONTEXT_INSPECTION_SYSTEM_PROMPT, user_input,
+            )).strip()
         else:
             return "Sorry, the system doesn't recognise this provider"
+        reply = _fill_known_context_fields(reply, user_input, target_url)
         if learned_flow_text:
             reply = f"{reply}\n\n{learned_flow_text}"
         return reply
@@ -3800,15 +3893,9 @@ async def chat_response(client, model: str, user_input: str, provider: str, curr
             # เลย ทั้งที่ provider นี้เข้าถึงได้แล้ว — ทำให้ general-chat path
             # (routes.py::_general_chat_result) พังด้วยข้อความ fallback ตรงนี้เอง ("Sorry,
             # the system doesn't recognize this provider") ไม่ใช่ error จริงจาก LLM เลย
-            stream = await client.responses.create(
-                model=model,
-                instructions=_CHAT_RESPONSE_SYSTEM_PROMPT,
-                input=[{"role": "user", "content": prompt}],
-                stream=True,
-                store=False,
-                extra_headers=await _openai_oauth_headers(),
+            return await _openai_plain_text_reply(
+                client, model, _CHAT_RESPONSE_SYSTEM_PROMPT, prompt,
             )
-            return await _consume_openai_text_stream(stream)
         return "Sorry, the system doesn't recognise this provider"
     except Exception as e:
         print(f"⚠️ chat_response error: {e}", flush=True)
@@ -3910,15 +3997,9 @@ async def answer_file_query(
         if provider == "openai":
             # W_openai_oauth (follow-up fix 2026-08-17j): ดู chat_response() ด้านบนสำหรับ
             # เหตุผลเต็ม — จุดเดียวกันทุกประการ (dispatch point แยกที่ไม่เคยมี branch นี้)
-            stream = await client.responses.create(
-                model=model,
-                instructions=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
-                input=[{"role": "user", "content": prompt}],
-                stream=True,
-                store=False,
-                extra_headers=await _openai_oauth_headers(),
+            return await _openai_plain_text_reply(
+                client, model, _ANSWER_FILE_QUERY_SYSTEM_PROMPT, prompt,
             )
-            return await _consume_openai_text_stream(stream)
         return "Sorry, the system doesn't recognise this provider"
     except Exception as e:
         print(f"⚠️ answer_file_query error: {e}", flush=True)
