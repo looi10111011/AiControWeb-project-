@@ -125,6 +125,15 @@ def _normalize_option_text(text: str) -> str:
 # กลับเข้า loop หลักทันที ไม่รอค้างนาน โดยเฉพาะตอนรวมกับ _dispatch_with_retry ด้านล่างที่
 # ยิงซ้ำอยู่แล้ว (5s เดิม x 3 ครั้ง = รอได้ถึง 15s ต่อ 1 action เดียว นานเกินไป)
 _ELEMENT_ACTION_TIMEOUT_MS = 3000
+# W_check_evaluate_timeout: ชั้น fallback ของ check() (force click / JS click) ไม่ได้รอ
+# actionability เหมือนชั้นแรก — force=True และ el.click() ข้ามการรอนั้นไปเลย เวลาที่ตั้งไว้จึง
+# ครอบแค่ "หา element เจอไหม" ซึ่งชั้นแรกเพิ่งพิสูจน์ไปแล้วว่าเจอ (มันล้มเพราะ Playwright
+# ไม่ยอมรับว่า element นี้ checkable ไม่ใช่เพราะหาไม่เจอ) — 3 วินาทีต่อชั้นจึงเป็นการรอเปล่า
+# ที่คูณด้วย _ACTION_RETRIES อีกรอบ
+_ELEMENT_FALLBACK_TIMEOUT_MS = 1000
+# อ่านสถานะ DOM ล้วนๆ หลังคลิก — ค่าเดียวกับ state_filter._STATE_CHECK_TIMEOUT_MS ด้วยเหตุผล
+# เดียวกัน (เช็คก่อน/หลัง dispatch ทุก step ต้องเร็วที่สุด)
+_STATE_READ_TIMEOUT_MS = 500
 
 
 # ------------------------------------------------------------
@@ -133,7 +142,12 @@ _ELEMENT_ACTION_TIMEOUT_MS = 3000
 # retry เงียบๆ ระดับนี้ก่อน ไม่เสีย token เพราะไม่ต้องถาม LLM จนกว่าจะลองครบ —
 # ถ้ายัง fail อยู่หลัง retry ครบ ค่อยส่งกลับให้ LLM ตัดสินใจเหมือน W4 เดิม
 # ------------------------------------------------------------
-_ACTION_RETRIES = 3  # ครั้งแรก + retry อีก 2 ครั้ง
+# W_retry_never_paid_off: วัดจาก data/step_trace.jsonl ทั้งไฟล์ (422 แถว, 2026-09-03) —
+# action ที่สำเร็จในรอบ retry ที่ 2 หรือ 3 = 0 ครั้ง ส่วนที่เผาครบทุกรอบแล้วล้มเหลว = 29 ครั้ง
+# (click 15, fill 10, select 2, press_key 1, check 1) รอบที่สามจึงยังไม่เคยกู้อะไรได้เลยใน
+# ประวัติที่บันทึกไว้ แต่คูณเวลาหางของทุก action ที่ล้มเหลว — เหลือการลองซ้ำอีกหนึ่งรอบไว้
+# สำหรับหน้าเว็บที่ render ไม่ทันจริงๆ ซึ่งเป็นเหตุผลตั้งต้นของ retry
+_ACTION_RETRIES = 2  # ครั้งแรก + retry อีก 1 ครั้ง
 _ACTION_RETRY_DELAY_SEC = 0.5
 
 
@@ -705,7 +719,12 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
         await target.press(selector, "Backspace", timeout=timeout)
         await target.fill(selector, text, timeout=timeout)
         try:
-            await target.locator(selector).evaluate("el => { el.blur(); document.body.click(); }")
+            # W_check_evaluate_timeout: จุดเดียวกันกับใน check() — Locator.evaluate() ที่ไม่ระบุ
+            # timeout รอได้ถึง 30 วินาที ทั้งที่นี่เป็นแค่ขั้นตอนเสริม best-effort หลัง fill สำเร็จ
+            # ไปแล้ว (element ที่หลุดจาก DOM หลัง fill คือเคสที่ทำให้รอเต็มเวลาโดยไม่ได้อะไรเลย)
+            await target.locator(selector).evaluate(
+                "el => { el.blur(); document.body.click(); }", timeout=_STATE_READ_TIMEOUT_MS,
+            )
             # popup ปิดจริง (ยืนยันจากการทดสอบ) แต่ไม่ synchronous — framework ใช้
             # transition/nextTick ก่อนถอด element ออกจาก DOM จริง (~100-300ms) ไม่รอตรงนี้
             # จะคืนผลลัพธ์ก่อน popup หายจริง ทำให้ get_snapshot() รอบถัดไป (ที่ orchestrator
@@ -856,7 +875,10 @@ async def _is_effectively_checked(target: Union[Page, Frame], selector: str) -> 
                     result = cls.includes('checked') || cls.includes('--active') || cls.includes(' active');
                 }
                 return !!result;
-            }"""
+            }""",
+            # W_check_evaluate_timeout: ต้องระบุเสมอ — ไม่ระบุ = 30 วินาทีของ Playwright
+            # ต่อการเรียกหนึ่งครั้ง และ check() เรียกฟังก์ชันนี้ได้ถึง 2 ครั้งต่อความพยายาม
+            timeout=_STATE_READ_TIMEOUT_MS,
         )
     except Exception:
         return False
@@ -892,7 +914,7 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
     # ตรงๆ ไม่ว่า Playwright จะมองว่า element นี้ "checkable" หรือไม่
     try:
         target = await resolve_frame(page, selector)
-        await target.click(selector, timeout=timeout, force=True)
+        await target.click(selector, timeout=min(timeout, _ELEMENT_FALLBACK_TIMEOUT_MS), force=True)
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
             return ActionResult(True, f"check({index})", "checked successfully (force click)", locator_descriptor=descriptor)
@@ -905,7 +927,14 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
     # pseudo-element ล้วนๆ)
     try:
         target = await resolve_frame(page, selector)
-        await target.locator(selector).evaluate("el => el.click()")
+        # W_check_evaluate_timeout: ต้องส่ง timeout เองเสมอ — Locator.evaluate() ที่ไม่ระบุ
+        # ใช้ default 30 วินาทีของ Playwright ทำให้ action สุดท้ายของ task ค้างครึ่งนาที
+        # ทั้งที่งานจริงเสร็จไปแล้ว (รันจริง 2026-09-03: "Timeout 30000ms exceeded" ที่
+        # step สุดท้าย หลังลบข้อมูลครบตั้งแต่ step ก่อนหน้า) — บั๊กคลาสเดียวกับ
+        # W_descriptor_timeout ที่ compute_locator_descriptor() เคยโดนมาแล้ว
+        await target.locator(selector).evaluate(
+            "el => el.click()", timeout=min(timeout, _ELEMENT_FALLBACK_TIMEOUT_MS),
+        )
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
             return ActionResult(True, f"check({index})", "checked successfully (JS click)", locator_descriptor=descriptor)

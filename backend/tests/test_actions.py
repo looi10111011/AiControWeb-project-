@@ -4,6 +4,7 @@ import pytest
 from playwright.async_api import TimeoutError as PWTimeout, async_playwright
 
 from backend.app.core.actions import (
+    _ACTION_RETRIES,
     ActionResult,
     _DIALOG_CONTAINER_SELECTOR,
     _DIALOG_CONTAINER_SELECTORS,
@@ -99,7 +100,7 @@ async def test_execute_click_retries_on_transient_failure_then_succeeds(_no_real
     result = await execute(mock_page, {"type": "click", "index": 2})
 
     assert result.success is True
-    assert "attempt 2/3" in result.message
+    assert "attempt 2/2" in result.message
     assert mock_page.click.await_count == 2
     _no_real_sleep.assert_awaited_once()  # หน่วงแค่ระหว่างครั้งที่ 1->2 ครั้งเดียว
 
@@ -112,9 +113,9 @@ async def test_execute_fill_gives_up_after_max_retries(_no_real_sleep):
     result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello"})
 
     assert result.success is False
-    assert "after 3 attempts" in result.message
-    assert mock_page.fill.await_count == 3
-    assert _no_real_sleep.await_count == 2  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
+    assert "after 2 attempts" in result.message
+    assert mock_page.fill.await_count == 2
+    assert _no_real_sleep.await_count == 1  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
 
 
 # ---------------- W19 ("Safe Input Replacement"): focus -> select-all -> Backspace -> fill ----------------
@@ -194,7 +195,7 @@ async def test_execute_fill_dismisses_any_popup_opened_by_focus_after_success():
     # เป้าหมายเป็น <input type=file> ไหม ก็เรียก evaluate() ผ่าน locator ตัวนี้ด้วย จำนวนครั้ง
     # จึงไม่ใช่ 1 อีกต่อไป สิ่งที่เทสต์นี้สนใจจริงๆ คือ "blur+body click ถูกยิงจริงหลัง fill"
     dismiss_locator.evaluate.assert_any_await(
-        "el => { el.blur(); document.body.click(); }"
+        "el => { el.blur(); document.body.click(); }", timeout=500,
     )
     mock_page.wait_for_timeout.assert_awaited_once_with(200)
 
@@ -464,11 +465,12 @@ async def test_execute_click_hovers_before_every_retry_attempt_until_giving_up(_
     result = await execute(mock_page, {"type": "click", "index": 5})
 
     assert result.success is False
-    assert mock_page.click.await_count == 3
-    assert mock_page.hover.await_count == 2  # ก่อนรอบ 2 และรอบ 3 (ไม่ใช่ก่อนรอบแรก)
+    assert mock_page.click.await_count == _ACTION_RETRIES
+    # hover ก่อนทุกรอบตั้งแต่รอบ 2 เป็นต้นไป = จำนวนรอบทั้งหมด - 1 (ไม่ hover ก่อนรอบแรก)
+    assert mock_page.hover.await_count == _ACTION_RETRIES - 1
     # กรองเอาแค่ click/hover (ตัด query_selector ที่ resolve_frame() เรียกแทรกก่อนทุกครั้งออก)
     call_order = [c[0] for c in mock_page.method_calls if c[0] in ("click", "hover")]
-    assert call_order == ["click", "hover", "click", "hover", "click"]
+    assert call_order == ["click"] + ["hover", "click"] * (_ACTION_RETRIES - 1)
 
 
 @pytest.mark.asyncio
@@ -1801,7 +1803,7 @@ async def test_click_that_fails_with_no_change_at_all_reports_a_plain_failure():
 
     assert result.success is False
     assert "DOM did change" not in result.message
-    assert "after 3 attempts" in result.message
+    assert "after 2 attempts" in result.message
 
 
 # ---------------- W_conditional_count / W_count_answer_check (P1.1) ----------------
