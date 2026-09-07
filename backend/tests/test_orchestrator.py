@@ -8525,18 +8525,18 @@ def test_a_validation_message_with_real_detail_still_stops_the_task():
 # การกรอกช่องนั้น แต่ตัวสแกนยังเห็นแบนเนอร์เดิมค้างอยู่แล้วฆ่างานทิ้ง
 
 
-def test_a_required_error_about_a_field_already_filled_is_treated_as_stale():
-    f = orchestrator_module._is_stale_required_error
-    assert f("Error: First Name is required", ["First Name"]) is True
-    # แบนเนอร์ค้างข้ามเทิร์น: ตอนนี้กำลังกรอก Last Name แต่ข้อความยังพูดถึง First Name
-    assert f("Error: First Name is required", ["First Name", "Last Name"]) is True
-    assert f("ช่องรหัสผ่าน ต้องกรอก", ["รหัสผ่าน"]) is True
+def test_a_required_field_error_never_ends_the_task():
+    """hard-stop มีไว้สำหรับ error ที่แก้ได้ด้วยค่าใหม่จาก user เท่านั้น — "ช่องนี้ต้องกรอก"
+    ไม่ใช่แบบนั้น agent เติมเองได้ ไม่ว่าจะเป็นของค้างจากช่องที่กรอกไปแล้วหรือช่องที่ยังว่างจริง"""
+    f = orchestrator_module._is_required_field_error
+    assert f("Error: First Name is required") is True
+    assert f("Error: Postal Code is required") is True
+    assert f("ช่องรหัสผ่าน ต้องกรอก") is True
 
 
 def test_errors_that_are_still_true_keep_stopping_the_task():
-    """แคบไว้สองชั้นโดยเจตนา — ต้องเป็นข้อความชนิด required และต้องเป็นช่องที่กรอกไปแล้วจริง"""
-    f = orchestrator_module._is_stale_required_error
-    assert f("Error: Postal Code is required", ["First Name", "Last Name"]) is False
-    assert f("First Name must be at least 3 characters", ["First Name"]) is False
-    assert f("Invalid email format", ["Email"]) is False
-    assert f("Error: First Name is required", []) is False
+    """เส้นแบ่ง: error ที่บอกว่า "ค่าที่กรอกผิด" เดาเองไม่ได้ ต้องหยุดถามเหมือนเดิม"""
+    f = orchestrator_module._is_required_field_error
+    assert f("First Name must be at least 3 characters") is False
+    assert f("Invalid email format") is False
+    assert f("Username: Already exists") is False

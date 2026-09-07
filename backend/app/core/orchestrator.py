@@ -1686,21 +1686,20 @@ def _is_bare_required_message(text: str) -> bool:
 _REQUIRED_ERROR_WORDS = ("required", "ต้องกรอก", "จำเป็นต้องระบุ", "ห้ามเว้นว่าง")
 
 
-def _is_stale_required_error(text: str, filled_labels) -> bool:
-    """True ถ้า error นี้เป็นเรื่อง "ช่องนี้ต้องกรอก" ของช่องที่กรอกไปแล้วในงานนี้
+def _is_required_field_error(text: str) -> bool:
+    """True ถ้าข้อความบอกว่า "ช่องนี้ต้องกรอก" — เป็น error ที่ agent แก้เองได้เสมอ
 
-    เทียบกับ *ทุก* ช่องที่กรอกไปแล้ว ไม่ใช่แค่ช่องของเทิร์นนี้ — แบนเนอร์ของ SauceDemo ค้างอยู่
-    จนกว่าจะกดส่งใหม่ พอ agent กรอก First Name แล้วไปกรอก Last Name ต่อในเทิร์นถัดไป แบนเนอร์
-    เรื่อง First Name ก็ยังอยู่และฆ่างานทิ้งอยู่ดี (เจอจากการรันซ้ำหลังแก้รอบแรก)"""
-    lowered = (text or "").lower()
-    if not any(w in lowered for w in _REQUIRED_ERROR_WORDS):
-        return False
-    normalized_text = _normalized_field_name(lowered)
-    for raw in filled_labels or ():
-        label = _normalized_field_name(raw or "")
-        if label and label in normalized_text:
-            return True
-    return False
+    W_required_error_is_not_a_dead_end (release gate จับได้ 2026-09-07, rag_integration และ
+    long_flow ตกด้วยข้อความเดียวกันเป๊ะ 'Error: Postal Code is required'): agent กรอก
+    First/Last Name เองแล้วพ่วงคลิก Continue ทั้งที่ยังไม่ได้กรอก Postal Code — error นี้เป็น
+    ความจริง ไม่ใช่ของค้าง แต่ระบบยุติงานทั้งงานเพื่อ "ขอค่าใหม่จาก user" ทั้งที่ค่าที่ขาดคือ
+    สิ่งที่ agent เติมเองได้ (มันเพิ่งเติมชื่อเองไปสองช่องในเทิร์นก่อนหน้า)
+    hard-stop ตัวนี้มีไว้สำหรับ error ที่ "แก้ได้ด้วยค่าใหม่จาก user เท่านั้น" — ข้อความชนิด
+    required ไม่เข้าข่ายนั้นเลย มันบอกชัดว่าต้องทำอะไรต่อและ agent ทำได้เอง ปล่อยให้ loop เดินต่อ
+    (แบนเนอร์ยังอยู่บนหน้า โมเดลเห็นใน snapshot ถัดไปอยู่แล้ว)
+    ส่วนข้อความที่บอกว่า "ค่าที่กรอกผิด" (invalid format / at least N characters / already
+    exists) ยังหยุดเหมือนเดิม เพราะกรอกใหม่เองมั่วๆ ไม่ได้ ต้องรู้ค่าที่ถูกจริงๆ"""
+    return any(w in (text or "").lower() for w in _REQUIRED_ERROR_WORDS)
 
 
 def _label_looks_like_form_submit(label: str) -> bool:
@@ -6918,14 +6917,10 @@ class Orchestrator:
                     validation_errors = [
                         e for e in await _scan_validation_errors(page, within_form=True)
                         if not _is_bare_required_message(e)
-                        # W_required_error_survives_the_fix: ข้อความ "ช่องนี้ต้องกรอก" ของช่องที่
-                        # เพิ่งกรอกไปแล้วคือของค้างจากก่อนหน้า ไม่ใช่ปัญหาที่ยังเหลืออยู่
-                        and not (
-                            tool_input.get("type") in ("fill", "fill_secret")
-                            and _is_stale_required_error(
-                                e, [*agent_filled_field_labels, action_label],
-                            )
-                        )
+                        # W_required_error_is_not_a_dead_end: ข้อความชนิด "ช่องนี้ต้องกรอก"
+                        # ไม่ใช่ทางตัน — agent เติมเองได้ ไม่ว่าจะเป็นของค้างจากช่องที่กรอกไปแล้ว
+                        # (W_required_error_survives_the_fix) หรือเป็นช่องที่ยังไม่ได้กรอกจริงๆ
+                        and not _is_required_field_error(e)
                     ]
                     if validation_errors:
                         errors_text = " | ".join(f"'{e}'" for e in validation_errors)
