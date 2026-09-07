@@ -2792,7 +2792,7 @@ def _step_is_navigational(step_text: str) -> bool:
 def _display_step_evidence(
     step_text: str, action_label: str, action_type: str, url_changed: bool, success: bool,
 ) -> str:
-    """หลักฐานว่า action นี้กำลังทำข้อที่ cursor แสดงผลชี้อยู่ — "match" / "url" / "" (ไม่มี)
+    """หลักฐานว่า action นี้กำลังทำข้อที่ cursor แสดงผลชี้อยู่ — "match" / "url" / "action" / ""
 
     ฟังก์ชันบริสุทธิ์ ไม่มี side effect ทดสอบตรงๆ ได้ และไม่เรียก LLM (กฎเดิมของเส้นทางนี้)
 
@@ -2811,7 +2811,18 @@ def _display_step_evidence(
         # goto/go_back/switch_tab นับเป็นการนำทางเสมอ แม้ URL จะเท่าเดิม (reload หน้าเดิม)
         if url_changed or action_type in ("goto", "go_back", "switch_tab"):
             return "url"
-    return ""
+    # W_plan_ticks_every_row (user เลือกเอง 2026-09-07 หลังเห็นของจริงว่าติ๊กสดได้แค่ 1 ใน 4 แถว):
+    # action ที่เปลี่ยนสถานะหน้าเว็บสำเร็จแล้ว แต่ผูกกับข้อความของข้อนี้ไม่ได้ ให้ถือว่าเดินหน้า
+    # ไปหนึ่งข้อ วัดจริงแล้วสองสาขาข้างบนครอบได้แค่ส่วนน้อย เพราะแถวส่วนใหญ่ในแผนที่ LLM ร่างมา
+    # เขียนกว้างเกินกว่าจะ match กับ label ของปุ่ม ("กรอกข้อมูลผู้ใช้", "ตรวจสอบผลลัพธ์") และ
+    # ไม่ใช่ขั้นนำทางจึงไม่มี URL เปลี่ยนให้จับ
+    #
+    # ราคาที่จ่ายโดยรู้ตัว: แถวติ๊กเร็วกว่าความจริงเมื่อข้อเดียวกินหลาย action และเมื่อจำนวน action
+    # มากกว่าจำนวนข้อ cursor จะไปค้างที่ข้อสุดท้ายจนกว่างานจะจบ — ทั้งสองอย่างไม่กระทบความถูกต้อง
+    # ของงานเลย เพราะ cursor ตัวนี้ไม่เคยป้อน plan_fully_completed / prompt / guard ใด ๆ (ดู
+    # ข้อจำกัดที่หัวข้อ W_plan_panel_lags_the_log ด้านบน) และการ cap ไว้ที่ข้อสุดท้ายทำให้มัน
+    # พูดว่า "แผนจบแล้ว" ไม่ได้อยู่ดี ข้อสุดท้ายยังต้องรอ task สำเร็จจริงถึงจะติ๊ก
+    return "action"
 
 # W_verify_text_needs_a_write (บั๊กจริงที่ user เจอจาก token 2026-09-04): goal "เปิดเว็ปแล้วไป
 # ที่หน้าแอดมิน" ใช้ LLM ไป 4 ครั้งเพื่อให้ได้ action เดียว หนึ่งในเทิร์นที่เสียไปคือ finish_task

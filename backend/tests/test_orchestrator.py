@@ -8574,10 +8574,23 @@ def test_display_cursor_reads_a_thai_step_written_with_spaces():
 
 
 def test_display_cursor_ignores_read_only_and_failed_actions():
+    """สองเคสนี้คือสิ่งเดียวที่ยังหยุด cursor แสดงผลได้ หลังคลายเกณฑ์ตาม W_plan_ticks_every_row"""
     f = orchestrator_module._display_step_evidence
     assert f("ไปที่หน้า Admin", "", "read_page_data", True, True) == ""   # อ่านไม่ใช่ความคืบหน้า
     assert f("ไปที่หน้า Admin", "Admin", "click", True, False) == ""      # action ที่ล้มเหลว
-    assert f("กรอกอีเมล", "Email", "fill", False, True) == ""             # ไม่มีหลักฐานอะไรเลย
+    for read_only in sorted(orchestrator_module._GOAL_SCOPE_ALLOWED_ACTION_TYPES):
+        assert f("กรอกอีเมล", "", read_only, True, True) == ""
+
+
+def test_display_cursor_advances_on_any_successful_change_to_the_page():
+    """W_plan_ticks_every_row: แถวที่เขียนกว้างจน match ไม่ได้และไม่ใช่ขั้นนำทาง ต้องยังเดิน —
+    ไม่งั้น panel ค้างอยู่แถวเดิมทั้ง task ซึ่งเป็นสิ่งที่ user เจอจริง (ติ๊กสดแค่ 1 ใน 4 แถว)"""
+    f = orchestrator_module._display_step_evidence
+    assert f("กรอกอีเมล", "Email", "fill", False, True) == "action"
+    assert f("ตรวจสอบผลลัพธ์", "Some Button", "click", False, True) == "action"
+    # หลักฐานที่ชัดกว่ายังต้องชนะ เพื่อให้ log บอกได้ว่าแถวขยับเพราะอะไร
+    assert f("แล้วกดค้นหา", "Search", "click", False, True) == "match"
+    assert f("ไปที่หน้า Admin", "Admin", "click", True, True) == "url"
 
 
 @pytest.mark.asyncio
