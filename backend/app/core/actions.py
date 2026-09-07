@@ -1791,21 +1791,27 @@ async def execute(
             # ไม่ตัด chain ที่พ่วง checkbox ตัวอื่น — นั่นคือการติ๊กสองช่องรวดซึ่งเป็นสิ่งที่
             # ต้องการพอดี ไม่ใช่การส่งฟอร์มก่อนเวลา ตรวจจาก DOM จริงด้วย ไม่เชื่อแค่ then_type
             # ที่ผู้เรียกส่งมา เพราะมันเป็น optional และ default เป็น "" (เจอตอนเขียนเทสต์)
+            #
+            # เวอร์ชันแรกตัด chain เฉพาะตอน "ยังมีช่องว่างเหลือ" แล้วไล่ชื่อช่องที่ยังไม่ถูก
+            # ติ๊กไปกับข้อความ — gate รอบถัดมาพิสูจน์ว่าผิดสองชั้น: โมเดลอ่านรายชื่อนั้นเป็น
+            # รายการที่ต้องทำแล้วติ๊กช่องที่โจทย์ไม่ได้ขอ (โจทย์ขอ 3 จาก 4 โมเดลติ๊กครบ 4 ได้
+            # คะแนนบางส่วน) และเงื่อนไข "ครบทุกช่องแล้วค่อยพ่วงได้" เองก็ผิด เพราะโจทย์ส่วนใหญ่
+            # ขอแค่บางช่อง ชั้นนี้ไม่รู้จัก goal จึงตัดสินไม่ได้ว่าติ๊กครบหรือยัง — กฎที่ถูกคือ
+            # "กลุ่มที่มีหลายช่อง ไม่พ่วงปุ่มเลย" ราคาคงที่หนึ่ง step และไม่ชี้นำอะไรผิดๆ
             if result.success and cmd.get("then_click_index") is not None:
-                pending = await state_filter.checkbox_group_still_unticked(page, cmd["index"])
+                group_size = await state_filter.checkbox_group_size(page, cmd["index"])
                 chained_is_checkbox = (then_type or "").lower() == "checkbox" or (
-                    pending is not None
+                    group_size >= 2
                     and await state_filter.element_is_checkbox(page, cmd["then_click_index"])
                 )
-                if pending is not None and not chained_is_checkbox:
-                    names = ", ".join(n for n in (pending.get("names") or []) if n)
+                if group_size >= 2 and not chained_is_checkbox:
                     return replace(
                         result,
                         message=(
-                            f"{result.message} (did not press the chained button: "
-                            f"{pending['unticked']} of the {pending['total']} checkboxes in this "
-                            f"group are still unticked{f' — {names}' if names else ''}. Tick every "
-                            "box the goal asks for first, then press the button on its own turn.)"
+                            f"{result.message} (did not press the chained button: this is one of "
+                            f"{group_size} checkboxes in the same group. Tick exactly the boxes "
+                            "the instruction names — no others — then press the button on "
+                            "its own turn.)"
                         ),
                     )
             return await _maybe_chain_click(

@@ -183,46 +183,42 @@ async def check_checkbox_redundant(page: Page, index: int) -> Optional[str]:
 
 
 _SIBLING_CHECKBOX_JS = """(el) => {
-    // ไล่ ancestor ขึ้นไปหา "กลุ่ม" ที่เล็กที่สุดที่มี checkbox ตั้งแต่ 2 ตัวขึ้นไป แล้วรายงาน
-    // ตัวที่ยังไม่ถูกติ๊ก — ตั้งใจไม่ผูกกับ <form>/<fieldset> เพราะหน้าเว็บจำนวนมาก (รวม
-    // MiniWoB ที่เจอบั๊กนี้) วาง checkbox ไว้ใน div เปล่าๆ ไม่มี form เลย
+    // ไล่ ancestor ขึ้นไปหา "กลุ่ม" ที่เล็กที่สุดที่มี checkbox ตั้งแต่ 2 ตัวขึ้นไป แล้วคืนจำนวน
+    // ตั้งใจไม่ผูกกับ <form>/<fieldset> เพราะหน้าเว็บจำนวนมาก (รวม MiniWoB ที่เจอบั๊กนี้)
+    // วาง checkbox ไว้ใน div เปล่าๆ ไม่มี form เลย
     const visible = (b) => b === el || (!b.disabled && b.offsetParent !== null);
     let scope = el.parentElement;
     let boxes = [];
     while (scope) {
         boxes = Array.from(scope.querySelectorAll('input[type="checkbox"]')).filter(visible);
-        if (boxes.length >= 2) break;
+        if (boxes.length >= 2) return boxes.length;
         scope = scope.parentElement;
     }
-    if (boxes.length < 2) return null;
-    const others = boxes.filter((b) => b !== el && !b.checked);
-    if (!others.length) return null;
-    const nameOf = (b) => (
-        (b.labels && b.labels[0] && b.labels[0].textContent)
-        || (b.parentElement && b.parentElement.textContent)
-        || b.id || ''
-    ).trim().slice(0, 40);
-    return {total: boxes.length, unticked: others.length, names: others.slice(0, 5).map(nameOf)};
+    return 0;
 }"""
 
 
-async def checkbox_group_still_unticked(page: Page, index: int) -> Optional[dict]:
-    """checkbox ตัวอื่นในกลุ่มเดียวกันที่ยังไม่ถูกติ๊ก (ถ้ามี) — คืน dict หรือ None
+async def checkbox_group_size(page: Page, index: int) -> int:
+    """จำนวน checkbox ในกลุ่มเดียวกับ index นี้ — คืน 0 ถ้าเป็นช่องเดี่ยว (ไม่มีกลุ่ม)
 
     ไม่ใช่การเช็ค redundant เหมือนตัวอื่นในไฟล์นี้ ผู้เรียกใช้ตัดสินว่าจะ "พ่วงปุ่ม submit
     ต่อท้ายการติ๊ก" ได้ไหม (ดู W_chained_submit_after_check ใน actions.py) — กฎการห้าม throw
-    และการ fail-safe เป็น None ยังเหมือนกันทุกประการ"""
+    และการ fail-safe (ตรงนี้คือคืน 0 = ไม่ขวางอะไร) ยังเหมือนกันทุกประการ
+
+    ตั้งใจรายงานแค่ "ขนาดกลุ่ม" ไม่ใช่ "ช่องไหนยังไม่ถูกติ๊ก" — เวอร์ชันแรกคืนรายชื่อช่องที่
+    ยังว่างแล้วให้ actions เอาไปใส่ข้อความ ผลคือ gate รอบถัดมาโมเดลอ่านรายชื่อนั้นเป็นรายการ
+    ที่ต้องทำ แล้วติ๊กช่องที่โจทย์ไม่ได้ขอเพิ่มเพื่อให้ "ครบ" (วัดเจอ 2026-09-07: โจทย์ขอ 3
+    จาก 4 ช่อง โมเดลติ๊กครบ 4 ได้คะแนนบางส่วน) ชั้นนี้ไม่รู้จัก goal จึงไม่มีทางรู้ว่าช่องไหน
+    ควรถูกติ๊ก — การบอกสถานะไปครึ่งๆ จึงชี้นำผิดมากกว่าไม่บอกเลย"""
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
-        info = await target.locator(selector).evaluate(
+        size = await target.locator(selector).evaluate(
             _SIBLING_CHECKBOX_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
         )
     except Exception:
-        return None
-    if isinstance(info, dict) and info.get("unticked"):
-        return info
-    return None
+        return 0
+    return int(size) if isinstance(size, (int, float)) else 0
 
 
 async def element_is_checkbox(page: Page, index: int) -> bool:

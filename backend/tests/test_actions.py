@@ -2280,7 +2280,9 @@ _LONE_CHECKBOX_HTML = """<!doctype html><html><body><form>
 
 
 @pytest.mark.asyncio
-async def test_check_does_not_press_a_chained_button_while_the_group_has_unticked_boxes():
+async def test_check_never_presses_a_chained_button_inside_a_checkbox_group():
+    """โจทย์ส่วนใหญ่ขอแค่บางช่องในกลุ่ม ชั้น actions ไม่รู้จัก goal จึงตัดสินไม่ได้ว่า
+    "ติ๊กครบหรือยัง" — กฎคือกลุ่มที่มีหลายช่องไม่พ่วงปุ่มเลย ไม่ว่าสถานะจะเป็นยังไง"""
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page()
@@ -2291,26 +2293,33 @@ async def test_check_does_not_press_a_chained_button_while_the_group_has_unticke
             assert result.success is True                       # การติ๊กเองสำเร็จตามปกติ
             assert await page.locator("#a").is_checked() is True
             assert await page.evaluate("() => !!window.__submitted") is False
-            assert "still unticked" in result.message
-            assert "beta" in result.message and "gamma" in result.message
+            assert "3 checkboxes in the same group" in result.message
+
+            # ติ๊กครบทุกช่องแล้วก็ยังไม่พ่วง — เวอร์ชันแรกปล่อยผ่านตรงนี้ แล้ว gate
+            # พิสูจน์ว่ามันสอนให้โมเดลติ๊กช่องที่โจทย์ไม่ได้ขอเพื่อให้ "ครบ"
+            await page.check("#b")
+            result = await execute(page, {"type": "check", "index": 2, "then_click_index": 3}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is False
         finally:
             await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_check_still_presses_the_chained_button_once_the_group_is_complete():
-    """ราคาที่ยอมจ่ายคือหนึ่ง step ไม่ใช่การปิดทางส่งฟอร์ม — ติ๊กครบแล้วต้องพ่วงได้เหมือนเดิม"""
+async def test_the_dropped_chain_never_names_individual_boxes():
+    """บั๊กจริงจาก gate 2026-09-07: ข้อความเวอร์ชันแรกไล่ชื่อช่องที่ยังไม่ถูกติ๊ก โมเดลอ่าน
+    เป็นรายการที่ต้องทำแล้วติ๊กช่องที่โจทย์ไม่ได้ขอ (ขอ 3 จาก 4 ติ๊กครบ 4 ได้คะแนนบางส่วน)"""
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page()
         try:
             await page.set_content(_CHECKBOX_GROUP_HTML)
-            await page.check("#a")
-            await page.check("#b")
-            result = await execute(page, {"type": "check", "index": 2, "then_click_index": 3}, [])
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 3}, [])
 
-            assert result.success is True
-            assert await page.evaluate("() => !!window.__submitted") is True
+            for name in ("alpha", "beta", "gamma"):
+                assert name not in result.message
+            assert "the instruction names" in result.message
         finally:
             await browser.close()
 
