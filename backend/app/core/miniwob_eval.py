@@ -78,6 +78,7 @@ window.WOB_DONE_GLOBAL / window.WOB_REWARD_GLOBAL (core.js::core.endEpisode()) �
 """
 
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -150,6 +151,25 @@ def _init_script(seed: int) -> str:
   }});
 }})();
 """
+
+
+def task_seed(task_name: str) -> int:
+    """seed คงที่ต่อชื่อ task (ไม่ใช่สุ่มจาก wall-clock) — ต้องเหมือนเดิมทุกครั้งที่รันไฟล์นี้
+    ซ้ำ เพื่อให้ utterance ที่อ่านตอนนี้ตรงกับ episode ที่ agent จะเจอจริงตอน run_task()
+    navigate ซ้ำ (ดู docstring หัวไฟล์ ข้อ 1) — ไม่ต้องสุ่มข้าม task จริงจัง แค่ต้องการเลข
+    32-bit ที่ไม่ใช่ 0 เสมอ
+
+    W_miniwob_seed_not_stable (วัดเจอ 2026-09-07 ตอนไล่บั๊ก click-checkboxes): เดิมใช้
+    abs(hash(task_name)) ซึ่ง *ไม่* คงที่ตามที่คอมเมนต์เดิมอ้างไว้ — PYTHONHASHSEED ของ str
+    ถูกสุ่มใหม่ทุก process ตั้งแต่ Python 3.3 ค่าจึงคงที่แค่ "ภายใน process เดียว" เท่านั้น
+    (ซึ่งพอดีทำให้เงื่อนไขข้อ 1 ที่คอมเมนต์พูดถึงยังทำงานถูก บั๊กเลยไม่เคยดังออกมา)
+    ผลคือ gate ทุกรอบเจอ episode คนละอันของแต่ละ task: รอบที่ล้มได้โจทย์ 6 ช่องต้องติ๊ก 4
+    ส่วนตอนไล่บั๊กใน process ใหม่ได้ "Select nothing and click Submit" ซึ่งง่ายกว่ามาก
+    การเทียบ regression ข้ามรอบของ suite นี้จึงเทียบคนละโจทย์กันมาตลอด
+
+    crc32 ให้ค่าเดิมเสมอทุก process/ทุกเครื่อง (ไม่ใช่ hash เชิงความปลอดภัย ซึ่งไม่ต้องการ
+    ที่นี่อยู่แล้ว — ต้องการแค่ determinism)"""
+    return (zlib.crc32(task_name.encode("utf-8")) % 2_147_483_647) or 1
 
 
 async def _auto_approve(cmd: dict) -> bool:
@@ -272,11 +292,7 @@ async def _run_one_task(
         raise FileNotFoundError(f"ไม่พบ MiniWoB task {task_name!r} ที่ {html_path}")
     url = html_path.resolve().as_uri()
 
-    # seed คงที่ต่อ task name (ไม่ใช่สุ่มจาก wall-clock) — ต้องเหมือนเดิมทุกครั้งที่รันไฟล์
-    # นี้ซ้ำ เพื่อให้ utterance ที่อ่านตอนนี้ตรงกับ episode ที่ agent จะเจอจริงตอน
-    # run_task() navigate ซ้ำ (ดู docstring หัวไฟล์ ข้อ 1) — ไม่ต้องสุ่มข้าม task จริงจัง
-    # (แค่ต้องการเลข 32-bit ที่ไม่ใช่ 0 เสมอ)
-    seed = (abs(hash(task_name)) % 2_147_483_647) or 1
+    seed = task_seed(task_name)
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=headless)
