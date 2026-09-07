@@ -3307,6 +3307,28 @@ _PASSWORD_FIELD_STATE_JS = """() => Array.from(
 }))"""
 
 
+# W_index_drift_measure (2026-09-07): จาก release gate เห็น action ที่ยิงใส่ index แล้วไปโดน
+# element คนละตัวกับที่ตั้งใจ (fill(24) ไปโดน '-- Select --' แทน Email) แต่ trace ที่มีแยกไม่ออก
+# ระหว่างสองสาเหตุที่แก้คนละทาง:
+#   (1) หน้า re-render ระหว่าง snapshot กับ dispatch (LLM คิดอยู่หลายวินาที) -> index เดิมชี้
+#       คนละ element กับที่โมเดลเห็นตอนตัดสินใจ
+#   (2) โมเดลอ้าง index จากเทิร์นเก่าที่จำมาจาก history -> snapshot ปัจจุบันถูกต้องอยู่แล้ว
+# ตัววัดนี้เทียบ label ตอน snapshot กับ label สดตอนจะ dispatch: ต่างกัน = สาเหตุ (1)
+# เหมือนกันแต่ action ยังผิดเป้า = สาเหตุ (2) — วัดก่อน ค่อยตัดสินว่าจะแก้ทางไหน
+_LIVE_LABEL_JS = """(el) => (el.getAttribute('data-ai-label') || el.innerText || el.value || '').trim()"""
+
+
+async def _live_label_at_index(page: Page, index) -> Optional[str]:
+    """label สดของ element ที่ index นั้น ณ ตอนนี้ — None ถ้าไม่มี element นั้นแล้ว/อ่านไม่ได้"""
+    try:
+        found = await page.query_selector(f'[data-ai-index="{index}"]')
+        if found is None:
+            return None
+        return (await found.evaluate(_LIVE_LABEL_JS)) or ""
+    except Exception:
+        return None
+
+
 async def _password_field_states(page: Page) -> list[dict]:
     """[{index, filled}] ของช่อง password ที่มองเห็นได้ — ห้าม raise ตามกฎของไฟล์นี้"""
     try:
@@ -4251,6 +4273,9 @@ class Orchestrator:
         # _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS ด้านบนสุดของไฟล์
         last_same_label_key: Optional[tuple] = None
         consecutive_same_label_count = 0
+        # W_index_drift_measure: นับว่า element ที่ index ชี้เปลี่ยนไป/หายไปกี่ครั้งต่อ task
+        index_drift_changed = 0
+        index_drift_gone = 0
         # W_session_drift: จำนวนครั้งที่ login ใหม่ให้กลางทาง (ดู guard ต้นลูป)
         mid_task_relogin_count = 0
         # W_fill_secret_hardening: จำนวนครั้งติดกันที่ fill_secret ถูกปฏิเสธเพราะไม่ใช่
@@ -5995,6 +6020,19 @@ class Orchestrator:
                 action_tag = next(
                     (e.get("tag", "") for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
+                # W_index_drift_measure: element ที่ index นี้ยังเป็นตัวเดิมกับตอน snapshot ไหม
+                if action_index is not None and action_label:
+                    _live = await _live_label_at_index(page, action_index)
+                    if _live is None:
+                        index_drift_gone += 1
+                    elif _live and _label_without_markers(action_label) not in _live:
+                        index_drift_changed += 1
+                        if verbose:
+                            print(
+                                f"[index-drift] index {action_index}: snapshot={action_label!r} "
+                                f"-> ตอน dispatch={_live[:40]!r}",
+                                flush=True,
+                            )
                 # W_search follow-up 2: attribute "type" ของ element (เช่น input ที่
                 # type="text"/"search") ส่งคู่กับ tag ให้ execute()/classify_action() แยก
                 # ช่องกรอกข้อความ/ค้นหาธรรมดาออกจาก input ที่แท้จริงอาจเสี่ยง (ดู
@@ -7230,6 +7268,10 @@ class Orchestrator:
                 "retry_value_field_labels": retry_value_field_labels,
                 # W_auto_login_outcome_is_invisible: "skipped" | "ok" | "failed"
                 "auto_login": auto_login_outcome,
+                # W_index_drift_measure: element ที่ index ชี้เปลี่ยนตัว/หายไประหว่าง
+                # snapshot กับ dispatch กี่ครั้ง
+                "index_drift_changed": index_drift_changed,
+                "index_drift_gone": index_drift_gone,
             }
         except Exception as e:
             # W_loop_crash: เดิม try ก้อนนี้มีแต่ finally ไม่มี except เลยสักตัว — exception

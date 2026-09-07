@@ -88,6 +88,11 @@ def write_token_usage(
             # guard_rejections["login_skip"] แล้วตอบได้ว่าเทิร์นที่เสียไปกับ guard นั้น
             # เกิดตอน auto-login ล้มเหลวจริงหรือเกิดทั้งที่ล็อกอินสำเร็จแล้ว
             "auto_login": _stat("auto_login", "skipped"),
+            # W_index_drift_measure: element ที่ index ชี้เปลี่ยนตัว (changed) หรือหายไป
+            # (gone) ระหว่าง snapshot กับตอน dispatch — แยกสาเหตุ "หน้า re-render"
+            # ออกจาก "โมเดลอ้าง index เก่า" ซึ่งแก้คนละทาง
+            "index_drift_changed": _stat("index_drift_changed", 0),
+            "index_drift_gone": _stat("index_drift_gone", 0),
             "action_calls": _stat("action_calls", 0),
             "finish_task_calls": _stat("finish_task_calls", 0),
             "guard_rejections": _stat("guard_rejections", {}),
