@@ -2172,3 +2172,51 @@ async def test_a_real_dropdown_trigger_still_gets_the_note():
     finally:
         await browser.close()
         await pw.stop()
+
+
+# W_blank_navigation_destroys_the_task (release gate จับได้ 2026-09-07, MiniWoB
+# "click-checkboxes"): หลังโดนบังคับ go_back หน้าเว็บกลายเป็นหน้าว่าง โมเดลจึงสั่ง goto ด้วย url
+# ว่าง ซึ่งพาไป about:blank แล้วรายงานว่าสำเร็จ — จากจุดนั้น read_page_data ล้มด้วย
+# "no element matching 'body'" ทุกครั้ง task กู้ตัวเองไม่ได้อีกเลยแต่ยังเผา step จนหมดงบ
+
+_ONE_BUTTON_HTML = "<html><body><button data-ai-index='1'>Submit</button></body></html>"
+
+
+@pytest.mark.asyncio
+async def test_goto_refuses_a_blank_destination_and_leaves_the_page_alone():
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        for url in ("", "about:blank", "  "):
+            result = await execute(page, {"type": "goto", "url": url})
+            assert result.success is False
+            assert "[Rejected]" in result.message
+        assert await page.locator("[data-ai-index='1']").count() == 1
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_real_destination_is_untouched_by_the_blank_check():
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        result = await execute(page, {"type": "goto", "url": "https://example.com"})
+        assert result.success is True
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_go_back_with_no_history_reports_failure_instead_of_success():
+    """Playwright คืน None เฉยๆ เมื่อไม่มีประวัติให้ย้อน เดิมจึงรายงานว่าสำเร็จทุกครั้ง —
+    recovery ที่ล้มเหลวถูกนับเป็นสำเร็จ แล้ว loop ก็เดินต่อบนหน้าที่ใช้อะไรไม่ได้"""
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        result = await execute(page, {"type": "go_back"})
+        assert result.success is False
+        assert "no previous page" in result.message
+        assert await page.locator("[data-ai-index='1']").count() == 1
+    finally:
+        await browser.close()
+        await pw.stop()

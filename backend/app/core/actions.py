@@ -1021,8 +1021,27 @@ async def scroll(page: Page, direction: str = "down", amount: int = 600) -> Acti
         return ActionResult(False, f"scroll({direction})", f"error: {e}")
 
 
+# W_blank_navigation_destroys_the_task (release gate จับได้ 2026-09-07, งาน MiniWoB
+# "click-checkboxes"): หลังโดนบังคับ go_back หน้าเว็บกลายเป็นหน้าว่าง โมเดลจึงสั่ง goto ด้วย url
+# ว่าง ซึ่งเดิมพาไป about:blank แล้วรายงานว่า "navigated to" สำเร็จ — จากจุดนั้นทุก action ที่
+# เหลือล้มหมด (read_page_data: "no element matching 'body'") task กู้ตัวเองไม่ได้อีกเลย
+# ไปต่อไม่ได้แต่ยังเผา step จนหมดงบ
+#
+# ไม่มีกรณีไหนที่การไปหน้าว่างเป็นความตั้งใจของ goal — ปฏิเสธตรงๆ ดีกว่าปล่อยให้ทำลาย context
+# ของ task ทิ้ง (หลักเดียวกับ check_fill_is_empty_noop: ปฏิเสธ action ที่ไม่มีทางให้ผลที่ต้องการ)
+_BLANK_URLS = ("", "about:blank", "about:", "blank")
+
+
 async def goto(page: Page, url: str, timeout: int = 15000) -> ActionResult:
     """เปิด URL ใหม่"""
+    if (url or "").strip().lower() in _BLANK_URLS:
+        return ActionResult(
+            False, "goto",
+            "[Rejected] that is a blank page, not a destination — navigating there would throw "
+            "away the page this task is working on and every later action would fail. If you "
+            "need to start over, goto the task's original URL; otherwise read the indexed "
+            "elements on the current page and continue from there",
+        )
     try:
         await page.goto(url, timeout=timeout)
         return ActionResult(True, "goto", f"navigated to {url}")
@@ -1031,12 +1050,29 @@ async def goto(page: Page, url: str, timeout: int = 15000) -> ActionResult:
 
 
 async def go_back(page: Page) -> ActionResult:
-    """ย้อนกลับหน้าก่อนหน้า"""
+    """ย้อนกลับหน้าก่อนหน้า
+
+    W_blank_navigation_destroys_the_task: Playwright คืน None เฉยๆ (ไม่ throw) เมื่อไม่มี
+    ประวัติให้ย้อน เดิมจึงรายงาน "went back successfully" ทุกครั้งแม้ไม่ได้ไปไหนเลยหรือหลุดไป
+    หน้าว่าง — recovery ที่ล้มเหลวถูกนับเป็นสำเร็จ แล้ว loop ก็เดินต่อบนหน้าที่ใช้อะไรไม่ได้
+    เทียบ URL ก่อน/หลังแล้วรายงานตามความจริง"""
+    before = page.url
     try:
         await page.go_back()
-        return ActionResult(True, "go_back", "went back successfully")
     except Exception as e:
         return ActionResult(False, "go_back", f"error: {e}")
+    after = page.url
+    # เช็ค "ไม่ได้ขยับ" ก่อนเสมอ — หน้าที่สร้างด้วย set_content มี url เป็น about:blank อยู่แล้ว
+    # ทั้งที่เนื้อหาปกติดี ถ้าเช็คหน้าว่างก่อนจะรายงานผิดว่า "หน้าหายไปแล้ว"
+    if after == before:
+        return ActionResult(False, "go_back", "there was no previous page to go back to")
+    if (after or "").strip().lower() in _BLANK_URLS:
+        return ActionResult(
+            False, "go_back",
+            "going back left a blank page — the page this task was working on is gone. "
+            "Navigate to the task's URL again to carry on",
+        )
+    return ActionResult(True, "go_back", "went back successfully")
 
 
 async def switch_tab(page: Page, tab_index: int) -> ActionResult:

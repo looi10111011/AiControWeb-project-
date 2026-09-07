@@ -1650,14 +1650,26 @@ _FORM_SUBMIT_LABEL_KEYWORDS = (
 
 # "* Required"/"Required"/"Required." ล้วนๆ ไม่มีเนื้อหาอื่น (เห็นจริงบน OrangeHRM) — ต่างจาก
 # error ที่มีเนื้อหาจริงเช่น "Should have at least 7 characters" ซึ่งต้องไม่ถูกกรองทิ้ง
-_BARE_REQUIRED_MESSAGE_RE = re.compile(r'^[\*\s]*required[\.\!]?$', re.IGNORECASE)
+# W_bare_invalid_is_a_field_hint (release gate จับได้ 2026-09-07, งาน "search_no_results"
+# ตกซ้ำได้ 100% ทั้งสองรอบ): ช่อง Employee Name ของ OrangeHRM เป็น autocomplete พอพิมพ์ชื่อที่
+# ไม่มีอยู่จริง มันขึ้นคำว่า "Invalid" ใต้ช่อง ตัวสแกน validation error เห็นแล้วยุติ task ทั้งงาน
+# เพื่อขอค่าใหม่จาก user — ทั้งที่ goal ของงานนั้นคือ "ค้นหาชื่อที่ไม่มีอยู่แล้วยืนยันว่าไม่พบ"
+# คำว่า "Invalid" จึงเป็นผลลัพธ์ที่ถูกต้อง ไม่ใช่ความล้มเหลว (จบที่ 1 step ทุกครั้ง)
+#
+# เป็น false positive ชนิดเดียวกับ "* Required" เป๊ะ: คำเดียวโดดๆ ที่เป็นป้ายบอกสถานะของช่อง
+# ไม่ได้บอกว่าค่าที่กรอกผิดยังไง ต่างจากข้อความจริงอย่าง "Invalid email format" หรือ
+# "Should have at least 7 characters" ซึ่งบอกรายละเอียดและยังต้องหยุดเหมือนเดิม
+_BARE_FIELD_HINT_MESSAGE_RE = re.compile(
+    r'^[\*\s]*(?:required|invalid)[\.\!]?$', re.IGNORECASE,
+)
 
 
 def _is_bare_required_message(text: str) -> bool:
-    """True ถ้าข้อความเป็นแค่ "* Required"/"Required" เฉยๆ (ไม่มีรายละเอียดว่าค่าที่กรอกผิด
-    ยังไง) — เป็น false positive ที่โผล่ให้ช่องพี่น้องที่ "ยังไม่ได้กรอกเลย" เท่านั้น ไม่ใช่
-    ปัญหาของค่าที่เพิ่ง fill จริงๆ ต้องกรองทิ้งก่อน hard-stop"""
-    return bool(_BARE_REQUIRED_MESSAGE_RE.match((text or "").strip()))
+    """True ถ้าข้อความเป็นแค่ป้ายบอกสถานะของช่องคำเดียว ("* Required"/"Required"/"Invalid")
+    ไม่มีรายละเอียดว่าค่าที่กรอกผิดยังไง — false positive ที่โผล่ให้ช่องพี่น้องที่ยังไม่ได้กรอก
+    หรือให้ autocomplete ที่หาคำที่พิมพ์ไม่เจอ ไม่ใช่ปัญหาของค่าที่เพิ่ง fill จริงๆ
+    ต้องกรองทิ้งก่อน hard-stop (ดู W_bare_invalid_is_a_field_hint เหนือ regex)"""
+    return bool(_BARE_FIELD_HINT_MESSAGE_RE.match((text or "").strip()))
 
 
 def _label_looks_like_form_submit(label: str) -> bool:

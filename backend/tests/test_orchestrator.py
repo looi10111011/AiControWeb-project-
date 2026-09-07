@@ -8497,3 +8497,23 @@ def test_a_thai_target_matches_an_english_url_path():
     # หลักฐานยังต้องครบเหมือนเดิม: ต้องมี action นำทางที่สำเร็จ และต้องอยู่หน้านั้นจริง
     assert reached("แอดมิน", url, []) is False
     assert reached("แอดมิน", "https://x/web/pim/viewEmployeeList", record) is False
+
+
+# W_bare_invalid_is_a_field_hint (release gate จับได้ 2026-09-07): งาน "search_no_results"
+# ตกซ้ำได้ 100% ทั้งสองรอบ ที่ 1 step — ช่อง autocomplete ของ OrangeHRM ขึ้นคำว่า "Invalid"
+# เมื่อพิมพ์ชื่อที่ไม่มีอยู่จริง แล้วตัวสแกน validation error ยุติ task ทั้งงานเพื่อขอค่าใหม่
+# ทั้งที่ goal คือ "ค้นหาชื่อที่ไม่มีอยู่แล้วยืนยันว่าไม่พบ" — คำนั้นคือผลลัพธ์ที่ถูกต้อง
+
+
+def test_a_bare_invalid_is_treated_like_a_bare_required_not_a_hard_stop():
+    assert _is_bare_required_message("Invalid") is True
+    assert _is_bare_required_message("invalid.") is True
+    assert _is_bare_required_message("  Invalid  ") is True
+
+
+def test_a_validation_message_with_real_detail_still_stops_the_task():
+    """กันแก้เกิน — ข้อความที่บอกรายละเอียดว่าผิดยังไงต้องยังหยุดเหมือนเดิม"""
+    assert _is_bare_required_message("Invalid email format") is False
+    assert _is_bare_required_message("Invalid credentials") is False
+    assert _is_bare_required_message("Should have at least 7 characters") is False
+    assert _is_bare_required_message("Employee Name already exists") is False
