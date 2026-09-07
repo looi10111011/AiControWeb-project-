@@ -2253,3 +2253,104 @@ async def test_an_empty_toast_container_does_not_hide_the_real_toast():
     finally:
         await browser.close()
         await pw.stop()
+
+
+# --- W_chained_submit_after_check: ห้ามกดปุ่มส่งพ่วงท้ายการติ๊กช่องแรกของกลุ่ม ---
+#
+# บั๊กจริงจาก release-gate 2026-09-07 (MiniWoB click-checkboxes): โจทย์ให้ติ๊ก 4 จาก 6 ช่อง
+# แล้วกด Submit — โมเดลพ่วง then_click_index ของ Submit มาตั้งแต่การติ๊กช่องแรก episode จบ
+# ทันทีด้วยคะแนน 0 และ freeze ค่านั้นไว้ อีก 14 step ที่เหลือจึงไม่มีความหมาย ทุก action
+# รายงาน [OK] ตลอดทาง
+#
+# ใช้ Chromium จริงเพราะสิ่งที่ต้องพิสูจน์คือการไล่ ancestor หา "กลุ่ม" ของ checkbox บน DOM
+# จริง — mock ที่ตอบว่าเจอก็จะเจอเสมอไม่ว่า JS จะผิดแค่ไหน
+
+_CHECKBOX_GROUP_HTML = """<!doctype html><html><body><div id="boxes">
+<label><input type="checkbox" data-ai-index="0" id="a">alpha</label>
+<label><input type="checkbox" data-ai-index="1" id="b">beta</label>
+<label><input type="checkbox" data-ai-index="2" id="c">gamma</label>
+</div><button data-ai-index="3" id="go" onclick="window.__submitted=true">Submit</button>
+</body></html>"""
+
+_LONE_CHECKBOX_HTML = """<!doctype html><html><body><form>
+<label><input type="checkbox" data-ai-index="0" id="agree">I agree</label>
+<input data-ai-index="1" id="name">
+</form><button data-ai-index="2" id="go" onclick="window.__submitted=true">Submit</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_check_does_not_press_a_chained_button_while_the_group_has_unticked_boxes():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 3}, [])
+
+            assert result.success is True                       # การติ๊กเองสำเร็จตามปกติ
+            assert await page.locator("#a").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+            assert "still unticked" in result.message
+            assert "beta" in result.message and "gamma" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_check_still_presses_the_chained_button_once_the_group_is_complete():
+    """ราคาที่ยอมจ่ายคือหนึ่ง step ไม่ใช่การปิดทางส่งฟอร์ม — ติ๊กครบแล้วต้องพ่วงได้เหมือนเดิม"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            await page.check("#a")
+            await page.check("#b")
+            result = await execute(page, {"type": "check", "index": 2, "then_click_index": 3}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is True
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_lone_checkbox_still_submits_in_the_same_command():
+    """"ยอมรับเงื่อนไข" ช่องเดียวในฟอร์มคือเคสที่กฎ then_click_index มีไว้ให้แต่แรก —
+    guard ต้องไม่แตะมันเลย ไม่งั้นการแก้บั๊กนี้ไปทำให้ฟอร์มปกติช้าลงทุกใบ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_LONE_CHECKBOX_HTML)
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 2}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is True
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_chaining_another_checkbox_is_left_alone():
+    """พ่วง checkbox ตัวถัดไปคือการติ๊กสองช่องรวด ซึ่งเป็นสิ่งที่ต้องการพอดี ไม่ใช่การส่ง
+    ฟอร์มก่อนเวลา — ตัด chain ตรงนี้จะทำให้ทุก task ที่ต้องติ๊กหลายช่องช้าลงเปล่าๆ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            elements = [
+                {"index": 0, "tag": "input", "type": "checkbox", "label": "alpha"},
+                {"index": 1, "tag": "input", "type": "checkbox", "label": "beta"},
+            ]
+            result = await execute(
+                page, {"type": "check", "index": 0, "then_click_index": 1}, elements)
+
+            assert result.success is True
+            assert await page.locator("#a").is_checked() is True
+            assert await page.locator("#b").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+        finally:
+            await browser.close()

@@ -1773,6 +1773,41 @@ async def execute(
             if redundant is not None:
                 return ActionResult(True, f"check({cmd['index']})", f"[Skipped] {redundant}")
             result = await _dispatch_with_retry(check, page, cmd["index"])
+            # W_chained_submit_after_check (บั๊กจริงจาก release-gate 2026-09-07, MiniWoB
+            # click-checkboxes): โจทย์บอกให้ติ๊ก 4 ช่องจาก 6 แล้วกด Submit — โมเดลพ่วง
+            # then_click_index ของปุ่ม Submit มากับการติ๊ก *ช่องแรก* ตั้งแต่ action แรก
+            # episode จึงจบทันทีตอนติ๊กไปได้ช่องเดียว ได้คะแนน 0 และ freeze ค่านั้นไว้ อีก
+            # 14 step ที่เหลือติ๊กถูกครบก็ไม่มีความหมายอีกแล้ว — งานพังตั้งแต่ action แรก
+            # โดยที่ทุก action รายงาน [OK] หมด
+            #
+            # ต้นทางคือกฎใน prompt เองที่สั่งให้พ่วงปุ่ม submit "ไม่ว่าจะเพิ่งกรอกช่องข้อความ
+            # หรือเพิ่งติ๊ก checkbox" (ดู _PROMPT_SEARCH_SUBMIT ใน llm.py) ซึ่งถูกสำหรับช่อง
+            # ค้นหาช่องเดียว แต่ผิดเสมอสำหรับกลุ่ม checkbox ที่ต้องติ๊กหลายช่องก่อนส่ง
+            # ประวัติของไฟล์นี้บอกซ้ำแล้วว่าการแก้ prompt อย่างเดียวไม่พอ จึงกันที่โค้ด
+            #
+            # ราคาที่จ่ายเมื่อเดาผิด: เสียหนึ่ง step (โมเดลกดปุ่มเองในเทิร์นถัดไป) — เทียบกับ
+            # การส่งฟอร์มก่อนเวลาซึ่งกู้คืนไม่ได้เลย ยอมจ่ายฝั่งที่ถูกกว่ามาก
+            #
+            # ไม่ตัด chain ที่พ่วง checkbox ตัวอื่น — นั่นคือการติ๊กสองช่องรวดซึ่งเป็นสิ่งที่
+            # ต้องการพอดี ไม่ใช่การส่งฟอร์มก่อนเวลา ตรวจจาก DOM จริงด้วย ไม่เชื่อแค่ then_type
+            # ที่ผู้เรียกส่งมา เพราะมันเป็น optional และ default เป็น "" (เจอตอนเขียนเทสต์)
+            if result.success and cmd.get("then_click_index") is not None:
+                pending = await state_filter.checkbox_group_still_unticked(page, cmd["index"])
+                chained_is_checkbox = (then_type or "").lower() == "checkbox" or (
+                    pending is not None
+                    and await state_filter.element_is_checkbox(page, cmd["then_click_index"])
+                )
+                if pending is not None and not chained_is_checkbox:
+                    names = ", ".join(n for n in (pending.get("names") or []) if n)
+                    return replace(
+                        result,
+                        message=(
+                            f"{result.message} (did not press the chained button: "
+                            f"{pending['unticked']} of the {pending['total']} checkboxes in this "
+                            f"group are still unticked{f' — {names}' if names else ''}. Tick every "
+                            "box the goal asks for first, then press the button on its own turn.)"
+                        ),
+                    )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,

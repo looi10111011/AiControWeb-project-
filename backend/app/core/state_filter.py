@@ -182,6 +182,65 @@ async def check_checkbox_redundant(page: Page, index: int) -> Optional[str]:
     return None
 
 
+_SIBLING_CHECKBOX_JS = """(el) => {
+    // ไล่ ancestor ขึ้นไปหา "กลุ่ม" ที่เล็กที่สุดที่มี checkbox ตั้งแต่ 2 ตัวขึ้นไป แล้วรายงาน
+    // ตัวที่ยังไม่ถูกติ๊ก — ตั้งใจไม่ผูกกับ <form>/<fieldset> เพราะหน้าเว็บจำนวนมาก (รวม
+    // MiniWoB ที่เจอบั๊กนี้) วาง checkbox ไว้ใน div เปล่าๆ ไม่มี form เลย
+    const visible = (b) => b === el || (!b.disabled && b.offsetParent !== null);
+    let scope = el.parentElement;
+    let boxes = [];
+    while (scope) {
+        boxes = Array.from(scope.querySelectorAll('input[type="checkbox"]')).filter(visible);
+        if (boxes.length >= 2) break;
+        scope = scope.parentElement;
+    }
+    if (boxes.length < 2) return null;
+    const others = boxes.filter((b) => b !== el && !b.checked);
+    if (!others.length) return null;
+    const nameOf = (b) => (
+        (b.labels && b.labels[0] && b.labels[0].textContent)
+        || (b.parentElement && b.parentElement.textContent)
+        || b.id || ''
+    ).trim().slice(0, 40);
+    return {total: boxes.length, unticked: others.length, names: others.slice(0, 5).map(nameOf)};
+}"""
+
+
+async def checkbox_group_still_unticked(page: Page, index: int) -> Optional[dict]:
+    """checkbox ตัวอื่นในกลุ่มเดียวกันที่ยังไม่ถูกติ๊ก (ถ้ามี) — คืน dict หรือ None
+
+    ไม่ใช่การเช็ค redundant เหมือนตัวอื่นในไฟล์นี้ ผู้เรียกใช้ตัดสินว่าจะ "พ่วงปุ่ม submit
+    ต่อท้ายการติ๊ก" ได้ไหม (ดู W_chained_submit_after_check ใน actions.py) — กฎการห้าม throw
+    และการ fail-safe เป็น None ยังเหมือนกันทุกประการ"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        info = await target.locator(selector).evaluate(
+            _SIBLING_CHECKBOX_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+    if isinstance(info, dict) and info.get("unticked"):
+        return info
+    return None
+
+
+async def element_is_checkbox(page: Page, index: int) -> bool:
+    """element ตัวนี้เป็น checkbox เองหรือเปล่า — ผู้เรียกใช้แยก "พ่วงติ๊กช่องถัดไป" (ตั้งใจ)
+    ออกจาก "พ่วงปุ่มส่งฟอร์ม" (บั๊ก) ตอบจาก DOM จริงไม่ใช่จาก metadata ที่ผู้เรียกส่งมา
+    เพราะ then_type เป็น optional และ default เป็น "" — เชื่อค่าที่ไม่ได้ส่งมาไม่ได้"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        return bool(await target.locator(selector).evaluate(
+            "el => (el.tagName || '').toLowerCase() === 'input'"
+            " && (el.type || '').toLowerCase() === 'checkbox'",
+            timeout=_STATE_CHECK_TIMEOUT_MS,
+        ))
+    except Exception:
+        return False
+
+
 async def check_click_redundant(page: Page, index: int) -> Optional[str]:
     """REDUNDANT (คลิกไม่ได้จริง) ถ้า element เป้าหมาย disabled ไปแล้ว — perception.py
     กรอง element ที่ disabled อยู่แล้วตอน snapshot ไม่ให้ติด index เลย แต่หน้าอาจเปลี่ยน
