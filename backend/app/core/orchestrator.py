@@ -2764,6 +2764,55 @@ _MAX_PREMATURE_GOAL_SCOPE_RETRIES = 1
 # scroll").
 _GOAL_SCOPE_ALLOWED_ACTION_TYPES = {"read_page_data", "wait", "scroll", "hover"}
 
+# W_plan_panel_lags_the_log (user รายงาน 2026-09-07): PLAN panel ติ๊กครบทุกข้อพร้อมกันตอน task จบ
+# ทั้งที่ LOG เดินสดปกติ — สาเหตุคือ event เดียวที่บอกความคืบหน้าของแผน (plan_step_done) ยิงก็ต่อ
+# เมื่อโมเดลรายงาน completed_plan_step มาเอง และส่งค่า plan_cursor-1 ซึ่งเป็น 0 ตราบใดที่ cursor
+# ยังไม่ขยับ (แถวในแผนนับจาก 1 หน้าเว็บจึงไม่มีอะไรติ๊ก) ส่วน LOG ทันเพราะ event "step" ยิงทุก
+# action ไม่มีเงื่อนไข
+#
+# ตัวที่ทำให้ PLAN ทันคือ cursor ตัวที่สองที่ตัดสินจาก "หลักฐานที่มองเห็นบนหน้าเว็บ" (URL เปลี่ยน
+# หรือ action ตรงกับข้อความของข้อนั้น) ตามที่ user เลือกไว้ว่าเอาความทันใจ
+#
+# *** ข้อจำกัดที่ห้ามละเมิด: cursor ตัวนี้ใช้ "แสดงผลอย่างเดียว" ***
+# plan_cursor ตัวเดิมป้อน plan_fully_completed -> goal-scope hard stop ซึ่งเป็นต้นเหตุบั๊ก
+# false completion (W_plan_counter_claims_a_password_change: รายงานสำเร็จทั้งที่ยังไม่ได้กดบันทึก)
+# การเร่ง cursor เดิมให้ขยับง่ายขึ้นเพื่อให้ UI ทันจะเปิดบั๊กนั้นกลับมาทันที จึงต้องแยกกันเด็ดขาด
+_PLAN_NAV_STEP_KEYWORDS = (
+    "ไปที่", "ไปยัง", "เปิดหน้า", "เข้าหน้า", "เข้าสู่ระบบ", "ล็อกอิน", "หน้า",
+    "go to", "open", "navigate", "login", "log in", "sign in",
+)
+
+
+def _step_is_navigational(step_text: str) -> bool:
+    """ข้อนี้เป็นขั้น "ไปที่หน้า X" หรือเปล่า — ใช้ contains_keyword() ที่ทนการเว้นวรรคของภาษาไทย
+    ("ไป ที่ หน้า Admin" ต้องนับได้) ห้ามใช้ substring ดิบ ดูบทเรียนใน W_thai_keyword_space"""
+    return contains_keyword(step_text, _PLAN_NAV_STEP_KEYWORDS)
+
+
+def _display_step_evidence(
+    step_text: str, action_label: str, action_type: str, url_changed: bool, success: bool,
+) -> str:
+    """หลักฐานว่า action นี้กำลังทำข้อที่ cursor แสดงผลชี้อยู่ — "match" / "url" / "" (ไม่มี)
+
+    ฟังก์ชันบริสุทธิ์ ไม่มี side effect ทดสอบตรงๆ ได้ และไม่เรียก LLM (กฎเดิมของเส้นทางนี้)
+
+    ใช้ _action_matches_plan_step() ซ้ำโดยเจตนา — มันมีสะพานไทย<->อังกฤษผ่าน regex ที่มีอยู่แล้ว
+    (step "แล้วกดค้นหา" กับปุ่ม "Search") docstring ของมันห้ามเอาไป *บล็อก* dispatch ซึ่งไม่ใช่
+    กรณีนี้: cursor แสดงผลไม่ gate อะไรเลยสักอย่าง"""
+    if not success:
+        return ""
+    if action_type in _GOAL_SCOPE_ALLOWED_ACTION_TYPES:
+        return ""      # การอ่านหน้าไม่ใช่ความคืบหน้า — ใช้ชุดเดิม ไม่สร้างชุดที่สาม
+    if _action_matches_plan_step(
+        step_text, _label_without_markers(action_label or ""), action_type,
+    ) is True:
+        return "match"
+    if _step_is_navigational(step_text):
+        # goto/go_back/switch_tab นับเป็นการนำทางเสมอ แม้ URL จะเท่าเดิม (reload หน้าเดิม)
+        if url_changed or action_type in ("goto", "go_back", "switch_tab"):
+            return "url"
+    return ""
+
 # W_verify_text_needs_a_write (บั๊กจริงที่ user เจอจาก token 2026-09-04): goal "เปิดเว็ปแล้วไป
 # ที่หน้าแอดมิน" ใช้ LLM ไป 4 ครั้งเพื่อให้ได้ action เดียว หนึ่งในเทิร์นที่เสียไปคือ finish_task
 # ที่ถูก guard ตาราง (W63[7.2]) ตีกลับ เพราะโมเดลส่ง verify_text มาด้วยทั้งที่งานนี้เป็นการ
@@ -4308,6 +4357,12 @@ class Orchestrator:
         # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
         # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
         plan_cursor = 1
+        # W_plan_panel_lags_the_log: cursor "สำหรับแสดงผลเท่านั้น" — ตัดสินจากหลักฐานบน
+        # หน้าเว็บ (URL/action) เพื่อให้ PLAN panel เดินทันกับ LOG
+        # ค่านี้ *ไม่เคย* ป้อน plan_fully_completed, ไม่เคยเข้า prompt, และไม่มีวันเกิน
+        # จำนวนข้อของแผน — ข้อสุดท้ายจึงยังต้องรอ task สำเร็จจริงถึงจะติ๊ก (ดู allDone ฝั่ง
+        # frontend) โครงสร้างนี้ทำให้มันแปลว่า "แผนจบแล้ว" ไม่ได้เลยแม้จะเดินไปสุดทาง
+        display_plan_cursor = 1
         # W_plan_cursor_needs_a_matching_action: กี่ครั้งติดกันแล้วที่ไม่ยอมให้ cursor เดินหน้า
         # เพราะ action ดู "ไม่ตรง" กับ step ปัจจุบัน — ต้องมีเพดาน ไม่งั้นล็อกตาย (ดูจุดใช้งาน)
         blocked_cursor_advances = 0
@@ -4771,6 +4826,15 @@ class Orchestrator:
             goal_mentions_credentials = _goal_mentions_credentials(goal)
             # W_no_record_edit_for_delete_goal: resolve ครั้งเดียวเหมือนกัน
             goal_is_deletion_only = _goal_is_deletion_only(goal)
+
+            # W_plan_panel_lags_the_log: ยิงความคืบหน้าครั้งแรกก่อนเข้าลูป เพื่อให้ spinner ไป
+            # อยู่ข้อ 1 ตั้งแต่ต้น ไม่ต้องรอ action แรกจบก่อน (แผนถูกยืนยันเสร็จแล้วตรงนี้)
+            if plan_text:
+                await _emit({
+                    "kind": "plan_progress", "current": 1, "done_through": 0,
+                    "total": _total_plan_steps(plan_text), "confirmed": 0,
+                    "evidence": "start", "url": page.url,
+                })
 
             for _ in range(max_steps):
                 # W_step_budget: นับ "รอบ" แยกจาก steps_taken (ดูคำอธิบายที่จุดประกาศตัวแปร)
@@ -6766,7 +6830,10 @@ class Orchestrator:
                 # ต้อง re-evaluate) ไม่เช็คกับ goto/switch_tab/go_back เพราะ navigate คือ
                 # จุดประสงค์หลักของ action พวกนี้อยู่แล้ว ไม่ต้องเตือนซ้ำ
                 result_text = str(result) + _tab_note
-                if tool_input.get("type") not in ("goto", "switch_tab", "go_back") and page.url != url_before_action:
+                # W_plan_panel_lags_the_log: อ่านครั้งเดียว ใช้สองที่ (โน้ต W30 ด้านล่าง และ
+                # การขยับ cursor แสดงผล) ไม่เพิ่มการอ่าน DOM
+                url_changed_this_action = page.url != url_before_action
+                if tool_input.get("type") not in ("goto", "switch_tab", "go_back") and url_changed_this_action:
                     result_text += (
                         f"\n[The page changed by itself after this action: from "
                         f"{url_before_action} to {page.url} — the earlier plan may no longer "
@@ -6893,6 +6960,43 @@ class Orchestrator:
                         actions_since_plan_progress = 0
                 elif plan_progressing_action:
                     actions_since_plan_progress += 1
+
+                # W_plan_panel_lags_the_log: ขยับ cursor แสดงผลจากหลักฐานบนหน้าเว็บ แล้วยิง
+                # ความคืบหน้า *ทุก action* — จังหวะเดียวกับ event "step" ที่ทำให้ LOG ทัน สอง
+                # panel จึงเดินคู่กันโดยโครงสร้าง ไม่มีทางหลุดจากกันได้
+                #
+                # ยิงทุกครั้งแม้ไม่มีความคืบหน้า เพราะแถว "กำลังทำข้อนี้" ต้องรีเฟรชให้ตรงเสมอ
+                # และ event นี้พา done_through ไปด้วย ทำให้ tab ที่เพิ่งเชื่อมสายกลางคัน
+                # กู้ติ๊กที่พลาดไปได้ครบ (ระบบไม่มี replay buffer — ดู routes.py::_stream_task_events)
+                #
+                # ค่าใช้จ่ายอยู่บน SSE ล้วน ไม่มีอะไรเข้า prompt ของ LLM
+                if plan_text:
+                    _plan_total = _total_plan_steps(plan_text)
+                    _plan_lines = _plan_step_lines(plan_text)
+                    _display_text = (
+                        _plan_lines[display_plan_cursor - 1]
+                        if 0 < display_plan_cursor <= len(_plan_lines) else ""
+                    )
+                    _display_evidence = _display_step_evidence(
+                        _display_text, action_label or "", str(tool_input.get("type") or ""),
+                        url_changed_this_action, bool(result.success),
+                    )
+                    # cap ที่ _plan_total ไม่ใช่ _plan_total + 1 — ข้อสุดท้ายยังต้องรอ task สำเร็จ
+                    if _display_evidence and display_plan_cursor < _plan_total:
+                        display_plan_cursor += 1
+                    # floor: ฝั่งแสดงผลต้องไม่ตามหลัง cursor ตัวอนุรักษ์นิยม
+                    display_plan_cursor = max(
+                        display_plan_cursor, min(plan_cursor, _plan_total),
+                    )
+                    await _emit({
+                        "kind": "plan_progress",
+                        "current": display_plan_cursor,
+                        "done_through": display_plan_cursor - 1,
+                        "total": _plan_total,
+                        "confirmed": min(plan_cursor - 1, _plan_total),
+                        "evidence": _display_evidence or "none",
+                        "url": page.url,
+                    })
 
                 # W_action_matches_plan_step: เทียบกับ step ที่กำลังทำอยู่ *หลัง* cursor ขยับแล้ว
                 # (ถ้า cursor เพิ่งขยับ แปลว่า step ปัจจุบันคือข้อถัดไป ซึ่งเป็นข้อที่ต้องเทียบจริง

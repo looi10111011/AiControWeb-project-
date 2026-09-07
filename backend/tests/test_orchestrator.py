@@ -8540,3 +8540,107 @@ def test_errors_that_are_still_true_keep_stopping_the_task():
     assert f("First Name must be at least 3 characters") is False
     assert f("Invalid email format") is False
     assert f("Username: Already exists") is False
+
+
+# --- W_plan_panel_lags_the_log: PLAN panel ต้องเดินทันกับ LOG ---
+#
+# user รายงานว่า PLAN ติ๊กครบทุกข้อพร้อมกันตอน task จบ ทั้งที่ LOG เดินสดปกติ — event เดียวที่บอก
+# ความคืบหน้าของแผน (plan_step_done) ยิงก็ต่อเมื่อโมเดลรายงาน completed_plan_step มาเอง และส่งค่า
+# plan_cursor-1 ซึ่งเป็น 0 ตราบใดที่ cursor ยังไม่ขยับ หน้าเว็บจึงไม่มีอะไรติ๊กเลยระหว่างทาง
+#
+# cursor แสดงผลต้องแยกขาดจาก plan_cursor ที่ป้อน Goal Boundary Gate เด็ดขาด (บั๊ก false
+# completion W_plan_counter_claims_a_password_change เพิ่งปิดไป)
+
+
+def test_display_cursor_advances_on_a_url_change_for_a_navigation_step():
+    f = orchestrator_module._display_step_evidence
+    # ขั้นนำทาง: URL เปลี่ยน หรือ action เป็น goto/go_back ก็นับเป็นความคืบหน้าได้
+    assert f("เปิดหน้ารายชื่อพนักงาน", "", "goto", False, True) == "url"
+    assert f("ไปที่หน้า Admin", "Admin", "click", True, True) != ""
+
+
+def test_display_cursor_advances_when_the_action_matches_the_step_wording():
+    """สะพานไทย<->อังกฤษของ _action_matches_plan_step: step ไทยกับปุ่มอังกฤษต้องจับคู่กันได้"""
+    f = orchestrator_module._display_step_evidence
+    assert f("แล้วกดค้นหา", "Search", "click", False, True) == "match"
+    assert f("กดบันทึกข้อมูล", "Save", "click", False, True) == "match"
+
+
+def test_display_cursor_reads_a_thai_step_written_with_spaces():
+    """ไทยไม่มีขอบเขตคำ ผู้ใช้เว้นวรรคตรงไหนก็ได้ — บทเรียนเดียวกับ W_thai_keyword_space"""
+    assert orchestrator_module._step_is_navigational("ไป ที่ หน้า Admin") is True
+    assert orchestrator_module._display_step_evidence(
+        "ไป ที่ หน้า Admin", "", "goto", True, True) == "url"
+
+
+def test_display_cursor_ignores_read_only_and_failed_actions():
+    f = orchestrator_module._display_step_evidence
+    assert f("ไปที่หน้า Admin", "", "read_page_data", True, True) == ""   # อ่านไม่ใช่ความคืบหน้า
+    assert f("ไปที่หน้า Admin", "Admin", "click", True, False) == ""      # action ที่ล้มเหลว
+    assert f("กรอกอีเมล", "Email", "fill", False, True) == ""             # ไม่มีหลักฐานอะไรเลย
+
+
+@pytest.mark.asyncio
+async def test_run_task_emits_plan_progress_for_every_action():
+    """LOG ทันเพราะ event "step" ยิงทุก action — PLAN ต้องได้จังหวะเดียวกัน"""
+    mock_async_playwright, _, _ = _patch_browser()
+    on_event = AsyncMock()
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 1}, "t1", [], llm.TokenUsage()),
+        ("browser_action", {"type": "click", "index": 2}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t3", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "click(1)", "คลิกสำเร็จ"))),          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]),          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)):
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+            approved_plan="1. ไป Admin\n2. อ่านตาราง\n3. บันทึก",
+        )
+
+    progress = [
+        c.args[0] for c in on_event.await_args_list
+        if c.args and c.args[0].get("kind") == "plan_progress"
+    ]
+    # 1 ครั้งก่อนเข้าลูป + 1 ครั้งต่อ action ที่ dispatch จริง
+    assert len(progress) == 3
+    assert progress[0]["evidence"] == "start"
+    for event in progress:
+        assert event["total"] == 3
+        # cap: cursor แสดงผลห้ามเกินจำนวนข้อ ไม่งั้นมันจะแปลว่า "แผนจบแล้ว" ได้
+        assert 1 <= event["current"] <= event["total"]
+        assert event["done_through"] == event["current"] - 1
+        assert "url" in event
+
+
+@pytest.mark.asyncio
+async def test_plan_progress_does_not_disturb_the_safety_cursor():
+    """เคสเดียวกับ test_plan_cursor_does_not_advance_on_a_read_only_action — ทั้ง plan_step_done
+    และ plan_context ที่ส่งเข้า prompt ต้องเหมือนเดิมทุกตัวอักษร"""
+    mock_async_playwright, _, _ = _patch_browser()
+    on_event = AsyncMock()
+
+    next_action_calls = [
+        ("browser_action", {"type": "read_page_data", "query": "กี่แถว", "completed_plan_step": 2},
+         "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": True, "message": "เสร็จ"}, "t3", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright),          patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)),          patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)),          patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))),          patch("backend.app.core.orchestrator.execute",
+               AsyncMock(return_value=ActionResult(True, "read_page_data", "อ่านได้"))),          patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]),          patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=lambda m, tid, r: m),          patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)) as mock_na:
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic", on_event=on_event,
+            approved_plan="1. ไป Admin\n2. อ่านตาราง",
+        )
+
+    plan_contexts = [c.args[12] for c in mock_na.await_args_list]
+    assert ">>> CURRENT STEP (1/2)" in plan_contexts[0]
+    assert ">>> CURRENT STEP (1/2)" in plan_contexts[1]
+    # การอ่านหน้าไม่ขยับ cursor แสดงผลด้วยเช่นกัน
+    progress = [
+        c.args[0] for c in on_event.await_args_list
+        if c.args and c.args[0].get("kind") == "plan_progress"
+    ]
+    assert [e["current"] for e in progress] == [1, 1]

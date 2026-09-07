@@ -920,6 +920,10 @@ const liveChatReplies = {};  // task_id -> chat reply message for Q&A summarizat
 // removed from once added, even if the agent later revisits/retries an action related to
 // that step, so a checked box doesn't flicker back to unchecked mid-run.
 const completedPlanSteps = {};
+// W_plan_panel_lags_the_log: task_id -> plan_progress event ล่าสุดจาก SSE — พา current/
+// done_through/total มาให้ทุก action (จังหวะเดียวกับ event "step" ที่ทำให้ LOG ทัน)
+// เดิม PLAN ติ๊กครบพร้อมกันตอนจบ เพราะ event เก่ายิงเฉพาะตอนโมเดลรายงานเอง และส่งเลข 0 มา
+const planProgress = {};
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
 // W_urllock: true while the pencil-edit toggle is active for the *current* turn — while
 // true, renderTopbar() leaves the URL field alone (unlocked, not overwritten with
@@ -1398,6 +1402,14 @@ function handleStreamEvent(taskId, event) {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push({
       step: null, cmd: event.cmd, result: "Auto-approved (auto-approve enabled)", success: true,
     });
+  } else if (event.kind === "plan_progress") {
+    // W_plan_panel_lags_the_log: เก็บตัวล่าสุดไว้ชี้แถว "กำลังทำข้อนี้" แล้วเทข้อที่ผ่านไปแล้ว
+    // ลง Set เดิม — แหล่งความจริงเดียวสำหรับ "ติ๊กแล้ว" และเพราะ event นี้พา done_through มา
+    // ทุกครั้ง tab ที่เพิ่งเชื่อมสายกลางคันจึงกู้ติ๊กที่พลาดไปได้ครบในทีเดียว (ระบบไม่มี
+    // replay buffer ฝั่ง server — ดู routes.py::_stream_task_events)
+    planProgress[taskId] = event;
+    const doneSet = completedPlanSteps[taskId] || (completedPlanSteps[taskId] = new Set());
+    for (let i = 1; i <= (event.done_through || 0); i++) doneSet.add(i);
   } else if (event.kind === "plan_step_done") {
     // W43: never delete/unset once added (see completedPlanSteps declaration) — a
     // checked box should stay checked even if the agent revisits that part of the page.
@@ -1526,6 +1538,7 @@ async function killSession(convId) {
     delete liveSteps[taskId];
     delete pendingApprovals[taskId];
     delete runningPlans[taskId];
+    delete planProgress[taskId];
     delete liveChatReplies[taskId];
     delete liveScreens[taskId];
     if (liveConnections[taskId]) {
@@ -2606,20 +2619,29 @@ function renderPlanPanel(latest) {
   // task's own success is the more reliable signal, so once it's done successfully every
   // step counts as done regardless of which individual "plan_step_done" events actually
   // arrived. Fixes checklists that finished the real task but were left with unticked rows.
+  // W_plan_panel_lags_the_log: ตอนนี้แถวก่อนหน้าถูกติ๊กสดจาก plan_progress ระหว่างทางแล้ว
+  // allDone จึงเหลือหน้าที่ครอบแค่ข้อสุดท้าย (cursor แสดงผลถูก cap ไม่ให้เกินข้อสุดท้าย
+  // โดยตั้งใจ) ไม่ใช่กวาดทั้งลิสต์เหมือนเดิม — เหตุผลเดิมด้านบนยังใช้ได้ทุกข้อ
   const allDone = !!(latest.result && latest.result.success);
+  const progress = planProgress[latest.task_id] || null;
   badgeSlot.innerHTML = latest.result
     ? `<span class="plan-badge ${latest.result.success ? "ok" : "fail"}">${latest.result.success ? "Done" : "Failed"}</span>`
-    : `<span class="plan-badge running">Running</span>`;
+    : `<span class="plan-badge running">Running${
+        progress && progress.total ? ` ${progress.done_through}/${progress.total}` : ""
+      }</span>`;
   // step ปัจจุบัน = ข้อแรกที่ยังไม่เสร็จ และแสดงเฉพาะตอน task ยังรันอยู่จริงเท่านั้น
   // (task ที่จบแล้วไม่มี "กำลังทำ" — ถ้ายังหมุนอยู่จะอ่านว่าค้าง)
   const running = !!latest && latest.status === "running";
+  // W_plan_panel_lags_the_log: แถวที่กำลังทำมาจาก plan_progress ตรงๆ ถ้ามี — fallback เป็น
+  // การไล่หา "ข้อแรกที่ยังไม่เสร็จ" แบบเดิมทุกประการสำหรับ task เก่า/หน้าที่เพิ่งเปิดขึ้นมา
+  const currentIndex = !running ? 0 : (progress
+    ? Math.min(progress.current, planSteps.length)
+    : (planSteps.findIndex((s) => !(allDone || doneSteps.has(s.index))) + 1));
   setHtmlIfChanged(body, planSteps.length
     ? `<ul class="plan-checklist">${planSteps.map((step) => {
         const done = allDone || doneSteps.has(step.index);
         // step ที่กำลังทำ = ข้อแรกที่ยังไม่เสร็จ และเฉพาะตอน task ยังรันอยู่จริง (ดู running)
-        const current = !done && running && !planSteps.some(
-          (s) => !(allDone || doneSteps.has(s.index)) && s.index < step.index,
-        );
+        const current = !done && step.index === currentIndex;
         return `<li class="plan-checklist-item${done ? " done" : ""}${current ? " current" : ""}">
               <span class="plan-checklist-box">${done ? "✓" : ""}</span>
               <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
