@@ -554,3 +554,32 @@ def test_the_manual_block_arrives_only_with_a_strict_manual():
         manual_context="สรุปคู่มือทั่วไปของเว็บนี้",
     )
     assert "manual" not in plain
+
+
+# W_core_carries_situational_rules รอบสอง: กฎค้นหา/ส่งฟอร์ม, label ซ้ำ, marker hover และกฎฟอร์ม
+
+
+def test_round_two_blocks_are_out_of_the_core():
+    core = llm.build_system_prompt(frozenset())
+    assert "No Redundant Search Submission" not in core
+    assert "Scoped Search Context" not in core
+    assert "may need to hover" not in core
+    assert "Strict Form Input Matching" not in core
+    assert len(core) < 16000          # ก่อนรอบนี้ 19,323 ตัวอักษร
+
+
+def test_round_two_gates_read_the_page_not_the_goal():
+    assert "search_submit" in _resolve(elements=[{"label": "Search"}])
+    assert "form_input" in _resolve(elements=[{"label": "Username", "tag": "input"}])
+    assert "marker_hover" in _resolve(
+        elements=[{"label": "Delete [hidden — may need to hover the row first]"}])
+    assert "dup_labels" in _resolve(elements=[{"label": "Edit"}, {"label": "Edit"}])
+
+
+def test_a_bare_page_still_pays_for_nothing():
+    assert _resolve(elements=[{"label": "Dashboard"}]) == frozenset()
+
+
+def test_labels_that_are_unique_do_not_pull_in_the_duplicate_rule():
+    assert "dup_labels" not in _resolve(
+        elements=[{"label": "Edit"}, {"label": "Delete"}, {"label": ""}, {"label": ""}])

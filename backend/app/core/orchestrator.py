@@ -672,6 +672,12 @@ def _detect_tab_switch(page: Page, tabs_before: list, cmd: dict):
     return page, ""
 
 
+# W_core_carries_situational_rules (รอบสอง): ปุ่ม/ช่องค้นหา — คนละชุดกับ
+# _FORM_SUBMIT_LABEL_KEYWORDS โดยเจตนา ชุดนั้นคือ "ปุ่มที่บันทึกข้อมูล" ซึ่งไม่รวม Search
+# (การค้นหาไม่ใช่การบันทึก และ permission layer ก็แยกสองอย่างนี้ออกจากกันด้วยเหตุผลเดียวกัน)
+_SEARCH_CONTROL_LABEL_KEYWORDS = ("search", "ค้นหา", "filter", "กรอง", "go", "ok")
+
+
 def _resolve_prompt_sections(
     previous: frozenset,
     *,
@@ -726,6 +732,21 @@ def _resolve_prompt_sections(
             k in label for k in _FORM_SUBMIT_LABEL_KEYWORDS
         ):
             sections.add("save_toast")
+            sections.add("search_submit")
+        if any(k in label for k in _SEARCH_CONTROL_LABEL_KEYWORDS):
+            sections.add("search_submit")
+        if "may need to hover" in label:
+            sections.add("marker_hover")
+        if tag in ("input", "textarea", "select") or element.get("contenteditable"):
+            sections.add("form_input")
+            if "search" in label or element.get("type") == "search":
+                sections.add("search_submit")
+    # W_core_carries_situational_rules (รอบสอง): กฎ "label ซ้ำกันหลายตัว" ใช้ได้ก็ต่อเมื่อหน้านี้
+    # มี label ซ้ำจริง — นับจาก snapshot ตรงๆ ไม่ต้องเดาจากถ้อยคำของ goal
+    labels = [str(e.get("label", "")).strip().lower() for e in elements]
+    labels = [l for l in labels if l]
+    if len(labels) != len(set(labels)):
+        sections.add("dup_labels")
     return frozenset(sections)
 
 
