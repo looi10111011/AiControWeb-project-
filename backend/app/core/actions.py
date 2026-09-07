@@ -1545,6 +1545,30 @@ async def _maybe_chain_click(
     )
 
 
+async def _chained_button_blocked_by_checkbox_group(page, cmd: dict, then_type: str):
+    """เหตุผลที่ห้ามพ่วงปุ่มต่อท้าย action นี้ (None = พ่วงได้ตามปกติ)
+
+    W_chained_submit_after_check: ใช้ทั้งกับ type "check" และ "click" — gate รอบที่พิสูจน์
+    guard ตัวนี้เอง แสดงให้เห็นว่าโมเดลสลับมาใช้ click กับ checkbox ตัวเดิมได้ทันที
+    (click บน checkbox = toggle) แล้วพ่วง Submit ไปด้วย ซึ่งเป็น failure mode เดียวกันเป๊ะ
+    แค่คนละ action type — guard ที่ปิดแค่ทางเดียวจึงไม่ได้ปิดอะไรเลย"""
+    if cmd.get("then_click_index") is None:
+        return None
+    if not await state_filter.element_is_checkbox(page, cmd["index"]):
+        return None
+    group_size = await state_filter.checkbox_group_size(page, cmd["index"])
+    if group_size < 2:
+        return None
+    if (then_type or "").lower() == "checkbox" or await state_filter.element_is_checkbox(
+        page, cmd["then_click_index"]
+    ):
+        return None      # พ่วง checkbox ตัวอื่น = ติ๊กสองช่องรวด ไม่ใช่การส่งฟอร์มก่อนเวลา
+    return (
+        f"did not press the chained button: this is one of {group_size} checkboxes in the "
+        "same group. Tick exactly the boxes the instruction names — no others — then "
+        "press the button on its own turn."
+    )
+
 async def execute(
     page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
     manual_guidance: str = "", allowed_domains: Optional[set] = None, element_tag: str = "",
@@ -1651,6 +1675,10 @@ async def execute(
                 shift_note = state_filter.index_shift_note_for_kind(disturb_kind)
                 if shift_note is not None:
                     result = replace(result, message=f"{result.message} ({shift_note})")
+            if result.success:
+                blocked = await _chained_button_blocked_by_checkbox_group(page, cmd, then_type)
+                if blocked is not None:
+                    return replace(result, message=f"{result.message} ({blocked})")
             if stale_chain_note is not None:
                 # คลิกหลักสำเร็จจริง (เปิด dropdown/เลือกตัวเลือกได้ตามต้องการ) — รายงานตาม
                 # ความจริง แล้วบอก
@@ -1798,22 +1826,10 @@ async def execute(
             # คะแนนบางส่วน) และเงื่อนไข "ครบทุกช่องแล้วค่อยพ่วงได้" เองก็ผิด เพราะโจทย์ส่วนใหญ่
             # ขอแค่บางช่อง ชั้นนี้ไม่รู้จัก goal จึงตัดสินไม่ได้ว่าติ๊กครบหรือยัง — กฎที่ถูกคือ
             # "กลุ่มที่มีหลายช่อง ไม่พ่วงปุ่มเลย" ราคาคงที่หนึ่ง step และไม่ชี้นำอะไรผิดๆ
-            if result.success and cmd.get("then_click_index") is not None:
-                group_size = await state_filter.checkbox_group_size(page, cmd["index"])
-                chained_is_checkbox = (then_type or "").lower() == "checkbox" or (
-                    group_size >= 2
-                    and await state_filter.element_is_checkbox(page, cmd["then_click_index"])
-                )
-                if group_size >= 2 and not chained_is_checkbox:
-                    return replace(
-                        result,
-                        message=(
-                            f"{result.message} (did not press the chained button: this is one of "
-                            f"{group_size} checkboxes in the same group. Tick exactly the boxes "
-                            "the instruction names — no others — then press the button on "
-                            "its own turn.)"
-                        ),
-                    )
+            if result.success:
+                blocked = await _chained_button_blocked_by_checkbox_group(page, cmd, then_type)
+                if blocked is not None:
+                    return replace(result, message=f"{result.message} ({blocked})")
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,

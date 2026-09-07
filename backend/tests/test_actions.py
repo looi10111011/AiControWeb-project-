@@ -2363,3 +2363,43 @@ async def test_chaining_another_checkbox_is_left_alone():
             assert await page.evaluate("() => !!window.__submitted") is False
         finally:
             await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_click_on_a_checkbox_cannot_chain_the_button_either():
+    """gate รอบที่วัด noise บน commit เดิม (2026-09-07) จับได้ว่าโมเดลสลับมาใช้ click กับ
+    checkbox ตัวเดิมแล้วพ่วง Submit ต่อ — failure mode เดียวกันเป๊ะ แค่คนละ action type
+    guard ที่ปิดแค่ทาง "check" จึงไม่ได้ปิดอะไรเลย"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            result = await execute(page, {"type": "click", "index": 0, "then_click_index": 3}, [])
+
+            assert result.success is True                       # การคลิกเองสำเร็จตามปกติ
+            assert await page.locator("#a").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+            assert "3 checkboxes in the same group" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_click_next_to_a_checkbox_group_still_chains():
+    """เป้าที่ไม่ใช่ checkbox ต้องไม่โดน guard นี้เลย แม้จะอยู่ในหน้าที่มีกลุ่ม checkbox อยู่ —
+    ไม่งั้นการแก้บั๊กนี้ไปทำให้ทุกหน้าที่มี checkbox เสีย chain ไปทั้งหน้า"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(
+                _CHECKBOX_GROUP_HTML.replace(
+                    '<button data-ai-index="3"',
+                    '<input data-ai-index="4" id="q"><button data-ai-index="3"'))
+            result = await execute(page, {"type": "click", "index": 4, "then_click_index": 3}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is True
+        finally:
+            await browser.close()
