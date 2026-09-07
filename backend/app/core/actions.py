@@ -251,11 +251,30 @@ async def _detect_success_toast(page: Page) -> Optional[str]:
     ไหม — คืนข้อความที่เจอ (ตัดสั้นๆ ไม่เกิน 200 ตัวอักษร) หรือ None ถ้าไม่เจอ/เช็คไม่ได้
     (ไม่ throw ให้ click ที่เพิ่ง success พัง — หลักการเดียวกับ _detect_confirmation_modal
     ด้านล่าง) รอสั้นๆ (_TOAST_WAIT_TIMEOUT_MS) ให้ animation/network เข้ามาแสดงผลก่อนถ้ายังไม่
-    เจอทันที เพราะ toast มักปรากฏหลัง response กลับมาไม่กี่ร้อย ms ไม่ใช่ทันทีที่คลิก"""
+    เจอทันที เพราะ toast มักปรากฏหลัง response กลับมาไม่กี่ร้อย ms ไม่ใช่ทันทีที่คลิก
+
+    W_toast_container_is_empty (วัดกับหน้าจริง 2026-09-07): เดิมใช้ .first ซึ่งหยิบ element แรก
+    ที่ match ตาม DOM order — บน OrangeHRM นั่นคือ ".oxd-toast-container" ซึ่งเป็น *กล่องครอบ*
+    ที่มีอยู่ก่อนแล้วและยังว่างเปล่า โค้ดจึงอ่านข้อความได้ "" แล้วคืน None ทั้งที่ toast ขึ้นจริง
+    วัดได้ว่าโผล่ที่ 156 ms และอยู่ถึง 3500 ms คือทันเวลาที่รออยู่ (2500 ms) สบายๆ
+    ผลคือ action ที่บันทึกสำเร็จถูกรายงานว่า "No toast/success confirmation appeared" แล้ว agent
+    ก็เผา step ไล่หาคำยืนยันที่ระบบมองข้ามไปเอง (เห็นในงาน add_candidate/login_checkout/
+    rag_permission ของ release gate)
+    -> รอ element ตัวแรกที่ *มีข้อความจริง* ไม่ใช่ตัวแรกที่ match selector"""
     try:
-        locator = page.locator(_SUCCESS_TOAST_SELECTOR).first
-        await locator.wait_for(state="visible", timeout=_TOAST_WAIT_TIMEOUT_MS)
-        text = (await locator.inner_text(timeout=_ELEMENT_ACTION_TIMEOUT_MS)).strip()
+        handle = await page.wait_for_function(
+            """(sel) => {
+                for (const el of document.querySelectorAll(sel)) {
+                    if (!el.getClientRects().length) continue;
+                    const text = (el.innerText || '').trim();
+                    if (text) return text;
+                }
+                return null;
+            }""",
+            arg=_SUCCESS_TOAST_SELECTOR,
+            timeout=_TOAST_WAIT_TIMEOUT_MS,
+        )
+        text = (await handle.json_value() or "").strip()
         return text[:200] if text else None
     except Exception:
         return None

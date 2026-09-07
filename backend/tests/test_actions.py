@@ -863,32 +863,35 @@ async def test_execute_delete_action_also_auto_resolves_confirmation_modal():
 
 @pytest.mark.asyncio
 async def test_detect_success_toast_returns_text_when_visible():
-    mock_page = MagicMock()
-    toast = MagicMock()
-    toast.wait_for = AsyncMock()
-    toast.inner_text = AsyncMock(return_value="Successfully Saved")
-    wrapper = MagicMock()
-    wrapper.first = toast
-    mock_page.locator = MagicMock(return_value=wrapper)
+    """W_toast_container_is_empty: เดิม mock page.locator(...).first ซึ่งเป็นการตรึง *วิธีการ*
+    ไม่ใช่พฤติกรรม — พอเปลี่ยนไปหา element ตัวแรกที่มีข้อความจริง เทสต์ก็ล้มทั้งที่ผลลัพธ์ถูกขึ้น
+    ทดสอบกับ Chromium จริงแทน จะได้ตรึงสิ่งที่ผู้เรียกต้องการจริงๆ: ได้ข้อความ toast กลับมา"""
+    from backend.app.core.actions import _detect_success_toast as detect
 
-    result = await _detect_success_toast(mock_page)
-
-    assert result == "Successfully Saved"
-    mock_page.locator.assert_called_once_with(_SUCCESS_TOAST_SELECTOR)
+    pw, browser, page = await _with_page(
+        "<html><body><div class='oxd-toast--success'>Successfully Saved</div></body></html>"
+    )
+    try:
+        assert await detect(page) == "Successfully Saved"
+    finally:
+        await browser.close()
+        await pw.stop()
 
 
 @pytest.mark.asyncio
 async def test_detect_success_toast_returns_none_when_not_visible_in_time():
-    mock_page = MagicMock()
-    toast = MagicMock()
-    toast.wait_for = AsyncMock(side_effect=PWTimeout("timeout"))
-    wrapper = MagicMock()
-    wrapper.first = toast
-    mock_page.locator = MagicMock(return_value=wrapper)
+    """หน้าที่ไม่มี toast เลยต้องคืน None — รวมถึงหน้าที่มีแต่กล่องครอบว่างๆ ซึ่งเป็นเคสที่
+    ทำให้ action ที่บันทึกสำเร็จถูกรายงานว่าไม่มีคำยืนยัน (W_toast_container_is_empty)"""
+    from backend.app.core.actions import _detect_success_toast as detect
 
-    result = await _detect_success_toast(mock_page)
-
-    assert result is None
+    pw, browser, page = await _with_page(
+        "<html><body><div class='oxd-toast-container'></div></body></html>"
+    )
+    try:
+        assert await detect(page) is None
+    finally:
+        await browser.close()
+        await pw.stop()
 
 
 @pytest.mark.asyncio
@@ -2217,6 +2220,36 @@ async def test_go_back_with_no_history_reports_failure_instead_of_success():
         assert result.success is False
         assert "no previous page" in result.message
         assert await page.locator("[data-ai-index='1']").count() == 1
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_toast_container_is_empty (วัดกับหน้าจริง 2026-09-07): _SUCCESS_TOAST_SELECTOR มี
+# ".oxd-toast-container" ปนอยู่ และ .first หยิบกล่องครอบที่ยังว่างเปล่ามาก่อนตัว toast จริง
+# โค้ดจึงอ่านข้อความได้ "" แล้วสรุปว่าไม่มี toast ทั้งที่บันทึกสำเร็จ — วัดได้ว่า toast โผล่ที่
+# 156 ms และอยู่ถึง 3500 ms คือทันเวลาที่รออยู่ (2500 ms) สบายๆ ปัญหาอยู่ที่เลือก element ผิดตัว
+
+_TOAST_HTML = """
+<html><body>
+  <div class="oxd-toast-container"></div>
+  <button data-ai-index="1" onclick="
+    document.querySelector('.oxd-toast-container').innerHTML =
+      '<div class=&quot;oxd-toast--success&quot;>Successfully Saved</div>';
+  ">Save</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_an_empty_toast_container_does_not_hide_the_real_toast():
+    from backend.app.core.actions import _detect_success_toast
+
+    pw, browser, page = await _with_page(_TOAST_HTML)
+    try:
+        assert await _detect_success_toast(page) is None      # ยังไม่กด ยังไม่มี toast
+        await page.click("[data-ai-index='1']")
+        assert await _detect_success_toast(page) == "Successfully Saved"
     finally:
         await browser.close()
         await pw.stop()

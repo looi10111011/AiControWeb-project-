@@ -1766,6 +1766,10 @@ _MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
 # แล้วไปต่อ ไม่ใช่ฆ่า task ทิ้งทันที) งานที่ยาวจริงจึงยังมีทางไปต่อได้
 _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS = 4
 
+# W_already_logged_in_but_told_to_log_in: บอกโมเดลว่าระบบล็อกอินให้แล้วเฉพาะช่วง step แรกๆ
+# พอเดินไปได้สักพักมันเห็นหน้าหลังล็อกอินเองแล้ว ไม่ต้องจ่ายค่าบรรทัดนี้ทุกเทิร์นจนจบงาน
+_MAX_ALREADY_LOGGED_IN_REMINDER_STEPS = 3
+
 # W_session_drift: จำนวนครั้งสูงสุดที่ระบบจะ login ใหม่ให้เองกลางทาง (ดู guard ต้นลูปหลัก) —
 # เผื่อ session หมดอายุจริงระหว่าง task ยาว แต่ไม่ปล่อยให้วน login ไม่รู้จบถ้า credential ใช้
 # ไม่ได้จริง (กรณีนั้น _maybe_auto_login() จะคืนเหตุผลความล้มเหลวออกมาอยู่แล้ว)
@@ -4973,6 +4977,27 @@ class Orchestrator:
                 # แจ้งเตือน LLM รอบนี้ว่า action นั้นอาจเป็น no-op ทั้งที่ดูเหมือนสำเร็จ กัน
                 # การเสีย step ต่อๆ ไปคิดว่า "ทำไปแล้ว" ทั้งที่จริงไม่มีผล
                 verification_context = ""
+                # W_already_logged_in_but_told_to_log_in (release gate จับได้ 2026-09-07, งาน
+                # add_candidate): goal ขึ้นต้นว่า "Log in with username 'Admin' and password
+                # 'admin123', go to Recruitment..." แต่ _maybe_auto_login() พาเข้าระบบไปแล้ว
+                # ตั้งแต่ก่อนเข้า loop จึงไม่มีฟอร์ม login ให้กรอก โมเดลไม่รู้เรื่องนี้เลยจึงพยายาม
+                # ทำตามคำสั่งแรกของ goal ด้วยการยัด username/password ลงช่อง Search ใน sidebar
+                # แล้วหลงทางต่ออีก 5 step จนไม่เคยไปถึงฟอร์มเป้าหมาย
+                #
+                # ระบบรู้คำตอบอยู่แล้ว (auto_login_outcome) แค่ไม่เคยบอกโมเดล — บอกเฉพาะตอนที่
+                # login สำเร็จจริง *และ* goal พูดถึงการ login เท่านั้น งานที่ไม่เกี่ยวไม่ต้องจ่าย
+                # ค่าบรรทัดนี้ และหยุดบอกหลังพ้น step แรกๆ ไปแล้ว (โมเดลเห็นหน้าหลังล็อกอินเองแล้ว)
+                if (
+                    auto_login_outcome == "ok"
+                    and steps_taken < _MAX_ALREADY_LOGGED_IN_REMINDER_STEPS
+                    and contains_keyword(goal, _LOGIN_ONLY_CLAUSE_KEYWORDS)
+                ):
+                    verification_context = (
+                        "[The system already signed in with the stored credentials before this "
+                        "task started — the log-in part of the goal is DONE. There is no log-in "
+                        "form on screen; never type a username or password into a search box or "
+                        "any other field. Carry on from the next part of the goal.]"
+                    )
                 if steps_taken > 0 and not page_changed_for_context:
                     last_record = self.memory.recent(1)
                     if last_record:
