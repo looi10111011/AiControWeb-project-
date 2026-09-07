@@ -1964,3 +1964,55 @@ def test_cap_rows_can_be_disabled_with_a_non_positive_limit():
 
     assert len(capped) == 500
     assert note == ""
+
+
+# W_same_label_for_different_fields (release gate จับได้ 2026-09-07, งาน add_candidate ตกทุกรอบ
+# ตั้งแต่ต้น): ฟอร์ม Add Candidate ของ OrangeHRM มีช่อง First/Middle/Last Name อยู่ใต้ label กลุ่ม
+# เดียวว่า "Full Name" ทั้งสามช่องจึงมี label เหมือนกันเป๊ะ โมเดลกรอก First+Middle แล้วปล่อย
+# Last Name ว่าง ระบบขึ้น Required กด Save ไม่ผ่านทุกครั้ง (ยืนยันด้วย probe ที่ไม่ใช้ LLM)
+
+
+def test_fields_sharing_one_label_are_split_apart_by_their_placeholders():
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    elements = [
+        {"index": 20, "tag": "input", "label": "Full Name", "placeholder": "First Name"},
+        {"index": 21, "tag": "input", "label": "Full Name", "placeholder": "Middle Name"},
+        {"index": 22, "tag": "input", "label": "Full Name", "placeholder": "Last Name"},
+    ]
+    _disambiguate_shared_labels(elements)
+    assert [e["label"] for e in elements] == [
+        "Full Name: First Name", "Full Name: Middle Name", "Full Name: Last Name",
+    ]
+
+
+def test_a_unique_label_is_never_touched():
+    """W_empty_field_shows_no_value ห้ามเอา placeholder มาแสดงเป็นค่าของช่องว่าง — ช่องที่
+    label ไม่ซ้ำ (ซึ่งคือเกือบทั้งหมด) จึงต้องไม่ถูกแตะเลย"""
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    elements = [
+        {"index": 1, "tag": "input", "label": "Employee Name", "placeholder": "Type for hints..."},
+        {"index": 2, "tag": "input", "label": "Email", "placeholder": "you@example.com"},
+    ]
+    _disambiguate_shared_labels(elements)
+    assert [e["label"] for e in elements] == ["Employee Name", "Email"]
+
+
+def test_shared_labels_with_no_way_to_tell_them_apart_are_left_alone():
+    """เติมไปก็ยังกำกวมเหมือนเดิม — ปล่อยไว้ดีกว่าทำให้ label ยาวขึ้นโดยไม่ได้อะไร"""
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    no_hint = [
+        {"index": 1, "tag": "input", "label": "Amount", "placeholder": ""},
+        {"index": 2, "tag": "input", "label": "Amount", "placeholder": ""},
+    ]
+    _disambiguate_shared_labels(no_hint)
+    assert [e["label"] for e in no_hint] == ["Amount", "Amount"]
+
+    same_hint = [
+        {"index": 1, "tag": "input", "label": "Amount", "placeholder": "0.00"},
+        {"index": 2, "tag": "input", "label": "Amount", "placeholder": "0.00"},
+    ]
+    _disambiguate_shared_labels(same_hint)
+    assert [e["label"] for e in same_hint] == ["Amount", "Amount"]

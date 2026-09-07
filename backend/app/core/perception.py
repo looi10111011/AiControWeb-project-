@@ -860,12 +860,46 @@ _COLLECT_JS = r"""
       label = label ? `${label} [already active]` : '[already active]';
     }
 
-    out.push({ index: idx, tag, type, label, in_viewport: inViewport, region });
+    // W_same_label_for_different_fields: ส่ง placeholder ออกมาด้วยเพื่อให้ฝั่ง Python แยก
+    // ช่องที่ label ซ้ำกันได้ — ไม่ได้เอาไปใส่ label ตรงนี้เพราะช่องส่วนใหญ่ label ไม่ซ้ำ
+    // และ W_empty_field_shows_no_value ห้ามเอา placeholder มาแสดงเป็นค่าของช่องว่าง
+    out.push({ index: idx, tag, type, label, in_viewport: inViewport, region,
+               placeholder: (el.getAttribute && el.getAttribute('placeholder')) || '' });
     idx++;
   }
   return out;
 }
 """
+
+
+def _disambiguate_shared_labels(elements: list[dict]) -> None:
+    """ช่องกรอกหลายช่องที่ได้ label เดียวกัน -> เติม placeholder ต่อท้ายให้แยกออกจากกัน
+
+    W_same_label_for_different_fields (release gate จับได้ 2026-09-07, งาน add_candidate ตกทุก
+    รอบตั้งแต่ต้น): ฟอร์ม Add Candidate ของ OrangeHRM มีช่อง First/Middle/Last Name อยู่ใต้
+    label กลุ่มเดียวว่า "Full Name" — perception ให้ associatedLabel ชนะ placeholder เสมอ ทั้ง
+    สามช่องจึงมี label ว่า "Full Name" เหมือนกันเป๊ะ โมเดลแยกไม่ออกว่าช่องไหนคืออะไร มันกรอก
+    สองช่องแรก (First + Middle) แล้วปล่อย Last Name ว่าง ระบบขึ้น "Required" กด Save ไม่ผ่าน
+    ทุกครั้ง (ยืนยันด้วย probe ที่ไม่ใช้ LLM: placeholder ของสามช่องคือ First/Middle/Last Name)
+
+    เติมเฉพาะตอน label ซ้ำจริงเท่านั้น ซึ่งเป็นเคสที่กำกวมจริงและตรวจได้จาก snapshot ตรงๆ —
+    เติมให้ทุกช่องไม่ได้ เพราะ W_empty_field_shows_no_value แก้บั๊กจริงไว้แล้วว่าช่องว่างที่โชว์
+    placeholder ("Employee Name: Type for hints...") อ่านแล้วเหมือนช่องนั้นมีค่าอยู่ ทำให้ guard
+    ที่อ่านค่าตัวกรองจาก label ตัดสินผิด"""
+    by_label: dict[str, list[dict]] = {}
+    for el in elements:
+        label = str(el.get("label") or "").strip()
+        if label and el.get("tag") in ("input", "textarea", "select"):
+            by_label.setdefault(label.lower(), []).append(el)
+    for group in by_label.values():
+        if len(group) < 2:
+            continue
+        hints = [str(e.get("placeholder") or "").strip() for e in group]
+        # ต้องแยกออกจากกันได้จริงทุกตัว ไม่งั้นเติมไปก็ยังกำกวมเหมือนเดิม
+        if not all(hints) or len(set(hints)) != len(hints):
+            continue
+        for el, hint in zip(group, hints):
+            el["label"] = f"{el['label']}: {hint}"
 
 
 async def get_snapshot(page: Page):
@@ -910,6 +944,7 @@ async def get_snapshot(page: Page):
     # dialog จึงเป็นสิ่งเดียวที่กดได้ ณ ตอนนั้น ต้องมาก่อน in_viewport ด้วยซ้ำ (แถวข้อมูลหลัง
     # dialog ก็ in_viewport เหมือนกันหมด การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออกเลย)
     # ต่อยอด sort เดิม ไม่เขียนใหม่ — tuple key เรียงตามลำดับความสำคัญจากซ้ายไปขวา
+    _disambiguate_shared_labels(elements)
     elements.sort(key=lambda e: (e.get("region") != "dialog", not e.get("in_viewport", True)))
 
     # W_snapshot_cap (P3.3): ตัดเฉพาะรายการที่ส่งให้ LLM ไม่แตะ elements ที่คืนให้โค้ด
