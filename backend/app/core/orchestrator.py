@@ -1672,6 +1672,37 @@ def _is_bare_required_message(text: str) -> bool:
     return bool(_BARE_FIELD_HINT_MESSAGE_RE.match((text or "").strip()))
 
 
+# W_required_error_survives_the_fix (release gate จับได้ 2026-09-07, งาน rag_permission /
+# rag_integration / long_flow ตกด้วยอาการเดียวกันทั้งสามงาน): agent กด Continue บนฟอร์ม checkout
+# ของ SauceDemo ทั้งที่ยังไม่ได้กรอก เว็บขึ้น "Error: First Name is required" — agent แก้ถูกต้อง
+# ด้วยการกรอกช่องนั้นในเทิร์นถัดมา แต่ตัวสแกนที่รันทันทีหลัง fill ยังเห็นแบนเนอร์เดิมค้างอยู่
+# (SauceDemo ไม่ล้างจนกว่าจะกดส่งใหม่) แล้วเอา error ที่ล้าสมัยไปแล้วมาฆ่างานทิ้ง
+#
+# ข้อความแบบนี้มีรายละเอียดจริงจึงไม่เข้าตัวกรอง bare-hint — ต้องใช้เงื่อนไขที่ตรงกว่า:
+# error ที่บอกว่า "ช่อง X ต้องกรอก" ย่อมล้าสมัยทันทีที่เพิ่งกรอกช่อง X สำเร็จ
+# แคบโดยเจตนา: ต้องเป็นข้อความชนิด required *และ* ต้องอ้างถึงชื่อช่องที่เพิ่งกรอกจริงเท่านั้น
+# ข้อความที่บอกว่าค่าที่กรอก "ผิดรูปแบบ" (invalid format / at least N characters) ไม่เข้าเงื่อนไข
+# นี้และยังหยุด task เหมือนเดิม เพราะการกรอกใหม่ไม่ได้ทำให้มันหายไปเอง
+_REQUIRED_ERROR_WORDS = ("required", "ต้องกรอก", "จำเป็นต้องระบุ", "ห้ามเว้นว่าง")
+
+
+def _is_stale_required_error(text: str, filled_labels) -> bool:
+    """True ถ้า error นี้เป็นเรื่อง "ช่องนี้ต้องกรอก" ของช่องที่กรอกไปแล้วในงานนี้
+
+    เทียบกับ *ทุก* ช่องที่กรอกไปแล้ว ไม่ใช่แค่ช่องของเทิร์นนี้ — แบนเนอร์ของ SauceDemo ค้างอยู่
+    จนกว่าจะกดส่งใหม่ พอ agent กรอก First Name แล้วไปกรอก Last Name ต่อในเทิร์นถัดไป แบนเนอร์
+    เรื่อง First Name ก็ยังอยู่และฆ่างานทิ้งอยู่ดี (เจอจากการรันซ้ำหลังแก้รอบแรก)"""
+    lowered = (text or "").lower()
+    if not any(w in lowered for w in _REQUIRED_ERROR_WORDS):
+        return False
+    normalized_text = _normalized_field_name(lowered)
+    for raw in filled_labels or ():
+        label = _normalized_field_name(raw or "")
+        if label and label in normalized_text:
+            return True
+    return False
+
+
 def _label_looks_like_form_submit(label: str) -> bool:
     lowered = (label or "").lower()
     return any(kw in lowered for kw in _FORM_SUBMIT_LABEL_KEYWORDS)
@@ -6887,6 +6918,14 @@ class Orchestrator:
                     validation_errors = [
                         e for e in await _scan_validation_errors(page, within_form=True)
                         if not _is_bare_required_message(e)
+                        # W_required_error_survives_the_fix: ข้อความ "ช่องนี้ต้องกรอก" ของช่องที่
+                        # เพิ่งกรอกไปแล้วคือของค้างจากก่อนหน้า ไม่ใช่ปัญหาที่ยังเหลืออยู่
+                        and not (
+                            tool_input.get("type") in ("fill", "fill_secret")
+                            and _is_stale_required_error(
+                                e, [*agent_filled_field_labels, action_label],
+                            )
+                        )
                     ]
                     if validation_errors:
                         errors_text = " | ".join(f"'{e}'" for e in validation_errors)

@@ -8517,3 +8517,26 @@ def test_a_validation_message_with_real_detail_still_stops_the_task():
     assert _is_bare_required_message("Invalid credentials") is False
     assert _is_bare_required_message("Should have at least 7 characters") is False
     assert _is_bare_required_message("Employee Name already exists") is False
+
+
+# W_required_error_survives_the_fix (release gate จับได้ 2026-09-07): rag_permission /
+# rag_integration / long_flow ตกด้วยอาการเดียวกันทั้งสามงาน — agent กด Continue บนฟอร์ม
+# checkout ของ SauceDemo ก่อนกรอก เว็บขึ้น "Error: First Name is required" agent แก้ถูกด้วย
+# การกรอกช่องนั้น แต่ตัวสแกนยังเห็นแบนเนอร์เดิมค้างอยู่แล้วฆ่างานทิ้ง
+
+
+def test_a_required_error_about_a_field_already_filled_is_treated_as_stale():
+    f = orchestrator_module._is_stale_required_error
+    assert f("Error: First Name is required", ["First Name"]) is True
+    # แบนเนอร์ค้างข้ามเทิร์น: ตอนนี้กำลังกรอก Last Name แต่ข้อความยังพูดถึง First Name
+    assert f("Error: First Name is required", ["First Name", "Last Name"]) is True
+    assert f("ช่องรหัสผ่าน ต้องกรอก", ["รหัสผ่าน"]) is True
+
+
+def test_errors_that_are_still_true_keep_stopping_the_task():
+    """แคบไว้สองชั้นโดยเจตนา — ต้องเป็นข้อความชนิด required และต้องเป็นช่องที่กรอกไปแล้วจริง"""
+    f = orchestrator_module._is_stale_required_error
+    assert f("Error: Postal Code is required", ["First Name", "Last Name"]) is False
+    assert f("First Name must be at least 3 characters", ["First Name"]) is False
+    assert f("Invalid email format", ["Email"]) is False
+    assert f("Error: First Name is required", []) is False
