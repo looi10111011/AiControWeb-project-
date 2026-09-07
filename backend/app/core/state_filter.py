@@ -234,7 +234,10 @@ _INDEX_DISTURBING_CLICK_JS = """(el) => {
         if (role === 'combobox') return 'trigger';
         const popup = (node.getAttribute && node.getAttribute('aria-haspopup')) || '';
         if (popup && popup !== 'false') return 'trigger';
-        if (node.hasAttribute && node.hasAttribute('aria-expanded')) return 'trigger';
+        // W_expanded_alone_is_not_a_menu: aria-expanded เดี่ยวๆ แปลว่า "กดแล้วมีอะไรกางออก"
+        // ซึ่งจริงกับ tab/accordion/disclosure ด้วย ไม่ใช่แค่ dropdown — คืนชนิดที่อ่อนกว่า
+        // เพื่อให้ผู้เรียกเลือกได้ว่าจะเชื่อแค่ไหน (ดู index_shift_note_for_kind)
+        if (node.hasAttribute && node.hasAttribute('aria-expanded')) return 'trigger_weak';
         const cls = clsOf(node);
         if (CLASS_HINTS.some(h => cls.includes(h))) return 'trigger';
     }
@@ -285,7 +288,16 @@ _INDEX_SHIFT_NOTE_BY_KIND = {
 
 def index_shift_note_for_kind(kind: Optional[str]) -> Optional[str]:
     """W_menu_open_note_needs_no_chain: ข้อความเดียวกันในเชิงข้อเท็จจริงกับ chain_hint_for_kind()
-    แต่สำหรับคลิกที่ *ไม่มี* then_click_index — ดูเหตุผลเต็มในคอมเมนต์เหนือตารางด้านบน"""
+    แต่สำหรับคลิกที่ *ไม่มี* then_click_index — ดูเหตุผลเต็มในคอมเมนต์เหนือตารางด้านบน
+
+    W_expanded_alone_is_not_a_menu (regression ที่ release gate จับได้ 2026-09-07, งาน MiniWoB
+    "click-tab"): tab ของ jQuery UI มี aria-expanded จึงถูกจัดเป็น trigger แล้วได้ข้อความว่า
+    "กดซ้ำจะปิดเมนู" ซึ่งผิดสำหรับ tab (กดซ้ำไม่ปิด และการกดแท็บอื่นคือสิ่งที่ต้องทำ) โมเดลจึงวน
+    คลิกแท็บเดิมจนโดน loop detector — งานนี้เคยผ่านก่อนหน้านี้
+    ตอนที่ note นี้แนบเฉพาะกรณีมี chained click มันแทบไม่เคยยิง พอทำให้แนบทุกครั้งจึงไปโดน
+    widget ชนิดอื่นที่ใช้ aria-expanded เหมือนกัน (tab/accordion/disclosure)
+    -> แนบเฉพาะสัญญาณที่แรงจริง (role=combobox / aria-haspopup / class ของ select library)
+    ส่วน trigger_weak ไม่แนบอะไรเลย ปล่อยให้โมเดลอ่าน snapshot ใหม่ตามปกติ"""
     return _INDEX_SHIFT_NOTE_BY_KIND.get(kind) if kind else None
 
 
@@ -293,7 +305,9 @@ def chain_hint_for_kind(kind: Optional[str]) -> Optional[str]:
     """W_dropdown_sets_filter_dirty: แปลง kind ที่ classify_click_index_disturbance() คืน
     เป็นข้อความอธิบายให้โมเดล — แยกออกมาเพื่อให้ actions.py เรียก classify ครั้งเดียวแล้วเอา
     ผลไปใช้ทั้งสองทาง (ตัด chain + ยกธง filter dirty) โดยไม่อ่าน DOM ซ้ำ"""
-    return _CHAIN_HINT_BY_KIND.get(kind) if kind else None
+    # trigger_weak ใช้ข้อความเดียวกับ trigger สำหรับการ "ไม่ chain ต่อ" — การไม่ chain
+    # ปลอดภัยเสมอไม่ว่าจะเป็น dropdown จริงหรือ tab (index ชุดเดิมใช้ไม่ได้ทั้งคู่)
+    return _CHAIN_HINT_BY_KIND.get("trigger" if kind == "trigger_weak" else kind) if kind else None
 
 
 async def check_click_invalidates_indexes(page: Page, index: int) -> Optional[str]:

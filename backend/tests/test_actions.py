@@ -2131,3 +2131,44 @@ async def test_the_chained_submit_goes_through_once_both_fields_agree():
     finally:
         await browser.close()
         await pw.stop()
+
+
+# W_expanded_alone_is_not_a_menu (regression ที่ release gate จับได้ 2026-09-07, MiniWoB
+# "click-tab"): tab ของ jQuery UI มี aria-expanded จึงถูกจัดเป็น dropdown trigger แล้วได้
+# ข้อความ "กดซ้ำจะปิดเมนู" ซึ่งผิดสำหรับ tab — โมเดลวนคลิกแท็บเดิมจนโดน loop detector
+# งานนี้เคยผ่านมาก่อน จนกระทั่ง W_menu_open_note_needs_no_chain ทำให้ note แนบทุกคลิก
+
+_TABS_AND_DROPDOWN_HTML = """
+<html><body>
+  <div role="tablist">
+    <a data-ai-index="1" role="tab" aria-expanded="true" href="#">Tab #1</a>
+    <a data-ai-index="2" role="tab" aria-expanded="false" href="#">Tab #3</a>
+  </div>
+  <div data-ai-index="3" role="combobox" aria-haspopup="listbox">-- Select --</div>
+  <button data-ai-index="4">Plain</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_tab_is_not_described_as_a_menu_that_closes_when_clicked_again():
+    pw, browser, page = await _with_page(_TABS_AND_DROPDOWN_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 2})
+        assert result.success is True
+        assert result.message.strip() == "click succeeded"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_real_dropdown_trigger_still_gets_the_note():
+    """กันแก้เกินจนบล็อกที่ควรได้หายไปด้วย — combobox จริงต้องยังได้ข้อความเหมือนเดิม"""
+    pw, browser, page = await _with_page(_TABS_AND_DROPDOWN_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 3})
+        assert "now OPEN" in result.message
+    finally:
+        await browser.close()
+        await pw.stop()
