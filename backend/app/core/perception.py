@@ -1063,6 +1063,22 @@ _EXTRACT_TABLE_JS = r"""
 (hint) => {
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 
+  // W_extract_counts_stylesheets (บั๊กจริงจาก gate 2026-09-07, task add_candidate): agent
+  // กด Save แล้วไม่ผ่านเพราะไม่ได้กรอก Email หน้าเว็บขึ้นคำว่า "Required" ใต้ช่องนั้นจริงๆ
+  // แต่พอ agent ถาม read_page_data ว่า "มี validation error ไหม" กลับได้ CSS ทั้งก้อนจาก
+  // <style> กลับไปพร้อมประโยค "[counted by the system] the data below contains exactly 4
+  // entries" — มันจึงมองไม่เห็นสาเหตุ แล้วกด Save ซ้ำจนหมด step (4 ครั้งในรันเดียว)
+  //
+  // ต้นเหตุ: hint "body" -> extractList(body) -> อ่าน body.children ซึ่งรวม <style>/<script>
+  // ด้วย และ innerText ของ element ที่ไม่ถูก render จะ fallback ไปเป็น textContent (คือ CSS
+  // ทั้งไฟล์) — ไม่ใช่ช่องว่างอย่างที่คาด
+  //
+  // เรื่องนี้ร้ายกว่าการรกตา เพราะ "counted by the system, not by you" คือ guard เรือธงที่
+  // บอกโมเดลว่าห้ามนับเอง ถ้าตัวเลขนั้นนับ stylesheet เข้าไปด้วย guard ก็กลายเป็นตัวยืนยัน
+  // ข้อมูลผิดอย่างมั่นใจ ซึ่งอันตรายกว่าไม่มี guard เลย
+  const NON_CONTENT_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META", "HEAD"];
+  const isContentNode = (node) => !!node && !NON_CONTENT_TAGS.includes(node.tagName);
+
   // W_ariagrid: หลายเว็บ (OrangeHRM, MUI DataGrid, AG Grid, React-select ฯลฯ) ไม่ใช้
   // <table><tr><td> จริงเลย แต่ implement เป็น <div role="table">/<div role="row">/
   // <div role="cell|gridcell|columnheader"> แทน (ARIA grid pattern) — querySelectorAll("tr")
@@ -1085,7 +1101,10 @@ _EXTRACT_TABLE_JS = r"""
   const extractList = (el) => {
     const liChildren = el.querySelectorAll(":scope > li");
     const itemNodes = liChildren.length > 0 ? liChildren : el.children;
-    const items = Array.from(itemNodes).map((node) => clean(node.innerText)).filter(Boolean);
+    const items = Array.from(itemNodes)
+      .filter(isContentNode)
+      .map((node) => clean(node.innerText))
+      .filter(Boolean);
     return items.length > 0 ? { kind: "list", items } : null;
   };
 
@@ -1144,6 +1163,7 @@ _EXTRACT_TABLE_JS = r"""
         !!(el.closest && el.closest('thead'));
       const dataMatches = matches.filter((el) => !isHeaderRow(el));
       const items = (dataMatches.length > 0 ? dataMatches : matches)
+        .filter(isContentNode)
         .map((el) => clean(el.innerText)).filter(Boolean);
       if (items.length > 0) return { kind: "list", items };
     }

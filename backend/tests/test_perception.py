@@ -2016,3 +2016,58 @@ def test_shared_labels_with_no_way_to_tell_them_apart_are_left_alone():
     ]
     _disambiguate_shared_labels(same_hint)
     assert [e["label"] for e in same_hint] == ["Amount", "Amount"]
+
+
+# --- W_extract_counts_stylesheets: <style>/<script> ต้องไม่ถูกนับเป็นข้อมูลของหน้า ---
+
+_HTML_WITH_STYLESHEET = """<!doctype html><html><head><style>.a{color:red}</style></head>
+<body>
+<style>:root { --oxd-primary: #ff7b1d; } .oxd-input { border: 1px solid #ccc; }</style>
+<script>window.__x = 1;</script>
+<div id="app"><span class="err">Required</span><p>Email</p></div>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_extracted_entries_never_include_stylesheets_or_scripts():
+    """บั๊กจริงจาก gate 2026-09-07 (add_candidate): agent ถามว่า "มี validation error ไหม"
+    บนหน้าที่ขึ้นคำว่า Required อยู่จริง แล้วได้ CSS ทั้งก้อนกลับไปพร้อมประโยค "counted by
+    the system ... exactly 4 entries" — มันจึงไม่เห็นสาเหตุแล้วกด Save ซ้ำจนหมด step
+
+    innerText ของ element ที่ไม่ถูก render จะ fallback เป็น textContent (คือ CSS ทั้งไฟล์)
+    ไม่ใช่ค่าว่างอย่างที่คาด — เป็นเหตุผลที่ต้องกรองด้วย tag ไม่ใช่หวังพึ่งการ render"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_HTML_WITH_STYLESHEET)
+
+            result = await extract_table_data(page, "body")
+
+            assert "--oxd-primary" not in result
+            assert "window.__x" not in result
+            assert "Required" in result      # เนื้อหาจริงต้องยังอยู่ครบ
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_counted_by_the_system_number_counts_only_real_entries():
+    """ตัวเลข "counted by the system, not by you" คือ guard ที่สั่งโมเดลห้ามนับเอง — ถ้ามัน
+    นับ stylesheet เข้าไปด้วย มันก็กลายเป็นตัวยืนยันข้อมูลผิดอย่างมั่นใจ ซึ่งแย่กว่าไม่มี guard
+    (วัดจริงบน OrangeHRM: ตอบว่า "exactly 4 entries" โดยที่ 3 ใน 4 เป็น CSS)"""
+    from backend.app.core.actions import read_page_data
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_HTML_WITH_STYLESHEET)
+
+            result = await read_page_data(page, "any validation error", "body")
+
+            assert "exactly 1 entries" in result.message
+            assert "--oxd-primary" not in result.message
+            assert "Required" in result.message
+        finally:
+            await browser.close()
