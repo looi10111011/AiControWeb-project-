@@ -8657,3 +8657,115 @@ async def test_plan_progress_does_not_disturb_the_safety_cursor():
         if c.args and c.args[0].get("kind") == "plan_progress"
     ]
     assert [e["current"] for e in progress] == [1, 1]
+
+
+# --- W_goal_values_before_save: ห้ามกดบันทึกทั้งที่ค่าที่ goal ระบุยังไม่ถูกกรอก ---
+#
+# บั๊กจริงจาก gate 2026-09-07 (add_candidate): goal สั่งกรอก First/Last Name และ Email แล้ว
+# บันทึก โมเดลกรอกสองช่องแรกแล้วกด Save ฟอร์มตีกลับด้วย "Required" ใต้ช่อง Email แล้วมันกด
+# Save ซ้ำอีก 4 ครั้งจนหมด step
+
+
+def test_goal_literal_values_reads_only_what_the_goal_spells_out():
+    f = orchestrator_module._goal_literal_values
+    goal = ("fill in First Name 'AgentTest1', Last Name 'Bench1', "
+            "Email 'a@example.com', then save")
+
+    assert f(goal) == ["AgentTest1", "Bench1", "a@example.com"]
+    # ไม่มีเครื่องหมายคำพูด = ไม่เดาเอง (หลักการเดิมของ _goal_condition_values)
+    assert f("go to the admin page and save") == []
+    # field=value ยังนับเหมือนเดิม ใช้ตัวแยกตัวเดียวกับ guard อื่น
+    assert f("เปิดเว็ป แล้บลบuserole=ess ออกให้หมด") == ["ess"]
+
+
+@pytest.mark.asyncio
+async def test_values_already_typed_earlier_in_the_task_do_not_count_as_missing():
+    """username/password ที่กรอกตอน login ไม่เหลืออยู่ใน DOM ของหน้าฟอร์มถัดไป — ถ้า guard
+    ดูแต่ DOM มันจะบล็อกทุกการบันทึกหลังจากนั้นทั้งหมด"""
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value={"values": ["AgentTest1"], "hasPassword": False})
+    goal = "log in with username 'Admin', fill First Name 'AgentTest1', then save"
+
+    missing = await orchestrator_module._values_missing_before_commit(
+        page, goal, {"Admin"})
+
+    assert missing == []
+
+
+@pytest.mark.asyncio
+async def test_a_value_the_goal_named_but_nobody_typed_is_reported_missing():
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value={"values": ["AgentTest1", "Bench1"], "hasPassword": False})
+    goal = ("fill First Name 'AgentTest1', Last Name 'Bench1', "
+            "Email 'a@example.com', then save")
+
+    missing = await orchestrator_module._values_missing_before_commit(page, goal, set())
+
+    assert missing == ["a@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_missing_values_check_fails_open_when_the_page_cannot_be_read():
+    """กฎเดิมของ guard ทุกตัวในไฟล์นี้: อ่าน DOM ไม่ได้ = ไม่ขวาง ไม่ใช่เดาว่าขาด"""
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=RuntimeError("frame detached"))
+
+    missing = await orchestrator_module._values_missing_before_commit(
+        page, "fill Email 'a@example.com' then save", set())
+
+    assert missing == []
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_a_save_while_a_goal_value_is_still_missing():
+    """เส้นทางจริงผ่าน run_task: กด Save ทั้งที่ค่าหนึ่งจาก goal ยังไม่ถูกกรอก ต้องถูกปฏิเสธ
+    ก่อน dispatch และ nudge ต้องระบุค่าที่ขาดตรงๆ ไม่ใช่ข้อความกว้างๆ"""
+    mock_async_playwright, _, _mock_page = _patch_browser()
+    # ตรรกะการแยกว่าค่าไหนขาดถูกตรึงไว้ในเทสต์ของ _values_missing_before_commit ด้านบน
+    # (mock page ตรงๆ) ตรงนี้ตรึง "การต่อสาย" ล้วน: guard ต้องปฏิเสธก่อนถึง dispatch
+    elements = [
+        {"index": 1, "tag": "input", "type": "text", "label": "Email"},
+        {"index": 2, "tag": "button", "type": "submit", "label": "Save"},
+    ]
+    execute_mock = AsyncMock(return_value=ActionResult(True, "click(2)", "click succeeded"))
+    tool_results = []
+
+    def _record(messages, tool_use_id, text):
+        tool_results.append(text)
+        return messages
+
+    next_action_calls = [
+        ("browser_action", {"type": "click", "index": 2}, "t1", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "หยุด"}, "t2", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=(elements, "page"))), patch("backend.app.core.orchestrator.execute", execute_mock), patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record), patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=next_action_calls)), patch("backend.app.core.orchestrator._values_missing_before_commit", AsyncMock(return_value=["a@example.com"])):
+        await Orchestrator().run_task(
+            "https://example.com",
+            "fill First Name " + repr("AgentTest1") + ", Email " + repr("a@example.com") + ", then save",
+            provider="anthropic",
+        )
+
+    assert execute_mock.await_count == 0          # ปุ่ม Save ต้องไม่เคยถูกกดเลย
+    assert any("a@example.com" in t for t in tool_results)
+    # ค่าที่ยังไม่ถูกกรอกต้องถูกระบุชื่อออกมาตรงๆ ไม่ใช่ข้อความกว้างๆ ว่า "ฟอร์มไม่ครบ"
+    # (การแยกว่าค่าไหนกรอกแล้ว/ยัง ตรึงไว้ในเทสต์ของ _values_missing_before_commit ด้านบน
+    # ซึ่ง mock page ตรงๆ ไม่ต้องพึ่งการต่อสาย mock ทั้งชุดของ run_task)
+    assert "not been entered" in next(t for t in tool_results if "a@example.com" in t)
+
+
+@pytest.mark.asyncio
+async def test_login_credentials_stop_counting_as_missing_once_off_the_login_page():
+    """probe บนฟอร์มจริง 2026-09-08: auto-login (W17) กรอก username/password ให้เองนอกลูป
+    ผ่าน Playwright ตรงๆ ค่าพวกนั้นจึงไม่เคยผ่าน action ของ agent และไม่เหลืออยู่ใน DOM ของ
+    หน้าถัดไป — guard เวอร์ชันแรกจึงรายงาน ['Admin', 'admin123'] ว่าขาดไปตลอดกาล"""
+    goal = "log in with username 'Admin' and password 'admin123', fill Email 'a@b.com', then save"
+    page = MagicMock()
+
+    page.evaluate = AsyncMock(return_value={"values": [], "hasPassword": False})
+    assert await orchestrator_module._values_missing_before_commit(page, goal, set()) == ["a@b.com"]
+
+    # ยังอยู่หน้า login จริง (มีช่องรหัสผ่าน) = credential ยังต้องถูกกรอก ไม่ยกเว้น
+    page.evaluate = AsyncMock(return_value={"values": [], "hasPassword": True})
+    missing = await orchestrator_module._values_missing_before_commit(page, goal, set())
+    assert "Admin" in missing and "admin123" in missing

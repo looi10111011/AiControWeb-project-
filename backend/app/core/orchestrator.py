@@ -3176,6 +3176,99 @@ _PLAN_COMMIT_STEP_RE = re.compile(
 )
 
 
+# W_goal_values_before_save (บั๊กจริงจาก gate 2026-09-07, task add_candidate): goal สั่งกรอก
+# First Name / Last Name / Email แล้วบันทึก โมเดลกรอกแค่สองช่องแรกแล้วกด Save ทันที ฟอร์ม
+# ตีกลับด้วย "Required" ใต้ช่อง Email แล้วมันก็กด Save ซ้ำอีก 4 ครั้งจนหมด step
+#
+# ค่าที่ goal ใส่เครื่องหมายคำพูดไว้คือสิ่งที่ user พิมพ์มาเองตรงๆ ("ให้กรอก X") ไม่ใช่การ
+# ตีความ — จึงเป็นสัญญาณที่เช็คได้แบบ deterministic ว่าอะไรยังไม่ถูกกรอกก่อนจะกดบันทึก
+# ตั้งใจไม่เดาค่าจากภาษาธรรมชาติที่ไม่มีเครื่องหมายคำพูด (หลักการเดิมของ
+# _goal_condition_values: ไม่เดาเงื่อนไขเองจาก goal)
+_GOAL_QUOTED_VALUE_RE = re.compile(r"""['"“‘]([^'"”’
+]{2,80})['"”’]""")
+# ค่าที่ยาวเกินไปหรือมีช่องว่างเยอะมักเป็นประโยคที่ user ยกมาอ้าง ไม่ใช่ค่าที่ต้องกรอก
+_MAX_GOAL_VALUE_WORDS = 4
+
+
+def _goal_literal_values(goal: str) -> list[str]:
+    """ค่าที่ goal ระบุไว้ตรงๆ ว่าต้องกรอก — จาก 'ค่าในเครื่องหมายคำพูด' และฝั่งขวาของ
+    field=value (ใช้ _goal_condition_pairs() ตัวเดิม ไม่เขียน regex ที่สาม)"""
+    values: list[str] = []
+    for raw in _GOAL_QUOTED_VALUE_RE.findall(goal or ""):
+        value = raw.strip()
+        if value and len(value.split()) <= _MAX_GOAL_VALUE_WORDS:
+            values.append(value)
+    for _field, value in _goal_condition_pairs(goal or ""):
+        if value:
+            values.append(value)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(value)
+    return unique
+
+
+_FORM_VALUES_JS = """() => ({
+    values: Array.from(document.querySelectorAll("input, textarea, select"))
+        .map((el) => (el.value == null ? "" : String(el.value))).filter(Boolean),
+    hasPassword: !!document.querySelector('input[type="password"]'),
+})"""
+
+# ค่าที่ goal ระบุไว้ให้ "ล็อกอิน" — วัดจากของจริงแล้วว่า auto-login (W17) กรอกให้เองนอก
+# ลูปผ่าน Playwright ตรงๆ ค่าพวกนี้จึงไม่เคยผ่าน action ของ agent และไม่เหลืออยู่ใน DOM
+# ของหน้าถัดไป -> guard จะรายงานว่า "ยังไม่ได้กรอก" ไปตลอดกาลทุกครั้งที่กดบันทึก
+# (probe บนฟอร์มจริง 2026-09-08: ขาด ['Admin', 'admin123'] ค้างอยู่แม้กรอกครบทุกช่องแล้ว)
+_GOAL_CREDENTIAL_VALUE_RE = re.compile(
+    r"(?:username|user\s*name|password|pass|ชื่อผู้ใช้|รหัสผ่าน)\s*"
+    r"(?:is|=|:|คือ)?\s*['\"“‘]([^'\"”’\n]{1,80})['\"”’]",
+    re.IGNORECASE,
+)
+
+
+async def _values_missing_before_commit(
+    page: Page, goal: str, written: set,
+) -> list[str]:
+    """ค่าจาก goal ที่ยัง "ไม่เคยถูกกรอกเลยใน task นี้ และไม่ได้อยู่ในฟอร์มตอนนี้"
+
+    เช็คสองแหล่งเพราะแต่ละแหล่งพลาดคนละทาง: ค่าที่กรอกไปแล้วในหน้าก่อน (เช่น username
+    ตอน login) ไม่เหลืออยู่ใน DOM ของหน้าปัจจุบัน ส่วนค่าที่ระบบกรอกให้เอง (auto-login
+    หรือ browser autofill) ไม่เคยผ่าน action ของ agent จึงไม่อยู่ใน written
+
+    ห้าม throw (กฎเดียวกับ guard อื่นในไฟล์นี้) — อ่าน DOM ไม่ได้ = ถือว่าไม่มีอะไรขาด"""
+    wanted = _goal_literal_values(goal)
+    if not wanted:
+        return []
+    try:
+        state = await page.evaluate(_FORM_VALUES_JS)
+    except Exception:
+        return []
+    if not isinstance(state, dict):
+        return []
+    present = {
+        str(v).strip().casefold() for v in (state.get("values") or []) if str(v).strip()
+    }
+    present |= {str(v).strip().casefold() for v in written if str(v).strip()}
+    if not state.get("hasPassword"):
+        # ไม่มีช่องรหัสผ่านบนหน้านี้ = ไม่ใช่หน้า login แล้ว ค่า credential จาก goal จึงไม่มี
+        # ที่ให้กรอกและไม่ควรถูกนับว่าขาด (ดูคอมเมนต์เหนือ _GOAL_CREDENTIAL_VALUE_RE)
+        present |= {
+            v.strip().casefold() for v in _GOAL_CREDENTIAL_VALUE_RE.findall(goal or "")
+        }
+    return [value for value in wanted if value.casefold() not in present]
+
+
+_MAX_MISSING_VALUE_REJECTIONS = 2
+_MISSING_GOAL_VALUES_NUDGE = (
+    "[Rejected] '{what}' would submit this form, but {count} value(s) the goal explicitly "
+    "asked for have not been entered anywhere yet: {values}. Find the field for each one on "
+    "this page and fill it in first, then submit. Never submit a form with the goal's own "
+    "values still missing — the site rejects it (a 'Required' message appears next to the "
+    "empty field) and pressing the button again cannot fix it."
+)
+
 def _goal_is_deletion_only(goal: str) -> bool:
     """True ถ้า goal เป็นงาน "ลบ" ล้วนๆ โดยไม่มีคำสั่งแก้ไข/สร้างปนอยู่เลย — แคบกว่า
     _goal_targets_existing_records_only() (ที่รวม edit-all ด้วย) เพราะ guard นี้ต้องไม่แตะ
@@ -4352,6 +4445,10 @@ class Orchestrator:
         auto_login_outcome = "skipped"
         # W_verify_text_needs_a_write: งานนี้เคยเขียนค่าลงฟอร์มจริงไหม
         wrote_a_value_this_task = False
+        # W_goal_values_before_save: ค่าที่ agent เขียนลงหน้าไปแล้วใน task นี้ (ค่าที่กรอกใน
+        # หน้าก่อนหน้าไม่เหลืออยู่ใน DOM ของหน้าปัจจุบัน จึงต้องจำไว้เอง)
+        values_written_this_task: set = set()
+        missing_value_rejection_count = 0
         goal_wants_a_record_change = (
             canonical_intent(goal).operation in _TABLE_VERIFY_RELEVANT_OPERATIONS
         )
@@ -6368,6 +6465,50 @@ class Orchestrator:
                         ))
                         continue
 
+                # W_goal_values_before_save (บั๊กจริงจาก gate 2026-09-07 task add_candidate):
+                # goal สั่งกรอก First Name / Last Name / Email แล้วบันทึก โมเดลกรอกสองช่องแรก
+                # แล้วกด Save ทันที ฟอร์มตีกลับด้วย "Required" ใต้ช่อง Email แล้วมันกด Save ซ้ำ
+                # อีก 4 ครั้งจนหมด step — ทั้ง task พังเพราะค่าที่ goal บอกไว้ตรงๆ ค่าหนึ่งไม่เคย
+                # ถูกกรอกเลย
+                #
+                # ครอบทั้งการกดปุ่มบันทึกตรงๆ และการพ่วงปุ่มนั้นมากับ fill (then_click_index)
+                # เพราะโมเดลตัวนี้พ่วงปุ่ม submit มากับ fill แทบทุกครั้ง — guard ที่ดูแค่ type
+                # "click" จะไม่เห็นเส้นทางที่ใช้จริงบ่อยที่สุด (บทเรียนเดียวกับ
+                # W_chained_submit_after_check ที่ปิดแค่ทางเดียวแล้วไม่ได้ปิดอะไรเลย)
+                #
+                # โควตา 2 ครั้งตาม pattern ของ guard อื่นในไฟล์นี้: ถ้าเดาผิด (ค่าอยู่ในหน้าที่
+                # อ่านไม่ได้ / เป็นค่าที่ user ยกมาอ้างเฉยๆ ไม่ใช่ค่าที่ต้องกรอก) จะเสียแค่สอง
+                # เทิร์นแล้วปล่อยผ่าน ไม่ใช่บล็อกตายจนงานทำไม่ได้
+                _commits_form = (
+                    tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and _action_commits_a_record_edit(tool_input, action_label)
+                ) or (
+                    tool_input.get("then_click_index") is not None
+                    and bool(_RECORD_COMMIT_LABEL_RE.search(then_label or ""))
+                )
+                if _commits_form and missing_value_rejection_count < _MAX_MISSING_VALUE_REJECTIONS:
+                    _pending = {
+                        v.strip() for v in (tool_input.get("text"), tool_input.get("label"))
+                        if isinstance(v, str) and v.strip()
+                    }
+                    missing_values = await _values_missing_before_commit(
+                        page, goal, values_written_this_task | _pending,
+                    )
+                    if missing_values:
+                        missing_value_rejection_count += 1
+                        nudge_text = _MISSING_GOAL_VALUES_NUDGE.format(
+                            what=(action_label.strip() or str(tool_input.get("type"))),
+                            count=len(missing_values),
+                            values=", ".join(f"'{v}'" for v in missing_values),
+                        )
+                        if verbose:
+                            print(f"[missing-values] ยังไม่ได้กรอก: {missing_values}")
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                        ))
+                        continue
+
                 # W_no_record_edit_for_delete_goal (ดูคอมเมนต์เหนือ _RECORD_COMMIT_LABEL_RE
                 # ด้านบนสำหรับบั๊กจริง): goal ที่สั่ง "ลบ" ล้วนๆ ต้องไม่กดบันทึกฟอร์มแก้ไข
                 # เด็ดขาด — hard reject ไม่มีโควตา เหมือน W_no_create_for_existing_goal/
@@ -6742,6 +6883,9 @@ class Orchestrator:
                 # คือรหัสปัจจุบันที่ระบบกรอกให้เอง ไม่ใช่ค่าที่ user จะเปลี่ยน
                 if result.success and tool_input.get("type") in _VALUE_WRITING_ACTION_TYPES:
                     wrote_a_value_this_task = True  # W_verify_text_needs_a_write
+                    for _written in (tool_input.get("text"), tool_input.get("label")):
+                        if isinstance(_written, str) and _written.strip():
+                            values_written_this_task.add(_written.strip())
                 if (
                     result.success
                     and tool_input.get("type") == "fill"
