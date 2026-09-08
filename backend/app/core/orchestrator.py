@@ -728,6 +728,8 @@ def _resolve_prompt_sections(
             sections.add("marker_disabled")
         if "[required]" in label:
             sections.add("marker_required")
+        if "[focused]" in label:
+            sections.add("marker_focused")
         if _RECORD_COMMIT_LABEL_RE.search(label) or any(
             k in label for k in _FORM_SUBMIT_LABEL_KEYWORDS
         ):
@@ -903,6 +905,7 @@ _PERCEPTION_LABEL_MARKERS = (
     "[hidden — may need to hover the row first]",
     "[disabled]",
     "[required]",
+    "[focused]",
     "[already active]",
 )
 

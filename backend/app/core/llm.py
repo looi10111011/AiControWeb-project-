@@ -299,6 +299,8 @@ _PROMPT_MARKER_HOVER = """- If you see an element whose label ends with "[hidden
 _PROMPT_FORM_INPUT = """- When filling a Login Form, fill in BOTH Username and Password immediately. Do not insert a wait in between if the page hasn't changed.
 - W63[2.2] ("Strict Form Input Matching", ticket Issue 2.2): fill/select only the fields the goal explicitly specifies or clearly implies. NEVER fill/select/check other fields the goal never mentions, even if they are in the same form and look like data "that ought to be filled in too" (e.g. if the goal only says "set Username to Admin", never fill Password/Confirm Password/Employee Name that weren't mentioned, even though the form has them). If the form genuinely requires every mandatory field before Save/Submit will work (e.g. you see a "Required" validation error on a field the goal gave no value for) and the goal didn't provide that value and it isn't anywhere in the earlier conversation, NEVER invent or assume a value — call finish_task(success=false) stating exactly which value is missing (same principle as W20 "Current Password ≠ New Password" above)."""
 
+_PROMPT_MARKER_FOCUSED = """- An element whose label ends with the marker "[focused]" is the one the text cursor is in right now. Use it to check the result of an action that leaves no other visible trace: if the goal was to focus/select a field and that field already carries "[focused]", the job is done — say so with finish_task instead of clicking it again (clicking a field that is already focused changes nothing and no further evidence will ever appear). It also tells you where a press_key with no index would land."""
+
 _PROMPT_SECTIONS = {
     "plan": _PROMPT_PLAN,
     "table": _PROMPT_TABLE,
@@ -309,6 +311,7 @@ _PROMPT_SECTIONS = {
     "marker_disabled": _PROMPT_MARKER_DISABLED,
     "save_toast": _PROMPT_SAVE_TOAST,
     "marker_required": _PROMPT_MARKER_REQUIRED,
+    "marker_focused": _PROMPT_MARKER_FOCUSED,
     "search_submit": _PROMPT_SEARCH_SUBMIT,
     "dup_labels": _PROMPT_DUP_LABELS,
     "marker_hover": _PROMPT_MARKER_HOVER,
@@ -320,7 +323,7 @@ _PROMPT_SECTIONS = {
 _PROMPT_SECTION_ORDER = (
     "plan", "table", "widget", "password",
     "manual", "marker_active", "marker_disabled", "save_toast", "marker_required",
-    "search_submit", "dup_labels", "marker_hover", "form_input",
+    "marker_focused", "search_submit", "dup_labels", "marker_hover", "form_input",
 )
 
 

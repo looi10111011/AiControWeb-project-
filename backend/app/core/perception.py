@@ -241,13 +241,25 @@ _COLLECT_JS = r"""
   // "label -> wrapper -> grid-item" ที่พบจริง) เช็ค previous sibling ทุกตัวในแต่ละชั้น
   // หาตัวแรกที่เป็นข้อความสั้นๆ ไม่มี element โต้ตอบได้ซ้อนอยู่ข้างใน (กัน match ปุ่ม/ช่อง
   // กรอกอื่นที่บังเอิญอยู่ก่อนหน้าผิดที่) คืนค่าว่างถ้าไม่เจอเลย (ไม่ throw ไม่เดามั่ว)
+  // W_sentence_is_not_a_field_label (release-gate 2026-09-08, MiniWoB focus-text): หน้านั้น
+  // มี <input> เปล่าๆ ตัวเดียวที่ไม่มี label/aria/placeholder/name อะไรเลย ตัวไล่หา sibling
+  // จึงเดินขึ้นไปเจอ <div id="query"> ซึ่งเป็น *โจทย์ของหน้า* แล้วเอามาเป็นชื่อช่อง —
+  // snapshot จึงมี element เดียวชื่อ 'Focus into the textbox.' ซึ่งอ่านเหมือนหัวข้อ ไม่ใช่
+  // ช่องกรอก โมเดลเลยคลิกมันซ้ำ 15 ครั้งจนหมด step โดยไม่รู้ว่านั่นคือช่องที่ต้องโฟกัส
+  //
+  // ชื่อช่องจริงเป็นวลีสั้นๆ ("Email", "User Role", "ชื่อผู้ใช้") ไม่ใช่ประโยคที่มี
+  // เครื่องหมายจบประโยคหรือยาวหลายคำ — เกณฑ์นี้แคบพอที่จะไม่ไปตัดชื่อช่องจริงทิ้ง
+  // และกันไม่ให้ข้อความระดับหน้ากลายเป็นชื่อของ element
+  const looksLikeSentence = (t) => /[.!?。]\s*$/.test(t) || t.split(/\s+/).length > 6;
+
   const getPrecedingSiblingLabelText = (node) => {
     let cur = node;
     for (let depth = 0; depth < 4 && cur; depth++) {
       let sib = cur.previousElementSibling;
       while (sib) {
         const t = (sib.innerText || sib.textContent || '').trim();
-        if (t && t.length <= 80 && !sib.querySelector('input, button, select, textarea, a')) {
+        if (t && t.length <= 80 && !looksLikeSentence(t)
+            && !sib.querySelector('input, button, select, textarea, a')) {
           return t;
         }
         sib = sib.previousElementSibling;
@@ -831,6 +843,18 @@ _COLLECT_JS = r"""
     // อยู่ก็ได้ ไม่เกี่ยวกัน) แปะซ้อนกับ marker อื่นได้ปกติ
     if (isRequired) {
       label = label ? `${label} [required]` : '[required]';
+    }
+
+    // W_focus_is_invisible (release-gate 2026-09-08, MiniWoB focus-text): โจทย์คือ "โฟกัส"
+    // ช่องข้อความ agent คลิกถูกตั้งแต่ครั้งแรก (MiniWoB ให้คะแนนเต็ม) แต่ snapshot ไม่เคย
+    // บอกเลยว่า element ไหนกำลังโฟกัสอยู่ มันจึงไม่มีทางรู้ว่าทำสำเร็จแล้ว เลยคลิกซ้ำ
+    // จนหมด 15 step แล้วรายงานว่าไม่จบ
+    //
+    // ไม่ใช่เรื่องของ MiniWoB อย่างเดียว: "ตอนนี้เคอร์เซอร์อยู่ช่องไหน" เป็นสถานะที่
+    // มองไม่เห็นจาก DOM text ล้วนๆ และจำเป็นทุกครั้งที่จะพิมพ์/กด Enter ต่อ — เป็น
+    // ข้อมูลชนิดเดียวกับ marker ตัวอื่นในชุดนี้ (สถานะชั่วคราวของ element)
+    if (el === document.activeElement) {
+      label = label ? `${label} [focused]` : '[focused]';
     }
 
     // W50 (viewport-aware sorting): เช็คว่า element นี้อยู่ในกรอบจอที่มองเห็นตอนนี้ไหม

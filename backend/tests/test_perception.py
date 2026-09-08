@@ -2071,3 +2071,76 @@ async def test_counted_by_the_system_number_counts_only_real_entries():
             assert "Required" in result.message
         finally:
             await browser.close()
+
+
+# --- W_sentence_is_not_a_field_label: ข้อความระดับหน้าไม่ใช่ชื่อของช่อง ---
+
+_PAGE_INSTRUCTION_HTML = """<!doctype html><html><body>
+<div id="wrap">
+  <div id="query">Focus into the textbox.</div>
+  <div id="area"><input type="text" id="tt"></div>
+</div></body></html>"""
+
+_REAL_FIELD_LABEL_HTML = """<!doctype html><html><body>
+<div class="group"><div class="lbl">Email</div><div><input type="text" id="em"></div></div>
+<div class="group"><div class="lbl">ชื่อผู้ใช้</div><div><input type="text" id="us"></div></div>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_a_page_instruction_never_becomes_a_field_label():
+    """release-gate 2026-09-08 (MiniWoB focus-text): input เปล่าที่ไม่มี label/aria/placeholder
+    ได้ชื่อเป็นโจทย์ของหน้า snapshot จึงมี element เดียวชื่อ "Focus into the textbox." ซึ่ง
+    อ่านเหมือนหัวข้อ ไม่ใช่ช่องกรอก — โมเดลคลิกมันซ้ำ 15 ครั้งจนหมด step"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_PAGE_INSTRUCTION_HTML)
+
+            elements, _ = await get_snapshot(page)
+
+            assert len(elements) == 1
+            assert "Focus into the textbox" not in elements[0]["label"]
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_short_sibling_labels_still_name_their_field():
+    """เกณฑ์ต้องแคบพอที่จะไม่ไปตัดชื่อช่องจริงทิ้ง — ฟอร์มจำนวนมาก (รวม OrangeHRM)
+    วางชื่อช่องไว้เป็นพี่น้องก่อนหน้าแบบนี้ ไม่ได้ใช้ <label for>"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_REAL_FIELD_LABEL_HTML)
+
+            labels = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert any("Email" in lb for lb in labels)
+            assert any("ชื่อผู้ใช้" in lb for lb in labels)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_the_focused_element_is_marked_in_the_snapshot():
+    """W_focus_is_invisible (release-gate 2026-09-08, MiniWoB focus-text): โจทย์คือ "โฟกัส"
+    ช่องข้อความ agent คลิกถูกตั้งแต่ครั้งแรกและ MiniWoB ให้คะแนนเต็ม แต่ snapshot ไม่เคยบอก
+    ว่า element ไหนกำลังโฟกัสอยู่ มันจึงไม่มีทางรู้ว่าสำเร็จ เลยคลิกซ้ำจนหมด 15 step"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content('<input id="a"><input id="b"><button>Go</button>')
+
+            before = [e["label"] for e in (await get_snapshot(page))[0]]
+            await page.focus("#b")
+            after = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert not any("[focused]" in lb for lb in before)
+            assert "b [focused]" in after
+            assert sum("[focused]" in lb for lb in after) == 1     # โฟกัสได้ทีละหนึ่งเสมอ
+        finally:
+            await browser.close()
