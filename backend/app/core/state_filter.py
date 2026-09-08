@@ -216,6 +216,47 @@ async def check_fill_target_is_not_typable(page: Page, index: int) -> Optional[s
         )
     return None
 
+_MENU_OVERLAY_JS = """(el) => {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!top || top === el || el.contains(top)) return false;
+    const MENU = [
+        '[role="listbox"]', '[role="menu"]', '[role="combobox"]',
+        '[class*="select-dropdown"]', '[class*="dropdown-menu"]', '[class*="autocomplete"]',
+    ].join(",");
+    const menu = top.closest(MENU);
+    // เป้าที่อยู่ *ใน* เมนูเองไม่ใช่เคสนี้ (นั่นคือการเลือกตัวเลือกตามปกติ)
+    return !!menu && !menu.contains(el);
+}"""
+
+
+async def menu_overlay_covers_target(page: Page, index: int) -> bool:
+    """เป้าหมายถูกเมนู/รายการตัวเลือกที่เปิดค้างอยู่บังไว้หรือเปล่า
+
+    W_menu_overlay_blocks_target (ทำซ้ำบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08):
+    กด Tab ท้ายช่อง Last Name ทำให้โฟกัสไปตกที่ dropdown Vacancy แล้วเมนูของมันเปิดคลุม
+    ช่อง Email ที่อยู่ถัดลงไป — fill/click ช่อง Email จึงรอ actionability จนหมดเวลา 6.6 วินาที
+    ต่อครั้ง แล้วโดนบังคับ go_back จนงานพัง ทั้งที่ไม่มีอะไรผิดกับเป้าหมายเลย
+
+    ต่างจาก marker [obscured] ของ perception ตรงที่ตัวนั้นบอกแค่ "ถูกบัง" เฉยๆ (ซึ่งอาจเป็น
+    tooltip ที่หายไปเองก่อนถึงเวลาคลิก — ดูคอมเมนต์ใน perception.py) ส่วนตัวนี้ตอบเฉพาะเจาะจง
+    ว่าเป็น "เมนูที่เปิดค้างอยู่" ซึ่งปิดได้ด้วย Escape และไม่หายไปเอง
+
+    fail-safe คืน False ถ้าอ่าน DOM ไม่ได้ (กฎเดียวกับทุกฟังก์ชันในไฟล์นี้)"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        covered = await target.locator(selector).evaluate(
+            _MENU_OVERLAY_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+        # เทียบ is True ไม่ใช่ bool() — ค่าที่ไม่ใช่ boolean แท้ (mock ในเทสต์ หรือ evaluate
+        # ที่คืนอ็อบเจ็กต์แปลกๆ) ต้องแปลว่า "ตอบไม่ได้" = ไม่ขวาง ตามกฎ fail-safe ของไฟล์นี้
+        # ไม่ใช่ "ถูกบัง" ซึ่งจะทำให้ยิง Escape มั่วในสถานการณ์ที่อ่านสถานะจริงไม่ได้
+        return covered is True
+    except Exception:
+        return False
+
 async def check_checkbox_redundant(page: Page, index: int) -> Optional[str]:
     """REDUNDANT ถ้า checkbox/radio ถูกติ๊กอยู่แล้ว (action นี้คือ "check" ล้วนๆ ไม่ใช่
     "toggle" — ไม่มีทางทำให้กลายเป็นติ๊กซ้อนสองครั้งจนหลุดเป็น unchecked)"""

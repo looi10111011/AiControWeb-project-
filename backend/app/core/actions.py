@@ -149,6 +149,8 @@ _STATE_READ_TIMEOUT_MS = 500
 # สำหรับหน้าเว็บที่ render ไม่ทันจริงๆ ซึ่งเป็นเหตุผลตั้งต้นของ retry
 _ACTION_RETRIES = 2  # ครั้งแรก + retry อีก 1 ครั้ง
 _ACTION_RETRY_DELAY_SEC = 0.5
+# W_menu_overlay_blocks_target: รอสั้นๆ ให้เมนูปิดจริงก่อนวัดซ้ำ (transition ของ UI library)
+_MENU_DISMISS_WAIT_MS = 200
 
 
 async def _dispatch_with_retry(action_func, *args) -> ActionResult:
@@ -1545,6 +1547,29 @@ async def _maybe_chain_click(
     )
 
 
+async def _close_menu_covering(page: Page, index: int) -> bool:
+    """ปิดเมนูที่เปิดค้างอยู่และบังเป้าหมายไว้ คืน True ถ้าปิดได้จริง
+
+    W_menu_overlay_blocks_target (ทำซ้ำบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08): กด Tab
+    ท้ายช่อง Last Name ทำให้โฟกัสตกที่ dropdown Vacancy เมนูของมันเปิดคลุมช่อง Email ที่อยู่
+    ถัดลงไป fill ช่องนั้นจึงรอ actionability จนหมดเวลา **6.6 วินาที** แล้วล้ม ตามด้วย click ที่
+    ล้มแบบเดียวกัน แล้วโดนบังคับ go_back จน task พังทั้งงาน (release-gate 6a9f051)
+
+    ปิดให้เลยแทนที่จะปฏิเสธแล้วให้โมเดลไปคิดเอง เพราะเมนูนี้ไม่ได้เปิดจากเจตนาของโมเดล —
+    มันเปิดเพราะ Tab พาโฟกัสไปตกใส่ การปิดจึงคืนหน้าให้กลับไปเป็นอย่างที่โมเดลเห็นตอน
+    ตัดสินใจ ไม่ใช่การเดาใจ และไม่เสียเทิร์น LLM เพิ่มเลย
+
+    Escape ถูกยิงเฉพาะเมื่อรู้แล้วว่าเป็นเมนูบังอยู่จริง (ไม่ใช่ทุกครั้งที่ action ล้ม) จึงไม่ไป
+    ปิด dialog ที่โมเดลกำลังต้องการ — dialog ไม่เข้าเงื่อนไขของ menu_overlay_covers_target()"""
+    if not await state_filter.menu_overlay_covers_target(page, index):
+        return False
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(_MENU_DISMISS_WAIT_MS)
+    except Exception:
+        return False
+    return not await state_filter.menu_overlay_covers_target(page, index)
+
 async def _chained_button_blocked_by_checkbox_group(page, cmd: dict, then_type: str):
     """เหตุผลที่ห้ามพ่วงปุ่มต่อท้าย action นี้ (None = พ่วงได้ตามปกติ)
 
@@ -1652,6 +1677,9 @@ async def execute(
             wrong_kind = await state_filter.check_click_target_is_native_select(page, cmd["index"])
             if wrong_kind is not None:
                 return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {wrong_kind}")
+            # W_menu_overlay_blocks_target: เหมือนฝั่ง fill — เป้าที่ถูกเมนูเปิดค้างบังไว้จะ
+            # ล้มด้วย timeout ทุกครั้ง ไม่ใช่เพราะ index ผิด
+            menu_closed = await _close_menu_covering(page, cmd["index"])
             # W_chain_stale_index: ตัด then_click_index ทิ้งถ้าคลิกนี้ทำให้ index ชุดเดิมใช้
             # ไม่ได้ — ทั้ง "เปิด" dropdown (ตัวเลือกเพิ่งเกิด ไม่มี index เดิม) และ "เลือก
             # ตัวเลือก" (ตัวเลือกทั้งชุดหายไป index ที่เหลือเลื่อนหมด) ดู docstring ของ
@@ -1668,6 +1696,12 @@ async def execute(
                 if cmd.get("then_click_index") is not None else None
             )
             result = await _dispatch_click_with_retry(page, cmd["index"], label)
+            if menu_closed:
+                result = replace(
+                    result,
+                    message=(f"{result.message} (an open dropdown menu was covering this "
+                             "element — it was closed first)"),
+                )
             if result.success and disturb_kind == "option":
                 result = replace(result, dropdown_option_selected=True)
             # W_menu_open_note_needs_no_chain: คลิกที่ไม่มี chain ก็ต้องรู้ว่า index เลื่อนแล้ว
@@ -1708,6 +1742,9 @@ async def execute(
             not_typable = await state_filter.check_fill_target_is_not_typable(page, cmd["index"])
             if not_typable is not None:
                 return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {not_typable}")
+            # W_menu_overlay_blocks_target: เมนูที่ Tab เปิดค้างไว้บังช่องถัดไป (ดู
+            # _close_menu_covering) — ปิดก่อน ไม่งั้นรอ actionability จนหมดเวลา 6.6 วิแล้วล้ม
+            menu_closed = await _close_menu_covering(page, cmd["index"])
             empty_noop = await state_filter.check_fill_is_empty_noop(page, cmd["index"], cmd["text"])
             if empty_noop is not None:
                 return ActionResult(False, f"fill({cmd['index']})", f"[Rejected] {empty_noop}")
@@ -1724,6 +1761,12 @@ async def execute(
             if early_submit is not None:
                 cmd = {k: v for k, v in cmd.items() if k not in ("key", "then_click_index")}
             result = await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+            if menu_closed:
+                result = replace(
+                    result,
+                    message=(f"{result.message} (an open dropdown menu was covering this "
+                             "field — it was closed first)"),
+                )
             if early_submit is not None and result.success:
                 result = replace(
                     result,

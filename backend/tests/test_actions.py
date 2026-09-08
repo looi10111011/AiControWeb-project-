@@ -2452,3 +2452,76 @@ async def test_fill_still_works_through_a_wrapper_that_holds_the_real_input():
             assert await page.locator("[data-ai-index='3']").input_value() == "x@y.com"
         finally:
             await browser.close()
+
+
+# --- W_menu_overlay_blocks_target: เมนูที่เปิดค้างบังเป้าหมายไว้ ---
+#
+# ทำซ้ำบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08: กด Tab ท้ายช่อง Last Name ทำให้โฟกัส
+# ตกที่ dropdown Vacancy เมนูเปิดคลุมช่อง Email ที่อยู่ถัดลงไป fill ช่องนั้นรอ actionability
+# จนหมดเวลา 6.6 วินาที แล้วล้ม ตามด้วย click ที่ล้มแบบเดียวกัน จน task พังทั้งงาน
+# หลังแก้: 0.5 วินาที สำเร็จ
+
+_MENU_OVER_FIELD_HTML = """<!doctype html><html><body style="margin:0">
+<input data-ai-index="1" id="email" style="position:absolute;top:50px;left:0;width:200px;height:30px">
+<div id="menu" role="listbox" style="position:absolute;top:40px;left:0;width:300px;height:80px;background:#fff">
+  <div role="option" data-ai-index="2">Option A</div>
+</div>
+<script>document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.getElementById("menu").remove();
+});</script>
+</body></html>"""
+
+_DIALOG_OVER_FIELD_HTML = _MENU_OVER_FIELD_HTML.replace('role="listbox"', 'role="dialog"')
+
+
+@pytest.mark.asyncio
+async def test_fill_closes_a_menu_that_is_covering_the_field():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_MENU_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "a@b.com"}, [])
+
+            assert result.success is True
+            assert "covering this field" in result.message
+            assert await page.locator("#email").input_value() == "a@b.com"
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_an_overlay_that_is_not_a_menu_is_left_alone():
+    """Escape ถูกยิงเฉพาะเมื่อรู้ว่าเป็นเมนูบังอยู่จริง — dialog ที่โมเดลอาจกำลังต้องการ
+    ต้องไม่ถูกปิดทิ้งโดยผลข้างเคียงของ guard นี้"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_DIALOG_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "a@b.com"}, [])
+
+            assert "covering this field" not in result.message
+            assert await page.locator("#menu").count() == 1        # dialog ยังอยู่
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_clicking_an_option_inside_the_open_menu_is_not_treated_as_blocked():
+    """เป้าที่อยู่ *ใน* เมนูเองคือการเลือกตัวเลือกตามปกติ ปิดเมนูตรงนั้นจะทำลายงาน"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_MENU_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert result.success is True
+            assert "covering this element" not in result.message
+            assert await page.locator("#menu").count() == 1
+        finally:
+            await browser.close()
