@@ -903,6 +903,29 @@ _COLLECT_JS = r"""
 """
 
 
+# marker ที่ JS ด้านบนแปะต่อท้าย label (สถานะชั่วคราวของ element ไม่ใช่ชื่อของมัน)
+# อยู่ที่นี่เพราะเป็นที่เดียวกับตัวที่สร้างมัน — orchestrator import ต่อจากไฟล์นี้
+# (ทางกลับกันทำไม่ได้ perception ห้าม import orchestrator: circular)
+LABEL_MARKERS = (
+    "[in open dialog]",
+    "[Profile/Account Menu]",
+    "[obscured]",
+    "[hidden — may need to hover the row first]",
+    "[disabled]",
+    "[required]",
+    "[focused]",
+    "[already active]",
+)
+
+
+def label_without_markers(label: str) -> str:
+    """label ที่ตัด marker ออกหมดแล้ว — ใช้ตอนต้องเทียบว่า "เป็น element เดียวกันไหม"
+    เพราะ marker เปลี่ยนไปมาได้ตลอดโดยที่ตัว element ไม่ได้เปลี่ยนเลย"""
+    text = str(label or "")
+    for marker in LABEL_MARKERS:
+        text = text.replace(marker, " ")
+    return " ".join(text.split())
+
 def _disambiguate_shared_labels(elements: list[dict]) -> None:
     """ช่องกรอกหลายช่องที่ได้ label เดียวกัน -> เติม placeholder ต่อท้ายให้แยกออกจากกัน
 
@@ -917,11 +940,16 @@ def _disambiguate_shared_labels(elements: list[dict]) -> None:
     เติมให้ทุกช่องไม่ได้ เพราะ W_empty_field_shows_no_value แก้บั๊กจริงไว้แล้วว่าช่องว่างที่โชว์
     placeholder ("Employee Name: Type for hints...") อ่านแล้วเหมือนช่องนั้นมีค่าอยู่ ทำให้ guard
     ที่อ่านค่าตัวกรองจาก label ตัดสินผิด"""
+    # W_marker_hides_a_shared_label (gate 3915868, add_candidate): ต้องเทียบด้วย label ที่
+    # ตัด marker ออกแล้ว — พอช่องหนึ่งได้ [focused] ต่อท้าย (หรือ [required]/[obscured])
+    # label ก็ "ไม่ซ้ำ" กันอีกต่อไป ตัว disambiguate เลยเงียบ ทั้งสามช่องกลับไปชื่อ
+    # "Full Name" เหมือนกันหมด = บั๊กเดิมที่ฟังก์ชันนี้ถูกเขียนมาแก้พอดี (วัดแล้ว: agent
+    # กรอกนามสกุลลงช่อง Middle Name แล้วงานล้มทั้ง task)
     by_label: dict[str, list[dict]] = {}
     for el in elements:
-        label = str(el.get("label") or "").strip()
-        if label and el.get("tag") in ("input", "textarea", "select"):
-            by_label.setdefault(label.lower(), []).append(el)
+        base = label_without_markers(el.get("label"))
+        if base and el.get("tag") in ("input", "textarea", "select"):
+            by_label.setdefault(base.lower(), []).append(el)
     for group in by_label.values():
         if len(group) < 2:
             continue
@@ -930,7 +958,11 @@ def _disambiguate_shared_labels(elements: list[dict]) -> None:
         if not all(hints) or len(set(hints)) != len(hints):
             continue
         for el, hint in zip(group, hints):
-            el["label"] = f"{el['label']}: {hint}"
+            # เติมเข้าไปในส่วน "ชื่อ" แล้วต่อ marker กลับท้ายสุดตามเดิม เพื่อให้
+            # marker ยังอ่านออกว่าเป็นสถานะ ไม่ใช่ส่วนหนึ่งของชื่อช่อง
+            base = label_without_markers(el.get("label"))
+            markers = [m for m in LABEL_MARKERS if m in str(el.get("label") or "")]
+            el["label"] = " ".join([f"{base}: {hint}", *markers])
 
 
 async def get_snapshot(page: Page):

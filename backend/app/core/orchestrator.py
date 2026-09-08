@@ -40,7 +40,7 @@ from backend.app.core.actions import _KEY_VALUE_IN_QUERY_RE
 from backend.app.core.actions import _COUNT_QUERY_KEYWORDS, system_counted_conditions
 from backend.app.core.goal_intent import canonical_intent, contains_keyword
 from backend.app.core.memory import ShortTermMemory, clip_result
-from backend.app.core.perception import get_snapshot
+from backend.app.core.perception import LABEL_MARKERS, get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain, install_ssrf_guard
 from backend.app.rag import retriever
@@ -898,16 +898,9 @@ def _field_names_match(goal_field: str, page_field: str) -> bool:
 # test_orchestrator.py อ่านซอร์สของ perception.py จริงแล้วยืนยันว่า marker ทุกตัวที่ JS เติม
 # มีอยู่ในทะเบียนนี้ครบ — นั่นคือสิ่งเดียวที่ทำให้ drift "ดัง" ขึ้นมาแทนที่จะเงียบ ซึ่งเป็นรูปแบบ
 # ที่เจอซ้ำมาแล้วหลายครั้งในโปรเจกต์นี้ (comment/เจตนาถูก แต่โค้ดอีกฝั่งไม่ทำตาม)
-_PERCEPTION_LABEL_MARKERS = (
-    "[in open dialog]",
-    "[Profile/Account Menu]",
-    "[obscured]",
-    "[hidden — may need to hover the row first]",
-    "[disabled]",
-    "[required]",
-    "[focused]",
-    "[already active]",
-)
+# W_marker_hides_a_shared_label: ทะเบียนอยู่ที่ perception.py ซึ่งเป็นที่เดียวกับ JS ที่
+# สร้าง marker พวกนี้ — อ้างตัวเดียวกันแทนการพิมพ์ซ้ำสองที่ (เหตุผลเดิมของ W108)
+_PERCEPTION_LABEL_MARKERS = LABEL_MARKERS
 
 _ALREADY_ACTIVE_LABEL_MARKER = "[already active]"
 

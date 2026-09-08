@@ -2144,3 +2144,29 @@ async def test_the_focused_element_is_marked_in_the_snapshot():
             assert sum("[focused]" in lb for lb in after) == 1     # โฟกัสได้ทีละหนึ่งเสมอ
         finally:
             await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_marker_does_not_hide_that_two_fields_share_a_label():
+    """W_marker_hides_a_shared_label (gate 3915868, add_candidate): ตัว disambiguate เทียบ
+    label แบบดิบ พอช่องหนึ่งได้ [focused] ต่อท้าย label ก็ "ไม่ซ้ำ" กันอีกต่อไป มันเลยเงียบ
+    ทั้งสามช่องกลับไปชื่อ "Full Name" เหมือนกันหมด — บั๊กเดิมที่ฟังก์ชันนี้เขียนมาแก้พอดี
+    ผลจริง: agent กรอกนามสกุลลงช่อง Middle Name แล้วงานล้มทั้ง task"""
+    html = ("<!doctype html><body><div><div>Full Name</div>"
+            '<div><input name="firstName" placeholder="First Name"></div>'
+            '<div><input name="middleName" placeholder="Middle Name"></div>'
+            "</div></body>")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            before = [e["label"] for e in (await get_snapshot(page))[0]]
+            await page.focus("input[name=middleName]")
+            after = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert before == ["Full Name: First Name", "Full Name: Middle Name"]
+            # ช่องที่โฟกัสยังต้องบอกได้ว่าเป็นช่องไหน และ marker ต้องอยู่ท้ายสุด
+            assert after == ["Full Name: First Name", "Full Name: Middle Name [focused]"]
+        finally:
+            await browser.close()
