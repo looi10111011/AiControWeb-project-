@@ -5466,10 +5466,18 @@ class Orchestrator:
                     if provided and not (answer or "").strip():
                         provided = False
                         request_user_input_count = _MAX_REQUEST_USER_INPUT_CALLS
+                        # W_no_answer_is_not_an_exit (gate fedd2ed): ข้อความเวอร์ชันแรก
+                        # ลงท้ายด้วยทางออก "หรือเรียก finish_task(success=false)" — โมเดล
+                        # หยิบทางนั้นทันที task rag_integration จึงจบใน 3 step ทั้งที่คู่มือ
+                        # RAG มีค่าที่ต้องใช้อยู่แล้ว เดิมมันได้คำตอบว่างแล้วมั่วต่อจนจบงาน
+                        # ได้ การบอกว่า "ไม่มีใครตอบ" จึงต้องไม่กลายเป็นใบอนุญาตให้ยอมแพ้
                         result_text = (
-                            "[No answer] nobody is available to answer in this run. Do not call "
-                            "request_user_input again — decide from what is already on the page, or "
-                            "call finish_task(success=false) stating exactly which value is missing."
+                            "[No answer] nobody is available to answer in this run — this is normal "
+                            "and not a failure. Carry on with the task using what is already on the "
+                            "page, the goal, and any attached manual; pick sensible values yourself "
+                            "for anything routine (a name, a postcode). Do not call request_user_input "
+                            "again. Give up only if the goal genuinely cannot be done without a value "
+                            "that exists nowhere — and say which value that is."
                         )
                     else:
                         result_text = (

@@ -8824,5 +8824,9 @@ async def test_an_empty_answer_is_reported_as_nobody_being_there():
 
     assert "nobody is available to answer" in tool_results[0]
     assert "the user answered:" not in tool_results[0]
+    # W_no_answer_is_not_an_exit: ต้องผลักให้ "ทำต่อ" ไม่ใช่เปิดประตูให้ยอมแพ้ — ข้อความ
+    # เวอร์ชันแรกลงท้ายด้วย finish_task(success=false) แล้วโมเดลหยิบทางนั้นทันที (task
+    # rag_integration จบใน 3 step ทั้งที่คู่มือ RAG มีค่าที่ต้องใช้อยู่แล้ว)
+    assert "Carry on with the task" in tool_results[0]
     # ถามซ้ำต้องโดนปิดทันที ไม่ใช่ปล่อยให้เผา step ไปจนครบโควตา
     assert "do not call request_user_input again" in tool_results[1].lower()
