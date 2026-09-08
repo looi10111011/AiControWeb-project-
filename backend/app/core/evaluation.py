@@ -50,8 +50,22 @@ async def _auto_approve(cmd: dict) -> bool:
     return True
 
 # เดียวกับ run.py::_DEFAULT_AGENT_GOAL เป๊ะ
+#
+# W_ambiguous_benchmark_goal (วัดจาก 6 รันของ task นี้ 2026-09-08): ข้อความเดิมคือ "add
+# first product, change item to second product" ซึ่งไม่ได้บอกว่าสินค้าชิ้นไหน — agent จึง
+# เรียก request_user_input **ทั้ง 6 รอบ** เพื่อถามว่าหมายถึงอันไหน เสียไปหนึ่ง step ทุกครั้ง
+# ในงบ max_steps=15 ที่ต้องกรอกฟอร์ม 3 ช่องอยู่แล้ว และรอบที่ล้มก็ล้มเพราะเดินไม่ทันงบ
+#
+# นี่คือการแก้ *เครื่องวัด* ไม่ใช่แก้ agent: โจทย์ที่กำกวมวัดความสามารถในการเดาใจ ไม่ใช่
+# ความสามารถในการทำงานตามสั่ง ซึ่งไม่ใช่สิ่งที่ suite นี้ตั้งใจวัด (task อื่นทุกตัวใน
+# ไฟล์นี้ระบุค่าที่ต้องใช้ชัดเจนอยู่แล้ว) เจตนาของ task เหมือนเดิมทุกประการ: หยิบชิ้นแรก
+# เปลี่ยนเป็นชิ้นที่สอง แล้วไป checkout — แค่บอกชื่อสองชิ้นนั้นตรงๆ ตามลำดับ default (A-Z)
+# ของ saucedemo
+#
+# ผลที่ตามมาที่ต้องรู้: ตัวเลขของ login_checkout เทียบกับรันก่อนหน้านี้ไม่ได้อีกต่อไป
+# เพราะเป็นคนละโจทย์ (เหมือนตอนที่ MiniWoB เปลี่ยนมาใช้ seed คงที่)
 _TASK_LOGIN_CHECKOUT = (
-    "Log in, add first product, change item to second product , and proceed to checkout"
+    "Log in, add 'Sauce Labs Backpack' to the cart, then swap it for 'Sauce Labs Bike Light' (remove the backpack, add the bike light), and proceed to checkout"
 )
 # เดียวกับ run.py::_TEST_CASE_D_GOAL เป๊ะ (W7[B]: ทดสอบว่า RAG manual สั่งขออนุมัติก่อน
 # Checkout ได้จริงแม้ type="click" ธรรมดาไม่ตรง hardcoded rule ไหนเลย)
