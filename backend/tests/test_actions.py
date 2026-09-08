@@ -1780,6 +1780,22 @@ async def test_click_that_navigates_only_by_hash_route_still_counts_as_navigatio
     assert result.success is True
 
 
+def _dom_signature_only(*sizes):
+    """evaluate ปลอมที่ตอบเฉพาะ _dom_signature ตามลำดับ sizes ที่ให้มา ส่วน query อื่น
+    (เช่นตัวอ่านข้อความ error ของ W_rejected_submit_reports_success) ตอบ "ไม่มีอะไร"
+
+    เดิมเทสต์กลุ่มนี้ใช้ side_effect เป็นลิสต์ ซึ่งผูกกับ *จำนวนครั้ง* ที่ evaluate ถูกเรียก
+    พอมีการอ่าน DOM เพิ่มอีกจุด เทสต์ก็พังทั้งที่พฤติกรรมที่มันตรึงไว้ไม่ได้เปลี่ยนเลย
+    — ผูกกับสคริปต์ที่ถูกเรียกแทน จึงทนการเพิ่มจุดอ่านใหม่"""
+    remaining = list(sizes)
+
+    async def _evaluate(script, *args, **kwargs):
+        if "innerHTML" in str(script):
+            return remaining.pop(0) if remaining else 0
+        return []
+
+    return _evaluate
+
 @pytest.mark.asyncio
 async def test_click_that_fails_without_navigating_still_fails_but_reports_dom_change():
     """สัญญาณสำรองสำหรับ SPA ที่เปลี่ยนแค่ state ภายใน — ห้ามพลิกเป็น success จาก DOM signature
@@ -1787,7 +1803,7 @@ async def test_click_that_fails_without_navigating_still_fails_but_reports_dom_c
     mock_page = AsyncMock()
     mock_page.url = "https://app.example.com/admin/list"
     mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
-    mock_page.evaluate.side_effect = [1000, 4200]
+    mock_page.evaluate = _dom_signature_only(1000, 4200)
 
     result = await _dispatch_click_with_retry(mock_page, 3)
 
@@ -1801,7 +1817,7 @@ async def test_click_that_fails_with_no_change_at_all_reports_a_plain_failure():
     mock_page = AsyncMock()
     mock_page.url = "https://app.example.com/admin/list"
     mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
-    mock_page.evaluate.side_effect = [1000, 1000]
+    mock_page.evaluate = _dom_signature_only(1000, 1000)
 
     result = await _dispatch_click_with_retry(mock_page, 3)
 
@@ -2523,5 +2539,59 @@ async def test_clicking_an_option_inside_the_open_menu_is_not_treated_as_blocked
             assert result.success is True
             assert "covering this element" not in result.message
             assert await page.locator("#menu").count() == 1
+        finally:
+            await browser.close()
+
+
+# --- W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธต้องไม่รายงานว่าสำเร็จเฉยๆ ---
+#
+# release-gate 8c0f68a (login_checkout): กด Continue บนฟอร์ม checkout ที่ยังไม่ได้กรอก หน้า
+# ขึ้น "Error: First Name is required" ชัดเจน แต่โมเดลได้ "[OK] click succeeded" จึงกดซ้ำอีก
+# สองครั้งแล้วโดนบังคับ go_back จนงบ step หมดก่อนกรอกฟอร์มเสร็จ
+
+_VALIDATING_FORM_HTML = """<!doctype html><html><body>
+<input data-ai-index="1" id="name">
+<div id="err" class="error-message-container" style="display:none">Error: First Name is required</div>
+<button data-ai-index="2" onclick="
+  var v = document.getElementById('name').value;
+  document.getElementById('err').style.display = v ? 'none' : 'block';
+  if (v) document.body.setAttribute('data-sent', '1');
+">Continue</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_a_click_that_the_page_rejects_says_why():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_VALIDATING_FORM_HTML)
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert result.success is True                 # คลิกโดนจริง ไม่ได้โกหกเรื่องนั้น
+            assert "First Name is required" in result.message
+            assert "nothing was submitted" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_click_that_the_page_accepts_stays_quiet():
+    """ต้องไม่ไปแปะโน้ต error ให้คลิกที่ผ่านฉลุย และต้องไม่รายงาน error ที่ค้างอยู่ก่อน
+    คลิกว่าเป็นผลของคลิกนี้"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_VALIDATING_FORM_HTML)
+            await execute(page, {"type": "click", "index": 2}, [])      # ทำให้ error โผล่ค้างไว้
+            await page.fill("#name", "Somchai")
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert "rejected" not in result.message
+            assert await page.evaluate("() => document.body.dataset.sent") == "1"
         finally:
             await browser.close()

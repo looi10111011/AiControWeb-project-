@@ -330,6 +330,43 @@ async def _dom_signature(page: Page) -> Optional[int]:
         return None
 
 
+# W_rejected_submit_reports_success (release-gate 8c0f68a, task login_checkout): agent กด
+# Continue บนฟอร์ม checkout ที่ยังไม่ได้กรอก หน้าเว็บขึ้น "Error: First Name is required"
+# ชัดเจน แต่ผลที่ส่งกลับให้โมเดลคือ "[OK] click succeeded" เฉยๆ มันจึงกดซ้ำอีกสองครั้ง
+# แล้วโดนบังคับ go_back จนงบ step หมดก่อนจะกรอกฟอร์มเสร็จ
+#
+# ตัวตรวจ toast (_detect_success_toast ด้านบน) เป็นกระจกอีกบานของเรื่องเดียวกัน แต่ตอบได้
+# แค่ "สำเร็จไหม" ไม่เคยตอบ "ถูกปฏิเสธเพราะอะไร" — และมันยังถูก gate ด้วย _SAVE_LABEL_RE
+# ซึ่งไม่มีคำว่า Continue/Next อยู่เลย ปุ่มเดินหน้าของ wizard ทุกตัวจึงไม่เคยถูกตรวจอะไร
+#
+# รายงานเฉพาะข้อความที่ "เพิ่งโผล่หลังคลิก" เท่านั้น (เทียบ before/after) — หน้าที่มี
+# error ค้างอยู่ก่อนแล้วต้องไม่ถูกรายงานว่าคลิกนี้เป็นคนทำ
+_ERROR_MESSAGE_SELECTOR = (
+    '[role="alert"]:not(:empty), [aria-live="assertive"]:not(:empty), '
+    '[class*="error" i]:not(:empty), [class*="invalid" i]:not(:empty), '
+    '[class*="danger" i]:not(:empty)'
+)
+_MAX_ERROR_MESSAGE_CHARS = 160
+
+
+async def _visible_error_texts(page: Page) -> set:
+    """ข้อความ error ที่ผู้ใช้มองเห็นอยู่ตอนนี้ — ห้าม throw (กฎเดียวกับ state_filter)"""
+    try:
+        texts = await page.evaluate(
+            """(sel) => Array.from(document.querySelectorAll(sel))
+                 .filter((el) => el.offsetParent !== null)
+                 .map((el) => (el.innerText || "").trim())
+                 .filter((t) => t && t.length <= 160)""",
+            _ERROR_MESSAGE_SELECTOR,
+        )
+    except Exception:
+        return set()
+    # ค่าที่ไม่ใช่ list (mock ในเทสต์ / evaluate ที่คืนอย่างอื่น) = อ่านไม่ได้ ไม่ใช่ "ไม่มี
+    # error" — คืน set ว่างเหมือนกัน แต่ห้าม throw ออกไปให้ execute() พังเด็ดขาด
+    if not isinstance(texts, list):
+        return set()
+    return {t for t in texts if isinstance(t, str)}
+
 async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") -> ActionResult:
     """เหมือน _dispatch_with_retry() ทั่วไป (ครั้งแรก + retry อีก _ACTION_RETRIES-1 ครั้ง)
     แต่เฉพาะ click(): ตั้งแต่รอบ retry ที่ 2 เป็นต้นไป hover() บน element เป้าหมายก่อนคลิก
@@ -353,6 +390,7 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
     # สำเร็จไปแล้ว (ดู docstring ของ _normalize_click_url ด้านบนสำหรับบั๊กจริงเต็มๆ)
     url_before = _normalize_click_url(page.url)
     dom_before = await _dom_signature(page)
+    errors_before = await _visible_error_texts(page)
     result: ActionResult = None
     for attempt in range(1, _ACTION_RETRIES + 1):
         if attempt > 1:
@@ -384,6 +422,17 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
                     result.success, result.action, f"{result.message}{toast_note}",
                     locator_descriptor=result.locator_descriptor, toast_confirmed=bool(toast_text),
                 )
+            # W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธไม่พาไปไหน — ถ้าหน้ายัง
+            # เป็นหน้าเดิมและมีข้อความ error โผล่ขึ้นมาใหม่ นั่นคือคำตอบว่าทำไมคลิกนี้
+            # ไม่ได้ผล ต้องบอกโมเดลตรงๆ ไม่ใช่ปล่อยให้เห็นแค่ 'click succeeded'
+            if _normalize_click_url(page.url) == url_before:
+                new_errors = await _visible_error_texts(page) - errors_before
+                if new_errors:
+                    shown = '; '.join(sorted(new_errors))[:_MAX_ERROR_MESSAGE_CHARS]
+                    result = replace(
+                        result,
+                        message=(f'{result.message} [The page rejected this: "{shown}" — the click went through but nothing was submitted. Fix what the message asks for, then try again; clicking the same button again changes nothing.]'),
+                    )
             return result
         # W_click_navigated: attempt นี้ล้มเหลว แต่ถ้า URL เปลี่ยนไปแล้ว = attempt ก่อนหน้า
         # คลิกโดนจริงและพาไปหน้าใหม่แล้ว — retry ต่อไม่มีทางสำเร็จได้เลย (index ชุดเดิมไม่มี
