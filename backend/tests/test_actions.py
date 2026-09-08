@@ -930,7 +930,11 @@ async def test_execute_click_notes_missing_toast_when_label_matches_save():
         result = await execute(mock_page, {"type": "click", "index": 5}, label="บันทึก")
 
     assert result.success is True
-    assert "No toast/success confirmation appeared" in result.message
+    # W_no_toast_is_not_a_reason_to_repeat: ข้อความเดิมชวนให้ "ไปตรวจว่ามี validation error
+    # ไหม" ซึ่งโมเดลตีความเป็นการกดปุ่มเดิมซ้ำ (MiniWoB click-checkboxes เสีย 11 step ไปกับ
+    # เรื่องนี้ ทั้งที่ได้คะแนนเต็มไปแล้วตั้งแต่คลิกแรก)
+    assert "No confirmation message appeared" in result.message
+    assert "will not make one appear" in result.message
     assert result.toast_confirmed is False  # W64[7.2]
 
 

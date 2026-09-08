@@ -408,30 +408,54 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
                         result.success, result.action, f"{result.message}{modal_note}",
                         locator_descriptor=result.locator_descriptor,
                     )
-            elif label and _SAVE_LABEL_RE.search(label):
-                # W63[7.1]: ไม่เช็ค toast ถ้าเพิ่งเจอ confirmation modal ไปแล้วด้านบน (คนละ
-                # flow กัน — modal คือปุ่ม Delete/Remove ที่ต้องยืนยันซ้ำ ไม่ใช่ปุ่ม Save) —
-                # จำกัดเฉพาะ label ที่ตรงคำ Save/Submit/Confirm กัน overhead การรอ toast บน
-                # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
-                toast_text = await _detect_success_toast(page)
-                toast_note = (
-                    f' [Success confirmation found: \"{toast_text}"]' if toast_text
-                    else " [No toast/success confirmation appeared within the time limit after the click — check for a validation error, or whether the page already navigated back to the list by itself, before treating it as successful]"
+            # W63[7.1]: ไม่เช็ค toast ถ้าเพิ่งเจอ confirmation modal ไปแล้วด้านบน (คนละ
+            # flow กัน — modal คือปุ่ม Delete/Remove ที่ต้องยืนยันซ้ำ ไม่ใช่ปุ่ม Save) —
+            # จำกัดเฉพาะ label ที่ตรงคำ Save/Submit/Confirm กัน overhead การรอ toast บน
+            # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
+            else:
+                toast_text = (
+                    await _detect_success_toast(page)
+                    if label and _SAVE_LABEL_RE.search(label) else ""
                 )
-                result = ActionResult(
-                    result.success, result.action, f"{result.message}{toast_note}",
-                    locator_descriptor=result.locator_descriptor, toast_confirmed=bool(toast_text),
+                stayed = _normalize_click_url(page.url) == url_before
+                new_errors = (
+                    await _visible_error_texts(page) - errors_before if stayed else set()
                 )
-            # W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธไม่พาไปไหน — ถ้าหน้ายัง
-            # เป็นหน้าเดิมและมีข้อความ error โผล่ขึ้นมาใหม่ นั่นคือคำตอบว่าทำไมคลิกนี้
-            # ไม่ได้ผล ต้องบอกโมเดลตรงๆ ไม่ใช่ปล่อยให้เห็นแค่ 'click succeeded'
-            if _normalize_click_url(page.url) == url_before:
-                new_errors = await _visible_error_texts(page) - errors_before
-                if new_errors:
-                    shown = '; '.join(sorted(new_errors))[:_MAX_ERROR_MESSAGE_CHARS]
-                    result = replace(
-                        result,
-                        message=(f'{result.message} [The page rejected this: "{shown}" — the click went through but nothing was submitted. Fix what the message asks for, then try again; clicking the same button again changes nothing.]'),
+                note = ""
+                if toast_text:
+                    note = f' [Success confirmation found: "{toast_text}"]'
+                elif new_errors:
+                    # W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธไม่พาไปไหน และ
+                    # ข้อความที่มันขึ้นคือคำตอบว่าทำไมคลิกนี้ไม่ได้ผล
+                    shown = "; ".join(sorted(new_errors))[:_MAX_ERROR_MESSAGE_CHARS]
+                    note = (
+                        f' [The page rejected this: "{shown}" — the click went through but '
+                        "nothing was submitted. Fix what the message asks for, then try again; "
+                        "clicking the same button again changes nothing.]"
+                    )
+                elif label and _SAVE_LABEL_RE.search(label):
+                    # W_no_toast_is_not_a_reason_to_repeat (release-gate bf637ce, MiniWoB
+                    # click-checkboxes): ติ๊กครบแล้วกด Submit ที่ step 4 ได้คะแนนเต็มไปแล้ว
+                    # แต่ข้อความเดิมบอกว่า "ไม่พบ toast — ลองตรวจว่ามี validation error ไหม"
+                    # โมเดลจึงกด Submit ซ้ำ โดนบังคับ go_back หน้าเป็นหน้าว่าง แล้วเริ่มใหม่
+                    # ทั้งชุดจนหมด 15 step (รอบก่อนหน้าที่โจทย์เดียวกันใช้ 4 step)
+                    # อาการเดียวกันเคยเห็นใน add_candidate ตอนกด Save ซ้ำ 4 ครั้ง
+                    #
+                    # ตอนนี้แยกสองกรณีออกจากกันได้แล้ว: ถ้ามี error โผล่ กิ่งด้านบนตอบไปแล้ว
+                    # ว่าถูกปฏิเสธเพราะอะไร มาถึงตรงนี้ = ไม่มีอะไรปฏิเสธเลย เว็บจำนวนมาก
+                    # ไม่ขึ้น toast ให้อยู่แล้ว การกดปุ่มเดิมซ้ำจึงไม่ทำให้หลักฐานโผล่มาได้
+                    note = (
+                        " [No confirmation message appeared, and nothing on the page rejected "
+                        "the click either — many sites simply show no toast. Pressing the same "
+                        "button again will not make one appear: look at the data itself (the "
+                        "list/table/page you changed) for evidence, or move on to the next step "
+                        "of the goal.]"
+                    )
+                if note:
+                    result = ActionResult(
+                        result.success, result.action, f"{result.message}{note}",
+                        locator_descriptor=result.locator_descriptor,
+                        toast_confirmed=bool(toast_text),
                     )
             return result
         # W_click_navigated: attempt นี้ล้มเหลว แต่ถ้า URL เปลี่ยนไปแล้ว = attempt ก่อนหน้า
