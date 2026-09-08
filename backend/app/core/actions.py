@@ -1920,6 +1920,13 @@ async def execute(
                 then_label, then_tag, then_type,
             )
         if t == "check":
+            # W_check_fires_a_button: ต้องเช็คก่อน redundant — เป้าที่ไม่ใช่ checkbox เลย
+            # ตอบ "ติ๊กอยู่แล้วหรือยัง" ไม่ได้ตั้งแต่ต้น และ check() จะไปกดมันจริง
+            not_checkable = await state_filter.check_check_target_is_not_checkable(
+                page, cmd["index"])
+            if not_checkable is not None:
+                return ActionResult(
+                    False, f"check({cmd['index']})", f"[Skipped] {not_checkable}")
             redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
             if redundant is not None:
                 return ActionResult(True, f"check({cmd['index']})", f"[Skipped] {redundant}")

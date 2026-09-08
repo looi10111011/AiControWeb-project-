@@ -2599,3 +2599,57 @@ async def test_a_click_that_the_page_accepts_stays_quiet():
             assert await page.evaluate("() => document.body.dataset.sent") == "1"
         finally:
             await browser.close()
+
+
+# --- W_check_fires_a_button: ติ๊กใส่ของที่ไม่ใช่ checkbox ---
+#
+# release-gate d29ed4a (MiniWoB click-checkboxes): โมเดลสั่ง check ใส่ปุ่ม Submit — check()
+# ตกไปทางสำรอง (JS-click แล้วค่อยยืนยันสถานะติ๊ก) ผลคือกดปุ่มไปจริงแล้วรายงานว่า "clicked,
+# but the checked state could not be confirmed" ซึ่งอ่านเหมือนไม่มีอะไรเกิดขึ้น โมเดลจึงทำซ้ำ
+# แล้วโดนบังคับ go_back จนเสีย 11 step
+
+_CHECK_TARGETS_HTML = """<!doctype html><body>
+<button data-ai-index="1" onclick="document.body.dataset.fired='1'">Submit</button>
+<input data-ai-index="2" type="checkbox">
+<span data-ai-index="3" role="checkbox" aria-checked="false"
+      onclick="this.setAttribute('aria-checked','true')">custom</span>
+<label data-ai-index="4"><input type="checkbox" id="inner">wrapped</label>
+<input data-ai-index="5" type="text">
+</body>"""
+
+
+@pytest.mark.asyncio
+async def test_check_on_a_button_does_not_press_it():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECK_TARGETS_HTML)
+
+            result = await execute(page, {"type": "check", "index": 1}, [])
+
+            assert result.success is False
+            assert "not a checkbox" in result.message
+            # หัวใจของบั๊ก: ปุ่มต้องไม่ถูกกด ไม่ใช่แค่ข้อความสวยขึ้น
+            assert await page.evaluate("() => document.body.dataset.fired") is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_check_still_ticks_every_kind_of_real_checkbox():
+    """custom checkbox ที่ซ่อน input ไว้ (แบบ OrangeHRM) คือเหตุผลที่ check() มีทางสำรอง
+    อยู่ตั้งแต่ต้น — guard ตัวใหม่ต้องไม่ไปตัดทางนั้นทิ้ง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECK_TARGETS_HTML)
+
+            for index in (2, 3, 4):
+                assert (await execute(page, {"type": "check", "index": index}, [])).success is True
+
+            assert await page.locator("[data-ai-index='2']").is_checked() is True
+            assert await page.locator("#inner").is_checked() is True
+        finally:
+            await browser.close()

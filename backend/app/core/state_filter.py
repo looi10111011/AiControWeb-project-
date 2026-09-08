@@ -326,6 +326,56 @@ async def element_is_checkbox(page: Page, index: int) -> bool:
         return False
 
 
+_CHECKABLE_TARGET_JS = """(el) => {
+    const tag = (el.tagName || "").toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (tag === "input" && (type === "checkbox" || type === "radio")) return "";
+    if (role === "checkbox" || role === "radio" || role === "switch") return "";
+    // custom checkbox ที่ซ่อน <input> จริงไว้ข้างใน (เช่น .oxd-checkbox-input) — check()
+    // มีทางรองรับอยู่แล้วผ่าน JS-click + verify ห้ามปฏิเสธ
+    if (el.querySelector('input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"]')) return "";
+    if (el.closest && el.closest("label") && el.closest("label").querySelector('input[type="checkbox"], input[type="radio"]')) return "";
+    if (tag === "button" || tag === "a" || type === "submit" || type === "button") return "button";
+    return "other";
+}"""
+
+
+async def check_check_target_is_not_checkable(page: Page, index: int) -> Optional[str]:
+    """W_check_fires_a_button (release-gate d29ed4a, MiniWoB click-checkboxes): โมเดลสั่ง
+    type "check" ใส่ปุ่ม Submit — check() ตกไปทางสำรอง (JS-click แล้วค่อยยืนยันสถานะติ๊ก)
+    ผลคือ **มันกดปุ่มนั้นไปจริงๆ** แล้วรายงานว่า "clicked, but the checked state could not
+    be confirmed" ซึ่งอ่านเหมือนไม่มีอะไรเกิดขึ้น โมเดลจึงทำซ้ำ (trace ยืนยัน: ฟอร์มถูก
+    ส่งไปแล้วตั้งแต่ครั้งที่รายงานว่าล้มเหลว)
+
+    action ที่มี side effect จริงแต่รายงานว่าไม่มีอะไรเกิดขึ้น อันตรายกว่าการเสียเวลา —
+    ปฏิเสธก่อน dispatch เหมือน check_click_target_is_native_select() (W_click_native_select)
+    และ check_fill_target_is_not_typable() (W_fill_untypable_target) ซึ่งเป็นตระกูลเดียวกัน
+
+    ระวังไม่ปฏิเสธ custom checkbox ที่ check() รองรับอยู่แล้ว (role=checkbox หรือห่อ input
+    จริงไว้ข้างใน) fail-safe คืน None ถ้าอ่าน DOM ไม่ได้"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        kind = await target.locator(selector).evaluate(
+            _CHECKABLE_TARGET_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+    if kind == "button":
+        return (
+            "This is a button/link, not a checkbox — ticking it would press it instead, and "
+            "the result would say the tick could not be confirmed even though the button had "
+            'already fired. Use type: "click" if you mean to press it.'
+        )
+    if kind == "other":
+        return (
+            "This element is not a checkbox or radio and cannot be ticked. Look for the real "
+            'checkbox in the indexed elements, or use type: "click"/"fill" for what this '
+            "element actually is."
+        )
+    return None
+
 async def check_click_redundant(page: Page, index: int) -> Optional[str]:
     """REDUNDANT (คลิกไม่ได้จริง) ถ้า element เป้าหมาย disabled ไปแล้ว — perception.py
     กรอง element ที่ disabled อยู่แล้วตอน snapshot ไม่ให้ติด index เลย แต่หน้าอาจเปลี่ยน
