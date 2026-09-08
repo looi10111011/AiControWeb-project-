@@ -1914,7 +1914,32 @@ async def execute(
             wrong_kind = await state_filter.check_select_target_is_native(page, cmd["index"])
             if wrong_kind is not None:
                 return ActionResult(False, f"select({cmd['index']})", f"[Skipped] {wrong_kind}")
+            # W_select_reorders_the_page (release-gate 50eefd0, long_flow): เลือกค่าใน
+            # <select> ที่เป็นตัวเรียงลำดับ/ตัวกรอง ทำให้รายการทั้งหน้าสลับตำแหน่ง —
+            # index ที่พ่วงมากับคำสั่งเดียวกันจึงชี้ไปคนละ element กับที่โมเดลเห็นตอน
+            # ตัดสินใจ (รอบนั้น chained click ล้มด้วย timeout แล้วงานเดินผิดทางยาว)
+            #
+            # เทียบข้อความของเป้าที่พ่วงไว้ก่อน/หลัง select แทนการเดาว่า select ไหน
+            # เป็นตัวเรียงลำดับ — ถ้าข้อความเปลี่ยน แปลว่าหน้าจัดเรียงใหม่จริง
+            then_index = cmd.get("then_click_index")
+            then_text_before = (
+                await state_filter.element_text_at(page, then_index)
+                if then_index is not None else None
+            )
             result = await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
+            if result.success and then_index is not None:
+                then_text_after = await state_filter.element_text_at(page, then_index)
+                if then_text_before != then_text_after:
+                    return replace(
+                        result,
+                        message=(
+                            f"{result.message} (did not go on to the chained click: choosing "
+                            f"this value re-ordered the page, so index {then_index} is now "
+                            f'"{then_text_after or "gone"}" instead of '
+                            f'"{then_text_before or "unknown"}" — take a fresh look before '
+                            "clicking)"
+                        ),
+                    )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,

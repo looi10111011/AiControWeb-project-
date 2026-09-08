@@ -2653,3 +2653,62 @@ async def test_check_still_ticks_every_kind_of_real_checkbox():
             assert await page.locator("#inner").is_checked() is True
         finally:
             await browser.close()
+
+
+# --- W_select_reorders_the_page: เลือกค่าแล้วหน้าจัดเรียงใหม่ ---
+#
+# release-gate 50eefd0 (long_flow): โมเดลสั่ง select "Name (Z to A)" พร้อมพ่วงคลิกสินค้า
+# index 10 ในคำสั่งเดียว — SauceDemo render ลิสต์ใหม่ทั้งชุด node เก่าถูกทิ้งพร้อม
+# data-ai-index คลิกที่พ่วงจึง timeout สองรอบแล้วงานเดินผิดทางยาวจนหมด 25 step
+
+_REORDERING_SELECT_HTML = """<!doctype html><body>
+<select data-ai-index="1" onchange="
+  document.getElementById('list').innerHTML =
+    '<button onclick=&quot;document.body.dataset.clicked=this.textContent&quot;>Banana</button>';">
+  <option>A to Z</option><option>Z to A</option>
+</select>
+<div id="list"><button data-ai-index="2"
+  onclick="document.body.dataset.clicked=this.textContent">Apple</button></div>
+</body>"""
+
+_STABLE_SELECT_HTML = """<!doctype html><body>
+<select data-ai-index="1"><option>x</option><option>y</option></select>
+<button data-ai-index="2" onclick="document.body.dataset.clicked='stable'">Go</button>
+</body>"""
+
+
+@pytest.mark.asyncio
+async def test_a_select_that_rerenders_the_page_does_not_run_its_chained_click():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_REORDERING_SELECT_HTML)
+
+            result = await execute(page, {"type": "select", "index": 1, "label": "Z to A",
+                                          "then_click_index": 2}, [])
+
+            assert result.success is True                  # การเลือกค่าเองสำเร็จ
+            assert "re-ordered the page" in result.message
+            assert await page.evaluate("() => document.body.dataset.clicked") is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_select_that_leaves_the_page_alone_still_chains():
+    """ราคาต้องจ่ายเฉพาะตอนหน้าจัดเรียงใหม่จริง — select ธรรมดาต้องพ่วงได้เหมือนเดิม"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_STABLE_SELECT_HTML)
+
+            result = await execute(page, {"type": "select", "index": 1, "label": "y",
+                                          "then_click_index": 2}, [])
+
+            assert result.success is True
+            assert "re-ordered" not in result.message
+            assert await page.evaluate("() => document.body.dataset.clicked") == "stable"
+        finally:
+            await browser.close()

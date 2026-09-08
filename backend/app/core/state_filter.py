@@ -376,6 +376,26 @@ async def check_check_target_is_not_checkable(page: Page, index: int) -> Optiona
         )
     return None
 
+_ELEMENT_LABEL_JS = r"""(el) => ((el.innerText || el.value || el.getAttribute("aria-label")
+    || el.getAttribute("placeholder") || "") + "").trim().replace(/\s+/g, " ").slice(0, 80)"""
+
+
+async def element_text_at(page: Page, index: int) -> Optional[str]:
+    """ข้อความของ element ที่ index นี้ *ตอนนี้* — คืน None ถ้าอ่านไม่ได้/ไม่มีแล้ว
+
+    W_select_reorders_the_page (release-gate 50eefd0, task long_flow): โมเดลสั่ง select
+    "Name (Z to A)" พร้อมพ่วงคลิกสินค้า index 10 ต่อในคำสั่งเดียว — การเรียงลำดับสลับ
+    ตำแหน่งสินค้าทั้งหน้า index 10 หลัง select จึงเป็นคนละตัวกับที่โมเดลเห็นตอนตัดสินใจ
+    ผู้เรียกใช้เทียบข้อความก่อน/หลังเพื่อรู้ว่าเป้าที่พ่วงไว้ยังเป็นตัวเดิมไหม"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        return await target.locator(selector).evaluate(
+            _ELEMENT_LABEL_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+
 async def check_click_redundant(page: Page, index: int) -> Optional[str]:
     """REDUNDANT (คลิกไม่ได้จริง) ถ้า element เป้าหมาย disabled ไปแล้ว — perception.py
     กรอง element ที่ disabled อยู่แล้วตอน snapshot ไม่ให้ติด index เลย แต่หน้าอาจเปลี่ยน
