@@ -1701,6 +1701,13 @@ async def execute(
             file_input = await state_filter.check_fill_target_is_file_input(page, cmd["index"])
             if file_input is not None:
                 return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {file_input}")
+            # W_fill_untypable_target: ตัวเปิด dropdown/ปุ่ม ไม่ใช่ช่องกรอก — Playwright ล้ม
+            # เร็วอยู่แล้ว (วัดได้ 0.7 วิ ไม่ใช่ timeout) แต่คืน error ดิบที่บอกว่าอะไรผิดโดย
+            # ไม่บอกว่าต้องทำอะไรต่อ — เปลี่ยนเป็นทางออกที่ทำได้จริง เหมือนที่
+            # W_click_native_select ทำไว้สำหรับกระจกอีกบาน
+            not_typable = await state_filter.check_fill_target_is_not_typable(page, cmd["index"])
+            if not_typable is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {not_typable}")
             empty_noop = await state_filter.check_fill_is_empty_noop(page, cmd["index"], cmd["text"])
             if empty_noop is not None:
                 return ActionResult(False, f"fill({cmd['index']})", f"[Rejected] {empty_noop}")

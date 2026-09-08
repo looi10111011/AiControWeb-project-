@@ -168,6 +168,54 @@ async def check_fill_target_is_file_input(page: Page, index: int) -> Optional[st
     return None
 
 
+_TYPABLE_TARGET_JS = """(el) => {
+    const tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || el.isContentEditable) return "";
+    // fill() รองรับ wrapper ที่ห่อช่องกรอกไว้ข้างในอยู่แล้ว (W_fill_wrapper_resolves_to_inner_input)
+    if (el.querySelector("input, textarea, [contenteditable]")) return "";
+    const role = (el.getAttribute && el.getAttribute("role")) || "";
+    const cls = typeof el.className === "string" ? el.className : "";
+    const looksLikeDropdown = role === "combobox" || role === "listbox"
+        || (el.getAttribute && el.getAttribute("aria-haspopup"))
+        || /select-text|select-wrapper|dropdown/i.test(cls);
+    return looksLikeDropdown ? "dropdown" : "other";
+}"""
+
+
+async def check_fill_target_is_not_typable(page: Page, index: int) -> Optional[str]:
+    """W_fill_untypable_target (วัดบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08): agent
+    พยายามพิมพ์อีเมลลงตัวเปิด dropdown (div.oxd-select-text-input) แล้วได้ error ดิบของ
+    Playwright กลับไป ที่ขึ้นต้นว่า "Element is not an <input>, <textarea>, <select> or",
+    ซึ่งบอกว่าอะไรผิดแต่ไม่บอกว่าต้องทำอะไรต่อ
+
+    กระจกบานเดียวกับ check_click_target_is_native_select() (W_click_native_select) แค่สลับข้าง:
+    ตัวนั้นคือสั่ง click กับ <select> จริง ตัวนี้คือสั่ง fill กับของที่ไม่ใช่ช่องกรอก คืนทางออก
+    ที่ทำได้จริงแทน (คลิกเปิดเมนูแล้วเลือกตัวเลือก — เส้นทางเดียวกับ W50)
+
+    ไม่ปฏิเสธ wrapper ที่มีช่องกรอกอยู่ข้างใน เพราะ fill() แก้ให้เองอยู่แล้ว
+    fail-safe คืน None ถ้าอ่าน DOM ไม่ได้ (กฎเดียวกับทุกฟังก์ชันในไฟล์นี้)"""
+    try:
+        selector = _sel(index)
+        target = await resolve_frame(page, selector)
+        kind = await target.locator(selector).evaluate(
+            _TYPABLE_TARGET_JS, timeout=_STATE_CHECK_TIMEOUT_MS,
+        )
+    except Exception:
+        return None
+    if kind == "dropdown":
+        return (
+            "This is a custom dropdown/menu trigger, not a text field — text cannot be typed "
+            "into it. Click it to open the menu, then click the option whose label matches the "
+            "value you want (never guess how many ArrowDown presses to send)."
+        )
+    if kind == "other":
+        return (
+            "This element is not a text field and cannot accept typed text. Look for the real "
+            "input/textarea for this value in the indexed elements, or click this element if it "
+            "is a button/link."
+        )
+    return None
+
 async def check_checkbox_redundant(page: Page, index: int) -> Optional[str]:
     """REDUNDANT ถ้า checkbox/radio ถูกติ๊กอยู่แล้ว (action นี้คือ "check" ล้วนๆ ไม่ใช่
     "toggle" — ไม่มีทางทำให้กลายเป็นติ๊กซ้อนสองครั้งจนหลุดเป็น unchecked)"""

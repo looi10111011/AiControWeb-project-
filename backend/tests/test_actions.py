@@ -2403,3 +2403,52 @@ async def test_an_ordinary_click_next_to_a_checkbox_group_still_chains():
             assert await page.evaluate("() => !!window.__submitted") is True
         finally:
             await browser.close()
+
+
+# --- W_fill_untypable_target: พิมพ์ลงของที่ไม่ใช่ช่องกรอก ต้องได้ทางออก ไม่ใช่ error ดิบ ---
+
+_UNTYPABLE_HTML = """<!doctype html><html><body>
+<div data-ai-index="1" class="oxd-select-text-input" tabindex="0"><span>-- Select --</span></div>
+<div data-ai-index="2" class="oxd-input-group"><input data-ai-index="3" type="text"></div>
+<input data-ai-index="4" type="text">
+<button data-ai-index="5">Save</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_fill_on_a_dropdown_trigger_points_at_the_way_that_works():
+    """วัดบนฟอร์ม Add Candidate จริง (2026-09-08): agent พิมพ์อีเมลลง div.oxd-select-text-input
+    แล้วได้ error ดิบของ Playwright กลับไป ซึ่งบอกว่าอะไรผิดแต่ไม่บอกว่าต้องทำอะไรต่อ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_UNTYPABLE_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "x@y.com"}, [])
+
+            assert result.success is False
+            assert "dropdown" in result.message
+            assert "Click it to open the menu" in result.message
+            assert "Element is not an" not in result.message      # ไม่ปล่อย error ดิบออกไป
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_fill_still_works_through_a_wrapper_that_holds_the_real_input():
+    """W_fill_wrapper_resolves_to_inner_input มีมาก่อนและต้องไม่ถูก guard ตัวใหม่ตัดทิ้ง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_UNTYPABLE_HTML)
+
+            wrapper = await execute(page, {"type": "fill", "index": 2, "text": "x@y.com"}, [])
+            plain = await execute(page, {"type": "fill", "index": 4, "text": "z@y.com"}, [])
+
+            assert wrapper.success is True
+            assert plain.success is True
+            assert await page.locator("[data-ai-index='3']").input_value() == "x@y.com"
+        finally:
+            await browser.close()
