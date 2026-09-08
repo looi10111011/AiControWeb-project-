@@ -8769,3 +8769,60 @@ async def test_login_credentials_stop_counting_as_missing_once_off_the_login_pag
     page.evaluate = AsyncMock(return_value={"values": [], "hasPassword": True})
     missing = await orchestrator_module._values_missing_before_commit(page, goal, set())
     assert "Admin" in missing and "admin123" in missing
+
+
+# --- W_order_complete_is_the_end: หน้ายืนยันการสั่งซื้อ = จบงาน ---
+#
+# release-gate 3aaf213 (login_checkout): agent ทำครบและกด Finish จนถึง checkout-complete.html
+# ที่ step 10 แล้วเดินเล่นต่ออีก 5 step (Back Home -> Add to cart -> cart -> Remove ->
+# Continue Shopping) จนชน max_steps โดยไม่เคยเรียก finish_task — ล้มทั้งที่ทำสำเร็จ
+
+
+def test_order_complete_needs_both_a_buying_goal_and_a_confirmation_page():
+    f = orchestrator_module._order_is_complete
+    goal = "Log in, add first product, change item to second product, and proceed to checkout"
+
+    assert f(goal, "https://www.saucedemo.com/checkout-complete.html") is True
+    assert f("ล็อกอินแล้วสั่งซื้อสินค้าชิ้นแรก", "https://x/order-complete") is True
+    # ยังไม่ถึงหน้ายืนยัน = ยังไม่จบ
+    assert f(goal, "https://www.saucedemo.com/cart.html") is False
+    # goal ที่ไม่ได้สั่งซื้ออะไร ต้องไม่โดนหยุดเพราะ URL บังเอิญชื่อแบบนี้ — benchmark
+    # ตัวหนึ่งคือ "sort the products by Price" ซึ่งมีคำว่า order ในความหมาย "ลำดับ"
+    assert f("sort the products by Price (low to high)", "https://x/checkout-complete") is False
+    assert f("sort items in ascending order", "https://x/order-complete") is False
+
+
+# --- W_nobody_is_watching: ถามคนในรันที่ไม่มีคนเฝ้า ---
+#
+# วัดจาก step_trace 2026-09-08: request_user_input ถูกเรียก 51 ครั้ง และได้คำตอบว่างเปล่า
+# ทั้ง 51 ครั้ง ทุกครั้งอยู่ในรัน eval/gate ที่ไม่มีคนเฝ้าจอ — โมเดลได้ประโยค "the user
+# answered:" ที่ไม่มีอะไรตามหลัง แล้วต้องเดาต่อเอง โดยจ่ายไปแล้วหนึ่ง step กับหนึ่ง LLM call
+
+
+@pytest.mark.asyncio
+async def test_an_empty_answer_is_reported_as_nobody_being_there():
+    mock_async_playwright, _, _ = _patch_browser()
+    tool_results = []
+
+    def _record(messages, tool_use_id, text):
+        tool_results.append(text)
+        return messages
+
+    calls = [
+        ("request_user_input", {"prompt": "รหัสอะไร", "sensitive": False}, "t1", [], llm.TokenUsage()),
+        ("request_user_input", {"prompt": "ถามอีกที", "sensitive": False}, "t2", [], llm.TokenUsage()),
+        ("finish_task", {"success": False, "message": "จบ"}, "t3", [], llm.TokenUsage()),
+    ]
+
+    with patch("backend.app.core.orchestrator.async_playwright", mock_async_playwright), patch("backend.app.core.orchestrator.goto", AsyncMock(return_value=_GOTO_OK)), patch("backend.app.core.orchestrator.wait_stable", AsyncMock(return_value=_WAIT_OK)), patch("backend.app.core.orchestrator.get_snapshot", AsyncMock(return_value=([], "page"))), patch("backend.app.core.orchestrator.retriever.retrieve", return_value=[]), patch("backend.app.core.orchestrator.llm.append_tool_result", side_effect=_record), patch("backend.app.core.orchestrator.llm.next_action", AsyncMock(side_effect=calls)):
+        await Orchestrator().run_task(
+            "https://example.com", "goal", provider="anthropic",
+            # เหมือน ask_user_func ของ harness eval/gate เป๊ะ: อนุมัติเสมอ แต่ไม่มีข้อความ
+            # จริงเขียนกลับมาใน cmd["answer"] — provided=True แต่คำตอบว่าง
+            ask_user_func=AsyncMock(return_value=True),
+        )
+
+    assert "nobody is available to answer" in tool_results[0]
+    assert "the user answered:" not in tool_results[0]
+    # ถามซ้ำต้องโดนปิดทันที ไม่ใช่ปล่อยให้เผา step ไปจนครบโควตา
+    assert "do not call request_user_input again" in tool_results[1].lower()

@@ -2918,6 +2918,39 @@ _NAV_TARGET_URL_ALIASES = {
 }
 
 
+# W_order_complete_is_the_end (release-gate 3aaf213, task login_checkout): goal คือ "ล็อกอิน,
+# หยิบสินค้าชิ้นแรก, เปลี่ยนเป็นชิ้นที่สอง, แล้วไป checkout" — agent ทำครบและกด Finish จน
+# ถึงหน้า checkout-complete.html ที่ step 10 แล้ว "เดินเล่นต่อ" อีก 5 step (Back Home ->
+# Add to cart -> cart -> Remove -> Continue Shopping) จนชน max_steps โดยไม่เคยเรียก finish_task
+# ทั้งที่งานจบไปแล้ว — task ถูกนับว่าล้มทั้งที่ทำสำเร็จ
+#
+# goal-scope gate มีไว้สำหรับกรณีนี้ตรงๆ แต่ทางจุดชนวนที่มีอยู่สามทาง (แผนจบครบ / ถึงหน้า
+# เป้าหมายนำทาง / ตารางไม่เหลือแถวตามเงื่อนไข) ไม่มีทางไหนครอบงานสั่งซื้อเลย
+#
+# ต้องเข้าเงื่อนไขทั้งสองข้างพร้อมกัน ไม่ใช่ดู URL อย่างเดียว: เว็บทั่วไปมีคำว่า "success"
+# ในเส้นทางได้โดยไม่ได้แปลว่างานของ user จบ และ goal ที่ไม่ได้สั่งซื้ออะไรก็ไม่ควรถูกหยุด
+# ด้วยหน้าที่บังเอิญชื่อแบบนี้
+#
+# จงใจไม่ใส่คำว่า "order" เดี่ยวๆ ในคลังคำของ goal — benchmark ตัวหนึ่งในไฟล์เดียวกันคือ
+# "sort the products by Price (low to high)" ซึ่งพูดถึง order ในความหมาย "ลำดับ" ไม่ใช่การสั่งซื้อ
+_CHECKOUT_GOAL_KEYWORDS = (
+    "checkout", "check out", "purchase", "place the order", "buy",
+    "ชำระเงิน", "สั่งซื้อ", "เช็คเอาท์",
+)
+_ORDER_COMPLETE_URL_MARKERS = (
+    "checkout-complete", "checkout_complete", "order-complete", "order_complete",
+    "order-confirmation", "ordercomplete", "thank-you", "thankyou",
+    "purchase-complete", "payment-success", "payment_success",
+)
+
+
+def _order_is_complete(goal: str, page_url: str) -> bool:
+    """งานสั่งซื้อ/ชำระเงินที่หน้าปัจจุบันคือหน้ายืนยันว่าสั่งซื้อเสร็จแล้ว"""
+    if not contains_keyword(goal or "", _CHECKOUT_GOAL_KEYWORDS):
+        return False
+    url = (page_url or "").lower()
+    return any(marker in url for marker in _ORDER_COMPLETE_URL_MARKERS)
+
 def _navigation_target_reached(target: str, page_url: str, last_action_record: list[dict]) -> bool:
     """W_goal_scope: หลักฐานว่าถึงหน้าเป้าหมายจริง (ไม่ใช่แค่เดา) — ต้องมีทั้ง (1) action
     ล่าสุดที่ execute() จริง (self.memory.recent(1)) สำเร็จและเป็นประเภท navigate จริงๆ
@@ -4493,6 +4526,9 @@ class Orchestrator:
         # W_prefer_row_delete: goal นี้เกี่ยวกับบัญชีของผู้ใช้เองหรือเปล่า (คำนวณครั้งเดียว)
         goal_is_about_account = _goal_is_about_the_signed_in_account(goal)
         nav_target_reached_confirmed = False
+        # W_order_complete_is_the_end: sticky เหมือน nav_target_reached_confirmed — พอกด
+        # Back Home หน้าก็เปลี่ยนไปแล้ว ถ้าอ่านจาก URL ปัจจุบันอย่างเดียวสัญญาณจะหายทันที
+        order_completed_confirmed = False
         # W_goal_scope: จำนวนครั้งติดกันที่ action ถูกปฏิเสธเพราะ goal ถือว่าสำเร็จแล้ว — เงื่อนไข
         # reset ไม่เหมือน counter อื่นในไฟล์นี้ (ดู comment ตรงจุดใช้งานจริง)
         consecutive_goal_scope_reject_count = 0
@@ -5024,6 +5060,12 @@ class Orchestrator:
                             goal_scope_satisfied_reason = (
                                 f"the goal's navigation target ('{goal_nav_target}') has already been reached"
                             )
+                        elif _order_is_complete(goal, page.url) or order_completed_confirmed:
+                            order_completed_confirmed = True
+                            goal_scope_satisfied_reason = (
+                                "the order was already placed and the site showed its "
+                                "order-complete page"
+                            )
                         elif _goal_targets_existing_records_only(goal):
                             # W_zero_records_done: งานลบ/แก้ตามเงื่อนไข "เสร็จ" เมื่อตารางที่
                             # กรองแล้วไม่เหลือแถวที่ตรงเงื่อนไข — สัญญาณเดียวกับที่ guard
@@ -5410,10 +5452,27 @@ class Orchestrator:
                     steps_taken += 1
                     provided, answer = await _request_user_input(prompt_text, sensitive, ask_user_func)
                     log_cmd = {"type": "request_user_input", "prompt": prompt_text, "sensitive": sensitive}
-                    result_text = (
-                        f"the user answered: {answer}" if provided
-                        else "[No answer] the user declined or did not answer within the time limit"
-                    )
+                    # W_nobody_is_watching (วัดจาก step_trace 2026-09-08): request_user_input
+                    # ถูกเรียก 51 ครั้ง และ **ทั้ง 51 ครั้งได้คำตอบว่างเปล่า** ทุกครั้งอยู่ในรัน
+                    # eval/gate ซึ่งไม่มีคนเฝ้าจอ — ask_user_func ของ harness ตอบ "อนุมัติ" เสมอ
+                    # แต่ไม่มีข้อความจริงให้ ผลคือโมเดลได้ประโยค "the user answered:" ที่ไม่มี
+                    # อะไรตามหลัง แล้วต้องเดาต่อเอง โดยจ่ายไปแล้วทั้งหนึ่ง step และหนึ่ง LLM call
+                    #
+                    # บอกความจริงว่าไม่มีใครตอบ ดีกว่าปล่อยให้เข้าใจว่าคนตอบมาว่า "" และปิดทาง
+                    # ถามซ้ำทั้ง task ไปเลย เพราะรอบต่อไปก็จะว่างเหมือนเดิมทุกครั้ง
+                    if provided and not (answer or "").strip():
+                        provided = False
+                        request_user_input_count = _MAX_REQUEST_USER_INPUT_CALLS
+                        result_text = (
+                            "[No answer] nobody is available to answer in this run. Do not call "
+                            "request_user_input again — decide from what is already on the page, or "
+                            "call finish_task(success=false) stating exactly which value is missing."
+                        )
+                    else:
+                        result_text = (
+                            f"the user answered: {answer}" if provided
+                            else "[No answer] the user declined or did not answer within the time limit"
+                        )
                     # W_secret_answer_not_logged: คำตอบต้องไปถึงโมเดล (ไม่งั้นกรอกไม่ได้) แต่ไม่
                     # ควรไปโผล่ในที่ที่ถูกเก็บไว้ยาวๆ — panel LOG บนหน้าจอ, data/step_trace.jsonl
                     # บนดิสก์ และ ShortTermMemory ที่ถูกสรุปกลับเข้า prompt ทุก step ล้วนไม่จำเป็น
