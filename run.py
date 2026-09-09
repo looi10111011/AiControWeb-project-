@@ -1365,9 +1365,11 @@ def _print_flakiness(rows, *, title="อัตราการผ่านรา�
     print(f"\n=== {title} ===", flush=True)
     for row in rows:
         mark = "FLAKY" if row["verdict"] == "flaky" else row["verdict"]
+        skipped = row.get("skipped_infra") or 0
+        note = f"  (ตัดออก {skipped} รอบ: provider/โควตา)" if skipped else ""
         print(
             f"  [{mark:<11}] {row['name']:<20} {row['passed']}/{row['runs']}"
-            f"  ({row['pass_rate'] * 100:.0f}%)",
+            f"  ({row['pass_rate'] * 100:.0f}%){note}",
             flush=True,
         )
 

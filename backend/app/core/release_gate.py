@@ -315,6 +315,34 @@ _FLAKY_LOW = 0.2
 _FLAKY_HIGH = 0.8
 
 
+# W_gate_infra_failure (2026-09-09): รัน flakiness ครั้งแรกที่วัดได้จริงจบด้วย 4 task ขึ้น
+# FLAKY (4/5) — พอเปิด message ดูพบว่าทั้งสี่ล้มที่ step 0 ด้วย "ResourceExhausted: 429 You
+# exceeded your current quota" ในรอบที่ 5 รอบเดียว ส่วนรอบ 1-4 ผ่านครบ 15/15 ทุกรอบ
+#
+# นี่คือ infrastructure คนละชนิดกับ run_is_invalid() ด้านบน: ตรงนั้นคือ "ทั้งรันตายหมด"
+# ส่วนนี่คือ "โควตาหมดกลางรัน" — task ที่เหลือยังเดินได้ รันจึงยัง valid แต่ task ที่โดน
+# ไม่ได้บอกอะไรเลยเกี่ยวกับ commit การนับมันเป็น "ล้ม" คือการสร้าง flaky ปลอมขึ้นมาเอง
+_INFRA_FAILURE_MARKERS = (
+    "resourceexhausted", "429", "exceeded your current quota", "rate limit",
+    "quota", "insufficient_quota", "authentication_error", "api key is invalid",
+    "not supported when using codex", "connection error", "temporarily unavailable",
+    "503", "502",
+)
+
+
+def task_failed_on_infrastructure(row: dict) -> bool:
+    """task ที่ล้มโดยไม่ได้ลงมือทำอะไรเลย และข้อความบอกว่าเป็นปัญหาฝั่ง provider/เครือข่าย
+
+    ต้องครบทั้งสามอย่าง: ล้ม + steps == 0 + ข้อความเข้าเงื่อนไข — task ที่เดินไปได้หลาย
+    step แล้วค่อยเจอ 429 ตอนท้ายยังนับเป็นผลจริง เพราะมันได้ทำงานจริงไปแล้วส่วนหนึ่ง"""
+    if row.get("success"):
+        return False
+    if int(row.get("steps", 0) or 0) != 0:
+        return False
+    text = f"{row.get('message') or ''} {row.get('error') or ''}".lower()
+    return any(marker in text for marker in _INFRA_FAILURE_MARKERS)
+
+
 def run_is_invalid(summary: dict) -> bool:
     """รันที่ไม่มี task ไหนได้ลงมือทำอะไรเลย = วัดอะไรไม่ได้ ไม่ใช่ regression
 
@@ -340,11 +368,18 @@ def task_flakiness(summaries: list[dict]) -> list[dict]:
     20-80%) — เกณฑ์ตามที่ user กำหนด สิ่งที่อยู่นอกช่วงนั้นแต่ไม่ใช่ 0/1 พอดี (เช่น 1/5)
     ถือว่า "mostly-fail"/"mostly-pass" ซึ่งยังต้องดู แต่ไม่ใช่ noise เต็มตัว"""
     runs: dict[str, list[bool]] = {}
+    skipped: dict[str, int] = {}
     for summary in summaries:
         for row in summary.get("results", []) or []:
             name = row.get("name")
-            if name:
-                runs.setdefault(name, []).append(bool(row.get("success")))
+            if not name:
+                continue
+            # W_gate_infra_failure: โควตาหมด/คีย์เสีย = ไม่มีข้อมูลเกี่ยวกับ task นี้เลย
+            # ในรอบนั้น ไม่ใช่ "ล้ม" — นับเป็นล้มเมื่อไหร่ก็ได้ flaky ปลอมทันที
+            if task_failed_on_infrastructure(row):
+                skipped[name] = skipped.get(name, 0) + 1
+                continue
+            runs.setdefault(name, []).append(bool(row.get("success")))
     report = []
     for name, outcomes in runs.items():
         rate = sum(outcomes) / len(outcomes)
@@ -359,6 +394,7 @@ def task_flakiness(summaries: list[dict]) -> list[dict]:
         report.append({
             "name": name, "runs": len(outcomes), "passed": sum(outcomes),
             "pass_rate": round(rate, 3), "verdict": verdict,
+            "skipped_infra": skipped.get(name, 0),
         })
     return sorted(report, key=lambda row: (row["pass_rate"], row["name"]))
 

@@ -22,6 +22,7 @@ from backend.app.core.release_gate import (
     success_rate_stats,
     task_flakiness,
     run_is_invalid,
+    task_failed_on_infrastructure,
 )
 
 # ทุกเทสต์ mock subprocess/filesystem/eval suite ตรงๆ (ไม่รัน browser/LLM จริง) เหมือน
@@ -724,3 +725,53 @@ async def test_one_dead_run_is_dropped_and_the_rest_still_decide():
     assert result["success_rate"]["runs"] == 2      # นับเฉพาะรอบที่วัดได้จริง
     assert result["success_rate"]["median"] == 1.0
     assert result["passed"] is True
+
+
+# --- W_gate_infra_failure: โควตาหมดกลางรัน ไม่ใช่ผลของ benchmark ---
+#
+# รัน flakiness ครั้งแรกที่วัดได้จริง (2026-09-09, gemini): รอบ 1-4 ผ่าน 15/15 ทุกรอบ ส่วนรอบ
+# ที่ 5 มี 4 task ล้มที่ step 0 ด้วย "ResourceExhausted: 429 You exceeded your current quota"
+# ทั้งสี่จึงขึ้น FLAKY (4/5 = 80%) ทั้งที่ไม่มีอะไรเกี่ยวกับ benchmark เลย
+
+_QUOTA_MESSAGE = (
+    "Task stopped by an unexpected error at step 0: ResourceExhausted: 429 You "
+    "exceeded your current quota, please check your plan and billing details."
+)
+
+
+def test_a_quota_failure_at_step_zero_is_not_a_result():
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 0, "message": _QUOTA_MESSAGE}) is True
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 0,
+         "message": "The 'gpt-5.4-mini' model is not supported when using Codex"}) is True
+    # ล้มแบบปกติ (ทำงานไปแล้วแต่ไม่สำเร็จ) ยังเป็นผลจริง
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 12, "message": "ครบ max_steps"}) is False
+    # เจอ 429 หลังทำงานไปแล้วหลาย step = ได้ข้อมูลจริงไปแล้วบางส่วน ยังนับ
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 7, "message": _QUOTA_MESSAGE}) is False
+    assert task_failed_on_infrastructure({"success": True, "steps": 0, "message": ""}) is False
+
+
+def test_quota_failures_do_not_invent_a_flaky_task():
+    """เคสจริงที่วัดมา: 4 รอบผ่าน 1 รอบโดนโควตา — ต้องอ่านว่า 4/4 ไม่ใช่ 4/5"""
+    clean = [_summary(1.0, [{"name": "click-tab", "success": True, "steps": 1}])
+             for _ in range(4)]
+    starved = _summary(0.0, [
+        {"name": "click-tab", "success": False, "steps": 0, "message": _QUOTA_MESSAGE},
+    ])
+
+    row = task_flakiness([*clean, starved])[0]
+
+    assert row["verdict"] == "stable-pass"
+    assert (row["passed"], row["runs"]) == (4, 4)
+    assert row["skipped_infra"] == 1
+
+
+def test_a_task_that_only_ever_hit_quota_disappears_rather_than_lying():
+    starved = _summary(0.0, [
+        {"name": "ghost", "success": False, "steps": 0, "message": _QUOTA_MESSAGE},
+    ])
+
+    assert task_flakiness([starved, starved]) == []
