@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # swing เกินเกณฑ์ 10% ด้วยตัวมันเอง (success_rate -14.3%, p95 +49.5%, avg_tokens
     # กระจาย 124k-211k = 70%) การเทียบกับรันเดียวจึงเท่ากับจับ "ดวง" ไม่ใช่ regression
     # 5 = พอให้ median ทนรันดวงดี/ดวงร้ายได้ 2 ตัว โดยไม่ต้องรอสะสมนานเกินจะใช้งานจริง
+    # W_gate_is_noisy (2026-09-09): รันเดียวตัดสิน commit ไม่ได้ — commit 3ddb18a รัน
+    # สองครั้งติดโดยไม่แตะโค้ดเลย ได้ 12/15 (ธง FAIL) แล้ว 15/15 (ผ่าน) gate จึงรันซ้ำ
+    # แล้วตัดสินด้วย median ของ success_rate (ดู core/release_gate.py)
+    release_gate_repeats: int = 3
     release_gate_baseline_runs: int = 5
 
     chroma_persist_dir: str = "./data/chroma"

@@ -121,6 +121,11 @@ class TaskEvalResult:
     approval_count: int = 0
     fastpath: bool = False
     recoveries: int = 0
+    # W_gate_task_level_diff: ตัวนับจริงจาก run_task() (ไม่ใช่ค่าประมาณแบบ llm_calls
+    # ด้านบน) — เก็บรายตัวเพื่อให้เทียบ task ต่อ task ได้ ไม่ใช่แค่ค่าเฉลี่ยรวม
+    # ซึ่งกลบความต่างของแต่ละงานจนอ่านไม่ออกว่าอะไรเปลี่ยน
+    action_calls: int = 0
+    finish_task_calls: int = 0
 
 
 @dataclass
@@ -254,6 +259,8 @@ async def run_evaluation(
                 approval_count=get_approval_count(),
                 fastpath=is_fastpath,
                 recoveries=result.get("repairs", 0),
+                action_calls=result.get("action_calls", 0),
+                finish_task_calls=result.get("finish_task_calls", 0),
             ))
             # W_eval_trace: เส้นทาง eval ไม่ผ่าน TaskManager จึงต้องเรียก writer เองตรงนี้
             # (ดู core/telemetry.py หัวไฟล์สำหรับบั๊กจริงที่ทำให้ต้องทำ) — เขียนหลังบันทึกผลลง

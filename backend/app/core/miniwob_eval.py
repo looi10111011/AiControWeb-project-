@@ -209,6 +209,9 @@ class MiniWobResult:
     approval_count: int = 0
     fastpath: bool = False
     recoveries: int = 0
+    # W_gate_task_level_diff: เหมือน TaskEvalResult ทุกประการ (duck-typed คู่กัน)
+    action_calls: int = 0
+    finish_task_calls: int = 0
 
 
 @dataclass
@@ -352,6 +355,8 @@ async def _run_one_task(
                 approval_count=get_approval_count(),
                 fastpath=is_fastpath,
                 recoveries=result.get("repairs", 0),
+                action_calls=result.get("action_calls", 0),
+                finish_task_calls=result.get("finish_task_calls", 0),
             )
         finally:
             await browser.close()

@@ -16,6 +16,11 @@ from backend.app.core.release_gate import (
     build_noise_baseline,
     load_recent_summaries,
     METRIC_NAMES,
+    compare_tasks,
+    run_release_gate_repeated,
+    save_flakiness_report,
+    success_rate_stats,
+    task_flakiness,
 )
 
 # ทุกเทสต์ mock subprocess/filesystem/eval suite ตรงๆ (ไม่รัน browser/LLM จริง) เหมือน
@@ -412,8 +417,9 @@ def test_build_noise_baseline_single_run_reports_zero_spread():
 
 
 def test_compare_marks_metric_non_gating_when_its_own_spread_exceeds_threshold():
-    """avg_tokens ที่แกว่งเอง 52% แล้ว current ต่างจาก baseline 30% — ตัดสินไม่ได้
-    ส่วน avg_llm_calls ที่แกว่งเองแค่ 8% แล้ว regress 26% ตัดสินได้และต้อง fail"""
+    """spread ยังถูกวัดและรายงานเหมือนเดิม — แต่ตั้งแต่ W_gate_is_noisy เป็นต้นไป metric
+    ประสิทธิภาพไม่ gate อีกแล้วไม่ว่าจะแกว่งแคบแค่ไหน (เดิม avg_llm_calls ที่แกว่งเอง 8%
+    ถือว่า "ตัดสินได้" — แบนด์แคบแบบนั้นคือสิ่งที่ตีธง FAIL หลอกมาแล้วสามครั้งในวันเดียว)"""
     current = _summary_with(avg_tokens=130.0, avg_llm_calls=7.3)
     baseline = _summary_with(avg_tokens=100.0, avg_llm_calls=5.8)
     noise = {m: 0.0 for m in METRIC_NAMES}
@@ -425,21 +431,26 @@ def test_compare_marks_metric_non_gating_when_its_own_spread_exceeds_threshold()
         for c in compare_against_baseline(current, baseline, 10.0, noise_pct=noise)
     }
 
-    assert by_metric["avg_tokens"].gating is False
     assert by_metric["avg_tokens"].spread_pct == 52.0
-    assert by_metric["avg_llm_calls"].gating is True
+    assert by_metric["avg_llm_calls"].spread_pct == 8.0
+    # รายงานว่าแย่ลงได้ตามปกติ แค่ไม่มีสิทธิ์ตัดสิน commit
     assert by_metric["avg_llm_calls"].passed is False
+    assert by_metric["avg_tokens"].gating is False
+    assert by_metric["avg_llm_calls"].gating is False
 
 
-def test_compare_without_noise_pct_keeps_every_metric_gating():
-    """ผู้เรียกเดิมที่ไม่ส่ง noise_pct (เช่น baseline_path ที่ปักหมุดเอง) ต้องได้พฤติกรรม
-    เหมือนเดิมเป๊ะ — ทุก metric ยัง gate ได้ตามปกติ"""
+def test_only_success_rate_gates_even_without_noise_data():
+    """เดิมชื่อ ..._keeps_every_metric_gating และตรึงว่า "ทุก metric gate ได้" เมื่อไม่มี
+    ข้อมูล noise — W_gate_is_noisy กลับข้อนั้นโดยเจตนา: ความถูกต้อง (success_rate) ตัดสิน
+    commit ส่วน step/token/latency เป็นข้อมูลประกอบ ไม่ว่าจะรู้ spread ของมันหรือไม่"""
     current = _summary_with(avg_tokens=200.0)
     baseline = _summary_with(avg_tokens=100.0)
 
     comparisons = compare_against_baseline(current, baseline, 10.0)
+    by_metric = {c.metric: c for c in comparisons}
 
-    assert all(c.gating for c in comparisons)
+    assert by_metric["success_rate"].gating is True
+    assert not any(c.gating for c in comparisons if c.metric != "success_rate")
     assert all(c.spread_pct is None for c in comparisons)
 
 
@@ -471,3 +482,188 @@ def test_load_recent_summaries_excludes_the_run_just_saved(tmp_path):
     recent = load_recent_summaries(str(tmp_path), limit=5, exclude_path=_Path(own))
 
     assert [r["timestamp"] for r in recent] == [1.0]
+
+
+# --- W_gate_is_noisy: benchmark รอบเดียวตัดสิน commit ไม่ได้ ---
+#
+# หลักฐานที่ปิดเรื่องนี้ (2026-09-09): commit 3ddb18a รันสองครั้งติดโดยไม่แตะโค้ดเลย ได้
+# 12/15 (ธง FAIL, ล้ม login_checkout/add_candidate/choose-list) แล้ว 15/15 (ผ่าน ไม่ล้มสักตัว)
+# ก่อนหน้านั้น ec556ba ก็ให้ 1.000 แล้ว 0.800 มาแล้ว
+
+
+def _summary(success_rate, rows, *, timestamp=1.0):
+    return {
+        "git_commit": "abc1234",
+        "model": "m",
+        "timestamp": timestamp,
+        "task_count": len(rows),
+        "aggregate": {"success_rate": success_rate},
+        "results": rows,
+    }
+
+
+def test_task_flakiness_splits_stable_from_coin_flip():
+    summaries = [
+        _summary(0.5, [{"name": "always", "success": True}, {"name": "never", "success": False},
+                       {"name": "coin", "success": True}]),
+        _summary(0.5, [{"name": "always", "success": True}, {"name": "never", "success": False},
+                       {"name": "coin", "success": False}]),
+    ]
+
+    verdicts = {row["name"]: row["verdict"] for row in task_flakiness(summaries)}
+
+    assert verdicts == {"always": "stable-pass", "never": "stable-fail", "coin": "flaky"}
+    # เรียงจากผ่านน้อยไปมาก — ตัวที่ต้องดูอยู่บนสุดของตาราง
+    assert [row["name"] for row in task_flakiness(summaries)][0] == "never"
+
+
+def test_flaky_band_includes_both_edges():
+    """เกณฑ์ที่ user กำหนดคือ 20-80% — ขอบทั้งสองข้างต้องนับเป็น flaky ไม่ใช่หลุดออกไป"""
+    def runs_with(passes, total):
+        return [
+            _summary(1.0, [{"name": "t", "success": i < passes}]) for i in range(total)
+        ]
+
+    assert task_flakiness(runs_with(1, 5))[0]["verdict"] == "flaky"        # 20%
+    assert task_flakiness(runs_with(4, 5))[0]["verdict"] == "flaky"        # 80%
+    assert task_flakiness(runs_with(1, 10))[0]["verdict"] == "mostly-fail"  # 10%
+    assert task_flakiness(runs_with(9, 10))[0]["verdict"] == "mostly-pass"  # 90%
+
+
+def test_success_rate_stats_reports_the_spread_not_one_sample():
+    stats = success_rate_stats([_summary(0.8, []), _summary(1.0, []), _summary(0.933, [])])
+
+    assert stats["min"] == 0.8
+    assert stats["max"] == 1.0
+    assert stats["median"] == 0.933
+    assert stats["runs"] == 3
+    # ไม่มีรันเลยต้องไม่ throw — gate ครั้งแรกของ repo ใหม่เจอเคสนี้
+    assert success_rate_stats([])["runs"] == 0
+
+
+def test_compare_tasks_names_the_task_that_changed():
+    baseline = _summary(1.0, [
+        {"name": "steady", "success": True, "steps": 8, "llm_calls": 8,
+         "action_calls": 7, "finish_task_calls": 1},
+        {"name": "flipped", "success": True, "steps": 4, "llm_calls": 4,
+         "action_calls": 3, "finish_task_calls": 1},
+        {"name": "ballooned", "success": True, "steps": 4, "llm_calls": 4,
+         "action_calls": 3, "finish_task_calls": 1},
+    ])
+    current = _summary(0.667, [
+        {"name": "steady", "success": True, "steps": 9, "llm_calls": 8,
+         "action_calls": 7, "finish_task_calls": 1},
+        {"name": "flipped", "success": False, "steps": 4, "llm_calls": 4,
+         "action_calls": 3, "finish_task_calls": 1},
+        {"name": "ballooned", "success": True, "steps": 15, "llm_calls": 15,
+         "action_calls": 14, "finish_task_calls": 1},
+        {"name": "brand new", "success": True, "steps": 1},
+    ])
+
+    diffs = {row["name"]: row for row in compare_tasks(current, baseline)}
+
+    assert set(diffs) == {"flipped", "ballooned"}      # steady ขยับ 1 step = ไม่ใช่เรื่อง
+    assert diffs["flipped"]["success_after"] is False
+    assert diffs["ballooned"]["counters"]["steps"] == (4, 15)
+    assert "brand new" not in diffs                    # ไม่มีใน baseline = ไม่มีอะไรให้เทียบ
+
+
+def test_only_correctness_can_fail_the_gate():
+    """metric ประสิทธิภาพต้องรายงานได้แต่ไม่ตัดสิน — task ที่สำเร็จใน 9 step กับ 22 step
+    คือ task ที่สำเร็จเหมือนกัน (แบนด์ที่แคบเพราะ 5 รอบล่าสุดบังเอิญนิ่ง เคยตีธง FAIL ให้
+    approval_rate มาแล้วสองครั้งในวันเดียว)"""
+    current = {"aggregate": {"success_rate": 1.0, "avg_tokens": 200.0, "approval_rate": 2.0}}
+    baseline = {"aggregate": {"success_rate": 1.0, "avg_tokens": 100.0, "approval_rate": 1.0}}
+
+    by_metric = {c.metric: c for c in compare_against_baseline(current, baseline, 10.0)}
+
+    assert by_metric["avg_tokens"].passed is False       # ยังรายงานว่าแย่ลง
+    assert by_metric["avg_tokens"].gating is False       # แต่ไม่ถ่วง gate
+    assert by_metric["approval_rate"].gating is False
+    assert by_metric["success_rate"].gating is True
+    assert all(c.gating is False for c in by_metric.values() if c.metric != "success_rate")
+
+
+@pytest.mark.asyncio
+async def test_repeated_gate_decides_on_the_median_not_the_worst_run():
+    """รอบแรกตก 0.8 แต่อีกสองรอบได้ 1.0 -> median 1.0 = ผ่าน ซึ่งคือเคสจริงของ 3ddb18a"""
+    outcomes = [
+        {"summary": _summary(0.8, [{"name": "t", "success": False}]),
+         "baseline": _summary(1.0, [{"name": "t", "success": True}]), "passed": False},
+        {"summary": _summary(1.0, [{"name": "t", "success": True}]),
+         "baseline": _summary(0.5, []), "passed": True},
+        {"summary": _summary(1.0, [{"name": "t", "success": True}]),
+         "baseline": _summary(0.5, []), "passed": True},
+    ]
+
+    with patch("backend.app.core.release_gate.run_release_gate",
+               AsyncMock(side_effect=outcomes)) as mock_gate:
+        result = await run_release_gate_repeated(repeats=3, max_regression_pct=10.0)
+
+    assert mock_gate.await_count == 3
+    assert result["success_rate"] == {"min": 0.8, "median": 1.0, "max": 1.0, "runs": 3}
+    assert result["passed"] is True
+    # baseline ต้องมาจากรอบแรกเสมอ ไม่งั้นรอบ 2-3 จะไปเทียบกับรอบ 1 ของตัวเอง
+    assert result["baseline_success_rate"] == 1.0
+    # 2 ใน 3 = 66.7% อยู่ในช่วง 20-80% -> flaky: median บอกว่า commit ใช้ได้ แต่ task ตัวนี้
+    # ยังเชื่อผลเดี่ยวๆ ไม่ได้ ซึ่งเป็นสองคำถามคนละข้อและต้องตอบแยกกัน
+    assert {row["name"]: row["verdict"] for row in result["flakiness"]} == {"t": "flaky"}
+
+
+@pytest.mark.asyncio
+async def test_repeated_gate_still_fails_a_real_drop():
+    outcomes = [
+        {"summary": _summary(0.5, []), "baseline": _summary(1.0, []), "passed": False},
+        {"summary": _summary(0.5, []), "baseline": None, "passed": True},
+        {"summary": _summary(0.6, []), "baseline": None, "passed": True},
+    ]
+
+    with patch("backend.app.core.release_gate.run_release_gate",
+               AsyncMock(side_effect=outcomes)):
+        result = await run_release_gate_repeated(repeats=3, max_regression_pct=10.0)
+
+    assert result["success_rate"]["median"] == 0.5
+    assert result["passed"] is False
+
+
+def test_flakiness_reports_never_become_a_baseline(tmp_path):
+    """รายงาน flakiness อยู่โฟลเดอร์เดียวกับ summary — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็น
+    การเทียบกับศูนย์ทุก metric เงียบๆ"""
+    save_summary(_summary(1.0, [{"name": "t", "success": True}]), str(tmp_path))
+    save_flakiness_report({"git_commit": "abc1234", "runs": 5, "tasks": []}, str(tmp_path))
+
+    loaded = load_recent_summaries(str(tmp_path), limit=5)
+
+    assert len(loaded) == 1
+    assert "aggregate" in loaded[0]
+
+
+# --- เมนูของ run.py: key ซ้ำจะเงียบสนิท ---
+
+
+def test_run_py_menu_numbers_are_unique():
+    """W_gate_is_noisy (เจอตอนเพิ่มคำสั่ง flakiness 2026-09-09): ใส่ "23" ทับของ kpi ที่มีอยู่
+    แล้ว — dict literal ที่มี key ซ้ำไม่ error อะไรเลย ตัวหลังชนะเงียบๆ ผลคือ `run.py
+    flakiness 5` ไปเรียก KPI แล้วตีความ 5 เป็น "5 วัน" เผาการรันไปหนึ่งครั้งกว่าจะรู้ตัว
+
+    อ่านจากซอร์สจริง ไม่ใช่จาก dict ที่โหลดแล้ว — dict ที่โหลดแล้วคือ *ผลลัพธ์หลังจากที่
+    ตัวซ้ำถูกทิ้งไปแล้ว* จึงไม่มีทางเห็นปัญหา (เหตุผลเดียวกับเทสต์ทะเบียน marker ของ W108)"""
+    import re
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / "run.py"
+    text = source.read_text(encoding="utf-8")
+
+    action_keys = re.findall(r'^    "(\d+)": \(', text, re.MULTILINE)
+    alias_lines = re.findall(r'^    "([a-z0-9\-+_]+)": "(\d+)",', text, re.MULTILINE)
+
+    duplicates = {k for k in action_keys if action_keys.count(k) > 1}
+    assert not duplicates, f"เลขเมนูซ้ำใน run.py: {sorted(duplicates)}"
+
+    alias_names = [name for name, _ in alias_lines]
+    dup_aliases = {n for n in alias_names if alias_names.count(n) > 1}
+    assert not dup_aliases, f"alias ซ้ำใน run.py: {sorted(dup_aliases)}"
+
+    # ทุก alias ต้องชี้ไปยังเลขที่มีอยู่จริง
+    unknown = {number for _, number in alias_lines} - set(action_keys)
+    assert not unknown, f"alias ชี้ไปยังเลขที่ไม่มีในเมนู: {sorted(unknown)}"

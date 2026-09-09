@@ -39,6 +39,8 @@ _LOWER_IS_BETTER = {
     "p50_latency_seconds", "p95_latency_seconds", "avg_llm_calls", "avg_tokens", "approval_rate",
 }
 METRIC_NAMES = sorted(_HIGHER_IS_BETTER | _LOWER_IS_BETTER)
+# W_gate_is_noisy: ความถูกต้องคือ metric เดียวที่ตัดสิน commit ได้
+_CORRECTNESS_METRICS = {"success_rate"}
 
 
 def _git_commit_short() -> str:
@@ -81,6 +83,10 @@ def _result_row(result) -> dict:
         "approval_count": getattr(result, "approval_count", 0),
         "fastpath": getattr(result, "fastpath", False),
         "recoveries": getattr(result, "recoveries", 0),
+        # W_gate_task_level_diff: ตัวนับจริงต่อ task — ค่าเฉลี่ยรวมกลบความต่าง
+        # รายงานได้ว่า "avg_llm_calls +20%" แต่บอกไม่ได้ว่างานไหนเปลี่ยน
+        "action_calls": getattr(result, "action_calls", 0),
+        "finish_task_calls": getattr(result, "finish_task_calls", 0),
         "error": getattr(result, "error", None),
     }
 
@@ -151,6 +157,11 @@ def load_latest_summary(results_dir: Optional[str] = None, *, exclude_path: Opti
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            # W_gate_is_noisy: โฟลเดอร์เดียวกันนี้เก็บรายงาน flakiness ด้วย ซึ่งไม่ใช่
+            # ผลรันเดี่ยวและไม่มี "aggregate" — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็น
+            # การเทียบกับศูนย์ทุก metric เงียบๆ
+            if "aggregate" not in data:
+                continue
             candidates.append((data.get("timestamp", 0), data))
         except Exception:
             continue
@@ -174,6 +185,11 @@ def load_recent_summaries(
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            # W_gate_is_noisy: โฟลเดอร์เดียวกันนี้เก็บรายงาน flakiness ด้วย ซึ่งไม่ใช่
+            # ผลรันเดี่ยวและไม่มี "aggregate" — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็น
+            # การเทียบกับศูนย์ทุก metric เงียบๆ
+            if "aggregate" not in data:
+                continue
             candidates.append((data.get("timestamp", 0), data))
         except Exception:
             continue
@@ -260,16 +276,116 @@ def compare_against_baseline(
             # regression = เพิ่มขึ้นเกิน threshold
             passed = pct_change <= threshold
 
-        # W_gate_noise_floor: metric ที่ noise ของตัวเองกว้างกว่าเกณฑ์ ตัดสิน pass/fail
-        # ไม่ได้ — ยังคำนวณ passed ตามปกติเพื่อให้รายงานเห็นทิศทาง แต่ไม่ให้ถ่วง gate
+        # W_gate_noise_floor: metric ที่ noise ของตัวเองกว้างกว่าเกณฑ์ ตัดสิน regression
+        # ไม่ได้ — ยังคำนวณ passed ตามปกติเพื่อให้รายงานอ่านได้ แค่ไม่ให้มัน gate
+        #
+        # W_gate_is_noisy: ยิ่งกว่านั้น metric ประสิทธิภาพ (step/token/latency/llm_calls/
+        # approval) ไม่ตัดสิน pass/fail อีกต่อไปไม่ว่า spread จะแคบแค่ไหน — task ที่
+        # สำเร็จใน 9 step กับ 22 step คือ task ที่สำเร็จเหมือนกัน ความถูกต้องคือ
+        # success_rate ตัวเดียว ที่เหลือเป็นข้อมูลประกอบ (แบนด์ที่แคบเพราะ 5 รอบ
+        # ล่าสุดบังเอิญนิ่ง เคยตีธง FAIL ให้ approval_rate มาแล้วสองครั้งในวันเดียว)
         metric_spread = None if noise_pct is None else float(noise_pct.get(metric, 0.0))
+        gates = metric in _CORRECTNESS_METRICS and (
+            metric_spread is None or metric_spread <= threshold
+        )
         comparisons.append(MetricComparison(
             metric=metric, current=current_value, baseline=baseline_value,
             pct_change=pct_change, passed=passed,
-            gating=metric_spread is None or metric_spread <= threshold,
+            gating=gates,
             spread_pct=metric_spread,
         ))
     return comparisons
+
+
+# W_gate_is_noisy (2026-09-09, หลังวัดกับของจริงทั้งวัน): gate รอบเดียวตัดสิน commit ไม่ได้
+# หลักฐานที่ปิดเรื่องนี้: commit 3ddb18a รันสองครั้งติดโดยไม่แตะโค้ดเลย ได้ 12/15 (ธง FAIL)
+# แล้ว 15/15 (ผ่าน) — task ที่ล้มรอบแรกทั้งสามตัวผ่านหมดในรอบสอง ก่อนหน้านั้น ec556ba ก็
+# ให้ 1.000 แล้ว 0.800 มาแล้วเช่นกัน
+#
+# สามอย่างที่เปลี่ยนตามหลักฐานนี้:
+#   1. ความถูกต้อง (success) ตัดสินด้วย "median ของหลายรัน" ไม่ใช่รันเดียว
+#   2. metric ประสิทธิภาพ (step/token/latency/llm_calls) รายงานอย่างเดียว ไม่ตัดสิน pass/fail
+#      — task ที่สำเร็จใน 9 step กับ 22 step ก็คือ task ที่สำเร็จเหมือนกัน
+#   3. task ที่ผ่านบ้างล้มบ้างในโค้ดเดียวกันถูกทำเครื่องหมาย FLAKY เพื่อไม่ให้มีใครเสียเวลา
+#      ไล่ regression ที่ไม่มีอยู่จริง
+_FLAKY_LOW = 0.2
+_FLAKY_HIGH = 0.8
+
+
+def task_flakiness(summaries: list[dict]) -> list[dict]:
+    """อัตราการผ่านต่อ task จากหลายรันของ *commit เดียวกัน* เรียงจากผ่านน้อยไปมาก
+
+    verdict: "stable-pass" (ผ่านทุกรอบ) / "stable-fail" (ล้มทุกรอบ) / "flaky" (อยู่ระหว่าง
+    20-80%) — เกณฑ์ตามที่ user กำหนด สิ่งที่อยู่นอกช่วงนั้นแต่ไม่ใช่ 0/1 พอดี (เช่น 1/5)
+    ถือว่า "mostly-fail"/"mostly-pass" ซึ่งยังต้องดู แต่ไม่ใช่ noise เต็มตัว"""
+    runs: dict[str, list[bool]] = {}
+    for summary in summaries:
+        for row in summary.get("results", []) or []:
+            name = row.get("name")
+            if name:
+                runs.setdefault(name, []).append(bool(row.get("success")))
+    report = []
+    for name, outcomes in runs.items():
+        rate = sum(outcomes) / len(outcomes)
+        if rate == 1.0:
+            verdict = "stable-pass"
+        elif rate == 0.0:
+            verdict = "stable-fail"
+        elif _FLAKY_LOW <= rate <= _FLAKY_HIGH:
+            verdict = "flaky"
+        else:
+            verdict = "mostly-pass" if rate > _FLAKY_HIGH else "mostly-fail"
+        report.append({
+            "name": name, "runs": len(outcomes), "passed": sum(outcomes),
+            "pass_rate": round(rate, 3), "verdict": verdict,
+        })
+    return sorted(report, key=lambda row: (row["pass_rate"], row["name"]))
+
+
+def success_rate_stats(summaries: list[dict]) -> dict:
+    """min / median / max ของ success_rate ข้ามหลายรัน — median คือค่าที่ใช้ตัดสิน
+
+    รันเดียวเป็นตัวอย่างเดียวจากการแจกแจงที่กว้างพอจะกินทั้ง 0.8 ถึง 1.0 ได้ (วัดแล้ว
+    บน commit เดียวกัน) การเทียบตัวอย่างเดียวกับตัวอย่างเดียวจึงบอกอะไรไม่ได้เลย"""
+    rates = [float(s.get("aggregate", {}).get("success_rate", 0.0)) for s in summaries]
+    if not rates:
+        return {"min": 0.0, "median": 0.0, "max": 0.0, "runs": 0}
+    return {
+        "min": min(rates), "median": statistics.median(rates), "max": max(rates),
+        "runs": len(rates),
+    }
+
+
+def compare_tasks(current: dict, baseline: dict) -> list[dict]:
+    """เทียบ task ต่อ task ระหว่างสอง summary — คืนเฉพาะแถวที่ผลลัพธ์ (success) ต่างกัน
+    หรือตัวนับขยับเกิน 50% เพราะค่าเฉลี่ยรวมบอกได้แค่ "อะไรบางอย่างเปลี่ยน"
+
+    ตัวนับที่เทียบเป็น step/llm_calls/action_calls/finish_task_calls — ทั้งหมดเป็น
+    metric ประสิทธิภาพ จึงไม่มีอันไหนตัดสิน pass/fail (ดู W_gate_is_noisy ด้านบน)"""
+    base_rows = {r.get("name"): r for r in (baseline.get("results") or [])}
+    diffs = []
+    for row in current.get("results") or []:
+        name = row.get("name")
+        before = base_rows.get(name)
+        if before is None:
+            continue
+        counters = {}
+        for field in ("steps", "llm_calls", "action_calls", "finish_task_calls"):
+            was, now = int(before.get(field, 0) or 0), int(row.get(field, 0) or 0)
+            if was != now:
+                counters[field] = (was, now)
+        success_changed = bool(before.get("success")) != bool(row.get("success"))
+        big_move = any(
+            abs(now - was) > max(1, was * 0.5) for was, now in counters.values()
+        )
+        if success_changed or big_move:
+            diffs.append({
+                "name": name,
+                "success_before": bool(before.get("success")),
+                "success_after": bool(row.get("success")),
+                "counters": counters,
+            })
+    return diffs
 
 
 async def run_release_gate(
@@ -337,3 +453,76 @@ async def run_release_gate(
         "comparisons": comparisons,
         "passed": all(c.passed for c in comparisons if c.gating),
     }
+
+
+async def run_release_gate_repeated(
+    repeats: int = 3,
+    provider: Optional[str] = None,
+    results_dir: Optional[str] = None,
+    max_regression_pct: Optional[float] = None,
+    include_orangehrm: bool = True,
+    include_miniwob: bool = True,
+) -> dict[str, Any]:
+    """รัน gate ซ้ำ `repeats` รอบบนโค้ดชุดเดียวกัน แล้วตัดสินด้วย median
+
+    W_gate_is_noisy: รันเดียวตัดสิน commit ไม่ได้ (ดูคอมเมนต์เหนือ task_flakiness) —
+    ตัวเลขที่คืนออกไปจึงเป็น min/median/max ของ success_rate พร้อมอัตราการผ่านราย task
+    ข้ามทุกรอบ ส่วน pass/fail มาจาก median เทียบ baseline ด้วยเกณฑ์เดิม
+
+    baseline ที่ใช้เทียบคือ baseline ของรอบแรก (ก่อนรอบนี้จะเขียนผลของตัวเองลงไป) —
+    ไม่งั้นรอบที่ 2-3 จะไปเทียบกับรอบที่ 1 ของตัวเอง ซึ่งไม่ใช่การเทียบข้าม commit อีกต่อไป
+    """
+    runs: list[dict] = []
+    summaries: list[dict] = []
+    baseline: Optional[dict] = None
+    for attempt in range(max(1, repeats)):
+        outcome = await run_release_gate(
+            provider=provider, results_dir=results_dir,
+            max_regression_pct=max_regression_pct,
+            include_orangehrm=include_orangehrm, include_miniwob=include_miniwob,
+        )
+        runs.append(outcome)
+        summaries.append(outcome["summary"])
+        if attempt == 0:
+            baseline = outcome.get("baseline")
+
+    stats = success_rate_stats(summaries)
+    threshold = (
+        max_regression_pct if max_regression_pct is not None
+        else settings.release_gate_max_regression_pct
+    )
+    baseline_rate = (
+        None if not baseline else float(baseline.get("aggregate", {}).get("success_rate", 0.0))
+    )
+    if baseline_rate:
+        drop_pct = (stats["median"] - baseline_rate) / abs(baseline_rate) * 100.0
+        passed = drop_pct >= -threshold
+    else:
+        drop_pct, passed = 0.0, True
+
+    return {
+        "runs": runs,
+        "summaries": summaries,
+        "success_rate": stats,
+        "baseline_success_rate": baseline_rate,
+        "median_change_pct": drop_pct,
+        "flakiness": task_flakiness(summaries),
+        "task_diffs": (
+            [] if baseline is None else compare_tasks(summaries[-1], baseline)
+        ),
+        "passed": passed,
+    }
+
+
+def save_flakiness_report(report: dict, results_dir: Optional[str] = None) -> Path:
+    """เก็บรายงาน flakiness แยกจาก summary ปกติ — ตั้งชื่อขึ้นต้นด้วย "flakiness_" เพื่อไม่ให้
+    load_recent_summaries() (ที่ glob "*.json" ในโฟลเดอร์เดียวกัน) หยิบไปทำ baseline"""
+    directory = Path(results_dir or settings.release_gate_results_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    name = (
+        f"flakiness_{_sanitize_for_filename(report.get('git_commit', 'unknown'))}"
+        f"_{int(time.time() * 1000)}.json"
+    )
+    path = directory / name
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
