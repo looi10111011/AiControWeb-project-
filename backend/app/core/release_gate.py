@@ -87,6 +87,9 @@ def _result_row(result) -> dict:
         # รายงานได้ว่า "avg_llm_calls +20%" แต่บอกไม่ได้ว่างานไหนเปลี่ยน
         "action_calls": getattr(result, "action_calls", 0),
         "finish_task_calls": getattr(result, "finish_task_calls", 0),
+        # W_gate_run_invalid: เก็บข้อความสรุปของ task ไว้ด้วย — รันที่ล้มยกชุดเพราะ
+        # provider ปฏิเสธ ไม่มี error field ให้ดูเลย (run_task คืน dict ปกติ status=done)
+        "message": str(getattr(result, "message", "") or "")[:160],
         "error": getattr(result, "error", None),
     }
 
@@ -312,6 +315,24 @@ _FLAKY_LOW = 0.2
 _FLAKY_HIGH = 0.8
 
 
+def run_is_invalid(summary: dict) -> bool:
+    """รันที่ไม่มี task ไหนได้ลงมือทำอะไรเลย = วัดอะไรไม่ได้ ไม่ใช่ regression
+
+    W_gate_run_invalid (2026-09-09): endpoint ของ ChatGPT OAuth ปฏิเสธทุกโมเดลกลางวัน
+    ("The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account")
+    ผลคือ flakiness 5 รอบได้ 0/5 ทุก task และ gate อ่านออกมาเป็น success_rate 0.000 —
+    ซึ่งจะไป fail commit ให้กับ provider ที่ล่ม นี่คือ false positive ที่แย่ที่สุดของ gate
+
+    เกณฑ์ที่ใช้คือ "ทุก task จบด้วย steps == 0" เพราะ task ใน benchmark ทุกตัวต้องเปิด
+    เบราว์เซอร์และลงมือทำอย่างน้อยหนึ่ง action เสมอ — ไม่มีทางที่โค้ดจะพังจนทุกงานได้ศูนย์
+    step พร้อมกันโดยที่ยังไม่ใช่ปัญหาโครงสร้าง (ต่างจาก task เดี่ยวที่ได้ 0 step ซึ่งเกิด
+    ได้ปกติจาก short-circuit ของ api/routes.py)"""
+    rows = summary.get("results") or []
+    if not rows:
+        return True
+    return all(int(row.get("steps", 0) or 0) == 0 for row in rows)
+
+
 def task_flakiness(summaries: list[dict]) -> list[dict]:
     """อัตราการผ่านต่อ task จากหลายรันของ *commit เดียวกัน* เรียงจากผ่านน้อยไปมาก
 
@@ -486,7 +507,11 @@ async def run_release_gate_repeated(
         if attempt == 0:
             baseline = outcome.get("baseline")
 
-    stats = success_rate_stats(summaries)
+    # W_gate_run_invalid: รันที่ provider ล่ม (ทุก task 0 step) ไม่ถูกนับทั้งใน median
+    # และใน flakiness — ไม่งั้น outage หนึ่งครั้งจะกลายเป็น "ทุก task เป็น stable-fail"
+    valid = [s for s in summaries if not run_is_invalid(s)]
+    invalid_runs = len(summaries) - len(valid)
+    stats = success_rate_stats(valid)
     threshold = (
         max_regression_pct if max_regression_pct is not None
         else settings.release_gate_max_regression_pct
@@ -494,7 +519,7 @@ async def run_release_gate_repeated(
     baseline_rate = (
         None if not baseline else float(baseline.get("aggregate", {}).get("success_rate", 0.0))
     )
-    if baseline_rate:
+    if baseline_rate and valid:
         drop_pct = (stats["median"] - baseline_rate) / abs(baseline_rate) * 100.0
         passed = drop_pct >= -threshold
     else:
@@ -506,11 +531,14 @@ async def run_release_gate_repeated(
         "success_rate": stats,
         "baseline_success_rate": baseline_rate,
         "median_change_pct": drop_pct,
-        "flakiness": task_flakiness(summaries),
+        "flakiness": task_flakiness(valid),
         "task_diffs": (
-            [] if baseline is None else compare_tasks(summaries[-1], baseline)
+            [] if baseline is None or not valid else compare_tasks(valid[-1], baseline)
         ),
-        "passed": passed,
+        "invalid_runs": invalid_runs,
+        # ไม่มีรันที่ใช้ได้เลย = ตอบคำถามว่า "commit นี้ดีไหม" ไม่ได้ ไม่ใช่ตอบว่า "แย่ลง"
+        "measured": bool(valid),
+        "passed": passed if valid else True,
     }
 
 

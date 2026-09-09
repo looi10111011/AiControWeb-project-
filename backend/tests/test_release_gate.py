@@ -21,6 +21,7 @@ from backend.app.core.release_gate import (
     save_flakiness_report,
     success_rate_stats,
     task_flakiness,
+    run_is_invalid,
 )
 
 # ทุกเทสต์ mock subprocess/filesystem/eval suite ตรงๆ (ไม่รัน browser/LLM จริง) เหมือน
@@ -492,6 +493,9 @@ def test_load_recent_summaries_excludes_the_run_just_saved(tmp_path):
 
 
 def _summary(success_rate, rows, *, timestamp=1.0):
+    # แถวที่ไม่ระบุ steps ถือว่า "ได้ลงมือทำอะไรบ้าง" — ไม่งั้น run_is_invalid() จะอ่านว่า
+    # เป็นรันที่ provider ล่ม (W_gate_run_invalid) แล้วถูกตัดออกจากทุกการคำนวณ
+    rows = [{"steps": 1, **row} for row in rows]
     return {
         "git_commit": "abc1234",
         "model": "m",
@@ -612,10 +616,13 @@ async def test_repeated_gate_decides_on_the_median_not_the_worst_run():
 
 @pytest.mark.asyncio
 async def test_repeated_gate_still_fails_a_real_drop():
+    # แถวต้องมีจริงและมี step — summary ที่ไม่มีแถวเลยคือรันที่วัดอะไรไม่ได้
+    # (W_gate_run_invalid) ซึ่งเป็นคนละเรื่องกับ commit ที่แย่ลงจริง
+    half = [{"name": "a", "success": True, "steps": 3}, {"name": "b", "success": False, "steps": 5}]
     outcomes = [
-        {"summary": _summary(0.5, []), "baseline": _summary(1.0, []), "passed": False},
-        {"summary": _summary(0.5, []), "baseline": None, "passed": True},
-        {"summary": _summary(0.6, []), "baseline": None, "passed": True},
+        {"summary": _summary(0.5, half), "baseline": _summary(1.0, half), "passed": False},
+        {"summary": _summary(0.5, half), "baseline": None, "passed": True},
+        {"summary": _summary(0.6, half), "baseline": None, "passed": True},
     ]
 
     with patch("backend.app.core.release_gate.run_release_gate",
@@ -667,3 +674,53 @@ def test_run_py_menu_numbers_are_unique():
     # ทุก alias ต้องชี้ไปยังเลขที่มีอยู่จริง
     unknown = {number for _, number in alias_lines} - set(action_keys)
     assert not unknown, f"alias ชี้ไปยังเลขที่ไม่มีในเมนู: {sorted(unknown)}"
+
+
+# --- W_gate_run_invalid: provider ล่ม ไม่ใช่ regression ---
+#
+# 2026-09-09: endpoint ของ ChatGPT OAuth ปฏิเสธทุกโมเดลกลางวัน ("The 'gpt-5.4-mini' model is
+# not supported when using Codex with a ChatGPT account") — flakiness 5 รอบได้ 0/5 ทุก task
+# และ gate อ่านออกมาเป็น success_rate 0.000 ซึ่งจะไป fail commit ให้กับ provider ที่ล่ม
+
+
+def _rows(*steps):
+    return [{"name": f"t{i}", "success": False, "steps": s} for i, s in enumerate(steps)]
+
+
+def test_a_run_where_nothing_moved_is_not_a_measurement():
+    assert run_is_invalid(_summary(0.0, _rows(0, 0, 0))) is True
+    assert run_is_invalid(_summary(0.0, [])) is True
+    # task เดี่ยวที่ได้ 0 step เกิดได้ปกติ (short-circuit ของ api/routes.py) — ไม่ใช่ outage
+    assert run_is_invalid(_summary(0.5, _rows(0, 4, 9))) is False
+
+
+@pytest.mark.asyncio
+async def test_provider_outage_does_not_fail_the_commit():
+    dead = {"summary": _summary(0.0, _rows(0, 0, 0)), "baseline": _summary(1.0, _rows(5, 5, 5)),
+            "passed": False}
+
+    with patch("backend.app.core.release_gate.run_release_gate",
+               AsyncMock(side_effect=[dead, dead, dead])):
+        result = await run_release_gate_repeated(repeats=3, max_regression_pct=10.0)
+
+    assert result["invalid_runs"] == 3
+    assert result["measured"] is False
+    assert result["passed"] is True            # ตอบไม่ได้ ไม่ใช่ตอบว่าแย่ลง
+    assert result["flakiness"] == []           # ไม่มีใครถูกตราหน้าว่า stable-fail จาก outage
+
+
+@pytest.mark.asyncio
+async def test_one_dead_run_is_dropped_and_the_rest_still_decide():
+    good = {"summary": _summary(1.0, _rows(5, 5, 5)), "baseline": _summary(1.0, _rows(5, 5, 5)),
+            "passed": True}
+    dead = {"summary": _summary(0.0, _rows(0, 0, 0)), "baseline": None, "passed": False}
+
+    with patch("backend.app.core.release_gate.run_release_gate",
+               AsyncMock(side_effect=[good, dead, good])):
+        result = await run_release_gate_repeated(repeats=3, max_regression_pct=10.0)
+
+    assert result["invalid_runs"] == 1
+    assert result["measured"] is True
+    assert result["success_rate"]["runs"] == 2      # นับเฉพาะรอบที่วัดได้จริง
+    assert result["success_rate"]["median"] == 1.0
+    assert result["passed"] is True

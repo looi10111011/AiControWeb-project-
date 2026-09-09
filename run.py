@@ -1396,6 +1396,14 @@ def run_release_gate_cmd():
         stats = outcome["success_rate"]
         last = outcome["summaries"][-1]
 
+        if outcome.get("invalid_runs"):
+            print(
+                f"\n!! {outcome['invalid_runs']} รอบใช้วัดอะไรไม่ได้ (ทุก task จบที่ 0 step "
+                "— provider/เน็ตล่ม ไม่ใช่ regression) — ไม่ถูกนับใน median",
+                flush=True,
+            )
+        if not outcome.get("measured", True):
+            print("!! ไม่มีรอบไหนใช้ได้เลย — gate ตอบไม่ได้ว่า commit นี้ดีไหม (ไม่ถือว่าตก)", flush=True)
         print("=== Summary ===", flush=True)
         print(f"  git_commit : {last['git_commit']}", flush=True)
         print(f"  model      : {last['model']}", flush=True)
@@ -1480,6 +1488,16 @@ def run_flakiness_cmd(runs: str = ""):
         outcome = await run_release_gate_repeated(repeats=repeats)
         stats = outcome["success_rate"]
         rows = outcome["flakiness"]
+        if outcome.get("invalid_runs"):
+            print(
+                f"\n!! {outcome['invalid_runs']} จาก {repeats} รอบใช้วัดอะไรไม่ได้ "
+                "(ทุก task จบที่ 0 step — provider/เน็ตล่ม) ตัดออกจากรายงานแล้ว",
+                flush=True,
+            )
+        if not rows:
+            print("ไม่มีข้อมูลพอจะสรุปความไม่คงที่ — แก้ provider ให้รันได้ก่อนแล้วรันใหม่", flush=True)
+            return
+
         print(
             f"\nsuccess_rate: min={stats['min']:.3f} median={stats['median']:.3f} "
             f"max={stats['max']:.3f} ({stats['runs']} รัน)",
