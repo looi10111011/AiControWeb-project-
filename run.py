@@ -1422,7 +1422,10 @@ def run_release_gate_cmd():
             sign = "+" if outcome["median_change_pct"] >= 0 else ""
             print(
                 f"         เทียบ baseline {baseline_rate:.3f} "
-                f"({sign}{outcome['median_change_pct']:.1f}%)",
+                f"({sign}{outcome['median_change_pct']:.1f}%) "
+                # W_gate_model_baseline: บอกให้ชัดว่า baseline มาจากโมเดลเดียวกัน —
+                # ตัวเลขนี้เคยเทียบข้ามโมเดลเงียบๆ มาก่อน คนอ่านจึงต้องเห็นเองว่าไม่ใช่แล้ว
+                f"[{last['model']}]",
                 flush=True,
             )
 

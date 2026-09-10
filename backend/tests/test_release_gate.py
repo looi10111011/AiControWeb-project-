@@ -126,8 +126,9 @@ def test_load_latest_summary_returns_none_when_no_json_files(tmp_path):
 
 
 def test_load_latest_summary_picks_highest_timestamp_field_not_mtime(tmp_path):
-    old_summary = {"timestamp": 100.0, "git_commit": "old", "aggregate": {}}
-    new_summary = {"timestamp": 200.0, "git_commit": "new", "aggregate": {}}
+    _rows = [{"name": "t", "success": True, "steps": 1}]  # summary ที่ไม่มี task เลยถูกกรองออก
+    old_summary = {"timestamp": 100.0, "git_commit": "old", "aggregate": {}, "results": _rows}
+    new_summary = {"timestamp": 200.0, "git_commit": "new", "aggregate": {}, "results": _rows}
     # เขียน "new" ก่อน "old" ตั้งใจ (mtime ของ old จะใหม่กว่าจริงถ้า sort ผิดตัว) — ต้องเลือก
     # จาก field "timestamp" ข้างในไฟล์ ไม่ใช่ mtime ของระบบไฟล์
     (tmp_path / "new.json").write_text(json.dumps(new_summary), encoding="utf-8")
@@ -148,7 +149,10 @@ def test_load_latest_summary_excludes_given_path(tmp_path):
 
 def test_load_latest_summary_skips_unreadable_json_files(tmp_path):
     (tmp_path / "corrupt.json").write_text("not valid json{{{", encoding="utf-8")
-    good = {"timestamp": 100.0, "git_commit": "good", "aggregate": {}}
+    # "results" ต้องมีอย่างน้อยหนึ่งแถวที่เดินจริง — summary ที่ไม่มี task เลยถูกกรอง
+    # ออกจาก baseline ตาม W_gate_model_baseline (รันที่วัดอะไรไม่ได้ไม่ใช่จุดอ้างอิง)
+    good = {"timestamp": 100.0, "git_commit": "good", "aggregate": {},
+            "results": [{"name": "t", "success": True, "steps": 1}]}
     (tmp_path / "good.json").write_text(json.dumps(good), encoding="utf-8")
 
     latest = load_latest_summary(str(tmp_path))
@@ -462,7 +466,8 @@ def test_load_recent_summaries_returns_last_n_oldest_first(tmp_path):
 
     for ts in (5.0, 1.0, 3.0, 4.0, 2.0):
         (tmp_path / f"run_{ts}.json").write_text(
-            _json.dumps({"timestamp": ts, "aggregate": {m: ts for m in METRIC_NAMES}}),
+            _json.dumps({"timestamp": ts, "aggregate": {m: ts for m in METRIC_NAMES},
+                         "results": [{"name": "t", "success": True, "steps": 1}]}),
             encoding="utf-8",
         )
 
@@ -477,9 +482,11 @@ def test_load_recent_summaries_excludes_the_run_just_saved(tmp_path):
     from pathlib import Path as _Path
 
     own = tmp_path / "own.json"
-    own.write_text(_json.dumps({"timestamp": 9.0, "aggregate": {}}), encoding="utf-8")
+    _rows = [{"name": "t", "success": True, "steps": 1}]
+    own.write_text(
+        _json.dumps({"timestamp": 9.0, "aggregate": {}, "results": _rows}), encoding="utf-8")
     (tmp_path / "prev.json").write_text(
-        _json.dumps({"timestamp": 1.0, "aggregate": {}}), encoding="utf-8")
+        _json.dumps({"timestamp": 1.0, "aggregate": {}, "results": _rows}), encoding="utf-8")
 
     recent = load_recent_summaries(str(tmp_path), limit=5, exclude_path=_Path(own))
 
@@ -850,3 +857,57 @@ def test_run_py_passes_command_line_arguments_to_the_menu_function():
     # และคำสั่ง flakiness ต้องยังรับทั้งจำนวนรอบและดีเลย์
     signature = re.search(r"def run_flakiness_cmd\(([^)]*)\)", text).group(1)
     assert "runs" in signature and "delay" in signature
+
+
+
+# --- W_gate_model_baseline: baseline ต้องมาจากโมเดลเดียวกัน ---
+#
+# 2026-09-10: โฟลเดอร์ผลจริงมี summary ของสามโมเดลปนกัน (gpt-5.4-mini 42, gpt-5.5 7,
+# gemini-flash-lite 5) และ baseline หยิบ "5 ไฟล์ล่าสุด" โดยไม่ดูโมเดลเลย รันด้วย Gemini
+# หลังจากรันด้วย gpt-5.5 จึงถูกเทียบกับ gpt-5.5 แล้วรายงานว่าดีขึ้น 300% ซึ่งไม่ได้แปลว่า
+# commit ดีขึ้นเลยสักนิด — โมเดลเป็นตัวแปรที่ใหญ่กว่า commit หลายเท่า
+
+
+def _write_summary(directory, name, *, timestamp, model, rows=None):
+    import json as _json
+
+    payload = {
+        "timestamp": timestamp, "git_commit": "abc1234", "model": model,
+        "aggregate": {m: 1.0 for m in METRIC_NAMES},
+        "results": rows if rows is not None else [{"name": "t", "success": True, "steps": 1}],
+    }
+    (directory / name).write_text(_json.dumps(payload), encoding="utf-8")
+
+
+def test_baseline_ignores_runs_from_a_different_model(tmp_path):
+    _write_summary(tmp_path, "gemini.json", timestamp=1.0, model="gemini-flash-lite-latest")
+    _write_summary(tmp_path, "openai.json", timestamp=2.0, model="gpt-5.5")
+
+    recent = load_recent_summaries(str(tmp_path), limit=5, model="gemini-flash-lite-latest")
+
+    assert [r["model"] for r in recent] == ["gemini-flash-lite-latest"]
+    # ไฟล์ที่ใหม่กว่าแต่คนละโมเดล ต้องไม่ถูกหยิบมาเป็น "ล่าสุด"
+    assert load_latest_summary(str(tmp_path), model="gemini-flash-lite-latest")["timestamp"] == 1.0
+
+
+def test_a_model_with_no_history_gets_no_baseline_rather_than_someone_elses(tmp_path):
+    """โมเดลใหม่ = ไม่มีอะไรให้เทียบ ซึ่ง gate จัดการได้อยู่แล้ว (ผ่านแล้วบอกว่าไม่มี baseline)
+    ดีกว่าเทียบกับของที่เทียบไม่ได้แล้วรายงานตัวเลขที่ไม่มีความหมาย"""
+    _write_summary(tmp_path, "old.json", timestamp=1.0, model="gpt-5.4-mini")
+
+    assert load_recent_summaries(str(tmp_path), limit=5, model="brand-new-model") == []
+    assert load_latest_summary(str(tmp_path), model="brand-new-model") is None
+    # ไม่ระบุโมเดล = พฤติกรรมเดิมทุกประการ
+    assert len(load_recent_summaries(str(tmp_path), limit=5)) == 1
+
+
+def test_a_run_that_measured_nothing_is_not_a_baseline(tmp_path):
+    """รันที่ provider ล่ม (ทุก task 0 step) เคยถูกใช้เป็น baseline ได้ — ผลคือรันปกติรอบ
+    ถัดไปดู 'ดีขึ้น' ฟรีๆ ด้วยเหตุผลเดียวกับที่มันไม่ควรทำให้ commit ตก"""
+    dead = [{"name": "t", "success": False, "steps": 0} for _ in range(3)]
+    _write_summary(tmp_path, "dead.json", timestamp=2.0, model="m", rows=dead)
+    _write_summary(tmp_path, "real.json", timestamp=1.0, model="m")
+
+    recent = load_recent_summaries(str(tmp_path), limit=5, model="m")
+
+    assert [r["timestamp"] for r in recent] == [1.0]

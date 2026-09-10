@@ -149,58 +149,68 @@ def save_summary(summary: dict, results_dir: Optional[str] = None) -> Path:
     return path
 
 
-def load_latest_summary(results_dir: Optional[str] = None, *, exclude_path: Optional[Path] = None) -> Optional[dict]:
+# W_gate_model_baseline (2026-09-10): ไฟล์ summary ทุกไฟล์บันทึก "model" ไว้ตั้งแต่แรก แต่ไม่มี
+# ใครอ่านมันเลย — baseline หยิบไฟล์ล่าสุดในโฟลเดอร์โดยไม่สนว่ารันด้วยโมเดลอะไร พอเปลี่ยน
+# provider/โมเดล (gpt-5.4-mini -> gemini-flash-lite -> gpt-5.5 ภายในสองวัน) gate จึงเอาผลของ
+# โมเดลหนึ่งไปเทียบกับอีกโมเดลหนึ่งแล้วรายงานว่า "แย่ลง 40%" ซึ่งไม่ได้แปลว่า commit แย่ลงเลย
+#
+# ไม่ใช่แค่กรองให้สะอาดขึ้น: มันคือเงื่อนไขที่ทำให้ตัวเลขมีความหมาย — "commit นี้ทำให้แย่ลงไหม"
+# ตอบได้ก็ต่อเมื่อทุกอย่างยกเว้น commit เหมือนเดิม โมเดลเป็นตัวแปรที่ใหญ่กว่า commit หลายเท่า
+# (วัดมาแล้ว: โค้ดชุดเดียวกัน gpt-5.4-mini ได้ 12/15 ส่วน gemini-flash-lite ได้ 15/15)
+#
+# โมเดลใหม่ที่ยังไม่มีประวัติ = ไม่มี baseline (เหมือนรันครั้งแรกของโปรเจกต์) ซึ่ง gate จัดการ
+# ได้อยู่แล้วด้วยการผ่านและบอกว่ายังไม่มีอะไรให้เทียบ — ดีกว่าเทียบกับของที่เทียบไม่ได้
+def _summaries_in(
+    results_dir: Optional[str], exclude_path: Optional[Path], model: Optional[str],
+) -> list[tuple[float, dict]]:
+    directory = Path(results_dir or settings.release_gate_results_dir)
+    if not directory.is_dir():
+        return []
+    candidates: list[tuple[float, dict]] = []
+    for path in directory.glob("*.json"):
+        if exclude_path is not None and path.resolve() == exclude_path.resolve():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # W_gate_is_noisy: โฟลเดอร์เดียวกันนี้เก็บรายงาน flakiness ด้วย ซึ่งไม่ใช่ผลรันเดี่ยว
+        # และไม่มี "aggregate" — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็นการเทียบกับศูนย์ทุก
+        # metric เงียบๆ
+        if "aggregate" not in data:
+            continue
+        if model is not None and data.get("model") != model:
+            continue
+        # รันที่วัดอะไรไม่ได้ (provider ล่ม/โควตาหมด — ดู run_is_invalid) ต้องไม่เข้า baseline
+        # ด้วยเหตุผลเดียวกับที่มันไม่ควรทำให้ commit ตก: มันไม่ได้บอกอะไรเกี่ยวกับโค้ดเลย
+        # baseline ที่ประกอบจากรันแบบนั้นจะทำให้รันปกติรอบถัดไปดู "ดีขึ้น 300%" ฟรีๆ
+        if run_is_invalid(data):
+            continue
+        candidates.append((data.get("timestamp", 0), data))
+    candidates.sort(key=lambda pair: pair[0])
+    return candidates
+
+
+def load_latest_summary(
+    results_dir: Optional[str] = None, *, exclude_path: Optional[Path] = None,
+    model: Optional[str] = None,
+) -> Optional[dict]:
     """หา summary JSON ล่าสุดใน results_dir (เรียงตาม field "timestamp" ข้างในไฟล์เอง ไม่ใช่
     mtime ของไฟล์ — เผื่อไฟล์ถูก copy/sync มาจากที่อื่นแล้ว mtime ไม่ตรงกับตอนที่ eval รันจริง)
     คืน None เงียบๆ ถ้า dir ไม่มีอยู่/ไม่มีไฟล์ JSON ที่อ่านได้เลย (เช่น รัน release gate เป็น
     ครั้งแรกไม่เคยมี baseline มาก่อน) — exclude_path กันไม่ให้เทียบไฟล์ล่าสุดกับตัวเองถ้า
     caller เพิ่ง save_summary() ของ run นี้ไปแล้วก่อนเรียกฟังก์ชันนี้"""
-    directory = Path(results_dir or settings.release_gate_results_dir)
-    if not directory.is_dir():
-        return None
-    candidates = []
-    for path in directory.glob("*.json"):
-        if exclude_path is not None and path.resolve() == exclude_path.resolve():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            # W_gate_is_noisy: โฟลเดอร์เดียวกันนี้เก็บรายงาน flakiness ด้วย ซึ่งไม่ใช่
-            # ผลรันเดี่ยวและไม่มี "aggregate" — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็น
-            # การเทียบกับศูนย์ทุก metric เงียบๆ
-            if "aggregate" not in data:
-                continue
-            candidates.append((data.get("timestamp", 0), data))
-        except Exception:
-            continue
-    if not candidates:
-        return None
-    candidates.sort(key=lambda pair: pair[0])
-    return candidates[-1][1]
+    candidates = _summaries_in(results_dir, exclude_path, model)
+    return candidates[-1][1] if candidates else None
 
 
 def load_recent_summaries(
     results_dir: Optional[str] = None, *, limit: int = 5, exclude_path: Optional[Path] = None,
+    model: Optional[str] = None,
 ) -> list[dict]:
     """คืน summary JSON ล่าสุดไม่เกิน limit ไฟล์ เรียงเก่า->ใหม่ (เกณฑ์เดียวกับ
     load_latest_summary: เรียงตาม field "timestamp" ข้างในไฟล์ ไม่ใช่ mtime)"""
-    directory = Path(results_dir or settings.release_gate_results_dir)
-    if not directory.is_dir():
-        return []
-    candidates = []
-    for path in directory.glob("*.json"):
-        if exclude_path is not None and path.resolve() == exclude_path.resolve():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            # W_gate_is_noisy: โฟลเดอร์เดียวกันนี้เก็บรายงาน flakiness ด้วย ซึ่งไม่ใช่
-            # ผลรันเดี่ยวและไม่มี "aggregate" — ถ้าหลุดเข้าไปเป็น baseline จะกลายเป็น
-            # การเทียบกับศูนย์ทุก metric เงียบๆ
-            if "aggregate" not in data:
-                continue
-            candidates.append((data.get("timestamp", 0), data))
-        except Exception:
-            continue
-    candidates.sort(key=lambda pair: pair[0])
+    candidates = _summaries_in(results_dir, exclude_path, model)
     return [data for _, data in candidates[-limit:]] if limit > 0 else []
 
 
@@ -512,6 +522,7 @@ async def run_release_gate(
     else:
         history = load_recent_summaries(
             results_dir, limit=settings.release_gate_baseline_runs, exclude_path=saved_path,
+            model=model,
         )
         baseline, noise_pct = (None, None) if not history else build_noise_baseline(history)
 
