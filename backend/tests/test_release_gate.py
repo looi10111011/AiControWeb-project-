@@ -775,3 +775,53 @@ def test_a_task_that_only_ever_hit_quota_disappears_rather_than_lying():
     ])
 
     assert task_flakiness([starved, starved]) == []
+
+
+
+# --- โควตาที่หมดกลางรัน มาในรูป 404 "model_not_found" (2026-09-10) ---
+#
+# บัญชี ChatGPT free ยิง gpt-5.5 ผ่าน codex endpoint ได้จริงตอนแรก (รอบแรกของ gate ผ่าน
+# 5/15) พอโควตาหมด endpoint เปลี่ยนไปตอบ 404 "The model `gpt-5.5` does not exist or you do
+# not have access to it." ทุกครั้ง — โมเดลตัวเดิมที่เพิ่งใช้ได้เมื่อกี้ ผลคือรายงานออกมาว่า
+# 10 task เป็น stable-fail และ 4 task เป็น FLAKY ทั้งที่ไม่มี task ไหนได้ทำงานเลย
+
+# ข้อความจริงจาก summary ที่บันทึกไว้ — สังเกตว่าถูกตัดกลางคำว่า "access"
+_QUOTA_404_MESSAGE = (
+    "Task stopped by an unexpected error at step 0: NotFoundError: Error code: 404 - "
+    "{'error': {'message': 'The model `gpt-5.5` does not exist or you do not have acc"
+)
+
+
+def test_a_404_model_not_found_is_infrastructure_not_a_result():
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 0, "message": _QUOTA_404_MESSAGE}) is True
+    # รูปเต็มที่ไม่ถูกตัด ก็ต้องจับได้เหมือนกัน (คนละ marker)
+    assert task_failed_on_infrastructure(
+        {"success": False, "steps": 0,
+         "message": "404 ... 'code': 'model_not_found'}}"}) is True
+
+
+def test_quota_dying_mid_run_makes_the_whole_run_unmeasurable():
+    """เคสจริง: 5 task ผ่าน 10 task ตายที่ step 0 เพราะโควตา — รันนี้เทียบกับรันเต็มไม่ได้
+
+    เกณฑ์ all(steps == 0) เดิมมองว่ารันนี้ยัง valid แล้วปล่อย success_rate 0.333 เข้าไป
+    เป็นค่าจริง ทั้งที่สองในสามของรันไม่มีข้อมูลเลย"""
+    rows = [{"name": f"ok{i}", "success": True, "steps": 3} for i in range(5)]
+    rows += [{"name": f"dead{i}", "success": False, "steps": 0, "message": _QUOTA_404_MESSAGE}
+             for i in range(10)]
+
+    assert run_is_invalid(_summary(0.333, rows)) is True
+
+
+def test_a_few_infra_failures_do_not_invalidate_an_otherwise_real_run():
+    """เกณฑ์คือ 'ส่วนใหญ่' ไม่ใช่ 'มีสักตัว' — ไม่งั้นโควตาสะดุดครั้งเดียวจะลบทั้งรันทิ้ง"""
+    rows = [{"name": f"ok{i}", "success": True, "steps": 3} for i in range(10)]
+    rows += [{"name": "dead", "success": False, "steps": 0, "message": _QUOTA_404_MESSAGE}]
+
+    summary = _summary(0.909, rows)
+
+    assert run_is_invalid(summary) is False
+    # task ที่ตายด้วย infra ยังหายไปจากรายงานตามกฎเดิม (ไม่มีรอบไหนวัดมันได้เลย)
+    names = {r["name"] for r in task_flakiness([summary])}
+    assert "dead" not in names
+    assert len(names) == 10

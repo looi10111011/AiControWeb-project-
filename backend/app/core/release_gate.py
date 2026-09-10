@@ -89,7 +89,11 @@ def _result_row(result) -> dict:
         "finish_task_calls": getattr(result, "finish_task_calls", 0),
         # W_gate_run_invalid: เก็บข้อความสรุปของ task ไว้ด้วย — รันที่ล้มยกชุดเพราะ
         # provider ปฏิเสธ ไม่มี error field ให้ดูเลย (run_task คืน dict ปกติ status=done)
-        "message": str(getattr(result, "message", "") or "")[:160],
+        # 2026-09-10: ขยายจาก 160 เป็น 400 — ข้อความ 404 ของ codex endpoint ยาวพอที่
+        # 160 ตัวจะตัดตรงกลางคำว่า "access" พอดี ทำให้ marker ของ
+        # task_failed_on_infrastructure() ที่เขียนตามข้อความจริงกลับ match ไม่ติด
+        # (เจอตอนไล่ผลรันที่ 404 เพราะโควตาหมด แล้วยังถูกนับเป็น stable-fail อยู่ดี)
+        "message": str(getattr(result, "message", "") or "")[:400],
         "error": getattr(result, "error", None),
     }
 
@@ -322,10 +326,17 @@ _FLAKY_HIGH = 0.8
 # นี่คือ infrastructure คนละชนิดกับ run_is_invalid() ด้านบน: ตรงนั้นคือ "ทั้งรันตายหมด"
 # ส่วนนี่คือ "โควตาหมดกลางรัน" — task ที่เหลือยังเดินได้ รันจึงยัง valid แต่ task ที่โดน
 # ไม่ได้บอกอะไรเลยเกี่ยวกับ commit การนับมันเป็น "ล้ม" คือการสร้าง flaky ปลอมขึ้นมาเอง
+#
+# 2026-09-10 เพิ่ม "model_not_found"/"does not exist or you do not have access": บัญชี
+# ChatGPT แบบ free ยิง gpt-5.5 ผ่าน codex endpoint ได้จริงตอนแรก (โพรบ 200 สองครั้ง รอบแรก
+# ของ gate ผ่าน 5/15) แล้วพอโควตาหมดกลางทาง endpoint เปลี่ยนไปตอบ 404 "The model `gpt-5.5`
+# does not exist or you do not have access to it." ทุกครั้ง — ข้อความชวนให้เข้าใจว่าเป็น
+# เรื่องชื่อโมเดลผิด ทั้งที่โมเดลเดิมเพิ่งใช้ได้เมื่อกี้ ตัวชี้ขาดคือมันเปลี่ยนกลางรัน
 _INFRA_FAILURE_MARKERS = (
     "resourceexhausted", "429", "exceeded your current quota", "rate limit",
     "quota", "insufficient_quota", "authentication_error", "api key is invalid",
     "not supported when using codex", "connection error", "temporarily unavailable",
+    "model_not_found", "does not exist or you do not have",
     "503", "502",
 )
 
@@ -358,7 +369,15 @@ def run_is_invalid(summary: dict) -> bool:
     rows = summary.get("results") or []
     if not rows:
         return True
-    return all(int(row.get("steps", 0) or 0) == 0 for row in rows)
+    if all(int(row.get("steps", 0) or 0) == 0 for row in rows):
+        return True
+    # 2026-09-10: โควตาที่หมด "กลางรัน" ทำให้รันหนึ่งมีทั้ง task ที่ทำงานจริงและ task ที่ตาย
+    # ที่ step 0 ปนกัน — รันแรกของวันนั้นได้ 5/15 โดย 10 ตัวที่เหลือตายเพราะ 404 โควตา
+    # ตัว all() ข้างบนจึงมองว่ารันนี้ยัง valid แล้วปล่อย success_rate 0.333 เข้าไปเป็นค่าจริง
+    # ทั้งที่สองในสามของรันไม่มีข้อมูลเลย เกณฑ์ที่เพิ่ม: ถ้า task ที่ตายด้วยเหตุ infra เป็น
+    # ส่วนใหญ่ของรัน รันนั้นเทียบกับรันที่สมบูรณ์ไม่ได้ ต่อให้บาง task จะเดินได้ก็ตาม
+    infra = sum(1 for row in rows if task_failed_on_infrastructure(row))
+    return infra * 2 > len(rows)
 
 
 def task_flakiness(summaries: list[dict]) -> list[dict]:

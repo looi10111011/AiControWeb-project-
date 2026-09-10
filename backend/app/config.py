@@ -35,7 +35,20 @@ class Settings(BaseSettings):
     # W_openai_oauth: provider "openai" เรียกผ่าน chatgpt.com/backend-api/codex (Responses
     # API, ไม่ใช่ api.openai.com ปกติ — endpoint นี้ผูกกับ OAuth token เท่านั้น) จึงใช้ได้
     # เฉพาะชื่อ model ที่ endpoint นั้นรองรับ ไม่ใช่ทุกตัวใน OpenAI API ทั่วไป
-    openai_model: str = "gpt-5.4-mini"
+    #
+    # W_codex_model_retired (2026-09-10): endpoint เลิกรับ "gpt-5.4-mini" กลางวันของ 09-09
+    # โดยไม่มีอะไรฝั่งเราเปลี่ยน — ทุก task ตายที่ step 0 ด้วย 400 "The 'gpt-5.4-mini' model
+    # is not supported when using Codex with a ChatGPT account." ตอนไล่หาสาเหตุยิงโพรบ 15
+    # ชื่อโมเดล (gpt-5.4-codex / gpt-5.1-codex / gpt-5-codex / codex-mini-latest / o4-mini /
+    # gpt-5.5-mini / gpt-5.5-codex ...) ได้ 400 ข้อความเดียวกันเป๊ะทุกตัว **ยกเว้น "gpt-5.5"
+    # ตัวเปล่าตัวเดียวที่ผ่าน** — จึงไม่ใช่เรื่องสิทธิ์ของบัญชี (บัญชี free ก็เรียกตัวนี้ได้)
+    # แต่เป็นทะเบียนชื่อโมเดลของ endpoint ที่เปลี่ยนไป
+    #
+    # ผลข้างเคียงที่ตามมาด้วย: gpt-5.5 ปฏิเสธ max_output_tokens (llm.py มี fallback
+    # _openai_accepts_max_output_tokens อยู่แล้ว จึงเสีย round-trip แค่ครั้งเดียวต่อ process)
+    # เวลาที่เจอ 400 แบบนี้อีก ให้ยิงโพรบทีละชื่อก่อนสรุปว่าเป็นเรื่องแพลน/สิทธิ์ — 400 ที่
+    # พูดถึง "ChatGPT account" ชวนให้เข้าใจผิดว่าเป็นเรื่องบัญชี ทั้งที่เป็นเรื่องชื่อโมเดล
+    openai_model: str = "gpt-5.5"
 
     # W_eval: release gate (ดู core/release_gate.py) — รวมผล eval suite ทั้งหมด (SauceDemo/
     # OrangeHRM/MiniWoB) เขียนเป็น JSON ต่อ run ไว้ที่ dir นี้ tag ด้วย git commit + model
