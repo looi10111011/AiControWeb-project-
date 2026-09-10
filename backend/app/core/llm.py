@@ -155,6 +155,51 @@ def _no_tool_call_fallback_message(retries: int) -> str:
 _GEMINI_RATE_LIMIT_RETRIES = 3
 _GEMINI_RATE_LIMIT_BACKOFF_SECONDS = 20
 
+# W_gemini_backoff_everywhere (2026-09-10): ลูป retry ด้านบนเคยมีอยู่ที่เดียวคือ
+# next_action_gemini() ส่วนอีก 15 จุดที่ยิง generate_content_async() (classify_intent,
+# generate_plan, abstractor, repair-step, vision, chat/file/image ฯลฯ) ไม่มีเลย — 429 หนึ่งครั้ง
+# ที่ตกใส่จุดใดจุดหนึ่งในนั้นจึงฆ่า task ทั้ง task ทั้งที่ quota คืนใน 29 วินาที
+#
+# เห็นในรัน release gate จริงของวันนี้: classify_intent โดน 429 แล้วรอดมาได้เพราะบังเอิญมี
+# try/except ของตัวเองที่ fallback เป็น "action_task" — ไม่ใช่เพราะมีใครรอ quota ให้
+#
+# ต่างจากฝั่ง openai (ดู _openai_create_with_backoff) ตรงที่ Gemini บอกมาตรงๆ ว่าให้รอกี่วินาที
+# ("retry_delay { seconds: 29 }") จึงรอตามที่ API สั่งได้เลย แม่นกว่าการเดาแบบเท่าตัว
+# เพดาน quota ของ free tier คือ 15 request/นาที/โมเดล (quota_value ในข้อความ 429 เอง)
+_GEMINI_RETRY_DELAY_RE = re.compile(r"retry_delay\s*{[^}]*seconds:\s*(\d+)", re.DOTALL)
+# กันกรณี API ส่งค่ามาผิดปกติจนรอนานเกิน llm_step_timeout_seconds แล้วโดนตัดทิ้งก่อนได้ผล
+_GEMINI_MAX_BACKOFF_SECONDS = 60
+
+
+def _gemini_backoff_seconds(error: Exception, attempt: int) -> float:
+    """วินาทีที่ควรรอก่อนลองใหม่ — ใช้ค่าที่ API บอกมาก่อนเสมอ ค่อย fallback เป็นเท่าตัว"""
+    match = _GEMINI_RETRY_DELAY_RE.search(str(error))
+    if match:
+        # +1 กันขอบ: รอเท่าที่บอกเป๊ะๆ แล้วยิงทันทีมีโอกาสชนหน้าต่างเดิมพอดี
+        return min(float(match.group(1)) + 1.0, _GEMINI_MAX_BACKOFF_SECONDS)
+    return min(
+        _GEMINI_RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1), _GEMINI_MAX_BACKOFF_SECONDS
+    )
+
+
+async def _gemini_generate_with_backoff(gemini_model, **kwargs):
+    """generate_content_async() ที่รอแล้วลองใหม่เมื่อโดน 429 — จุดเดียวที่ทุก call ของ
+    provider gemini ผ่าน ดัก ResourceExhausted อย่างเดียว error อื่นต้องพังทันทีให้เห็น"""
+    for attempt in range(_GEMINI_RATE_LIMIT_RETRIES):
+        try:
+            return await gemini_model.generate_content_async(**kwargs)
+        except ResourceExhausted as e:
+            if attempt == _GEMINI_RATE_LIMIT_RETRIES - 1:
+                raise
+            wait = _gemini_backoff_seconds(e, attempt)
+            print(
+                f"⚠️ gemini โดน 429 (รอบ {attempt + 1}/{_GEMINI_RATE_LIMIT_RETRIES}) "
+                f"— รอ {wait:.0f}s แล้วลองใหม่",
+                flush=True,
+            )
+            await asyncio.sleep(wait)
+
+
 # W_prompt_sections (P4.1): SYSTEM_PROMPT เดิมยาว 44,487 ตัวอักษร (~11k token) และถูกส่ง
 # "ทั้งก้อน" ทุก step ของทุก task — วัดจาก step trace ของ release gate จริง: step แรกของ
 # ทุก task เริ่มที่ ~11.4k input token ทั้งที่หน้า saucedemo/MiniWoB มี element ไม่กี่ตัว
@@ -1145,7 +1190,8 @@ async def abstract_trajectory(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_ABSTRACTOR_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             for part in response.candidates[0].content.parts:
@@ -1350,7 +1396,8 @@ async def plan_with_procedural_memory(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             decision = None
@@ -1512,7 +1559,8 @@ async def repair_step(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_REPAIR_STEP_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -1653,7 +1701,8 @@ async def evaluate_semantic_redundancy(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -1833,7 +1882,8 @@ async def evaluate_safety_and_performance(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_MIDDLEWARE_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -1979,7 +2029,8 @@ async def generate_persona_message(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_PERSONA_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -2063,7 +2114,8 @@ async def route_multi_turn_strategy(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_MULTI_TURN_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -2279,7 +2331,8 @@ async def extract_structured_items(client, model: str, page_content: str, extrac
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -2420,7 +2473,8 @@ async def normalize_extraction_query(
                 tool_config={"function_calling_config": {"mode": "ANY"}},
                 system_instruction=_EXTRACTION_QUERY_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             result = None
@@ -3319,15 +3373,7 @@ async def next_action_gemini(
     # ซ้อนอยู่นอก retry ของ rate limit ด้านล่าง ซึ่งแก้คนละปัญหากัน (429 vs. ไม่เรียก tool)
     for no_tool_attempt in range(_NO_TOOL_CALL_RETRIES):
         response = None
-        for attempt in range(_GEMINI_RATE_LIMIT_RETRIES):
-            try:
-                response = await gemini_model.generate_content_async(contents=messages)
-                break
-            except ResourceExhausted:
-                if attempt == _GEMINI_RATE_LIMIT_RETRIES - 1:
-                    raise
-                # exponential backoff: 20s, 40s, ... กัน retry ถี่เกินไปจนโดน 429 ซ้ำอีก
-                await asyncio.sleep(_GEMINI_RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1))
+        response = await _gemini_generate_with_backoff(gemini_model, contents=messages)
 
         total_usage += TokenUsage(
             response.usage_metadata.prompt_token_count,
@@ -3494,7 +3540,8 @@ async def generate_text(client, model: str, prompt: str, provider: str) -> str:
 
     if provider == "gemini":
         gemini_model = client.GenerativeModel(model_name=model)
-        response = await gemini_model.generate_content_async(
+        response = await _gemini_generate_with_backoff(
+                gemini_model,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
         )
         return response.text.strip()
@@ -3596,7 +3643,8 @@ async def describe_screenshot(client, model: str, screenshot_png: bytes, action_
     try:
         prompt = _VISION_FALLBACK_PROMPT_TEMPLATE.format(action_type=action_type, index=index)
         gemini_model = client.GenerativeModel(model_name=model)
-        response = await gemini_model.generate_content_async(
+        response = await _gemini_generate_with_backoff(
+                gemini_model,
             contents=[{
                 "role": "user",
                 "parts": [{"text": prompt}, {"mime_type": "image/png", "data": screenshot_png}],
@@ -3905,7 +3953,8 @@ async def context_inspection_reply(
             gemini_model = client.GenerativeModel(
                 model_name=model, system_instruction=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": user_input}]}],
             )
             reply = (response.text or "").strip()
@@ -3973,7 +4022,8 @@ async def chat_response(client, model: str, user_input: str, provider: str, curr
             return (response.choices[0].message.content or "").strip()
         if provider == "gemini":
             gemini_model = client.GenerativeModel(model_name=model, system_instruction=_CHAT_RESPONSE_SYSTEM_PROMPT)
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             return (response.text or "").strip()
@@ -4079,7 +4129,8 @@ async def answer_file_query(
             gemini_model = client.GenerativeModel(
                 model_name=model, system_instruction=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{"role": "user", "parts": [{"text": prompt}]}],
             )
             return (response.text or "").strip()
@@ -4159,7 +4210,8 @@ async def answer_image_query(
             gemini_model = client.GenerativeModel(
                 model_name=model, system_instruction=_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT,
             )
-            response = await gemini_model.generate_content_async(
+            response = await _gemini_generate_with_backoff(
+                gemini_model,
                 contents=[{
                     "role": "user",
                     "parts": [{"text": prompt}, {"mime_type": mime_type, "data": image_bytes}],

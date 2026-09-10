@@ -2816,3 +2816,83 @@ async def test_an_error_that_is_not_throttling_fails_immediately():
 
     sleep.assert_not_awaited()
     assert client.responses.create.await_count == 1
+
+
+
+# --- W_gemini_backoff_everywhere: 429 ที่ตกใส่จุดอื่นนอก agent loop ---
+#
+# ลูป retry ของ Gemini เคยมีอยู่จุดเดียวคือ next_action_gemini() ส่วนอีก 15 จุดที่ยิง
+# generate_content_async() (classify_intent, generate_plan, vision, chat/file/image ฯลฯ)
+# ไม่มีเลย เห็นในรัน release gate จริง 2026-09-10: classify_intent โดน 429 แล้วรอดมาได้
+# เพราะบังเอิญมี try/except ของตัวเองที่ fallback เป็น "action_task" ไม่ใช่เพราะมีใครรอ quota
+
+_GEMINI_429 = (
+    "429 You exceeded your current quota. [violations { "
+    "quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\" "
+    "quota_value: 15 }, retry_delay { seconds: 29 }]"
+)
+
+
+def test_gemini_waits_exactly_as_long_as_the_api_asked():
+    """Gemini บอกมาตรงๆ ว่าให้รอกี่วินาที — ต่างจากฝั่ง openai ที่ต้องเดาแบบเท่าตัว"""
+    delay = llm._gemini_backoff_seconds(ResourceExhausted(_GEMINI_429), 0)
+
+    assert delay == 30.0  # 29 ที่ API บอก +1 กันชนหน้าต่างเดิมพอดี
+
+
+def test_gemini_falls_back_to_doubling_when_the_error_says_nothing():
+    plain = ResourceExhausted("429 quota exceeded")
+
+    assert [llm._gemini_backoff_seconds(plain, i) for i in range(3)] == [20, 40, 60]
+    # ค่าประหลาดต้องถูก cap ไม่งั้นรอนานเกิน llm_step_timeout_seconds แล้วโดนตัดทิ้งฟรีๆ
+    assert llm._gemini_backoff_seconds(
+        ResourceExhausted("retry_delay { seconds: 9999 }"), 0) == 60
+
+
+@pytest.mark.asyncio
+async def test_a_429_outside_the_agent_loop_is_waited_out_not_fatal():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(
+        side_effect=[ResourceExhausted(_GEMINI_429), "response-ok"])
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        result = await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    assert result == "response-ok"
+    assert sleep.await_args.args[0] == 30.0
+    assert model.generate_content_async.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gemini_gives_up_after_the_configured_retries():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(side_effect=ResourceExhausted(_GEMINI_429))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()):
+        with pytest.raises(ResourceExhausted):
+            await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    assert model.generate_content_async.await_count == llm._GEMINI_RATE_LIMIT_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_an_error_that_is_not_a_quota_error_fails_immediately():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(side_effect=ValueError("bad request"))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(ValueError):
+            await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    sleep.assert_not_awaited()
+
+
+def test_every_gemini_call_goes_through_the_backoff_helper():
+    """เทสต์นี้คือหัวใจ ไม่ใช่ตัว helper — จุดที่ยิงตรงจะเงียบสนิทจนกว่าจะโดน 429 จริง
+    ตอนรันสด (บทเรียนเดียวกับทะเบียน marker ของ W108 และเลขเมนูของ run.py)"""
+    from pathlib import Path
+
+    source = Path(llm.__file__).read_text(encoding="utf-8")
+    direct = source.count("gemini_model.generate_content_async(")
+
+    assert direct == 1, "generate_content_async ต้องถูกเรียกตรงที่เดียวคือใน helper เท่านั้น"
