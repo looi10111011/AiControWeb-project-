@@ -1,13 +1,18 @@
 """
-test_rag.py
-============
+manual_rag_precision_check.py
+=============================
+
+*** ไม่ใช่ไฟล์เทสต์ของ pytest *** — เดิมชื่อ test_rag.py ซึ่งทำให้ pytest เก็บมันไปด้วยทั้งที่
+ข้างในไม่มีฟังก์ชัน test_* เลยสักตัว (ทุกอย่างอยู่ใต้ main() ที่ยิง ingestion จริงเข้า ChromaDB)
+ผลคือมันติดอยู่ในลิสต์ "ไฟล์ที่ต้อง --ignore เวลารันชุดเต็ม" (P5.2) มานาน ทั้งที่ pytest ไม่เคย
+รันอะไรในนั้นเลย ชื่อใหม่บอกตรงๆ ว่าเป็นสคริปต์วัดผลที่คนสั่งรันเอง
 Test script สำหรับเทส ingestion + retriever ของโปรเจกต์ AI Browser Agent
 
 อ้างอิงจาก retriever.py จริง: retrieve(query, page_state="", k=5) -> list[str]
 หมายเหตุ: retrieve มีกฎเหล็กห้าม throw error ออกมา (ถ้าพังภายในจะคืน [] เสมอ)
 
 วิธีรัน (รันจาก root ของโปรเจกต์ Aiagentcontrolbrowser ระดับเดียวกับ run.py):
-  python test_rag.py
+  python backend/tests/manual_rag_precision_check.py
 """
 
 import sys
@@ -38,7 +43,7 @@ elif (_THIS_DIR / "manual_test.txt").exists():
 else:
     raise FileNotFoundError(
         f"ไม่เจอไฟล์ manual สำหรับเทสใน {_THIS_DIR} "
-        "กรุณาวาง sample_manual.txt ไว้ในโฟลเดอร์เดียวกับ test_rag.py"
+        "กรุณาวาง sample_manual.txt ไว้ในโฟลเดอร์เดียวกับ manual_rag_precision_check.py"
     )
 TOP_K = 3                               # จำนวน chunk บนสุดที่ดึงมาต่อคำถาม
 

@@ -57,7 +57,7 @@
               (backend/app/rag/ingestion.py: load_manual รองรับ 3 นามสกุล,
               collection.upsert() กัน id ชนตอน ingest ซ้ำ
               มี unit test ครบใน backend/tests/test_ingestion.py
-              + integration script backend/tests/test_rag.py วัด precision@k จริง
+              + integration script backend/tests/manual_rag_precision_check.py วัด precision@k จริง
               — ผ่าน 100% กับ manual_test.txt)
               *** เปลี่ยนจาก Gemini API embedding มาใช้ local embedding
               (all-MiniLM-L6-v2 ผ่าน ChromaDB DefaultEmbeddingFunction) แล้ว —
