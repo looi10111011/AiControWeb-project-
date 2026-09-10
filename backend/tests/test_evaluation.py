@@ -157,3 +157,33 @@ def test_evaluation_report_empty_results_does_not_divide_by_zero():
     assert report.success_rate == 0.0
     assert report.avg_steps == 0.0
     assert report.avg_tokens == 0.0
+
+
+
+# --- settings.eval_task_delay_seconds: เว้นจังหวะไม่ให้ provider ตัด ---
+#
+# 2026-09-10: รัน flakiness บนบัญชี ChatGPT free แล้ว provider ตัดตั้งแต่ task ที่ 3 ของรอบ
+# แรกทุกรอบ เพราะ suite ยิง 15 task ติดกันไม่มีพักเลย ค่า default ยังเป็น 0 (พฤติกรรมเดิม)
+# — เปิดใช้เฉพาะตอนรันบนบัญชีที่มีเพดานต่ำ
+
+
+@pytest.mark.asyncio
+async def test_no_delay_between_tasks_by_default():
+    with patch("backend.app.core.evaluation.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_fake_result())
+        with patch("backend.app.core.evaluation.asyncio.sleep", AsyncMock()) as sleep:
+            await run_evaluation(tasks=_FAKE_TASKS, url="https://example.com")
+
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_delay_falls_between_tasks_not_before_the_first_one():
+    with patch("backend.app.core.evaluation.Orchestrator") as MockOrchestrator:
+        MockOrchestrator.return_value.run_task = AsyncMock(return_value=_fake_result())
+        with patch("backend.app.core.evaluation.settings.eval_task_delay_seconds", 20.0):
+            with patch("backend.app.core.evaluation.asyncio.sleep", AsyncMock()) as sleep:
+                await run_evaluation(tasks=_FAKE_TASKS, url="https://example.com")
+
+    # 2 task = รอครั้งเดียว (ก่อนตัวที่สอง) ไม่ใช่สองครั้ง — ไม่มีเหตุผลให้รอก่อนเริ่ม
+    assert [c.args[0] for c in sleep.await_args_list] == [20.0]

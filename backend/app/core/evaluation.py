@@ -13,10 +13,12 @@ checkout), กลาง (RAG-based permission gate, บูรณาการ 3 �
 3 ชิ้น + ลบ 1 ชิ้น + checkout เต็ม flow)
 """
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from backend.app.config import settings
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.telemetry import (
     SOURCE_EVAL, new_run_id, write_step_trace, write_token_usage,
@@ -235,7 +237,10 @@ async def run_evaluation(
     # ลงมาเพื่อให้ 3 suite ใช้ id เดียวกัน ส่วนการรัน suite เดี่ยวๆ (run.py eval/orangehrm)
     # สร้างเอง trace จึง group ได้เสมอไม่ว่าจะเรียกจากทางไหน
     resolved_run_id = run_id or new_run_id("eval")
-    for task in tasks:
+    for index, task in enumerate(tasks):
+        # settings.eval_task_delay_seconds: เว้นจังหวะก่อน task ถัดไป ไม่ใช่ก่อนตัวแรก
+        if index and settings.eval_task_delay_seconds > 0:
+            await asyncio.sleep(settings.eval_task_delay_seconds)
         counting_ask_user_func, get_approval_count = _make_counting_auto_approve()
         started_at = time.monotonic()
         task_id = f"{resolved_run_id}-{task['name']}"

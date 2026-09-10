@@ -1467,7 +1467,7 @@ def run_release_gate_cmd():
         sys.exit(1)
 
 
-def run_flakiness_cmd(runs: str = ""):
+def run_flakiness_cmd(runs: str = "", delay: str = ""):
     """W_gate_is_noisy: รัน suite เดิมซ้ำหลายรอบบน commit เดียวกัน แล้วรายงานอัตราการผ่าน
     ราย task — ไม่ตัดสิน pass/fail และไม่ exit 1 เพราะคำถามของคำสั่งนี้คือ "task ไหนเชื่อได้"
     ไม่ใช่ "commit นี้ดีไหม"
@@ -1484,7 +1484,18 @@ def run_flakiness_cmd(runs: str = ""):
         repeats = max(2, int(runs)) if runs else 5
     except ValueError:
         repeats = 5
-    print(f"Provider: {settings.llm_provider} | รัน {repeats} รอบ (ยิง LLM จริงทุกรอบ)\n", flush=True)
+    # อาร์กิวเมนต์ที่สอง = วินาทีที่เว้นระหว่าง task (`run.py flakiness 5 30`) — บัญชี LLM ที่มี
+    # เพดานต่ำโดนตัดตั้งแต่ task ที่ 3 ถ้ายิงรวด ดู config.py::eval_task_delay_seconds
+    if delay:
+        try:
+            settings.eval_task_delay_seconds = max(0.0, float(delay))
+        except ValueError:
+            pass
+    pace = (
+        f" | เว้น {settings.eval_task_delay_seconds:.0f}s ระหว่าง task"
+        if settings.eval_task_delay_seconds > 0 else ""
+    )
+    print(f"Provider: {settings.llm_provider} | รัน {repeats} รอบ (ยิง LLM จริงทุกรอบ){pace}\n", flush=True)
 
     async def _run():
         outcome = await run_release_gate_repeated(repeats=repeats)
@@ -1634,7 +1645,12 @@ def main():
         sys.exit(1)
 
     _, func = action
-    func()
+    # 2026-09-10: เดิมเรียก func() เปล่าๆ เสมอ — `run.py flakiness 3` จึงรัน 5 รอบเงียบๆ
+    # เพราะพารามิเตอร์ของ run_flakiness_cmd(runs, delay) ไม่เคยได้รับค่าเลย (คำสั่งที่
+    # "ใช้ได้" อย่าง kpi อ่าน sys.argv เองในตัวฟังก์ชัน จึงไม่มีใครสังเกตว่าท่อนี้ตัน)
+    # ส่งเท่าที่ signature รับได้ ไม่งั้น TypeError เมื่อพิมพ์อาร์กิวเมนต์เกิน
+    accepted = func.__code__.co_argcount
+    func(*sys.argv[2:2 + accepted])
 
 
 if __name__ == "__main__":

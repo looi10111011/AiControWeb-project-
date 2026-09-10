@@ -2751,3 +2751,68 @@ async def test_openai_plain_text_reply_does_not_swallow_unrelated_errors():
         with pytest.raises(RuntimeError, match="401"):
             await llm._openai_plain_text_reply(client, "m", "sys", "hello")
     assert llm._openai_accepts_max_output_tokens is True
+
+
+
+# --- W_openai_throttle_backoff: 404 ที่แปลว่า "รอแป๊บ" ไม่ใช่ "ไม่มีโมเดลนี้" ---
+#
+# วัดจากรันจริง 2026-09-10 (บัญชี ChatGPT free): ยิงผ่าน 6-9 call ติดกัน แล้วทุก call ถัดไป
+# ได้ 404 "The model `gpt-5.5` does not exist or you do not have access to it." สำหรับโมเดล
+# ตัวเดิมที่เพิ่งสำเร็จ แล้วกลับมาใช้ได้เองในราวหนึ่งถึงสองนาทีโดยไม่ต้องแก้อะไร
+
+_THROTTLE_404 = (
+    "Error code: 404 - {'error': {'message': 'The model `gpt-5.5` does not exist or you "
+    "do not have access to it.', 'code': 'model_not_found'}}"
+)
+
+
+def test_a_404_for_a_model_that_just_worked_reads_as_throttling():
+    assert llm._looks_like_openai_throttle(Exception(_THROTTLE_404)) is True
+    assert llm._looks_like_openai_throttle(Exception("429 Too Many Requests")) is True
+    # error ชนิดอื่นต้องพังทันที ไม่ใช่รอ 105 วินาทีแล้วค่อยพัง
+    assert llm._looks_like_openai_throttle(Exception("Store must be set to false")) is False
+    assert llm._looks_like_openai_throttle(Exception("401 invalid_token")) is False
+
+
+@pytest.mark.asyncio
+async def test_a_throttled_call_waits_and_succeeds_instead_of_killing_the_task():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=[Exception(_THROTTLE_404), "stream-ok"])
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        result = await llm._openai_create_with_backoff(client, model="m")
+
+    assert result == "stream-ok"
+    assert client.responses.create.await_count == 2
+    sleep.assert_awaited_once()
+    # รอบแรกรอเท่ากับค่า base ไม่ใช่ยิงซ้ำทันที (cooldown จริงเป็นนาที)
+    assert sleep.await_args.args[0] == llm.settings.openai_throttle_base_wait_seconds
+
+
+@pytest.mark.asyncio
+async def test_the_wait_doubles_and_then_gives_up():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=Exception(_THROTTLE_404))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(Exception, match="model_not_found"):
+            await llm._openai_create_with_backoff(client, model="m")
+
+    base = llm.settings.openai_throttle_base_wait_seconds
+    assert [c.args[0] for c in sleep.await_args_list] == [base, base * 2, base * 4]
+    assert client.responses.create.await_count == llm.settings.openai_throttle_max_retries + 1
+    # ผลรวมการรอต้องอยู่ใต้ llm_step_timeout_seconds ไม่งั้น orchestrator ตัดทิ้งก่อนได้ผล
+    assert sum(c.args[0] for c in sleep.await_args_list) < llm.settings.llm_step_timeout_seconds
+
+
+@pytest.mark.asyncio
+async def test_an_error_that_is_not_throttling_fails_immediately():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=Exception("Store must be set to false"))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(Exception, match="Store must be set"):
+            await llm._openai_create_with_backoff(client, model="m")
+
+    sleep.assert_not_awaited()
+    assert client.responses.create.await_count == 1

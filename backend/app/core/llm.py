@@ -2765,6 +2765,49 @@ _OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS = 1024
 _openai_accepts_max_output_tokens = True
 
 
+# W_openai_throttle_backoff (2026-09-10): codex endpoint รายงาน "โดน rate limit" ด้วยรูป
+# ที่อ่านแล้วเข้าใจผิดได้ง่ายที่สุดเท่าที่จะเป็นไปได้ — 404 "The model `gpt-5.5` does not
+# exist or you do not have access to it." สำหรับโมเดลตัวเดิมที่เพิ่งเรียกสำเร็จเมื่อ 10
+# วินาทีก่อน (ไม่ใช่ 429 ตามที่ควรจะเป็น) ตัวชี้ขาดว่าเป็น rate limit ไม่ใช่ชื่อโมเดลผิด คือ
+# มันเปลี่ยนกลางรันแล้วหายเองเมื่อรอ — ถ้าชื่อโมเดลผิดจริงจะพังตั้งแต่ call แรกและไม่มีวันหาย
+_OPENAI_THROTTLE_MARKERS = (
+    "model_not_found", "does not exist or you do not have", "429",
+    "rate limit", "too many requests", "quota",
+)
+
+
+def _looks_like_openai_throttle(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in _OPENAI_THROTTLE_MARKERS)
+
+
+async def _openai_create_with_backoff(client: AsyncOpenAI, **kwargs):
+    """responses.create() ที่รอแล้วลองใหม่เมื่อโดน throttle — จุดเดียวที่ทุก call ของ
+    provider openai ผ่าน (tool loop / plain text / forced tool call)
+
+    รอแบบเพิ่มเป็นเท่าตัว (15 -> 30 -> 60) เพราะ cooldown ที่วัดได้จริงอยู่ราว 1-2 นาที
+    การลองใหม่ทันทีจึงไม่มีประโยชน์ นอกจากเผา call ให้โดนตัดต่อไปอีก
+
+    ไม่ retry error ชนิดอื่นเลย — ชื่อโมเดลที่ผิดจริง/token หมดอายุ ต้องพังเร็วให้เห็น
+    ไม่ใช่เงียบไป 105 วินาทีแล้วค่อยพัง"""
+    last_error: Optional[Exception] = None
+    for attempt in range(settings.openai_throttle_max_retries + 1):
+        try:
+            return await client.responses.create(**kwargs)
+        except Exception as e:
+            if not _looks_like_openai_throttle(e) or attempt >= settings.openai_throttle_max_retries:
+                raise
+            last_error = e
+            wait = settings.openai_throttle_base_wait_seconds * (2 ** attempt)
+            print(
+                f"⚠️ openai ถูก throttle (รอบ {attempt + 1}/"
+                f"{settings.openai_throttle_max_retries}) — รอ {wait:.0f}s แล้วลองใหม่",
+                flush=True,
+            )
+            await asyncio.sleep(wait)
+    raise last_error  # pragma: no cover - ลูปข้างบนคืนค่าหรือ raise ไปแล้วเสมอ
+
+
 async def _openai_plain_text_reply(client, model: str, instructions: str, prompt: str) -> str:
     """ยิง responses.create แบบข้อความล้วน + เก็บผลจาก stream — จุดเดียวที่ทุก branch openai
     ที่ไม่ใช่ tool-calling ใช้ร่วมกัน (chat/ไฟล์/รูป//context) เพื่อให้เพดาน output และ
@@ -2782,7 +2825,7 @@ async def _openai_plain_text_reply(client, model: str, instructions: str, prompt
         }
         if with_cap:
             kwargs["max_output_tokens"] = _OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS
-        return await client.responses.create(**kwargs)
+        return await _openai_create_with_backoff(client, **kwargs)
 
     if _openai_accepts_max_output_tokens:
         try:
@@ -2857,7 +2900,8 @@ async def _openai_forced_tool_call(
     tool นี้ตัวเดียว แต่กันไว้เหมือน next_action_openai()'s fallback) — ผู้เรียกแต่ละตัวมี
     "คืนค่า safe default เมื่อ result เป็น None" อยู่แล้วเหมือนกันหมด (ดู pattern เดียวกับ
     Anthropic/Gemini branch ของฟังก์ชันเดียวกัน)"""
-    stream = await client.responses.create(
+    stream = await _openai_create_with_backoff(
+        client,
         model=model,
         instructions=system_prompt,
         input=[{"role": "user", "content": prompt}],
@@ -3066,7 +3110,8 @@ async def _openai_one_turn(
     W_token_cut W2: instructions = _PROMPT_CORE คงที่ทุกเทิร์น (endpoint นี้บังคับ
     store=False อยู่แล้ว จึงพึ่ง prefix cache ผ่าน instructions+input ที่นิ่ง) บล็อกที่ gate
     ตามบริบทถูกต่อท้าย user turn โดย _build_user_turn_text() แทน"""
-    stream = await client.responses.create(
+    stream = await _openai_create_with_backoff(
+        client,
         model=model,
         instructions=_PROMPT_CORE,
         input=messages,
@@ -3462,7 +3507,8 @@ async def generate_text(client, model: str, prompt: str, provider: str) -> str:
         # disclosure เต็ม) — input ต้องเป็น list เสมอ (ไม่ใช่ string เปล่าๆ) และ store=False
         # บังคับ ยืนยันแล้วจริงจาก error response ของ endpoint เอง (ดู _consume_openai_text_
         # stream()/_openai_oauth_headers() ด้านบนสำหรับรายละเอียดเต็ม)
-        stream = await client.responses.create(
+        stream = await _openai_create_with_backoff(
+        client,
             model=model,
             input=[{"role": "user", "content": prompt}],
             stream=True,
@@ -4126,7 +4172,8 @@ async def answer_image_query(
             # shape จาก openai SDK's ResponseInputImageParam โดยตรง ไม่ใช่เดา — detail เป็น
             # required field ของ SDK เลือก "auto" ให้ provider ตัดสินใจความละเอียดเอง)
             image_b64 = base64.b64encode(image_bytes).decode("ascii")
-            stream = await client.responses.create(
+            stream = await _openai_create_with_backoff(
+        client,
                 model=model,
                 instructions=_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT,
                 input=[{

@@ -825,3 +825,28 @@ def test_a_few_infra_failures_do_not_invalidate_an_otherwise_real_run():
     names = {r["name"] for r in task_flakiness([summary])}
     assert "dead" not in names
     assert len(names) == 10
+
+
+
+def test_run_py_passes_command_line_arguments_to_the_menu_function():
+    """2026-09-10: `run.py flakiness 3` รัน 5 รอบเงียบๆ มาตลอด เพราะ main() เรียก func()
+    เปล่าๆ พารามิเตอร์ของ run_flakiness_cmd(runs, delay) จึงไม่เคยได้ค่า — คำสั่งอื่นที่รับ
+    อาร์กิวเมนต์ (kpi) อ่าน sys.argv เองในตัวฟังก์ชัน จึงไม่มีใครสังเกตว่าท่อนี้ตัน
+
+    เทสต์อ่านซอร์สจริงเหมือนเทสต์ทะเบียนเลขเมนู: การ import run.py มาเรียก main() จะไป
+    แตะ ACTIONS ที่ทุกตัวเปิด browser/ยิง LLM จริง"""
+    import re
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "run.py").read_text(encoding="utf-8")
+
+    dispatch = text[text.index("    _, func = action"):]
+    dispatch = dispatch[:dispatch.index("if __name__")]
+    # เทียบทั้งบรรทัด ไม่ใช่ substring — คอมเมนต์ที่อธิบายบั๊กนี้มีคำว่า func() อยู่ด้วย
+    calls = [ln.strip() for ln in dispatch.splitlines() if ln.strip() == "func()"]
+    assert not calls, "main() ต้องไม่เรียก func() แบบไม่ส่งอาร์กิวเมนต์"
+    assert "sys.argv[2:" in dispatch, "main() ต้องส่ง sys.argv ต่อให้คำสั่งที่รับอาร์กิวเมนต์"
+
+    # และคำสั่ง flakiness ต้องยังรับทั้งจำนวนรอบและดีเลย์
+    signature = re.search(r"def run_flakiness_cmd\(([^)]*)\)", text).group(1)
+    assert "runs" in signature and "delay" in signature

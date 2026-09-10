@@ -85,6 +85,7 @@ from typing import Optional
 
 from playwright.async_api import async_playwright
 
+from backend.app.config import settings
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.telemetry import (
     SOURCE_EVAL, new_run_id, write_step_trace, write_token_usage,
@@ -380,7 +381,10 @@ async def run_miniwob_evaluation(
     # W_eval_trace: เหมือน evaluation.py::run_evaluation — release_gate.py ส่ง run_id ของมันลงมา
     # ให้ทั้ง 3 suite ใช้ร่วมกัน ส่วนการรัน suite นี้เดี่ยวๆ (run.py miniwob) สร้างเอง
     resolved_run_id = run_id or new_run_id("eval")
-    for task_name in tasks:
+    for index, task_name in enumerate(tasks):
+        # เหมือน evaluation.py — เว้นจังหวะก่อน task ถัดไป ไม่ใช่ก่อนตัวแรก
+        if index and settings.eval_task_delay_seconds > 0:
+            await asyncio.sleep(settings.eval_task_delay_seconds)
         task_id = f"{resolved_run_id}-{task_name}"
         started_at = time.monotonic()
         try:

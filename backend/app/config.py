@@ -50,6 +50,24 @@ class Settings(BaseSettings):
     # พูดถึง "ChatGPT account" ชวนให้เข้าใจผิดว่าเป็นเรื่องบัญชี ทั้งที่เป็นเรื่องชื่อโมเดล
     openai_model: str = "gpt-5.5"
 
+    # W_openai_throttle_backoff (2026-09-10): บัญชี ChatGPT ที่ไม่ใช่แพลนจ่ายเงินยิง codex
+    # endpoint ได้เป็น "ชุด" แล้วต้องพัก — วัดจากรันจริง: ผ่าน 6-9 call ติดกัน แล้วโดนตัด
+    # ทุก call เป็นเวลาราว 1-2 นาที แล้วกลับมาใช้ได้เองโดยไม่ต้องทำอะไร (11:20:12 ตาย ->
+    # 11:20:36 ใช้ได้ ห่างกัน 24 วินาที) เดิมไม่มีการรอเลย call แรกที่โดนตัดจึงฆ่าทั้ง task
+    # ทันที — task ที่ยาวอย่าง long_flow (13 call ติดกัน) ไม่มีทางจบได้เลย
+    #
+    # ผูกกับ llm_step_timeout_seconds (180s): ผลรวมของการรอทุกรอบต้องน้อยกว่าค่านั้น ไม่งั้น
+    # orchestrator จะ timeout ทิ้งไปเองก่อนที่การรอจะได้ผล — 15+30+60 = 105s เหลือให้ตัว
+    # request จริงอีก 75s ถ้าจะเพิ่ม retry ต้องขยาย llm_step_timeout_seconds ด้วยเสมอ
+    openai_throttle_max_retries: int = 3
+    openai_throttle_base_wait_seconds: float = 15.0
+
+    # หน่วงระหว่าง task ของ eval suite (0 = ไม่หน่วง ตามพฤติกรรมเดิม) — backoff ด้านบน
+    # กู้ call ที่โดนตัดไปแล้ว ส่วนค่านี้ลดโอกาสโดนตัดตั้งแต่แรก สองอย่างนี้แก้คนละครึ่งของ
+    # ปัญหาเดียวกัน และ **ค่านี้อย่างเดียวไม่พอ**: task อย่าง long_flow ยิง 13 call ติดกัน
+    # ภายใน task เดียว การเว้นช่วง "ระหว่าง" task จึงช่วยมันไม่ได้เลย ต้องมี backoff ด้วย
+    eval_task_delay_seconds: float = 0.0
+
     # W_eval: release gate (ดู core/release_gate.py) — รวมผล eval suite ทั้งหมด (SauceDemo/
     # OrangeHRM/MiniWoB) เขียนเป็น JSON ต่อ run ไว้ที่ dir นี้ tag ด้วย git commit + model
     # แล้วเทียบกับผลรันล่าสุดก่อนหน้า
