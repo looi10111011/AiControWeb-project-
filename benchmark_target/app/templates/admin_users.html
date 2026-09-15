@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Users — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Users</h1>
+  <a class="btn btn-primary" href="/admin/users/new">Add User</a>
+</div>
+
+<form method="get" action="/admin/users" class="filter-bar">
+  <input type="text" name="q" placeholder="Search username" value="{{ q }}">
+  <button type="submit">Search</button>
+  <a href="/admin/users">Reset</a>
+</form>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Username</th><th>Role</th><th>Linked Employee</th><th>Status</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}</td>
+      <td>
+        <form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form">
+          <select name="role" onchange="this.form.submit()">
+            {% for r in ['admin', 'supervisor', 'ess'] %}
+            <option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      </td>
+      <td>{% if u.first_name %}{{ u.first_name }} {{ u.last_name }}{% else %}—{% endif %}</td>
+      <td><span class="status-badge status-{{ 'active' if u.enabled else 'terminated' }}">
+        {{ 'enabled' if u.enabled else 'disabled' }}
+      </span></td>
+      <td>
+        {% if u.id != user.id %}
+        <form method="post" action="/admin/users/{{ u.id }}/toggle-enabled" class="inline-form">
+          <button type="submit" class="btn btn-small">{{ 'Disable' if u.enabled else 'Enable' }}</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

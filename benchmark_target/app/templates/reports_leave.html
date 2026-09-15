@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Leave Report — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Leave Report ({{ rows|length }})</h1>
+  <a class="btn btn-primary"
+     href="/reports/leave?start_date={{ start_date }}&end_date={{ end_date }}&status={{ status }}&format=csv">Export CSV</a>
+</div>
+
+<form method="get" action="/reports/leave" class="filter-bar">
+  <input type="date" name="start_date" value="{{ start_date }}">
+  <input type="date" name="end_date" value="{{ end_date }}">
+  <select name="status">
+    <option value="">All statuses</option>
+    {% for s in ['pending', 'approved', 'rejected', 'cancelled'] %}
+    <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<table class="data-table">
+  <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.employee_code }}</td><td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.leave_type }}</td><td>{{ r.start_date }}</td><td>{{ r.end_date }}</td>
+      <td>{{ r.days }}</td><td><span class="status-badge">{{ r.status }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

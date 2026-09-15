@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Leave — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Leave Requests</h1>
+  {% if can_create %}<a class="btn btn-primary" href="/leave/requests/new">Apply for Leave</a>{% endif %}
+</div>
+
+{% if balances %}
+<div class="panel">
+  <h2>My Leave Balance</h2>
+  <div class="card-row">
+    {% for b in balances %}
+    <div class="stat-card"><div class="stat-value">{{ b.balance_days }}</div><div class="stat-label">{{ b.name }}</div></div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<form method="get" action="/leave/requests" class="filter-bar">
+  <select name="status">
+    <option value="">All statuses</option>
+    {% for s in ['pending', 'approved', 'rejected', 'cancelled'] %}
+    <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+  <a href="/leave/requests">Reset</a>
+</form>
+
+{% if requests|length == 0 %}
+<p class="empty-state">No leave requests.</p>
+{% else %}
+<table class="data-table">
+  <thead>
+    <tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Comment</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in requests %}
+    <tr>
+      <td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.leave_type_name }}</td>
+      <td>{{ r.start_date }} &rarr; {{ r.end_date }}</td>
+      <td>{{ r.days }}</td>
+      <td><span class="status-badge status-{{ 'active' if r.status in ['approved'] else 'terminated' if r.status in ['rejected','cancelled'] else '' }}">{{ r.status }}</span></td>
+      <td>{{ r.comment or '' }}</td>
+      <td>
+        {% if r.status == 'pending' and can_approve %}
+        <form method="post" action="/leave/requests/{{ r.id }}/approve" class="inline-form">
+          <button type="submit" class="btn btn-small">Approve</button>
+        </form>
+        <form method="post" action="/leave/requests/{{ r.id }}/reject" class="inline-form">
+          <button type="submit" class="btn btn-small btn-danger">Reject</button>
+        </form>
+        {% elif r.status == 'pending' %}
+        <form method="post" action="/leave/requests/{{ r.id }}/cancel" class="inline-form"
+              onsubmit="return confirm('Cancel this leave request?');">
+          <button type="submit" class="btn btn-small">Cancel</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

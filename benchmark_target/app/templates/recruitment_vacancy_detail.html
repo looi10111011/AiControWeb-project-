@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ vacancy.title }} — Hermes HRM{% endblock %}
+{% block content %}
+<h1>{{ vacancy.title }} <span class="status-badge status-{{ 'active' if vacancy.status == 'open' else 'terminated' }}">{{ vacancy.status }}</span></h1>
+<p>{{ vacancy.department }}</p>
+
+<table class="data-table">
+  <thead><tr><th>Candidate</th><th>Email</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for c in candidates %}
+    <tr>
+      <td>{{ c.first_name }} {{ c.last_name }}</td>
+      <td>{{ c.email }}</td>
+      <td><span class="status-badge">{{ c.status }}</span></td>
+      <td><a href="/recruitment/candidates/{{ c.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p><a href="/recruitment/vacancies">&larr; Back to Vacancies</a></p>
+{% endblock %}

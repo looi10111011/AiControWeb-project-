@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="card-row">
+  <div class="stat-card">
+    <div class="stat-value">{{ total_employees }}</div>
+    <div class="stat-label">Active employees</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ total_users }}</div>
+    <div class="stat-label">Enabled user accounts</div>
+  </div>
+  {% if user.role == 'supervisor' %}
+  <div class="stat-card">
+    <div class="stat-value">{{ direct_reports_count }}</div>
+    <div class="stat-label">Direct reports</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if my_employee %}
+<div class="panel">
+  <h2>My profile</h2>
+  <p>{{ my_employee.first_name }} {{ my_employee.last_name }} — {{ my_employee.job_title }}, {{ my_employee.department }}</p>
+  <a href="/pim/employees/{{ my_employee.id }}">View my profile</a>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Quick actions</h2>
+  <ul class="quick-actions">
+    <li><a href="/pim/employees">Browse employees</a></li>
+    {% if user.role == 'admin' %}
+    <li><a href="/pim/employees/new">Add employee</a></li>
+    <li><a href="/admin/users">Manage users</a></li>
+    {% endif %}
+  </ul>
+</div>
+{% endblock %}

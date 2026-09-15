@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Employees — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Employees ({{ total }})</h1>
+  {% if can_create %}<a class="btn btn-primary" href="/pim/employees/new">Add Employee</a>{% endif %}
+</div>
+
+<form method="get" action="/pim/employees" class="filter-bar">
+  <input type="text" name="q" placeholder="Search name or employee code" value="{{ q }}">
+  <select name="department">
+    <option value="">All departments</option>
+    {% for d in departments %}
+    <option value="{{ d }}" {% if d == department %}selected{% endif %}>{{ d }}</option>
+    {% endfor %}
+  </select>
+  <select name="status">
+    <option value="">All statuses</option>
+    <option value="active" {% if status == 'active' %}selected{% endif %}>Active</option>
+    <option value="terminated" {% if status == 'terminated' %}selected{% endif %}>Terminated</option>
+  </select>
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <input type="hidden" name="direction" value="{{ direction }}">
+  <button type="submit">Search</button>
+  <a href="/pim/employees">Reset</a>
+</form>
+
+{% macro sort_link(col, label) %}
+  {% set next_dir = 'desc' if (sort == col and direction == 'asc') else 'asc' %}
+  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ col }}&direction={{ next_dir }}&page={{ page }}">
+    {{ label }}{% if sort == col %} {{ '▲' if direction == 'asc' else '▼' }}{% endif %}
+  </a>
+{% endmacro %}
+
+{% if employees|length == 0 %}
+<p class="empty-state">No employees match this search/filter.</p>
+{% else %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>{{ sort_link('employee_code', 'Code') }}</th>
+      <th>{{ sort_link('first_name', 'First Name') }}</th>
+      <th>{{ sort_link('last_name', 'Last Name') }}</th>
+      <th>{{ sort_link('department', 'Department') }}</th>
+      <th>Job Title</th>
+      <th>{{ sort_link('hire_date', 'Hire Date') }}</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in employees %}
+    <tr>
+      <td>{{ e.employee_code }}</td>
+      <td>{{ e.first_name }}</td>
+      <td>{{ e.last_name }}</td>
+      <td>{{ e.department }}</td>
+      <td>{{ e.job_title }}</td>
+      <td>{{ e.hire_date }}</td>
+      <td><span class="status-badge status-{{ e.status }}">{{ e.status }}</span></td>
+      <td><a href="/pim/employees/{{ e.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<nav class="pagination" aria-label="Pagination">
+  {% if page > 1 %}
+  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ sort }}&direction={{ direction }}&page={{ page - 1 }}">Previous</a>
+  {% endif %}
+  <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}
+  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ sort }}&direction={{ direction }}&page={{ page + 1 }}">Next</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

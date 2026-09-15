@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{% if employee %}Edit Employee{% else %}Add Employee{% endif %} — Hermes HRM{% endblock %}
+{% block content %}
+<h1>{% if employee %}Edit Employee{% else %}Add Employee{% endif %}</h1>
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post"
+      action="{% if employee %}/pim/employees/{{ employee.id }}/edit{% else %}/pim/employees/new{% endif %}"
+      class="employee-form">
+  {% if employee %}<input type="hidden" name="version" value="{{ employee.updated_at }}">{% endif %}
+
+  <label for="first_name">First Name</label>
+  <input id="first_name" name="first_name" required value="{{ employee.first_name if employee else '' }}">
+
+  <label for="last_name">Last Name</label>
+  <input id="last_name" name="last_name" required value="{{ employee.last_name if employee else '' }}">
+
+  <label for="department">Department</label>
+  <select id="department" name="department" required>
+    {% for d in departments %}
+    <option value="{{ d }}" {% if employee and employee.department == d %}selected{% endif %}>{{ d }}</option>
+    {% endfor %}
+  </select>
+
+  <label for="job_title">Job Title</label>
+  <select id="job_title" name="job_title" required>
+    {% for dept, titles in job_titles.items() %}
+      {% for t in titles %}
+      <option value="{{ t }}" {% if employee and employee.job_title == t %}selected{% endif %}>{{ t }} ({{ dept }})</option>
+      {% endfor %}
+    {% endfor %}
+  </select>
+
+  <label for="supervisor_id">Supervisor</label>
+  <select id="supervisor_id" name="supervisor_id">
+    <option value="">— None —</option>
+    {% for s in supervisors %}
+    <option value="{{ s.id }}" {% if employee and employee.supervisor_id == s.id %}selected{% endif %}>
+      {{ s.first_name }} {{ s.last_name }} ({{ s.department }})
+    </option>
+    {% endfor %}
+  </select>
+
+  <label for="hire_date">Hire Date</label>
+  <input id="hire_date" name="hire_date" type="date" required value="{{ employee.hire_date if employee else '' }}">
+
+  <label for="leave_balance_annual">Annual Leave Balance (days)</label>
+  <input id="leave_balance_annual" name="leave_balance_annual" type="number" min="0" max="60"
+         value="{{ employee.leave_balance_annual if employee else 18 }}">
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save</button>
+    <a class="btn" id="cancel-link"
+       href="{% if employee %}/pim/employees/{{ employee.id }}{% else %}/pim/employees{% endif %}">Cancel</a>
+  </div>
+</form>
+
+<script>
+  // Dirty-form guard (spec 7: "Discard changes?" on leaving a dirty form). Native
+  // beforeunload dialog — no custom modal needed for this level of realism.
+  (function () {
+    const form = document.querySelector('form.employee-form');
+    let dirty = false;
+    let submitting = false;
+    form.addEventListener('input', () => { dirty = true; });
+    form.addEventListener('submit', () => { submitting = true; });
+    window.addEventListener('beforeunload', (e) => {
+      if (dirty && !submitting) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+  })();
+</script>
+{% endblock %}

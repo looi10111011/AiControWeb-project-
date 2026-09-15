@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Timesheet — Hermes HRM{% endblock %}
+{% block content %}
+<h1>{% if editing_id %}Edit Timesheet{% else %}New Timesheet{% endif %}</h1>
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{% if editing_id %}/time/timesheets/{{ editing_id }}/edit{% else %}/time/timesheets/new{% endif %}">
+  {% if not editing_id %}
+  <label for="week_start_date">Week Start (Monday)</label>
+  <input id="week_start_date" name="week_start_date" type="date" required value="{{ week_start_date }}">
+  {% else %}
+  <p><strong>Week of {{ week_start_date }}</strong></p>
+  {% endif %}
+
+  <table class="data-table">
+    <thead><tr><th>Day</th><th>Project</th><th>Hours</th></tr></thead>
+    <tbody>
+      {% for label, entry in day_entries %}
+      <tr>
+        <td>{{ label }}</td>
+        <td><input name="project_{{ loop.index0 }}" placeholder="Project / activity" value="{{ entry.project }}"></td>
+        <td><input name="hours_{{ loop.index0 }}" type="number" step="0.5" min="0" max="24" value="{{ entry.hours }}"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save Draft</button>
+    <a class="btn" href="/time/timesheets">Cancel</a>
+  </div>
+</form>
+{% endblock %}

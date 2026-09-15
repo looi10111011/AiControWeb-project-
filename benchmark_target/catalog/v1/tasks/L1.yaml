@@ -1,0 +1,519 @@
+- task_id: AUTH-LOGIN-SUCCESS-ADMIN
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Log in as the admin user and reach the dashboard.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0001
+      field: status
+      value: active
+- task_id: AUTH-LOGIN-INVALID-PASSWORD
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Attempt to log in as "admin" with an incorrect password and confirm the "Invalid username
+      or password." message is shown.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: http_redirect
+    expected:
+      location: /login
+- task_id: AUTH-LOGIN-DISABLED-ACCOUNT
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - daniel.garcia
+  goal:
+    description: Attempt to log in as "daniel.garcia" (a disabled account) and confirm the disabled-account
+      message is shown, not a generic error.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: http_redirect
+    expected:
+      location: /login
+- task_id: AUTH-LOGOUT
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Log in as admin, then log out and confirm the login page is shown again.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: http_redirect
+    expected:
+      location: /login
+- task_id: PIM-SEARCH-01
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Sarah Chen" in the Employees list and confirm EMP-0003 appears in
+      the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0003
+      field: status
+      value: active
+- task_id: PIM-SEARCH-02
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Sarah Chan" in the Employees list and confirm EMP-0011 appears in
+      the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0011
+      field: status
+      value: active
+- task_id: PIM-SEARCH-03
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Michael Smith" in the Employees list and confirm EMP-0004 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0004
+      field: status
+      value: active
+- task_id: PIM-SEARCH-04
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Michael Smyth" in the Employees list and confirm EMP-0012 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0012
+      field: status
+      value: active
+- task_id: PIM-SEARCH-05
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Jon Park" in the Employees list and confirm EMP-0020 appears in
+      the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0020
+      field: status
+      value: active
+- task_id: PIM-SEARCH-06
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "John Park" in the Employees list and confirm EMP-0021 appears in
+      the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0021
+      field: status
+      value: active
+- task_id: PIM-SEARCH-07
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Kristen Lee" in the Employees list and confirm EMP-0027 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0027
+      field: status
+      value: active
+- task_id: PIM-SEARCH-08
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Kirsten Lee" in the Employees list and confirm EMP-0028 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0028
+      field: status
+      value: active
+- task_id: PIM-SEARCH-09
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "James Wilson" in the Employees list and confirm EMP-0008 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0008
+      field: status
+      value: active
+- task_id: PIM-SEARCH-10
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee "Grace Thompson" in the Employees list and confirm EMP-0024 appears
+      in the results.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0024
+      field: status
+      value: active
+- task_id: PIM-VIEW-OWN-PROFILE
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson" and view your own employee profile.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0008
+      field: status
+      value: active
+- task_id: PIM-FILTER-DEPARTMENT-ENGINEERING
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees list to the "Engineering" department only.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0001
+      field: department
+      value: Engineering
+- task_id: PIM-FILTER-STATUS-TERMINATED
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees list to show only "Terminated" employees.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees
+- task_id: PIM-SORT-BY-HIRE-DATE
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Sort the Employees list by Hire Date ascending.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees
+- task_id: PIM-PAGINATE-TO-PAGE-3
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Navigate to page 3 of the Employees list.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees
+- task_id: LEAVE-VIEW-BALANCE
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson" and view your own Annual leave balance.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: http_redirect
+    expected:
+      location: /leave/requests
+- task_id: TIME-VIEW-MY-TIMESHEETS
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson" and view your own timesheets list.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets
+  verification:
+    type: http_redirect
+    expected:
+      location: /time/timesheets
+- task_id: PERF-VIEW-MY-REVIEWS
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson" and view your performance reviews.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/performance/reviews
+  verification:
+    type: http_redirect
+    expected:
+      location: /performance/reviews
+- task_id: REPORTS-VIEW-HOME
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Open the Reports section as admin.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/reports
+  verification:
+    type: http_redirect
+    expected:
+      location: /reports
+- task_id: ADMIN-VIEW-USERS-LIST
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Open the Users list under Admin.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: RECRUITMENT-VIEW-VACANCIES
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Open the Vacancies list under Recruitment.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/vacancies
+  verification:
+    type: http_redirect
+    expected:
+      location: /recruitment/vacancies
+- task_id: DASHBOARD-SUPERVISOR-DIRECT-REPORTS-COUNT
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: Log in as supervisor "alice.nguyen" and read the direct-reports count card on the dashboard.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: http_redirect
+    expected:
+      location: /dashboard
+- task_id: PIM-VIEW-SPECIFIC-PROFILE
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: View the employee profile for EMP-0008 (James Wilson).
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/8
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0008
+      field: status
+      value: active
+- task_id: ADMIN-VIEW-DISABLED-USER-STATUS
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Find "daniel.garcia" in the Users list and confirm it shows as disabled.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: PIM-EMPTY-SEARCH-RESULT
+  revision: 1
+  level: L1
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search the Employees list for a name that does not exist ("Zzyzx") and confirm the empty-state
+      message is shown.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Apply for Leave — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Apply for Leave</h1>
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/leave/requests/new">
+  <label for="leave_type_id">Leave Type</label>
+  <select id="leave_type_id" name="leave_type_id" required>
+    {% for lt in leave_types %}
+    <option value="{{ lt.id }}">{{ lt.name }}</option>
+    {% endfor %}
+  </select>
+
+  <label for="start_date">Start Date</label>
+  <input id="start_date" name="start_date" type="date" required>
+
+  <label for="end_date">End Date</label>
+  <input id="end_date" name="end_date" type="date" required>
+
+  <label for="comment">Comment</label>
+  <textarea id="comment" name="comment" rows="3"></textarea>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Submit</button>
+    <a class="btn" href="/leave/requests">Cancel</a>
+  </div>
+</form>
+{% endblock %}

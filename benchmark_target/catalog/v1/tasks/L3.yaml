@@ -1,0 +1,687 @@
+- task_id: LEAVE-FULL-CYCLE-APPROVE-01
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - james.wilson
+  - alice.nguyen
+  goal:
+    description: Log in as "james.wilson" and submit a 2-day Annual leave request. Log out, log in as
+      supervisor "alice.nguyen", approve it. Log back in as "james.wilson" and verify the request shows
+      as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0008
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Annual
+      start_date: '2026-04-06'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - sarah.chan
+  - bob.martinez
+  goal:
+    description: Log in as "sarah.chan" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "bob.martinez", approve it. Log back in as "sarah.chan" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0011
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0011
+      leave_type: Annual
+      start_date: '2026-04-08'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-03
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - matthew.lopez
+  - sarah.chen
+  goal:
+    description: Log in as "matthew.lopez" and submit a 2-day Annual leave request. Log out, log in as
+      supervisor "sarah.chen", approve it. Log back in as "matthew.lopez" and verify the request shows
+      as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0014
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0014
+      leave_type: Annual
+      start_date: '2026-04-13'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-04
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - joseph.taylor
+  - michael.smith
+  goal:
+    description: Log in as "joseph.taylor" and submit a 2-day Annual leave request. Log out, log in as
+      supervisor "michael.smith", approve it. Log back in as "joseph.taylor" and verify the request shows
+      as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0018
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0018
+      leave_type: Annual
+      start_date: '2026-04-15'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-05
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - john.park
+  - emma.johnson
+  goal:
+    description: Log in as "john.park" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "emma.johnson", approve it. Log back in as "john.park" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0021
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0021
+      leave_type: Annual
+      start_date: '2026-04-20'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-06
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - ethan.white
+  - david.kim
+  goal:
+    description: Log in as "ethan.white" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "david.kim", approve it. Log back in as "ethan.white" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0025
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0025
+      leave_type: Annual
+      start_date: '2026-04-22'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-07
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - lily.lewis
+  - olivia.brown
+  goal:
+    description: Log in as "lily.lewis" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "olivia.brown", approve it. Log back in as "lily.lewis" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0030
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0030
+      leave_type: Annual
+      start_date: '2026-04-27'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-08
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - lucas.young
+  - alice.nguyen
+  goal:
+    description: Log in as "lucas.young" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "alice.nguyen", approve it. Log back in as "lucas.young" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0035
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0035
+      leave_type: Annual
+      start_date: '2026-04-29'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-09
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - jack.adams
+  - bob.martinez
+  goal:
+    description: Log in as "jack.adams" and submit a 2-day Annual leave request. Log out, log in as supervisor
+      "bob.martinez", approve it. Log back in as "jack.adams" and verify the request shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0041
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0041
+      leave_type: Annual
+      start_date: '2026-05-04'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-APPROVE-10
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - scarlett.roberts
+  - sarah.chen
+  goal:
+    description: Log in as "scarlett.roberts" and submit a 2-day Annual leave request. Log out, log in
+      as supervisor "sarah.chen", approve it. Log back in as "scarlett.roberts" and verify the request
+      shows as approved.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0046
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0046
+      leave_type: Annual
+      start_date: '2026-05-06'
+      expected_status: approved
+- task_id: LEAVE-FULL-CYCLE-REJECT
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - james.wilson
+  - alice.nguyen
+  goal:
+    description: Log in as "james.wilson", submit a leave request, then as supervisor "alice.nguyen" reject
+      it with a comment. Log back in as the employee and verify the rejected status and comment are visible.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0008
+    leave_type: Sick
+    min_days: 1
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Sick
+      start_date: '2026-04-13'
+      expected_status: rejected
+- task_id: TIME-FULL-CYCLE-REJECT-RESUBMIT-APPROVE
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - sarah.chan
+  - bob.martinez
+  goal:
+    description: Log in as "sarah.chan", create and submit a timesheet. As supervisor "bob.martinez",
+      reject it. Log back in as the employee, edit and resubmit it, then approve it as the supervisor.
+      Verify the final status is approved.
+  preconditions: []
+  allowed_changes:
+  - timesheet.create
+  - timesheet.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0011
+      week_start_date: '2026-03-09'
+      expected_status: approved
+- task_id: RECRUITMENT-FULL-HIRE-WORKFLOW
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Shortlist candidate Priya Natarajan, schedule an interview, then hire them. Verify a
+      new employee record is created in the Engineering department.
+  preconditions: []
+  allowed_changes:
+  - candidate.status
+  - employee.create
+  forbidden_changes:
+  - employee.profile
+  url: http://localhost:8100/recruitment/candidates/1
+  verification:
+    type: custom
+    verifier: candidate.hired
+    args:
+      candidate_email: priya.n@example.test
+- task_id: PERF-FULL-CYCLE-SELF-MANAGER-FINALIZE
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - matthew.lopez
+  - sarah.chen
+  - admin
+  goal:
+    description: Log in as "matthew.lopez" and submit a self-review. Log in as supervisor "sarah.chen"
+      and submit the manager review (this finalizes it). Log in as admin and close the review cycle. Verify
+      the review is finalized.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: performance.review.finalized
+    args:
+      employee_code: EMP-0014
+      cycle_name: 2026 H1 Review
+- task_id: CROSS-MODULE-CREATE-EMPLOYEE-AND-LOGIN
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Create a new employee, then create a linked ESS user account for them, then verify the
+      new user can log in and see their own profile.
+  preconditions: []
+  allowed_changes:
+  - employee.create
+  - user.create
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/new
+  verification:
+    type: state_diff
+    expected:
+      employees:
+        created:
+        - {}
+      users:
+        created:
+        - role: ess
+- task_id: PIM-DEACTIVATE-SUPERVISOR-INTEGRITY-CHECK
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Deactivate supervisor "michael.smith"'s employee record (EMP-0004) and confirm their
+      direct reports' records are untouched (their supervisor link may now point at a terminated employee,
+      which is expected — no orphaned or deleted rows should result).
+  preconditions:
+  - type: employee.status
+    employee_code: EMP-0004
+    status: active
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/4
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0004
+      field: status
+      value: terminated
+- task_id: REPORTS-FILTERED-EXPORT-VERIFY-CONTENT
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Leave Report to "approved" status only and export it as CSV; confirm the exported
+      file contains only approved leave requests.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/reports/leave
+  verification:
+    type: download_artifact
+    expected:
+      filename_contains: leave_report
+      content_type: text/csv
+- task_id: DOCUMENTS-UPLOAD-REPLACE-DOWNLOAD-01
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Upload a document to employee EMP-0018, delete it, re-upload a document with the same
+      filename, then download it and confirm the content matches the second upload.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/18
+  verification:
+    type: custom
+    verifier: document.exists
+    args:
+      employee_code: EMP-0018
+      filename: contract.txt
+- task_id: DOCUMENTS-UPLOAD-REPLACE-DOWNLOAD-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Upload a document to employee EMP-0035, delete it, re-upload a document with the same
+      filename, then download it and confirm the content matches the second upload.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/35
+  verification:
+    type: custom
+    verifier: document.exists
+    args:
+      employee_code: EMP-0035
+      filename: contract.txt
+- task_id: TIME-FULL-CYCLE-REJECT-RESUBMIT-APPROVE-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - lily.lewis
+  - olivia.brown
+  goal:
+    description: Log in as "lily.lewis", create and submit a timesheet. As supervisor "olivia.brown",
+      reject it. Log back in as the employee, edit and resubmit it, then approve it as the supervisor.
+      Verify the final status is approved.
+  preconditions: []
+  allowed_changes:
+  - timesheet.create
+  - timesheet.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0030
+      week_start_date: '2026-03-23'
+      expected_status: approved
+- task_id: TIME-FULL-CYCLE-REJECT-RESUBMIT-APPROVE-03
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - jack.adams
+  - alice.nguyen
+  goal:
+    description: Log in as "jack.adams", create and submit a timesheet. As supervisor "alice.nguyen",
+      reject it. Log back in as the employee, edit and resubmit it, then approve it as the supervisor.
+      Verify the final status is approved.
+  preconditions: []
+  allowed_changes:
+  - timesheet.create
+  - timesheet.status
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0041
+      week_start_date: '2026-03-30'
+      expected_status: approved
+- task_id: RECRUITMENT-FULL-HIRE-WORKFLOW-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Hire candidate Yuki Tanaka, who is already at the interview stage. Verify a new employee
+      record is created in the Engineering department.
+  preconditions: []
+  allowed_changes:
+  - candidate.status
+  - employee.create
+  forbidden_changes:
+  - employee.profile
+  url: http://localhost:8100/recruitment/candidates/3
+  verification:
+    type: custom
+    verifier: candidate.hired
+    args:
+      candidate_email: yuki.tanaka@example.test
+- task_id: PIM-DEACTIVATE-SUPERVISOR-INTEGRITY-CHECK-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Deactivate supervisor "emma.johnson"'s employee record (EMP-0005) and confirm their direct
+      reports' records are untouched (their supervisor link may now point at a terminated employee, which
+      is expected — no orphaned or deleted rows should result).
+  preconditions:
+  - type: employee.status
+    employee_code: EMP-0005
+    status: active
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/5
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0005
+      field: status
+      value: terminated
+- task_id: PIM-DEACTIVATE-SUPERVISOR-INTEGRITY-CHECK-03
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Deactivate supervisor "david.kim"'s employee record (EMP-0006) and confirm their direct
+      reports' records are untouched (their supervisor link may now point at a terminated employee, which
+      is expected — no orphaned or deleted rows should result).
+  preconditions:
+  - type: employee.status
+    employee_code: EMP-0006
+    status: active
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/6
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0006
+      field: status
+      value: terminated
+- task_id: REPORTS-FILTERED-EXPORT-VERIFY-CONTENT-02
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees Report to "Sales" department and "active" status, export it as CSV,
+      and confirm every row matches both filters.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/reports/employees
+  verification:
+    type: download_artifact
+    expected:
+      filename_contains: employees_report
+      content_type: text/csv
+- task_id: LEAVE-SUBMIT-THEN-CANCEL-BEFORE-APPROVAL
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - scarlett.roberts
+  goal:
+    description: Log in as "scarlett.roberts", submit a leave request, then cancel it yourself before
+      any supervisor acts on it. Confirm the final status is cancelled and the leave balance is fully
+      restored.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0046
+    leave_type: Annual
+    min_days: 2
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0046
+      leave_type: Annual
+      start_date: '2026-05-25'
+      expected_status: cancelled
+- task_id: TIME-SUPERVISOR-APPROVES-MULTIPLE-IN-ONE-SESSION
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: James Wilson has a submitted timesheet. Log in as his supervisor, approve it, then confirm
+      the Team view no longer lists it as pending approval.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets?view=team
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0008
+      week_start_date: '2026-01-05'
+      expected_status: approved
+- task_id: CROSS-MODULE-CREATE-SUPERVISOR-ACCOUNT-AND-VERIFY-SCOPE
+  revision: 1
+  level: L3
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Create a new employee, create a linked user account with the supervisor role, then log
+      in as that user and confirm they see a Team view (direct reports) but no other employee's data outside
+      their scope.
+  preconditions: []
+  allowed_changes:
+  - employee.create
+  - user.create
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/new
+  verification:
+    type: state_diff
+    expected:
+      employees:
+        created:
+        - {}
+      users:
+        created:
+        - role: supervisor

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Timesheets — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Timesheets</h1>
+  {% if can_create %}<a class="btn btn-primary" href="/time/timesheets/new">New Timesheet</a>{% endif %}
+</div>
+
+{% if can_view_team %}
+<div class="filter-bar">
+  <a class="btn {% if view == 'mine' %}btn-primary{% endif %}" href="/time/timesheets?view=mine">Mine</a>
+  <a class="btn {% if view == 'team' %}btn-primary{% endif %}" href="/time/timesheets?view=team">Team</a>
+</div>
+{% endif %}
+
+{% if timesheets|length == 0 %}
+<p class="empty-state">No timesheets.</p>
+{% else %}
+<table class="data-table">
+  <thead><tr><th>Employee</th><th>Week Of</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for t in timesheets %}
+    <tr>
+      <td>{{ t.first_name }} {{ t.last_name }}</td>
+      <td>{{ t.week_start_date }}</td>
+      <td><span class="status-badge status-{{ 'active' if t.status == 'approved' else 'terminated' if t.status == 'rejected' else '' }}">{{ t.status }}</span></td>
+      <td><a href="/time/timesheets/{{ t.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

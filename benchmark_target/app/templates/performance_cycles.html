@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Review Cycles — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Review Cycles</h1>
+<table class="data-table">
+  <thead><tr><th>Cycle</th><th>Status</th><th>Finalized</th><th></th></tr></thead>
+  <tbody>
+    {% for c in cycles %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td><span class="status-badge status-{{ 'active' if c.status == 'open' else 'terminated' }}">{{ c.status }}</span></td>
+      <td>{{ c.finalized }} / {{ c.total }}</td>
+      <td>
+        {% if c.status == 'open' %}
+        <form method="post" action="/performance/cycles/{{ c.id }}/close" class="inline-form"
+              onsubmit="return confirm('Close this review cycle? No further self/manager reviews can be submitted.');">
+          <button type="submit" class="btn btn-danger btn-small">Close Cycle</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
