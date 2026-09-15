@@ -96,7 +96,7 @@ async def test_get_or_create_user_browser_mode_connects_via_cdp():
     assert session.page is mock_page
     assert session.context is mock_context
     mock_connect.assert_awaited_once()
-    mock_resolve.assert_awaited_once_with(mock_context, "https://example.com", None, "always_reuse")
+    mock_resolve.assert_awaited_once_with(mock_context, "https://example.com", None, "always_reuse", target_tab_id=None)
 
 
 @pytest.mark.asyncio

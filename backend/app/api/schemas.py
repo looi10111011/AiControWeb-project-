@@ -1,6 +1,7 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from backend.app.core.embedded_page import PageSnapshot
 
 # Security (follow-up to SEC audit): attached_file_content_base64 ไม่เคยมี size limit เลย
 # ตั้งแต่ต้น — เสี่ยง memory-exhaustion/zip-bomb ผ่าน .xlsx/.docx (ทั้งคู่เป็น zip ข้างใน
@@ -40,6 +41,16 @@ class CreateTaskRequest(BaseModel):
     # --remote-debugging-port (ดู index.html ข้อความเตือนข้าง checkbox นี้) headless ไม่มี
     # ผลใดๆ เมื่อตั้งค่านี้เป็น True (browser ที่ต่อเข้าไปเป็นของ user เองอยู่แล้ว)
     use_user_browser: bool = False
+    embedded_page: Optional[PageSnapshot] = None
+    target_tab_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_embedded_tab(self):
+        if self.embedded_page and (self.use_user_browser or self.target_tab_id):
+            raise ValueError("embedded_page cannot use a CDP browser")
+        if self.target_tab_id and (not self.use_user_browser or not self.session_id):
+            raise ValueError("target_tab_id requires use_user_browser and session_id")
+        return self
     # None = ใช้ settings.user_browser_tab_reuse_policy — มีผลเฉพาะตอน
     # use_user_browser=True: "ask" (default) ถามก่อนใช้ tab เดิมของ conversation นี้ต่อ
     # ทุกเทิร์น, "always_reuse" ใช้ต่อเลยไม่ถาม (เหมาะกับ follow-up หลายเทิร์นใน
@@ -173,6 +184,7 @@ class ExecutePlanRequest(BaseModel):
 
 
 class TaskCreatedResponse(BaseModel):
+    embedded_token: Optional[str] = None
     task_id: str
     status: str
 

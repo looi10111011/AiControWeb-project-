@@ -131,21 +131,27 @@
   .settings-item select, .settings-item input[type=number]{ background:var(--surface-3); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:7px 9px; font-size:12.5px; }
   .settings-item select{ max-width:150px; }
   .settings-item input[type=number]{ width:78px; }
-  /* แถว checkbox: ช่องติ๊กอยู่ซ้ายสุดของแถว และทั้งแถวคลิกได้ (เป็น <label>) */
-  /* ไอคอนเป็นตัวสวิตช์เอง: ติด = ไอคอนสว่างสีน้ำเงิน, ปิด = ไอคอนจางพร้อมขีดทับ — อ่านสถานะได้
-     จากที่เดียว ไม่ต้องกวาดตาไปมาระหว่างช่องติ๊กกับไอคอนที่บอกเรื่องเดียวกัน
+  /* แถวโหมด (Headless / Use my browser / Auto-approve): เลย์เอาต์เดียวกับแถว Theme —
+     ไอคอนซ้าย, ข้อความกลาง, ปุ่มสองช่อง (Off/On หรือ Manual/Auto) ชิดขวา หน้าตาเดียวกับ
+     .theme-toggle — ทั้งแถวเป็น <label> คลิกที่ไหนก็ได้เพื่อสลับโหมด ช่องที่ตรงกับสถานะ
+     ปัจจุบันติดสว่างด้วย input:checked / :not(:checked) ไม่มี JS
      ตัว <input> ยังอยู่ใน DOM ตำแหน่งเดิม (แค่มองไม่เห็น) เพราะโค้ดทั้งหน้าอ่านค่าจาก
      #headless/#useUserBrowser/#autoApprove.checked ตรงๆ และยังต้องโฟกัสด้วยคีย์บอร์ดได้ */
-  .settings-item-check{ align-items:flex-start; cursor:pointer; }
-  .settings-item-check input[type=checkbox]{ position:absolute; width:1px; height:1px; opacity:0; margin:0; pointer-events:none; }
-  .settings-item-check .settings-icon{ margin-top:0; position:relative; transition:color .12s, border-color .12s, background-color .12s; }
-  .settings-item-check input:checked + .settings-icon{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
-  /* ขีดทับตอนปิด — เส้นทแยงพาดไอคอน แบบเดียวกับไอคอน "ตาขีดฆ่า" ที่คนคุ้นอยู่แล้ว */
-  .settings-item-check input:not(:checked) + .settings-icon::after{
-    content:""; position:absolute; left:4px; right:4px; top:50%; height:1.5px; border-radius:1px;
-    background:var(--faint); transform:rotate(-45deg); }
-  .settings-item-check:hover .settings-icon{ border-color:var(--brand); }
-  .settings-item-check input:focus-visible + .settings-icon{ outline:2px solid var(--brand); outline-offset:2px; }
+  .settings-item-toggle{ cursor:pointer; }
+  .settings-item-toggle input[type=checkbox]{ position:absolute; width:1px; height:1px; opacity:0; margin:0; pointer-events:none; }
+  .settings-item-toggle .settings-icon{ transition:color .12s, border-color .12s, background-color .12s; }
+  .settings-item-toggle input:checked + .settings-icon{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
+  .settings-item-toggle:hover .settings-icon{ border-color:var(--brand); }
+  .mode-toggle{ display:flex; flex:0 0 auto; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+  .mode-toggle span{ background:var(--surface); color:var(--muted); font-size:11px; font-weight:600; padding:5px 9px; transition:background-color .12s, color .12s; }
+  .mode-toggle span + span{ border-left:1px solid var(--border); }
+  .settings-item-toggle:hover .mode-toggle{ border-color:var(--brand); }
+  .settings-item-toggle input:checked ~ .settings-item-control .mode-toggle .mode-on{ background:var(--brand); color:var(--brand-ink); }
+  .settings-item-toggle input:not(:checked) ~ .settings-item-control .mode-toggle .mode-off{ background:var(--brand); color:var(--brand-ink); }
+  .settings-item-toggle input:focus-visible ~ .settings-item-control .mode-toggle{ outline:2px solid var(--brand); outline-offset:2px; }
+  /* "Use my browser" ปิด headless -> input ถูก disabled: จางทั้งแถวให้เห็นว่าตั้งค่าไม่ได้ */
+  .settings-item-toggle:has(input:disabled){ opacity:.45; cursor:default; }
+  @media (prefers-reduced-motion: reduce){ .mode-toggle span{ transition:none; } }
   .settings-linked{ font-size:11.5px; color:var(--ink); text-align:right; max-width:150px; overflow-wrap:anywhere; }
   /* แถวนี้มี select อยู่ใต้คำอธิบาย (ไม่ใช่ชิดขวาเหมือนแถวอื่น) เพราะตัวเลือกยาวเกินกว่าจะ
      อ่านรู้เรื่องในคอลัมน์แคบๆ ทางขวา */
@@ -653,21 +659,23 @@
                 <input type="number" id="maxSteps" value="30" min="1" max="200">
               </div>
             </div>
-            <label class="settings-item settings-item-check">
+            <label class="settings-item settings-item-toggle">
               <input type="checkbox" id="headless" checked>
               <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
               <div class="settings-item-text">
                 <div class="settings-item-title">Headless (hide the browser window)</div>
                 <div class="settings-item-desc">Watch progress in the Live view above instead &mdash; uncheck only if you need to interact with the real window yourself, e.g. to solve a CAPTCHA</div>
               </div>
+              <span class="settings-item-control"><span class="mode-toggle" aria-hidden="true"><span class="mode-off">Off</span><span class="mode-on">On</span></span></span>
             </label>
-            <label class="settings-item settings-item-check">
+            <label class="settings-item settings-item-toggle">
               <input type="checkbox" id="useUserBrowser">
               <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M12 8h9.5M8.5 14L3.8 6.9M15.5 14l-4.7 8.1"/></svg></span>
               <div class="settings-item-text">
                 <div class="settings-item-title">Use my browser</div>
                 <div class="settings-item-desc">Opens a new tab in your own Chrome instead of a separate window &mdash; requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup</div>
               </div>
+              <span class="settings-item-control"><span class="mode-toggle" aria-hidden="true"><span class="mode-off">Off</span><span class="mode-on">On</span></span></span>
             </label>
             <div class="settings-item" id="tabReusePolicyRow" style="display:none;">
               <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M9 5v4"/></svg></span>
@@ -681,13 +689,14 @@
                 </select>
               </div>
             </div>
-            <label class="settings-item settings-item-check">
+            <label class="settings-item settings-item-toggle">
               <input type="checkbox" id="autoApprove">
               <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></span>
               <div class="settings-item-text">
                 <div class="settings-item-title">Auto-approve permission prompts</div>
                 <div class="settings-item-desc">Lets the agent act without asking</div>
               </div>
+              <span class="settings-item-control"><span class="mode-toggle" aria-hidden="true"><span class="mode-off">Manual</span><span class="mode-on">Auto</span></span></span>
             </label>
             </div>
           </section>

@@ -143,6 +143,7 @@ class SessionRegistry:
         ask_user_func: Optional[AskUserFunc],
         owner_token: Optional[str] = None,
         require_owner_token: bool = False,
+        target_tab_id: Optional[str] = None,
     ) -> BrowserSession:
         """session_id เคยเจอมาก่อน -> คืนตัวเดิมถ้ายัง healthy (ดู is_healthy()) ถ้าไม่
         healthy แล้วจะกู้คืนอัตโนมัติก่อนคืน (ดู _recover() — ไม่ fail ทันที) ไม่เคยเจอ ->
@@ -161,6 +162,31 @@ class SessionRegistry:
         ไม่ส่งมา (None) = fallback ไป generate เองฝั่ง server (ใช้กับ caller ภายในที่ไม่ต้อง
         พึ่งกลไกนี้ เช่น demo/test — ดู BrowserSession.owner_token default_factory)"""
         existing = self._sessions.get(session_id)
+        if target_tab_id:
+            if not use_user_browser:
+                raise ValueError("target_tab_id requires use_user_browser")
+            async with self._lock_for(session_id):
+                existing = self._sessions.get(session_id)
+                if existing is not None:
+                    if not owner_token or existing.owner_token != owner_token:
+                        raise SessionOwnershipError("Invalid session owner token")
+                    if existing.mode != "user_browser" or existing.context is None:
+                        raise ValueError("Agent Bar requires a user browser session")
+                    # Re-resolve the sender on every request; never recover by opening a tab.
+                    existing.page, _ = await resolve_target_page(
+                        existing.context, target_url, ask_user_func, "always_reuse",
+                        target_tab_id=target_tab_id,
+                    )
+                    existing.last_active_at = time.time()
+                    return existing
+                session = await self._create(
+                    session_id, use_user_browser=True, headless=headless,
+                    target_url=target_url, pool=pool, tab_reuse_policy="always_reuse",
+                    ask_user_func=ask_user_func, owner_token=owner_token,
+                    target_tab_id=target_tab_id,
+                )
+                self._sessions[session_id] = session
+                return session
         if existing is not None:
             if (require_owner_token and not owner_token) or (
                 owner_token is not None and existing.owner_token != owner_token
@@ -363,6 +389,7 @@ class SessionRegistry:
         tab_reuse_policy: Optional[str],
         ask_user_func: Optional[AskUserFunc],
         owner_token: Optional[str] = None,
+        target_tab_id: Optional[str] = None,
     ) -> BrowserSession:
         # Security (SEC-4 follow-up): ใช้ owner_token ที่ caller ส่งมาเป็น secret ของ
         # session ใหม่นี้เลยถ้ามี ไม่ส่งมา (None) ปล่อยให้ BrowserSession's default_factory
@@ -379,10 +406,15 @@ class SessionRegistry:
             # อัตโนมัติ (รวมถึง _open_new_tab_in_same_window() ตอน recover ด้านบน — ไม่ต้อง
             # ติดตั้งซ้ำที่นั่น)
             await install_ssrf_guard(context)
-            page, _opened_new_tab = await resolve_target_page(
-                context, target_url, ask_user_func,
-                tab_reuse_policy or settings.user_browser_tab_reuse_policy,
-            )
+            try:
+                page, _opened_new_tab = await resolve_target_page(
+                    context, target_url, ask_user_func,
+                    tab_reuse_policy or settings.user_browser_tab_reuse_policy,
+                    target_tab_id=target_tab_id,
+                )
+            except Exception:
+                await playwright.stop()
+                raise
             return BrowserSession(session_id, "user_browser", page, context, browser, playwright, **session_kwargs)
 
         if headless is False:

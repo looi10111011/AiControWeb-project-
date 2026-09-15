@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -73,6 +74,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Browser Agent", lifespan=lifespan)
+# benchmark_target's Target Surface (port 8100) embeds a same-page "AI bar" widget that
+# calls this API directly from the browser (fetch + EventSource) — different origin, so
+# without CORS the browser blocks it outright regardless of auth. Origins are the two
+# fixed localhost ports this repo actually serves (benchmark_target/app/config.py
+# TARGET_HOST/TARGET_PORT) — not "*", since allow_credentials isn't needed here (no
+# cookies cross the origin boundary; the widget only ever calls JSON/SSE endpoints).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8100", "http://localhost:8100"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
 # Security 1.5: ผูก limiter เข้ากับ app.state (จุดที่ @limiter.limit() ใน routes.py คาดหวังไว้)
 # — เฉพาะ endpoint ที่แปะ decorator เองเท่านั้นที่โดนจำกัด (POST /tasks, POST
 # /api/site-manual/learn) ไม่กระทบ endpoint อื่นเลย
