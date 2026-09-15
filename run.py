@@ -4,6 +4,9 @@ run.py — จุดรันเดียวของโปรเจกต์ (�
 วิธีใช้:
     python run.py            # เปิดเมนูให้เลือก
     python run.py server     # รัน API server (uvicorn --reload)
+    python run.py web        # รัน backend + benchmark และเปิดหน้า benchmark พร้อม Agent Bar
+                              # (alias: web-all/webui/benchmark-web/both) ไม่ต้องเปิด CDP
+                              # Ctrl+C ครั้งเดียวหยุดทั้งสอง server
     python run.py test       # รัน pytest ทั้งหมด
     python run.py perception # รัน demo perception.py (login saucedemo.com)
     python run.py ingest [path]  # ingest คู่มือเข้า ChromaDB (default: manual_test.txt)
@@ -207,6 +210,88 @@ def run_server():
         [sys.executable, "-m", "uvicorn", "backend.app.main:app"],
         check=False,
     )
+
+
+_CHROMIUM_CANDIDATES = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+
+
+def _find_chromium_binary() -> str | None:
+    for path in _CHROMIUM_CANDIDATES:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def run_web_all():
+    # Start both services; the embedded assistant runs in the ordinary benchmark tab.
+    import time
+    import webbrowser
+
+    import httpx
+
+    from backend.app.config import settings
+    from benchmark_target.app.config import TARGET_HOST, TARGET_PORT
+
+    print("=== เปิด Benchmark HRM พร้อมผู้ช่วยในหน้าเว็บ — Ctrl+C เพื่อหยุด ===", flush=True)
+
+    main_url = f"http://{settings.api_host}:{settings.api_port}"
+    bench_url = f"http://{TARGET_HOST}:{TARGET_PORT}"
+
+    main_proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "backend.app.main:app",
+         "--host", settings.api_host, "--port", str(settings.api_port)],
+    )
+    bench_proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "benchmark_target.app.main:app",
+         "--host", TARGET_HOST, "--port", str(TARGET_PORT)],
+    )
+
+    def _wait_healthy(url: str, proc: subprocess.Popen, timeout: float = 20.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return False  # process died before ever answering /health
+            try:
+                if httpx.get(f"{url}/health", timeout=1.0).status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.5)
+        return False
+
+    if _wait_healthy(main_url, main_proc):
+        print(f'[Agent backend] Ready: {main_url} (runs in background)')
+    else:
+        print('[Agent backend] Startup failed; inspect the server log.')
+
+    if _wait_healthy(bench_url, bench_proc):
+        print(f'[Benchmark HRM] Ready: {bench_url} (in-page assistant; no CDP required)')
+        webbrowser.open(bench_url)
+    else:
+        print('[Benchmark HRM] Startup failed; inspect the server log.')
+
+    print('Press Ctrl+C to stop both servers.', flush=True)
+    try:
+        while main_proc.poll() is None and bench_proc.poll() is None:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for proc in (main_proc, bench_proc):
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+        for proc in (main_proc, bench_proc):
+            if proc is None:
+                continue
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 def run_tests():
@@ -1579,6 +1664,7 @@ ACTIONS = {
     "22": ("W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน, เทียบ baseline)", run_release_gate_cmd),
     "24": ("W_gate_is_noisy: วัดความไม่คงที่ของ benchmark (รันซ้ำหลายรอบบน commit เดียว)", run_flakiness_cmd),
     "23": ("W_production_kpi: สรุป telemetry ของงานจริง (อ่านอย่างเดียว ไม่รัน browser/LLM)", run_kpi_cmd),
+    "25": ("เปิด Benchmark HRM พร้อม Agent Bar ในหน้าเว็บ", run_web_all),
 }
 
 ALIASES = {
@@ -1621,6 +1707,11 @@ ALIASES = {
     "flakiness": "24",
     "flaky": "24",
     "gate": "22",
+    "web": "25",
+    "web-all": "25",
+    "webui": "25",
+    "benchmark-web": "25",
+    "both": "25",
 }
 
 

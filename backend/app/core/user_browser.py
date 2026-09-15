@@ -14,6 +14,7 @@ BrowserContext เดิมที่มี cookie จริงอยู่แล
 """
 
 import asyncio
+from urllib.parse import urlsplit
 from typing import Awaitable, Callable, Optional
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright
@@ -85,6 +86,7 @@ async def resolve_target_page(
     target_url: str,
     ask_user_func: Optional[AskUserFunc],
     tab_reuse_policy: str = "ask",
+    target_tab_id: Optional[str] = None,
 ) -> tuple[Page, bool]:
     """หา/เปิด page ที่จะใช้ทำ task บน context จริงของ user (ห้าม context.new_context()
     เด็ดขาด — context ที่ส่งเข้ามาต้องเป็นตัวเดียวกับที่มี cookie จริงอยู่แล้วเสมอ) คืน
@@ -109,6 +111,29 @@ async def resolve_target_page(
             f"tab_reuse_policy ไม่รู้จัก: {tab_reuse_policy!r} (ต้องเป็นหนึ่งใน "
             f"{sorted(VALID_TAB_REUSE_POLICIES)})"
         )
+
+    if target_tab_id:
+        origin = urlsplit(target_url)
+        matches = []
+        for candidate in context.pages:
+            candidate_url = urlsplit(candidate.url)
+            if (candidate_url.scheme, candidate_url.netloc) != (origin.scheme, origin.netloc):
+                continue
+            try:
+                marker = await candidate.evaluate(
+                    "() => document.getElementById('hermes-ai-bar-host')?.dataset.tabId"
+                )
+                if marker == target_tab_id:
+                    matches.append(candidate)
+            except Exception:
+                continue
+        if len(matches) != 1:
+            raise UserBrowserConnectError(
+                "ไม่พบแท็บ Agent Bar ที่ส่งคำสั่งใน browser ที่เชื่อมต่อ CDP "
+                "กรุณาเปิดหน้า benchmark ใน browser ที่เชื่อมต่อแล้วลองใหม่"
+            )
+        await matches[0].bring_to_front()
+        return matches[0], False
 
     target_domain = extract_domain(target_url)
     matched = await _find_matching_tab(context, target_domain)

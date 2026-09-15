@@ -56,6 +56,7 @@ from backend.app.core.goal_intent import detect_goal_language
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.perception import get_snapshot
 from backend.app.core.session_registry import SessionOwnershipError
+from backend.app.core.embedded_page import EmbeddedPage, PageExchange, origin, run_embedded_task
 from backend.app.permission.rules import extract_domain, install_ssrf_guard, normalize_domain
 from backend.app.site_learning import crawl_site, describe_page, extract_page
 from backend.app.site_learning.learn_manager import LearnManager
@@ -520,6 +521,7 @@ async def _run_with_resolved_browser(
         session = await session_registry.get_or_create(
             req.session_id,
             use_user_browser=req.use_user_browser,
+            target_tab_id=getattr(req, "target_tab_id", None),
             headless=req.headless,
             target_url=req.url,
             pool=pool,
@@ -707,6 +709,34 @@ def _apply_pending_replacement_value(req, pending_value_request: dict) -> None:
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
 @limiter.limit("10/minute")
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
+    if req.embedded_page is not None:
+        try:
+            if origin(req.url) != origin(req.embedded_page.url):
+                raise ValueError("Snapshot must belong to the requested origin")
+            page = EmbeddedPage(req.embedded_page)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        manager = request.app.state.task_manager
+        task_id = manager.new_task_id()
+        if not hasattr(request.app.state, "embedded_pages"):
+            request.app.state.embedded_pages = {}
+        request.app.state.embedded_pages[task_id] = page
+
+        async def embedded_event(event):
+            await manager.push_event(task_id, event)
+
+        async def run_page():
+            try:
+                return await run_embedded_task(
+                    page, req.goal, req.provider, req.max_steps,
+                    _make_ask_user_func(manager, task_id, req.auto_approve), embedded_event,
+                )
+            finally:
+                page.close()
+                request.app.state.embedded_pages.pop(task_id, None)
+
+        record = manager.submit(task_id, req.url, req.goal, req.provider, run_page())
+        return TaskCreatedResponse(task_id=record.task_id, status=record.status, embedded_token=page.token)
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
     file_chat_memory = request.app.state.file_chat_memory
@@ -740,6 +770,23 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
         attached_file_name=req.attached_file_name,
     )
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
+
+
+@router.get("/page-bridge")
+async def page_bridge_capabilities():
+    return {"version": 1, "execution": "in_page"}
+
+
+@router.post("/tasks/{task_id}/page")
+async def exchange_embedded_page(task_id: str, body: PageExchange, request: Request):
+    page = getattr(request.app.state, "embedded_pages", {}).get(task_id)
+    if page is None:
+        raise HTTPException(status_code=410, detail="Page task ended or backend restarted")
+    try:
+        command = page.exchange(body)
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"command": command}
 
 
 @router.post("/api/generate_plan", response_model=GeneratePlanResponse)
