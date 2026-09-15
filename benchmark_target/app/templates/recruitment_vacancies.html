@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Vacancies — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Vacancies</h1>
+<table class="data-table">
+  <thead><tr><th>Title</th><th>Department</th><th>Candidates</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for v in vacancies %}
+    <tr>
+      <td><a href="/recruitment/vacancies/{{ v.id }}">{{ v.title }}</a></td>
+      <td>{{ v.department }}</td>
+      <td>{{ v.candidate_count }}</td>
+      <td><span class="status-badge status-{{ 'active' if v.status == 'open' else 'terminated' }}">{{ v.status }}</span></td>
+      <td>
+        {% if can_manage %}
+        <form method="post" action="/recruitment/vacancies/{{ v.id }}/toggle-status" class="inline-form">
+          <button type="submit" class="btn btn-small">{{ 'Close' if v.status == 'open' else 'Reopen' }}</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

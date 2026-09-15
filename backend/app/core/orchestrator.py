@@ -6,10 +6,12 @@ finish_task(false) ก่อนเวลาอันควร (ด้านล�
 """
 
 import asyncio
+from difflib import SequenceMatcher
 import base64
 import re
 import sys
 import time
+import urllib.parse
 from typing import Awaitable, Callable, Optional
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
@@ -19,6 +21,7 @@ from backend.app.core import fastpath_executor
 from backend.app.core import llm
 from backend.app.core import long_term_memory
 from backend.app.core import procedural_memory
+from backend.app.core import state_filter
 from backend.app.core.actions import (
     REJECTED_BY_USER_MESSAGE,
     ActionResult,
@@ -27,8 +30,17 @@ from backend.app.core.actions import (
     goto,
     wait_stable,
 )
-from backend.app.core.memory import ShortTermMemory
-from backend.app.core.perception import get_snapshot
+# W_delete_all_intent: ใช้ตัวดึง key=value ตัวเดียวกับที่ W_deterministic_count ใช้ใน
+# read_page_data (ดู _goal_condition_values ด้านล่าง) — import ชื่อเดียวแทนที่จะ copy regex
+# มาไว้อีกที่ กัน 2 ที่ที่ต้องแก้พร้อมกันแบบ dom_locator/extractor
+from backend.app.core.actions import _KEY_VALUE_IN_QUERY_RE
+# W_count_answer_check: ทั้งตัวอ่านตัวเลขที่โค้ดนับไว้ (system_counted_conditions) และชุดคำที่
+# บ่งบอกว่า goal เป็นคำถามเชิงนับ อยู่ที่ actions.py ที่เดียวกับที่สร้างข้อความนั้นขึ้นมา —
+# import ชื่อมาใช้ ไม่ก็อป format/keyword มาไว้อีกที่
+from backend.app.core.actions import _COUNT_QUERY_KEYWORDS, system_counted_conditions
+from backend.app.core.goal_intent import canonical_intent, contains_keyword
+from backend.app.core.memory import ShortTermMemory, clip_result
+from backend.app.core.perception import LABEL_MARKERS, get_snapshot
 from backend.app.core.user_browser import connect_user_browser, resolve_target_page
 from backend.app.permission.rules import DEFAULT_NEEDS_CONFIRMATION, extract_domain, install_ssrf_guard
 from backend.app.rag import retriever
@@ -45,10 +57,10 @@ _PAGE_CHANGING_ACTIONS = {"click", "goto", "select", "go_back", "press_key"}
 # _MAX_PREMATURE_FALSE_FINISH_RETRIES ครั้งก่อน ถ้ายังยืนยัน false อีกถึงจะยอมรับจริง
 _MAX_PREMATURE_FALSE_FINISH_RETRIES = 2
 _PREMATURE_FALSE_FINISH_NUDGE = (
-    "ยังไม่ยอมรับ finish_task(success=false) นี้ —ยังเหลือ step ให้ลองอยู่ และหน้าเว็บ"
-    "ปัจจุบันอาจยังมี element ที่ทำต่อได้ (เช่น ปุ่มที่ยังไม่ได้กด, ช่องที่ยังว่าง) ให้ดู"
-    "indexed elements ล่าสุดอีกครั้งแล้วลองทำ action ที่ยังไม่ได้ลอง ถ้าลองจริงๆ แล้วไปต่อ"
-    "ไม่ได้จริง ค่อยเรียก finish_task(success=false) อีกครั้ง"
+    "This finish_task(success=false) is not accepted yet — steps remain, and the current "
+    "page may still hold elements you can act on (e.g. a button not yet pressed, a field "
+    "still empty). Look at the latest indexed elements again and try an action you haven't "
+    "tried. If you genuinely cannot proceed after that, call finish_task(success=false) again."
 )
 
 # W5[A] "Verify" (2026-07-15): W5 เดิมทำแค่ "Retry" (actions.py::_dispatch_with_retry)
@@ -67,6 +79,17 @@ _MAX_PREMATURE_TRUE_FINISH_RETRIES = 1
 # ต่อ (ไม่ finish_task ทันทีเงียบๆ — ให้ LLM เห็นเหตุผลแล้วเลือก action ต่อไปเอง เหมือน
 # escape valve อื่นในไฟล์นี้)
 _MAX_REQUEST_USER_INPUT_CALLS = 3
+
+# W_token_cut W3 (หลักฐานจาก live baseline 2026-09-02): เทิร์น LLM ที่ไม่ได้ลงมือทำอะไร
+# เกือบทั้งหมดคือ guard ปฏิเสธ action ซ้ำ + finish_task ที่ถูกตีกลับด้วยเหตุผลเดิม —
+# ไม่ลดความปลอดภัย แค่ไม่ให้ "เตือนเรื่องเดิมซ้ำ" กินเทิร์น LLM เต็มๆ อีก
+#
+# _MAX_TASK_GUARD_REJECTIONS: guard ปฏิเสธรวมทุกเหตุผลทั้ง task เกินนี้ = โมเดลติดลูป
+#   แก้ตัวจริง จบ task ตามความจริงแทนการเผา step budget ต่อ (ตัวนับ guard_rejections เป็น
+#   monotonic ไม่ reset ต่างจากโควตาต่อ guard ที่ reset ตอน action สำเร็จ — ดู W1)
+# _MAX_SAME_GUARD_REASON_REJECTIONS: เหตุผลเดียวโดนซ้ำเกินนี้ (ข้ามรอบ reset ได้) = ลูป
+_MAX_TASK_GUARD_REJECTIONS = 9
+_MAX_SAME_GUARD_REASON_REJECTIONS = 4
 
 # W44: qa_summary เดิมตอบด้วย llm.summarize_page() ตัวเดียว (ไม่มี tool ให้เรียกเลย) เห็น
 # แค่ page_text จาก get_snapshot() (interactive elements ล้วนๆ ไม่มีเนื้อหาตาราง/list) —
@@ -92,12 +115,13 @@ _QA_SUMMARY_MAX_STEPS = 4
 # region="navigation" ใน qa_is_nav_click ด้านล่างที่อนุญาตจริง) ไม่ใช่แค่ fill/click ช่อง
 # ค้นหาเหมือนเดิม
 _QA_SUMMARY_ACTION_REJECTED_NUDGE = (
-    "[ปฏิเสธ] คำถามนี้คือ qa_summary (ถามข้อมูล ไม่ใช่สั่งงาน) ไม่อนุญาตให้ทำ action ที่มีผล"
-    "ต่อหน้าเว็บ (fill/select/goto/...) ยกเว้น fill/click กับช่องค้นหา/ปุ่มค้นหา/ตัวกรอง"
-    "ข้อมูล หรือคลิกเมนู/nav เพื่อไปหน้าอื่นที่มีข้อมูลที่ต้องการได้เท่านั้น — ถ้าต้องการอ่าน"
-    "เนื้อหาเพิ่มเติมให้ใช้ type: 'read_page_data' แล้วเรียก finish_task พร้อมคำตอบสุดท้าย"
-    "ทันทีที่พอตอบคำถามได้ ห้ามสรุปว่า 'ไม่มีข้อมูล' ก่อนลองค้นหา/นำทางไปหาอย่างน้อย 1 ครั้ง "
-    "ถ้ายังไม่เคยลองเลย"
+    "[Rejected] This is a qa_summary question (asking for information, not issuing a "
+    "command), so actions that change the page (fill/select/goto/...) are not allowed — the "
+    "only exceptions are fill/click on a search box/search button/filter, or clicking a "
+    "menu/nav item to reach another page holding the information you need. To read more "
+    "content use type: 'read_page_data', then call finish_task with your final answer as "
+    "soon as you can answer the question. Never conclude 'there is no data' before trying to "
+    "search or navigate at least once."
 )
 
 # label ที่บ่งบอกว่า element เป้าหมายเป็นช่อง/ปุ่มค้นหา/กรองข้อมูลจริงๆ — ใช้เป็นชั้นสำรอง
@@ -119,17 +143,19 @@ def _label_looks_like_search(label: str) -> bool:
 # guidance นี้เกี่ยวกับ "การตอบคำถาม" ล้วนๆ ไม่เกี่ยวกับ action_task ที่ finish_task แค่สรุป
 # สั้นๆ ว่าทำอะไรไป)
 _QA_ANSWER_FORMAT_GUIDANCE = (
-    "\n\n[คำแนะนำการตอบ — สำคัญ]: ตอบเฉพาะข้อมูลที่ผู้ใช้ถามจริงๆ เท่านั้น อย่าแปะรายละเอียด"
-    "อื่นที่ไม่มีใครถามมาด้วย (เช่น ถ้าถามแค่ \"รายชื่อ\" ให้ตอบแค่ชื่อ ไม่ต้องพ่วงตำแหน่ง/"
-    "office/salary ที่ไม่ได้ถาม) ถ้าคำตอบมีหลายรายการ ให้จัดเป็นลิสต์แบบขึ้นบรรทัดใหม่ทีละข้อ"
-    "เสมอ (เช่น \"1. ...\\n2. ...\\n3. ...\") ห้ามเขียนรวมเป็นย่อหน้าเดียวยาวๆ"
+    "\n\n[Answer guidance — important]: answer only what the user actually asked for. Never "
+    "bolt on details nobody asked about (if they asked only for \"the names\", give just the "
+    "names — no job title/office/salary they didn't ask for). If the answer has multiple "
+    "entries, always format them as a list with one item per line (e.g. \"1. ...\\n2. ...\\n"
+    "3. ...\"); never run them together into one long paragraph."
 )
 
 _PREMATURE_TRUE_FINISH_NUDGE = (
-    "การเรียก finish_task(success=true) นี้ยังไม่มี action ใดๆ เกิดขึ้นเลยใน task นี้ "
-    "(steps_taken=0) — ก่อนยืนยัน success ให้ตรวจสอบอีกครั้งว่า indexed elements ล่าสุด "
-    "มีหลักฐานชัดเจนจริงๆ ว่า goal สำเร็จแล้ว ถ้าใช่จริง เรียก finish_task(success=true) "
-    "อีกครั้งได้เลย ถ้าไม่แน่ใจ ให้ลองทำ action ที่เกี่ยวข้องกับ goal ก่อน"
+    "This finish_task(success=true) comes with no action having happened at all in this task "
+    "(steps_taken=0) — before confirming success, check again that the latest indexed "
+    "elements really do give clear evidence the goal is done. If they genuinely do, call "
+    "finish_task(success=true) again. If you are unsure, perform an action related to the "
+    "goal first."
 )
 
 # ACC-3 (accuracy audit follow-up): symmetric กับ guard ด้านบน (steps_taken==0) และ
@@ -151,17 +177,32 @@ _MUTATING_ACTION_TYPES = {
     "submit", "delete", "purchase", "pay",
 }
 _PREMATURE_ALL_FAILED_NUDGE = (
-    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบแล้วพบว่า action ที่มีผลจริง"
-    "ต่อหน้าเว็บ (fill/click/select/...) ที่ลองมาทั้งหมดใน task นี้ล้มเหลวทุกครั้ง ไม่มีสักครั้ง"
-    "ที่สำเร็จเลย — ไม่น่าจะเป็นไปได้ที่ goal จะสำเร็จจริงทั้งที่ยังไม่เคยทำ action ได้สำเร็จแม้แต่"
-    "ครั้งเดียว ให้ตรวจสอบ index/element ที่เลือกอีกครั้ง (อาจ index ผิด/element หาไม่เจอ) แล้วลอง"
-    "ทางอื่น ถ้าลองจริงๆ แล้วสำเร็จ ค่อยเรียก finish_task(success=true) อีกครั้ง"
+    "This finish_task(success=true) is rejected — every page-changing action "
+    "(fill/click/select/...) attempted in this task failed; not one succeeded. The goal "
+    "cannot plausibly be complete when no action has ever succeeded even once. Re-check the "
+    "index/element you chose (the index may be wrong, or the element not found) and try "
+    "another route. Once something genuinely succeeds, call finish_task(success=true) again."
 )
+
+
+# W_readonly_goal_evidence (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26): guard ACC-3
+# ด้านบนถามว่า "มี action ไหนสำเร็จบ้างไหม" แต่ไปวัดด้วย _MUTATING_ACTION_TYPES อย่างเดียว —
+# goal ประเภทถามอย่างเดียว (เช่น "เจอกี่รายการ", "ชื่อสินค้าตัวแรกคืออะไร") ไม่มีวันมี
+# mutating action สำเร็จได้เลยโดยธรรมชาติ เส้นทางที่ถูกต้องของมันคือ goto -> read_page_data
+# -> finish_task เท่านั้น guard จึงปฏิเสธ finish_task(true) ที่ถูกต้องทุกครั้งจนหมดโควตา
+# เสีย LLM call ทิ้ง 2 รอบต่อ task ฟรีๆ (เห็นในรัน live: "[finish_task(true) ไม่มี mutating
+# action ไหนสำเร็จเลย 1/2]" ทั้งที่ read_page_data เพิ่งดึงตารางจริงมาได้สำเร็จ)
+#
+# read_page_data ที่สำเร็จคือ "หลักฐานว่าได้ข้อมูลจริงจากหน้าเว็บแล้ว" ซึ่งตรงกับเจตนาเดิมของ
+# guard นี้เป๊ะ (กัน claim สำเร็จทั้งที่ไม่เคยมีอะไรทำงานเลย) — ต่างจาก goto/go_back/switch_tab
+# ที่ตั้งใจไม่นับ เพราะ goto แรกสุดถูก record เป็น success=True ทุก task อยู่แล้ว ส่วน
+# read_page_data ไม่เคยถูก record เองอัตโนมัติ จะโผล่มาก็ต่อเมื่อโมเดลสั่งเองและได้ข้อมูลจริง
+_EVIDENCE_ACTION_TYPES = _MUTATING_ACTION_TYPES | {"read_page_data"}
 
 
 def _has_any_successful_mutating_action(history: list[dict]) -> bool:
     return any(
-        (h.get("cmd") or {}).get("type") in _MUTATING_ACTION_TYPES and h.get("success") is True
+        (h.get("cmd") or {}).get("type") in _EVIDENCE_ACTION_TYPES and h.get("success") is True
         for h in history
     )
 
@@ -173,11 +214,11 @@ def _has_any_successful_mutating_action(history: list[dict]) -> bool:
 # พร้อมกันได้ทั้งคู่) ไม่ว่า steps_taken จะเท่าไหร่ก็ตาม
 _MAX_PREMATURE_VALIDATION_ERROR_RETRIES = 2
 _PREMATURE_VALIDATION_ERROR_NUDGE_TEMPLATE = (
-    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจพบข้อความ error/validation ที่ยัง"
-    "แสดงอยู่บนหน้าปัจจุบัน: {errors} ห้ามถือว่า task สำเร็จทั้งที่ยังมี error พวกนี้ค้างอยู่ "
-    "ให้แก้ field ที่เกี่ยวข้องตามข้อความ error ก่อน (เช่น กรอกช่องที่ว่าง/แก้ค่าที่ไม่ถูกต้อง/"
-    "เปลี่ยนค่าที่ซ้ำ) แล้วลองใหม่ ถ้าแก้แล้ว error หายไปแล้วจริงๆ ค่อยเรียก "
-    "finish_task(success=true) อีกครั้ง"
+    "This finish_task(success=true) is rejected — error/validation messages are still shown "
+    "on the current page: {errors} Never treat the task as successful while these remain. "
+    "Fix the relevant field per the error message first (e.g. fill an empty field, correct "
+    "an invalid value, change a duplicate value), then retry. Once the errors are genuinely "
+    "gone, call finish_task(success=true) again."
 )
 
 # ARIA [role=alert] เป็นมาตรฐานข้ามเว็บ (ใช้ได้ทุกเว็บที่ทำ a11y ไว้) ส่วน [class*=error/
@@ -244,11 +285,11 @@ _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES = 2
 # _premature_mutation_action_hint() ด้านล่าง) — เดิม (W22) hardcode คำแนะนำ "กลับไปทำขั้นตอน
 # ลบ" ตรงๆ ในนี้ ผิดถ้าใช้กับ edit-all-intent goal (ไม่มีอะไรให้ "ลบ")
 _PREMATURE_DELETION_INCOMPLETE_NUDGE_TEMPLATE = (
-    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบ DOM จริงของหน้าปัจจุบันแล้วพบว่า"
-    "ยังเหลือรายการที่ตรงเงื่อนไขอยู่ {count} รายการ (ข้อความจริงบนหน้าเว็บ: \"{text}\") ห้ามถือว่า"
-    "ทำครบแล้ว/ไม่พบรายการที่ตรงเงื่อนไข ทั้งที่ตารางยังโชว์จำนวนมากกว่า 0 อยู่จริง — {action_hint}"
-    "จนกว่าจำนวนจะเหลือ 0/ขึ้น \"No Records Found\""
-    "จริงๆ ถึงจะเรียก finish_task(success=true) ได้"
+    "This finish_task(success=true) is rejected — checking the current page's real DOM shows "
+    "{count} entries still matching the condition (actual text on the page: \"{text}\"). "
+    "Never treat the job as complete, or claim no matching entries exist, while the table "
+    "genuinely still shows a count above 0 — {action_hint}until the count really reaches 0 "
+    "or the page shows \"No Records Found\", only then may you call finish_task(success=true)."
 )
 
 # W22: คำที่บ่งบอกว่า goal นี้เป็นงานลบข้อมูล/รายการ — ครอบคลุมทั้งไทย/อังกฤษ (ไม่ผูกกับคำว่า
@@ -263,6 +304,168 @@ def _is_deletion_intent_goal(goal: str) -> bool:
     docstring ของ _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES ด้านบนว่าทำไมต้อง scope แคบ)"""
     lower = (goal or "").lower()
     return any(kw in lower for kw in _DELETION_INTENT_KEYWORDS)
+
+
+# W_plan_keeps_goal_verb: แผนที่ LLM ร่างมาต้องยังทำ "สิ่งเดียวกับที่ goal สั่ง" — บั๊กจริง
+# live run 2026-08-27: goal สั่ง "ลบ user ที่ userrole=ess ออกให้หมด" แต่ planner ร่างแผนว่า
+# "เปิดรายการผู้ใช้ที่พบแต่ละรายการเพื่อแก้ไข และเปลี่ยน Role ออกจาก ESS" แล้ว agent ก็เดินตาม
+# แผนนั้นจริงๆ (กด Edit -> เปลี่ยน User Role) — user รายงานว่า "ไม่เดินตาม planner เลย" แต่
+# ความจริงคือเดินตามแผนเป๊ะ ปัญหาอยู่ที่แผนผิดชนิดงานมาตั้งแต่ต้น
+#
+# scope แคบไว้ที่ deletion อย่างเดียวโดยตั้งใจ: "ลบ" มีทางเลือกที่ดูสมเหตุสมผลแต่ผิด (แก้ค่า
+# แทนการลบ) และผลลัพธ์ต่างกันถาวร ส่วนงานอ่าน/ค้นหาไม่มี failure mode แบบนี้
+# W_plan_warn_not_abort: ข้อความที่ยัดเข้า messages ตั้งแต่เทิร์นแรกเมื่อแผนที่ user ยืนยันมา
+# ยังไม่ตรงชนิดงาน — เตือนโมเดลตรงๆ ว่าอย่าเดินตามส่วนที่ผิดของแผน ไม่ใช่หยุดทั้ง task
+# W_plan_progress_stall: stall detector ที่มีอยู่ 3 ตัว (action ซ้ำเป๊ะ / label เดิม / วนเป็นคาบ
+# 2-4) จับได้แต่ "ทำ action ซ้ำ" — agent ที่ทำ action *ต่างกันทุกครั้ง* แต่ไม่คืบหน้าตามแผนเลย
+# ไม่มีตัวไหนจับได้ และ counter ที่มีทั้งหมดในไฟล์นี้เป็นแบบ "reset เมื่อสำเร็จ" ไม่ใช่ "นับว่า
+# ผ่านไปกี่ครั้งแล้ว" จึงต้องมีตัวใหม่ — แต่ผูกกับ plan_cursor ที่มีอยู่แล้ว ไม่ได้สร้างนิยาม
+# "ความคืบหน้า" ตัวที่สอง
+#
+# advisory ล้วน ไม่บล็อก: จุดที่รู้ผลอยู่ *หลัง* dispatch ซึ่ง nudge แบบ reject+continue ใช้ไม่ได้
+# (จะทิ้ง tool_use ไว้โดยไม่มี tool_result ตอบ -> Anthropic/Groq error ดู docstring ของ
+# _force_loop_recovery) จึงแนบข้อความไปกับผลของ action แทน — pattern เดียวกับ blocked_note
+# ของ W_modal_check_on_failure ไม่เสียเทิร์น LLM เพิ่มและโมเดลเห็นทันที
+# W_action_matches_plan_step (W111): W_plan_progress_stall ด้านล่างเป็นแค่ *ตัวนับ* — มันถาม
+# ว่า "cursor ขยับไหม" ไม่ใช่ "สิ่งที่ทำตรงกับ step ที่กำลังทำอยู่ไหม" และ live run แสดงจุดอ่อน
+# ของมันตรงๆ: โมเดลใส่ completed_plan_step มาแทบทุก action ทำให้ cursor ขยับตลอด ตัวนับจึงไม่มี
+# วันถึงเกณฑ์ ทั้งที่งานไม่คืบเลย
+#
+# ตัวนี้จึง **ห้ามรีเซ็ตเมื่อ cursor ขยับ** (นั่นคือรูโหว่ของตัวนั้นพอดี) — รีเซ็ตเฉพาะเมื่อ
+# action *ตรงกับ step* จริงๆ เท่านั้น
+#
+# advisory ล้วน ไม่บล็อก และเป็น "สัญญาณอ่อน" โดยเจตนา: ข้อความของ step เขียนโดย LLM จึงกว้าง/
+# กำกวมได้ตลอด การเอาไปบล็อก action จะพังงานที่ถูกต้อง — เป้าหมายคือเตือนโมเดลให้กลับไปอ่าน step
+_MIN_PLAN_STEP_WORDS_TO_JUDGE = 3
+_MAX_ACTIONS_MISMATCHING_PLAN_STEP = 5
+# W_plan_cursor_needs_a_matching_action: หน่วงการเดินหน้า cursor ได้มากสุดกี่ครั้งติดกัน —
+# 2 พอที่จะกันการไล่ติ๊กรวดเดียว แต่ไม่มากจนแผนดูค้างในสายตาคนดู
+_MAX_BLOCKED_CURSOR_ADVANCES = 2
+_MAX_PLAN_MISMATCH_NOTES = 1
+
+_PLAN_MISMATCH_NOTE_TEMPLATE = (
+    " [None of your last {count} actions matched what the current plan step actually asks. "
+    "Step {step} of {total} says: {step_text!r}. Read it again and do that — or, if this page "
+    "cannot do it, go where it can instead of trying more variations here.]"
+)
+
+# คำที่ไม่ช่วยแยกแยะอะไรเลย ตัดทิ้งก่อนเทียบ ไม่งั้นเกือบทุก action จะ "ตรง" เพราะบังเอิญมีคำ
+# เชื่อมเหมือนกัน — ชุดเล็กโดยเจตนา เอาเฉพาะคำที่โผล่ในแผนแทบทุกข้อของโปรเจกต์นี้
+_PLAN_STEP_STOPWORDS = frozenset({
+    "หน้า", "แล้ว", "และ", "ที่", "ของ", "ให้", "ไป", "จาก", "เพื่อ", "การ", "ใน", "กับ",
+    "the", "and", "then", "for", "with", "from", "into", "page", "click", "on", "to", "a", "of",
+})
+
+
+def _plan_step_keywords(step_text: str) -> set[str]:
+    """คำที่พอจะใช้บอกได้ว่า step นี้พูดถึงอะไร — ตัดคำเชื่อมและคำสั้นทิ้ง"""
+    words = re.findall(r"[\w\u0e00-\u0e7f]+", (step_text or "").lower())
+    return {w for w in words if len(w) >= 3 and w not in _PLAN_STEP_STOPWORDS}
+
+
+def _action_matches_plan_step(step_text: str, action_label: str, action_type: str) -> Optional[bool]:
+    """action นี้ดูเหมือนกำลังทำ step นี้อยู่ไหม
+
+    None = ตัดสินไม่ได้ (step กว้าง/สั้นเกินไป หรือ action ไม่มี label ให้เทียบ) — ผู้เรียกต้อง
+    ไม่นับเป็น mismatch เพราะ "อ่านไม่ออก" กับ "ทำผิด" คนละเรื่องกัน
+    ใช้ _field_names_match() ที่ทนพิมพ์ผิด/คำไทยติดกันอยู่แล้ว ไม่สร้างตัวเทียบชุดที่สอง"""
+    if not (action_label or "").strip():
+        return None
+
+    # W_action_matches_plan_step: แผนถูกเขียนเป็นภาษาไทยแต่ label ของเว็บเป็นอังกฤษเกือบเสมอ
+    # ในโปรเจกต์นี้ — การเทียบ token ตรงๆ จึงตอบ "ไม่ตรง" ให้กับคู่ที่ถูกต้องอย่าง
+    # step "แล้วกดค้นหา" กับปุ่ม "Search" ซึ่งจะทำให้ guard นี้เตือนผิดเป็นปกติ
+    # ใช้ regex สองภาษาที่มีอยู่แล้วในไฟล์นี้เป็นสะพานข้ามภาษา แทนการสร้างพจนานุกรมใหม่
+    # (ทุกตัวครอบทั้งไทย/อังกฤษอยู่แล้วเพราะถูกเขียนมาเพื่ออ่าน label ของเว็บไทยตั้งแต่ต้น)
+    # ต้องเช็คก่อนเกณฑ์จำนวนคำด้านล่าง เพราะภาษาไทยไม่มีเว้นวรรค การตัดคำแบบ regex จึงได้
+    # token เดียวยาวๆ ต่อประโยค ทำให้ step ภาษาไทยเกือบทุกข้อมีคำน้อยกว่าเกณฑ์และกลายเป็น
+    # "ตัดสินไม่ได้" ทั้งหมด — guard จะไม่มีวันได้ทำงานเลยกับแผนที่ planner เขียนจริง
+    for step_pattern, label_pattern in (
+        (_SEARCH_LABEL_RE, _SEARCH_LABEL_RE),
+        (_DESTRUCTIVE_LABEL_RE, _DESTRUCTIVE_LABEL_RE),
+        (_ROW_ACTION_LABEL_RE, _ROW_ACTION_LABEL_RE),
+        # ฝั่ง step ใช้ตัวไม่ผูก ^ (คำอยู่กลางประโยคเสมอ) ฝั่ง label ใช้ตัวผูก ^ ตามเดิม
+        # เพื่อไม่ให้ "Saved Searches" นับเป็นปุ่มบันทึก — นี่คือเหตุผลที่ W103 แยกสองตัวไว้
+        (_PLAN_COMMIT_STEP_RE, _RECORD_COMMIT_LABEL_RE),
+    ):
+        if step_pattern.search(step_text or "") and label_pattern.search(action_label or ""):
+            return True
+
+    keywords = _plan_step_keywords(step_text)
+    if len(keywords) < _MIN_PLAN_STEP_WORDS_TO_JUDGE:
+        return None
+    haystack = _plan_step_keywords(f"{action_label} {action_type}")
+    if not haystack:
+        return None
+    for word in haystack:
+        if any(_field_names_match(word, key) for key in keywords):
+            return True
+    return False
+
+
+_MAX_ACTIONS_WITHOUT_PLAN_PROGRESS = 4
+_MAX_PLAN_STALL_NOTES = 2
+
+_PLAN_STALL_NOTE_TEMPLATE = (
+    " [You have taken {count} actions since the last plan step was completed, and the plan is "
+    "still on step {step} of {total}: {step_text!r}. Re-read that step and do what it actually "
+    "asks — if it is already done, say so by passing completed_plan_step on your next action; "
+    "if it cannot be done on this page, go where it can be done instead of trying more "
+    "variations here.]"
+)
+
+_PLAN_MISMATCH_WARNING_TEMPLATE = (
+    "The confirmed plan does not match what the goal asks for: {reason}. Follow the goal, "
+    "not that part of the plan — this goal only asks you to DELETE records. Never open an "
+    "edit form and save it: changing a record is not deleting it, and it cannot be undone. "
+    "Use each row's own delete action instead."
+)
+
+_PLAN_KEEPS_GOAL_VERB_CORRECTION = (
+    "The plan you drafted does not delete anything. This goal is a DELETE task: the user "
+    "asked for the matching records to be removed, not edited. Never substitute changing a "
+    "field's value (e.g. switching a role to something else) for deleting the record — those "
+    "have permanently different outcomes. Redraft the plan so it uses the row's own delete "
+    "action and confirms the deletion, keeping every other step as it was."
+)
+
+
+def _plan_drops_goal_operation(goal: str, plan_text: str) -> Optional[str]:
+    """คืน "เหตุผลที่แผนผิด" ถ้าแผนทิ้งชนิดงานที่ goal สั่งไป หรือ None ถ้าแผนใช้ได้
+
+    (คืนเป็นข้อความ ไม่ใช่ bool เพราะผู้เรียกต้องบอกได้ว่าผิดกฎข้อไหน — ผู้เรียกทั้งหมดใช้ค่านี้
+    เป็น boolean อยู่แล้ว จึงไม่กระทบพฤติกรรมเดิม)
+
+    กฎ A — goal มีคำกลุ่มลบ แต่ทั้งแผนไม่มีคำกลุ่มลบเลยสักคำ
+    เกณฑ์แคบและ deterministic: ไม่ตัดสินจากการที่แผน "มีคำแก้ไขด้วย" เพราะแผนลบที่ถูกต้องอาจมี
+    ขั้นตอนตั้ง filter ที่ใช้คำว่า "เลือก/set" ได้ตามปกติ
+
+    กฎ B (W_plan_commits_a_record_edit) — goal เป็นงานลบ *ล้วนๆ* แต่แผนมีขั้นตอนที่ "บันทึก"
+    การแก้ไข record: งานลบล้วนไม่มีวันต้องกด Save ฟอร์มเลยแม้แต่ครั้งเดียว
+    กฎ A อย่างเดียวไม่พอจริงตามที่ audit ท้วง — แผนที่ทำให้ agent ไปเปลี่ยน Role ของ user จริง
+    ในรันที่ user รายงาน ("เปิดแต่ละรายการเพื่อแก้ไข -> เปลี่ยน Role -> บันทึก -> ลบสิทธิ์ ESS")
+    มีคำว่า "ลบ" อยู่ด้วย จึงผ่านกฎ A ฉลุยทั้งที่ workflow เป็น edit ล้วน
+    นี่คือกฎเดียวกับที่ runtime บังคับอยู่แล้วใน W_no_record_edit_for_delete_goal เพียงแต่ย้ายมา
+    ตรวจตั้งแต่ตอนร่างแผน แทนที่จะรอไปบล็อกตอนจะกด Save จริง
+
+    กฎ B gate ด้วย _goal_is_deletion_only() ไม่ใช่ _is_deletion_intent_goal() — goal ที่สั่งแก้ไข
+    จริง ("เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin") ต้องไม่โดนกฎนี้เลย"""
+    if not plan_text:
+        return None
+    if _is_deletion_intent_goal(goal) and not any(
+        kw in plan_text.lower() for kw in _DELETION_INTENT_KEYWORDS
+    ):
+        return (
+            "แผนไม่มีขั้นตอนลบเลยสักข้อ ทั้งที่ goal สั่งให้ลบ"
+        )
+    if _goal_is_deletion_only(goal):
+        for line in _plan_step_lines(plan_text):
+            if _PLAN_COMMIT_STEP_RE.search(line):
+                return (
+                    f"แผนมีขั้นตอนบันทึกการแก้ไข record ({line!r}) ทั้งที่ goal สั่งให้ลบอย่างเดียว "
+                    "— งานลบล้วนไม่มีวันต้องกด Save ฟอร์ม"
+                )
+    return None
 
 
 # W64[7.1] ("Filter Order & False Completion" — ticket Issue 7.1, บั๊กจริง: goal สั่งเปลี่ยน
@@ -306,12 +509,13 @@ def _is_edit_all_intent_goal(goal: str) -> bool:
 
 
 _DELETE_MUTATION_ACTION_HINT = (
-    "ให้กลับไปทำขั้นตอนลบ (คลิก checkbox เลือกทั้งหมด + Delete Selected หรือวนคลิกลบทีละแถว "
-    "ตามที่ SYSTEM_PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ "
+    "go back and continue deleting (tick the select-all checkbox + Delete Selected, or click "
+    "delete row by row, as SYSTEM_PROMPT describes) from the entries still remaining "
 )
 _EDIT_ALL_MUTATION_ACTION_HINT = (
-    "ให้กลับไปทำขั้นตอนแก้ไข (คลิกไอคอนแก้ไข/Edit ของแถวที่ยังเหลืออยู่ เปลี่ยนค่าตามที่ goal "
-    "ต้องการ แล้วกด Save ตามที่ SYSTEM_PROMPT อธิบายไว้) ต่อจากรายการที่ยังเหลืออยู่นี้ "
+    "go back and continue editing (click the Edit icon on a row still remaining, change the "
+    "value the goal asks for, then press Save, as SYSTEM_PROMPT describes) from the entries "
+    "still remaining "
 )
 
 
@@ -340,19 +544,837 @@ def _premature_mutation_action_hint(goal: str) -> str:
 # เป็นปุ่ม Edit ของแถวอื่นที่ไม่เกี่ยวข้องกันเลย — window แคบสุดเท่าที่จำเป็นสำหรับ pattern
 # ที่ user รายงานจริง (fill/select ตามด้วยคลิก row-action ทันที ไม่มี action คั่นกลาง) ลด
 # false-positive ได้มากสุดโดยยังจับบั๊กจริงได้ครบ
+# W_delete_all_intent (บั๊กจริงที่ user รายงาน + step trace 2026-08-26 ยืนยัน: goal "ลบ user
+# ที่ userrole=ess ออกให้หมด" — agent ลบไป 1 แถวจาก 7 แถวที่เป็น ESS แล้ว claim success=True
+# โดยไม่เคยกดปุ่ม Search เลยสักครั้งตลอด run): bulk marker (_EDIT_ALL_BULK_MARKERS ด้านบน) ถูก
+# ใช้โดย _is_edit_all_intent_goal() เท่านั้น ซึ่ง *ต้องมี verb แก้ไข* ด้วย goal ลบทั้งหมดจึงไม่
+# เข้าเงื่อนไขไหนเลย — สุทธิคือคำว่า "ให้หมด" ใน goal มีผลเป็นศูนย์ ไม่มีอะไรในระบบรู้ว่านี่คือ
+# งาน "ลบทั้งหมด" ไม่ใช่ "ลบชิ้นเดียว"
+#
+# ระดับการบังคับที่ตกลงกับ user: บังคับ "ลำดับ" แต่ไม่บังคับ "วิธี" — ต้องเห็นว่าตารางกรองตรง
+# เงื่อนไขจริงก่อนลบ และห้าม claim สำเร็จถ้ายังเหลือแถว แต่จะใช้ Select All หรือลบทีละแถว
+# ปล่อยให้โมเดลเลือกเอง (เว็บที่ไม่มี Select All ต้องยังทำงานได้)
+def _is_delete_all_intent_goal(goal: str) -> bool:
+    """W_delete_all_intent: True ถ้า goal เป็นทั้งงานลบ (_is_deletion_intent_goal) และมีขอบเขต
+    "ทุก/ทั้งหมด" (_EDIT_ALL_BULK_MARKERS) — ใช้ค่าคงที่เดิมทั้งสองชุด ไม่สร้าง keyword ใหม่
+    ซ้อนขึ้นมาอีกชุด"""
+    lower = (goal or "").lower()
+    return _is_deletion_intent_goal(goal) and any(m in lower for m in _EDIT_ALL_BULK_MARKERS)
+
+
+# W_count_answer_check (ปิดครึ่งหลังของ W_deterministic_count/W_conditional_count): โค้ดนับ
+# ให้แล้วและแนบตัวเลขไปกับผลลัพธ์ทุกครั้งก็จริง แต่ไม่มีอะไรตรวจเลยว่าโมเดล "ใช้" ตัวเลขนั้นจริง
+# หรือไม่ — บั๊กที่ user เจอสดคือ "ตารางมี 7 แถวที่เป็น ESS แต่ agent ตอบ 6" ซึ่งเป็นความผิด
+# ที่เกิด *หลัง* ข้อมูลถูกอ่านมาถูกต้องแล้ว การแนบตัวเลขเป็นแค่คำแนะนำใน prompt ที่โมเดลจะ
+# เพิกเฉยก็ได้ (และ P0 รอบนี้ก็เพิ่งพิสูจน์อีกรอบว่ากฎที่เขียนถูกครบแล้วโมเดลก็ยังทำไม่ครบ)
+#
+# ยิงเฉพาะตอนเงื่อนไขครบทั้ง 3 ข้อพร้อมกันเท่านั้น กัน false positive: goal เป็นคำถามเชิงนับ
+# จริง + ค่าเงื่อนไขที่โค้ดนับไว้ปรากฏใน goal จริง + ตัวเลขที่โค้ดนับได้ "ไม่โผล่ในคำตอบเลย
+# สักตัว" (ถ้าโมเดลตอบ 4 ตอนโค้ดนับได้ 4 ก็ผ่านทันที ไม่ต้องตีความประโยคภาษาธรรมชาติเลย)
+_MAX_COUNT_ANSWER_MISMATCH_RETRIES = 2
+
+_COUNT_ANSWER_MISMATCH_NUDGE_TEMPLATE = (
+    "This answer is rejected. The system already counted this for you from "
+    "the page's real data: there are exactly {count} entries matching '{value}'. Your answer "
+    "does not contain that number anywhere, so it contradicts what was actually counted — and "
+    "counting is not something to do by eye when the number has already been computed for you. "
+    "Call finish_task again with {count} as the number, or read the page again if you believe "
+    "the data has changed since it was counted."
+)
+
+
+def _count_answer_contradiction(
+    goal: str, answer: str, system_counted: dict[str, int],
+) -> Optional[tuple[str, int]]:
+    """W_count_answer_check: คืน (ค่าเงื่อนไข, จำนวนที่โค้ดนับได้) คู่แรกที่คำตอบขัดกับตัวเลข
+    ที่โค้ดนับไว้ หรือ None ถ้าไม่ขัด/ยังไม่เข้าเงื่อนไขให้ตรวจ
+
+    ตรวจเฉพาะตอนเงื่อนไขครบทั้ง 3 ข้อพร้อมกัน (ดู _MAX_COUNT_ANSWER_MISMATCH_RETRIES ด้านบน)
+    — จงใจไม่ตีความประโยคภาษาธรรมชาติเลยแม้แต่นิดเดียว แค่ถามว่า "ตัวเลขที่โค้ดนับได้โผล่อยู่ใน
+    คำตอบไหม" ซึ่งเป็นคำถามที่ตอบได้แบบ deterministic 100% เหมือน guard อื่นในไฟล์นี้
+
+    ใช้ร่วมกันทั้ง main loop และ qa_summary mini-loop โดยตั้งใจ — คำถามเชิงนับส่วนใหญ่ถูก
+    classify_intent() ส่งเข้า mini-loop (ซึ่งเป็นที่ที่บั๊กจริงเกิด) แต่ goal ที่มีทั้งคำถาม
+    และ action ปนกันจะไปจบที่ main loop แทน ถ้าเขียนแยกสองที่จะเพี้ยนออกจากกันแน่นอน"""
+    if not system_counted or not _goal_asks_for_a_count(goal):
+        return None
+    numbers_in_answer = set(re.findall(r"\d+", answer or ""))
+    goal_lower = (goal or "").lower()
+    return next(
+        (
+            (value, count) for value, count in system_counted.items()
+            if value in goal_lower and str(count) not in numbers_in_answer
+        ),
+        None,
+    )
+
+
+def _goal_asks_for_a_count(goal: str) -> bool:
+    """W_count_answer_check: True ถ้า goal เป็นคำถามเชิงนับ — ใช้ keyword ชุดเดียวกับที่
+    read_page_data ใช้เลือก lane อยู่แล้ว (actions._COUNT_QUERY_KEYWORDS) ไม่สร้างชุดใหม่ซ้อน"""
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _COUNT_QUERY_KEYWORDS)
+
+# W_prompt_sections (P4.1): ตัดสินว่า step นี้ต้องส่งบล็อกไหนของ SYSTEM_PROMPT บ้าง (ดู
+# llm.py::build_system_prompt สำหรับเหตุผลเต็มและเกณฑ์ว่าอะไร gate ได้)
+#
+# *** สะสมอย่างเดียว ไม่ถอดออก *** — ผู้เรียกส่ง set เดิมเข้ามาแล้ว union กับของรอบนี้ เหตุผล:
+# (1) prompt ที่กระพริบไปมาระหว่าง step ทำให้ prefix cache ของ provider พลาดทุกครั้งที่สลับ
+#     ซึ่งแพงกว่าการส่งบล็อกที่ไม่ได้ใช้ต่ออีกไม่กี่ step
+# (2) กฎที่โมเดล "เคยเห็น" แล้วหายไปกลางทางเป็นพฤติกรรมที่ไล่บั๊กยากมาก (เช่น เปิด dropdown
+#     ที่ step 3 แล้วกฎ W50 หายไปตอน step 4 เพราะ dropdown ปิดไปแล้ว)
+#
+# สัญญาณทุกตัวเป็น deterministic ที่ไฟล์นี้คำนวณอยู่แล้ว ไม่มี heuristic ใหม่:
+#   plan     — มี plan_text จริงหรือไม่ (ตรงตัว ไม่ต้องเดา)
+#   table    — goal เป็นงาน bulk/ลบ/แก้ทั้งหมด/คำถามเชิงนับ หรือหน้ามี checkbox เลือกแถว
+#   widget   — snapshot มี <select> จริง หรือมี trigger ของ custom dropdown
+#   password — ใช้ค่า allow_fill_secret ที่คำนวณไว้แล้วก่อนเรียก LLM (W_fill_secret_schema_gate)
+_TABLE_ELEMENT_LABEL_HINTS = ("select row", "select all", "records found")
+_WIDGET_ELEMENT_LABEL_HINTS = ("-- select --", "--select--")
+
+
+# W_tab_rebind (P3.6): actions.switch_tab() เรียก bring_to_front() แล้ว return เฉยๆ — ตัวแปร
+# `page` ที่ลูปหลักถืออยู่ไม่เคยถูกเปลี่ยน ทุก get_snapshot()/execute() หลังจากนั้นจึงยังยิงไป
+# ที่แท็บเดิม ผลคือ agent "จ้องแท็บเก่า" แล้วดึง snapshot เดิมซ้ำๆ ไปเรื่อยๆ โดยไม่รู้ตัว
+#
+# เคสที่เจ็บกว่าคือแท็บที่เปิดเองจากการคลิกลิงก์ target="_blank" — โมเดลไม่เคยสั่ง switch_tab
+# เลยด้วยซ้ำ จึงไม่มีทางแก้เองได้ (ไม่มี action ไหนที่มันเรียกแล้วจะกลับมาถูกแท็บ)
+#
+# แก้ที่ลูปหลักแทนที่จะแก้ใน actions.py: ตัว action ไม่ได้เป็นเจ้าของตัวแปร `page` ของลูป และ
+# การให้ ActionResult พก Page object กลับมาจะทำให้ dataclass ที่ถูก str()/บันทึกลง history
+# ต้องแบก object ที่ serialize ไม่ได้ไปด้วยโดยไม่จำเป็น
+def _detect_tab_switch(page: Page, tabs_before: list, cmd: dict):
+    """คืน (page ที่ควรใช้ต่อ, ข้อความอธิบาย) — คืน (page เดิม, "") ถ้าไม่ต้องเปลี่ยนอะไร
+
+    ห้าม throw: browser/context อาจถูกปิดไปแล้วตอนถูกเรียก (task ที่กำลังจบ/ถูก stop) ซึ่ง
+    ไม่ควรทำให้ step ที่ทำสำเร็จไปแล้วกลายเป็น error ย้อนหลัง"""
+    try:
+        tabs_after = list(page.context.pages)
+    except Exception:
+        return page, ""
+
+    if cmd.get("type") == "switch_tab":
+        index = cmd.get("tab_index")
+        if isinstance(index, int) and 0 <= index < len(tabs_after) and tabs_after[index] is not page:
+            target = tabs_after[index]
+            return target, f"\n[Now operating on tab {index}: {target.url}]"
+        return page, ""
+
+    # แท็บใหม่โผล่มาเองจาก action นี้ (คลิกลิงก์ target="_blank" ฯลฯ) — ตามไปแท็บล่าสุดเสมอ
+    # เพราะนั่นคือสิ่งที่ผู้ใช้จริงจะเห็นอยู่ตรงหน้าหลังคลิก
+    opened = [t for t in tabs_after if t not in tabs_before]
+    if opened:
+        target = opened[-1]
+        return target, (
+            f"\n[This action opened a new tab and the agent has switched to it: {target.url} "
+            "— the indexed elements you get next are from this new tab, not the previous one]"
+        )
+    return page, ""
+
+
+# W_core_carries_situational_rules (รอบสอง): ปุ่ม/ช่องค้นหา — คนละชุดกับ
+# _FORM_SUBMIT_LABEL_KEYWORDS โดยเจตนา ชุดนั้นคือ "ปุ่มที่บันทึกข้อมูล" ซึ่งไม่รวม Search
+# (การค้นหาไม่ใช่การบันทึก และ permission layer ก็แยกสองอย่างนี้ออกจากกันด้วยเหตุผลเดียวกัน)
+_SEARCH_CONTROL_LABEL_KEYWORDS = ("search", "ค้นหา", "filter", "กรอง", "go", "ok")
+
+
+def _resolve_prompt_sections(
+    previous: frozenset,
+    *,
+    goal: str,
+    plan_text: Optional[str],
+    elements: list[dict],
+    allow_fill_secret: bool,
+    manual_context: str = "",
+) -> frozenset:
+    sections = set(previous)
+    if plan_text:
+        sections.add("plan")
+    # W_password_rules_arrive_too_late (บั๊กจริงที่ user รายงานพร้อมภาพหน้าจอ 2026-09-03:
+    # goal "เปลี่ยนรหัสผ่านใหม่เป็น ..." แต่ agent เดินไป PIM > Update Password ของพนักงาน
+    # แทนที่จะกดเมนูโปรไฟล์มุมขวาบน > Change Password): บล็อกกฎเรื่องรหัสผ่านมี W20 ที่สั่ง
+    # เรื่องนี้ไว้ตรงตัวอยู่แล้ว ("ห้ามคลิก My Info — ให้กด User Dropdown มุมขวาบนก่อน") แต่
+    # เดิมส่งเฉพาะตอน allow_fill_secret ซึ่งเป็น True ก็ต่อเมื่อ *ยืนหน้าฟอร์มเปลี่ยนรหัสผ่าน
+    # อยู่แล้ว* — คือหลังจากเลือกทางผิดไปแล้ว โมเดลจึงไม่เคยเห็นกฎตอนที่ต้องตัดสินใจเลือกทาง
+    # ส่งตั้งแต่ตอนที่ goal/แผนพูดถึงการเปลี่ยนรหัสผ่าน (sections สะสมข้าม step อยู่แล้ว
+    # ส่งครั้งเดียวก็อยู่ยาวทั้ง task)
+    if allow_fill_secret or _goal_or_plan_requests_password_change(
+        f"{goal} {plan_text or ''}"
+    ):
+        sections.add("password")
+    if (
+        _is_deletion_intent_goal(goal)
+        or _is_edit_all_intent_goal(goal)
+        or _goal_targets_existing_records_only(goal)
+        or _goal_asks_for_a_count(goal)
+    ):
+        sections.add("table")
+    # W_core_carries_situational_rules: บล็อกที่ย้ายออกจาก core มา gate ตาม marker ที่กฎนั้น
+    # พูดถึงเอง — ทริกเกอร์ตรงตัวกับสิ่งที่อยู่บนหน้าจริง ไม่ใช่การเดาจากถ้อยคำของ goal จึงไม่มี
+    # ทางส่งไม่ทันเวลาที่ต้องใช้ (marker มาพร้อม snapshot ของ step เดียวกับที่โมเดลจะตัดสินใจ)
+    # sections สะสมข้าม step อยู่แล้ว เห็นครั้งเดียวก็อยู่ยาวทั้ง task
+    if manual_context and "[PRE_LEARNED_MANUAL]" in manual_context:
+        sections.add("manual")
+    for element in elements:
+        label = str(element.get("label", "")).lower()
+        tag = element.get("tag")
+        if tag == "select" or any(h in label for h in _WIDGET_ELEMENT_LABEL_HINTS):
+            sections.add("widget")
+        if any(h in label for h in _TABLE_ELEMENT_LABEL_HINTS):
+            sections.add("table")
+        if "[already active]" in label:
+            sections.add("marker_active")
+        if "[disabled]" in label:
+            sections.add("marker_disabled")
+        if "[required]" in label:
+            sections.add("marker_required")
+        if "[focused]" in label:
+            sections.add("marker_focused")
+        if _RECORD_COMMIT_LABEL_RE.search(label) or any(
+            k in label for k in _FORM_SUBMIT_LABEL_KEYWORDS
+        ):
+            sections.add("save_toast")
+            sections.add("search_submit")
+        if any(k in label for k in _SEARCH_CONTROL_LABEL_KEYWORDS):
+            sections.add("search_submit")
+        if "may need to hover" in label:
+            sections.add("marker_hover")
+        if tag in ("input", "textarea", "select") or element.get("contenteditable"):
+            sections.add("form_input")
+            if "search" in label or element.get("type") == "search":
+                sections.add("search_submit")
+    # W_core_carries_situational_rules (รอบสอง): กฎ "label ซ้ำกันหลายตัว" ใช้ได้ก็ต่อเมื่อหน้านี้
+    # มี label ซ้ำจริง — นับจาก snapshot ตรงๆ ไม่ต้องเดาจากถ้อยคำของ goal
+    labels = [str(e.get("label", "")).strip().lower() for e in elements]
+    labels = [l for l in labels if l]
+    if len(labels) != len(set(labels)):
+        sections.add("dup_labels")
+    return frozenset(sections)
+
+
+_URL_IN_GOAL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _normalized_field_name(text: str) -> str:
+    """W_filter_scope_guard: ยุบชื่อ field ให้เทียบกันได้ระหว่างที่ user พิมพ์ใน goal กับที่
+    เว็บแสดงจริง — "userrole" (goal) กับ "User Role" (label บนหน้า) คือ field เดียวกัน
+    ตัดทุกอย่างที่ไม่ใช่ตัวอักษร/ตัวเลขทิ้ง (ช่องว่าง ขีด ขีดล่าง) แล้วเทียบตัวพิมพ์เล็ก"""
+    return re.sub(r"[^0-9a-z\u0e00-\u0e7f]+", "", (text or "").lower())
+
+
+def _goal_condition_pairs(goal: str) -> list[tuple[str, str]]:
+    """W_column_aware_rows: (ชื่อ field ที่ normalize แล้ว, ค่าที่ต้องการ) ทุกคู่ที่ user เขียนไว้
+    ใน goal แบบ "key=value" — เป็น **แหล่งความจริงเดียว** ของทั้ง _goal_condition_fields()
+    และ _goal_condition_values() ด้านล่าง (เดิมสองตัวนั้นวน regex เองคนละรอบ ซึ่งแปลว่ากฎการ
+    ตัดURL/กันค่าซ้ำต้องแก้สองที่พร้อมกันตลอด)
+
+    ตัด URL ทิ้งก่อนเสมอ — goal จริงมักมี URL ปนอยู่ด้วย ("ไปที่ https://x/?id=9 แล้วลบ user
+    ที่ userrole=ess ให้หมด") ซึ่ง query string ของมันเข้าเงื่อนไข key=value เป๊ะๆ ทั้งที่ไม่ใช่
+    เงื่อนไขของงานเลย ถ้าไม่ตัดจะได้เงื่อนไข AND ที่ไม่มีแถวไหนตรงได้เลย แล้ว guard จะบล็อก
+    การลบที่ถูกต้องทิ้งไปเปล่าๆ
+
+    คืน [] ถ้า goal ไม่ได้ระบุเงื่อนไขแบบนี้ = ไม่เปิด guard ที่พึ่งมันเลยสักตัว (ไม่เดาเงื่อนไข
+    เองจากภาษาธรรมชาติ)"""
+    goal_without_urls = _URL_IN_GOAL_RE.sub(" ", goal or "")
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw_field, raw_value in _KEY_VALUE_IN_QUERY_RE.findall(goal_without_urls):
+        value = raw_value.strip()
+        if not value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        pairs.append((_normalized_field_name(raw_field), value))
+    return pairs
+
+
+def _goal_condition_fields(goal: str) -> list[str]:
+    """W_filter_scope_guard: ฝั่งซ้ายของ "key=value" = field ที่ user "อนุญาต" ให้กรอง
+    ("userrole=ess" -> ["userrole"])"""
+    fields: list[str] = []
+    for field, _ in _goal_condition_pairs(goal):
+        if field and field not in fields:
+            fields.append(field)
+    return fields
+
+
+# W_filter_scope_guard: perception ใส่ชื่อ field เป็น prefix ให้ dropdown trigger อยู่แล้ว
+# (perception.py — "User Role: -- Select --", "Status: Enabled") ตัวคั่นคือ ": " ตัวแรก
+# เท่านั้น เพราะค่าที่ตามมาอาจมี ":" ของตัวเองได้
+_FIELD_LABEL_PREFIX_RE = re.compile(r"^([^:]{1,40}):\s")
+
+
+def _filter_field_from_label(label: str, action_type: str = "") -> str:
+    """ชื่อ field ที่ action นี้กำลังจะไปแตะ (normalize แล้ว) — "" ถ้า label ไม่ได้บอกชื่อ
+    field มาเลย ซึ่งแปลว่าตัดสินไม่ได้ ต้องปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก
+
+    W_field_label_without_value (บั๊กจริง live stability check 2026-08-31): prefix
+    "ชื่อ field: ค่า" จะมีก็ต่อเมื่อช่องนั้น *มีค่าอยู่แล้ว* — ช่องที่ยังว่าง label คือชื่อ field
+    เปล่าๆ ("Username") ไม่มี ":" เลย เพราะตัวเติม prefix ข้ามไปเมื่อ label มีชื่อนั้นอยู่แล้ว
+    ผลคือ guard ตาบอดพอดีตอนที่ช่องยังไม่ถูกแตะ — ซึ่งคือจังหวะเดียวที่มันต้องทำงาน
+    (รันจริง: goal บอกแค่ userrole=ess แต่ agent ไป fill ช่อง "Username" ผ่านฉลุย)
+
+    จำกัดไว้ที่ fill/select เท่านั้น: การ fill เล็งไปที่ form field เสมอ label ที่ไม่มี ":" จึงคือ
+    ชื่อช่องแน่ๆ — ส่วน click ห้ามตีความแบบนี้เด็ดขาด ปุ่มชื่อ "Search"/"Delete" จะกลายเป็น
+    "ชื่อ field" ทันทีแล้ว guard จะบล็อกทุกปุ่มบนหน้า"""
+    # W_label_marker_key: "Username [required]" ต้องให้ชื่อ field เป็น "username" ไม่ใช่
+    # "usernamerequired" ซึ่งจะไม่ match อะไรเลยแล้ว guard ก็เงียบไปเฉยๆ
+    cleaned = _label_without_markers(label)
+    match = _FIELD_LABEL_PREFIX_RE.match(cleaned)
+    if match:
+        return _normalized_field_name(match.group(1))
+    if action_type in ("fill", "select"):
+        return _normalized_field_name(cleaned)
+    return ""
+
+
+# W_filter_scope_guard: goal ที่ user พิมพ์จริงไม่ได้สะอาดเหมือนตัวอย่างในเทสต์ — ของจริงคือ
+# "แล้บลบuserole=ess" (ไม่เว้นวรรคก่อน key เลย และสะกด userole ตัว r เดียว) ส่วนหน้าเว็บเขียนว่า
+# "User Role" การเทียบแบบตรงตัวจึงไม่ match แล้ว guard จะไปบล็อก *การกดที่ถูกต้อง* ซึ่งแย่กว่า
+# ไม่มี guard เลย — เทียบ 3 ชั้นจากเข้มไปหลวม และ fail-open เสมอเมื่อตัดสินไม่ได้
+_FIELD_NAME_SIMILARITY_THRESHOLD = 0.8
+# ดู W_field_match_min_length ใน _field_names_match() — ชื่อ field ที่สั้นกว่านี้ห้ามตัดสินด้วย
+# กฎ "ครอบกันอยู่" เพราะมันเป็นส่วนประกอบของชื่ออื่นได้ง่ายเกินไป
+_MIN_FIELD_NAME_CONTAINMENT_LENGTH = 5
+
+
+def _field_names_match(goal_field: str, page_field: str) -> bool:
+    """goal_field มาจากที่ user พิมพ์ page_field มาจาก label ที่ perception อ่านได้จริง
+    (normalize มาแล้วทั้งคู่) — True = ถือว่าเป็น field เดียวกัน"""
+    if not goal_field or not page_field:
+        return False
+    if goal_field == page_field:
+        return True
+    # "แล้บลบuserole" ครอบ "userole" อยู่ — คำไทยที่ติดมาหน้า key ไม่ควรทำให้ไม่ match
+    #
+    # W_field_match_min_length (MR3 จาก audit): กฎ "ครอบกันอยู่" หลวมเกินไปสำหรับชื่อสั้น —
+    # goal "name=john" จะทำให้ "name" ครอบอยู่ใน "employeename"/"username"/"nationality"
+    # ทั้งหมด แล้ว guard ก็ปล่อยให้ตั้งค่าช่องผิดผ่านไปได้ (false negative เงียบๆ)
+    # ชื่อ field จริงที่สั้นกว่า 5 ตัวอักษรมีน้อยมาก (id/tel/url/name/type) แต่ชื่อที่ *มี*
+    # คำสั้นพวกนี้เป็นส่วนประกอบมีเยอะมาก — ต่ำกว่านี้ให้ตัดสินด้วยกฎที่เข้มกว่าเท่านั้น
+    shorter = min(len(goal_field), len(page_field))
+    if shorter >= _MIN_FIELD_NAME_CONTAINMENT_LENGTH and (
+        page_field in goal_field or goal_field in page_field
+    ):
+        return True
+    # ตัดส่วนที่ไม่ใช่ ASCII ทิ้งแล้วลองใหม่ ("แล้บลบuserole" -> "userole")
+    # W_field_match_min_length: ชั้นนี้ก็ใช้ containment เหมือนกัน จึงต้องมีเพดานความสั้น
+    # เดียวกัน ไม่งั้น "name" ก็ยังรั่วไปตรงกับ "employeename" ผ่านทางนี้อยู่ดี
+    ascii_goal = re.sub(r"[^0-9a-z]+", "", goal_field)
+    if ascii_goal == page_field:
+        return True
+    if (
+        ascii_goal
+        and min(len(ascii_goal), len(page_field)) >= _MIN_FIELD_NAME_CONTAINMENT_LENGTH
+        and (ascii_goal in page_field or page_field in ascii_goal)
+    ):
+        return True
+    # เหลือแค่พิมพ์ผิดจริงๆ ("userole" vs "userrole") — ใช้ ASCII ฝั่ง goal เทียบ ไม่งั้น
+    # คำไทยที่ติดมาจะถ่วง ratio ให้ต่ำจนไม่ match
+    return SequenceMatcher(None, ascii_goal or goal_field, page_field).ratio() >= _FIELD_NAME_SIMILARITY_THRESHOLD
+
+
+# W_prefer_row_delete: การกด "Edit" ถูกตั้งใจปล่อยผ่านมาตลอด (ดูเหตุผลเหนือ
+# _RECORD_COMMIT_LABEL_RE: บางเว็บใช้หน้า Edit เป็นทางผ่านไปหาปุ่มลบ) — ยังคงเหตุผลนั้นไว้
+# ทุกประการ เพียงแต่เพิ่มเงื่อนไข: ถ้า *บนหน้าเดียวกันนี้* มีปุ่ม/ไอคอนลบให้กดอยู่แล้ว การเข้า
+# หน้า Edit ก็ไม่ใช่ "ทางผ่านที่จำเป็น" อีกต่อไป มันคือการเดินผิดทางเฉยๆ — และเดินผิดทางบน goal
+# ที่สั่งลบเคยจบลงด้วยการเปลี่ยน Role ของ user จริงมาแล้ว (live run 2026-08-27)
+# ไม่มีปุ่มลบในหน้า = ปล่อยผ่านเหมือนเดิม ห้ามบล็อก
+# W_reject_obscured_click (P8/M3): perception ติดป้าย [obscured] ให้ element ที่ถูกของอื่นวางทับ
+# มาตั้งแต่ต้น แต่ค้นทั้ง backend/ แล้ว **ไม่มีโค้ดส่วนไหนอ่านป้ายนี้เลยสักบรรทัด** (มีแต่ตัวที่
+# สร้างป้าย + เทสต์ที่ assert ว่าป้ายมีอยู่) โมเดลจึงคลิกของที่ถูกบังได้เรื่อยๆ ครั้งละ ~12-18
+# วินาทีที่รู้ล่วงหน้าอยู่แล้วว่าจะ timeout — ต่างจากป้ายพี่น้อง ([already active]/[disabled]/
+# [hidden — may need to hover]) ที่มีกฎรองรับครบ
+#
+# *** ต้องมี dialog เปิดอยู่ด้วยถึงจะปฏิเสธ *** — comment ที่ perception.py อธิบายไว้ถูกต้องแล้ว
+# ว่าจงใจเก็บ element ที่ถูกบังไว้ใน snapshot เพราะ overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง
+# (dropdown/tooltip ที่ปิดตัวเอง) การมี dialog เปิดค้างต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็น
+# ถาวรจนคลิกไม่ได้แน่ๆ
+# W_marker_registry (W108): perception เติม marker ต่อท้าย label 7 ตัว แต่ฝั่ง Python เคยตั้งชื่อ
+# ไว้แค่ 3 ตัว ที่เหลือถูกพิมพ์เป็น literal ซ้ำหลายที่ ("[already active]" อยู่ 5 จุด) และ
+# [disabled]/[required]/[hidden — ...] ไม่มีชื่อเลย — วันที่มีใครเพิ่ม marker ตัวที่ 8 จะไม่มีอะไร
+# เตือนว่าต้องมาแก้ตัวตัดด้านล่างด้วย
+#
+# *** ทะเบียนนี้ไม่ใช่ของสำคัญที่สุด เทสต์ที่คู่กับมันต่างหาก ***
+# test_orchestrator.py อ่านซอร์สของ perception.py จริงแล้วยืนยันว่า marker ทุกตัวที่ JS เติม
+# มีอยู่ในทะเบียนนี้ครบ — นั่นคือสิ่งเดียวที่ทำให้ drift "ดัง" ขึ้นมาแทนที่จะเงียบ ซึ่งเป็นรูปแบบ
+# ที่เจอซ้ำมาแล้วหลายครั้งในโปรเจกต์นี้ (comment/เจตนาถูก แต่โค้ดอีกฝั่งไม่ทำตาม)
+# W_marker_hides_a_shared_label: ทะเบียนอยู่ที่ perception.py ซึ่งเป็นที่เดียวกับ JS ที่
+# สร้าง marker พวกนี้ — อ้างตัวเดียวกันแทนการพิมพ์ซ้ำสองที่ (เหตุผลเดิมของ W108)
+_PERCEPTION_LABEL_MARKERS = LABEL_MARKERS
+
+_ALREADY_ACTIVE_LABEL_MARKER = "[already active]"
+
+# W_label_marker_key (W107): marker เป็น "สถานะชั่วคราวของ element" ไม่ใช่ "ตัวตน" ของมัน —
+# ปุ่มเดิมที่บังเอิญถูก hover/ถูกบัง/อยู่ใน dialog ได้ label คนละสตริง โค้ดที่ใช้ label เป็นกุญแจ
+# เทียบจึงมองว่าเป็นคนละ element
+# บั๊กจริงที่ user เจอ: loop detector ใช้ (type, label) เป็นกุญแจ พอ agent สลับคลิกระหว่าง
+# "Select row" กับ "Select row [hidden — may need to hover the row first]" ตัวนับก็รีเซ็ตทุกครั้ง
+# ไม่มีวันถึงเกณฑ์ 4 -> เผา step จนหมด max_steps ทั้งที่ guard ตัวนี้ถูกเขียนมาเพื่อเคสนี้โดยตรง
+#
+# ตัดเฉพาะ marker ที่รู้จัก **ไม่ตัด [...] ทั่วไป** เพราะ label จริงของเว็บมีวงเล็บเหลี่ยมของ
+# ตัวเองได้ (เช่นปุ่ม "[Beta] Export") การตัดมั่วจะทำให้ element คนละตัวกลายเป็นตัวเดียวกัน
+def _label_without_markers(label: str) -> str:
+    """label ที่ตัด marker ของ perception ออกหมดแล้ว — ใช้ตอนต้องการ "ตัวตน" ของ element
+    เท่านั้น ห้ามใช้แทน label ดิบในที่ที่ตั้งใจตรวจ marker (ดู _OBSCURED_LABEL_MARKER ฯลฯ)
+
+    marker ต่อท้ายเป็นปกติ แต่กลายเป็น label ทั้งก้อนได้ถ้า label เดิมว่าง และซ้อนกันได้หลายตัว
+    จึงตัดทุกตำแหน่ง ไม่ใช่แค่ท้ายสตริง"""
+    cleaned = label or ""
+    for marker in _PERCEPTION_LABEL_MARKERS:
+        cleaned = cleaned.replace(marker, " ")
+    return " ".join(cleaned.split())
+
+
+_OBSCURED_LABEL_MARKER = "[obscured]"
+# ป้ายที่ perception ติดให้ element ที่อยู่ในกล่องโต้ตอบที่เปิดค้าง (W_dialog_in_snapshot)
+_DIALOG_LABEL_MARKER = "[in open dialog]"
+_MAX_OBSCURED_CLICK_RETRIES = 2
+
+_OBSCURED_CLICK_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' is behind a dialog that is currently open, so clicking it cannot "
+    "work — it would only wait and time out. Deal with the dialog first: pick one of its own "
+    "buttons to close it{dialog_hint}. Everything behind the dialog becomes clickable again "
+    "once it is closed."
+)
+
+
+_MAX_PREFER_ROW_DELETE_RETRIES = 2
+
+_PREFER_ROW_DELETE_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' opens an edit form, but this goal only asks you to DELETE — and "
+    "this page already shows a delete control you can use directly ('{delete_label}'). Going "
+    "through the edit form risks changing a record instead of removing it, which cannot be "
+    "undone. Use the delete action on the row you want removed instead."
+)
+
+# W_prefer_row_delete: perception ติดป้าย [Profile/Account Menu] ให้ element กลุ่มนี้อยู่แล้ว
+# แต่ของเดิมมีที่ใช้ป้ายนี้อยู่ที่เดียวคือตอนระบบเลือก element ให้เองใน forced recovery —
+# คลิกที่ "โมเดลเลือกเอง" ไม่เคยถูกกันเลย ทั้งที่เป็นทางเดินออกนอกงานที่เห็นซ้ำๆ (live run
+# 2026-08-27: กด "William Little [Profile/Account Menu]" กลางงานลบ user)
+_PROFILE_MENU_LABEL_MARKER = "[Profile/Account Menu]"
+# W_account_keyword_scope (MR4 จาก audit): "setting"/"ตั้งค่า" เดี่ยวๆ กว้างเกินไป — goal ที่
+# พูดถึง settings *ของระบบ* ("ไปที่หน้า Configuration แล้วตั้งค่า...") จะปิด guard นี้ทิ้งฟรีๆ
+# ทั้งที่ไม่ได้เกี่ยวกับบัญชีของผู้ใช้ที่ล็อกอินอยู่เลย — ใช้เฉพาะรูปที่ระบุว่าเป็นของตัวผู้ใช้เอง
+_ACCOUNT_GOAL_KEYWORDS = (
+    "profile", "account", "logout", "log out", "sign out", "password",
+    "my settings", "account settings", "personal settings",
+    "โปรไฟล์", "บัญชี", "ออกจากระบบ", "รหัสผ่าน", "ตั้งค่าบัญชี", "ตั้งค่าส่วนตัว",
+)
+_MAX_PROFILE_MENU_RETRIES = 2
+
+_PROFILE_MENU_NUDGE = (
+    "[Rejected] That element is the user's own profile/account menu (logout, change "
+    "password, personal settings). This goal has nothing to do with the signed-in user's "
+    "account, so opening it cannot move the task forward — and it leads to flows that log "
+    "you out or change credentials. Stay on the page's own content and pick an element that "
+    "belongs to the goal."
+)
+
+
+def _goal_is_about_the_signed_in_account(goal: str) -> bool:
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _ACCOUNT_GOAL_KEYWORDS)
+
+
+# W_empty_table_needs_right_filter (บั๊กจริง live stability check 2026-08-31): guard ฝั่ง
+# "ยืนยันว่าจบงาน" รับ "ตารางที่แสดงอยู่เหลือ 0 แถว" เป็นหลักฐานความสำเร็จ โดย **ไม่เคยตรวจว่า
+# ตัวกรองบนหน้ายังตั้งเป็นค่าที่ goal สั่งอยู่จริงไหม** — ตารางว่างเพราะกรองผิดกับตารางว่างเพราะ
+# ลบครบ หน้าตาเหมือนกันเป๊ะสำหรับมัน
+# (รันจริง: agent คลิก dropdown ซ้ำซ้อนจนตัวกรองเพี้ยน กด Search ได้ตารางว่าง แล้วรายงานว่า
+# "ลบครบแล้ว" ทั้งที่ ground truth ก่อนและหลังเท่ากันที่ 1 ESS = ไม่ได้ลบอะไรเลย)
+#
+# น่าสังเกตว่าฝั่ง *ทำลายข้อมูล* มี guard คู่นี้อยู่แล้ว (W_delete_all_intent guard B ตรวจว่าแถว
+# ที่เห็นตรงเงื่อนไขก่อนยอมให้ลบ) แต่ฝั่ง *ยืนยันว่าจบงาน* ไม่เคยมีคู่ของมัน
+#
+# อ่านจาก label ที่ perception ทำไว้ให้แล้วล้วนๆ ("User Role: ESS" — W_dropdown_field_label +
+# W_field_label_for_plain_inputs) ไม่เรียก LLM ไม่ยิง DOM เพิ่มสักครั้ง
+# ค่าที่แปลว่า "ยังไม่ได้ตั้ง" ของ dropdown ตัวกรอง — ต้องถือว่า "ไม่ตรงเงื่อนไข" ไม่ใช่ "ไม่รู้"
+_FILTER_UNSET_VALUE_TEXTS = ("-- select --", "--select--", "select...", "all", "any", "ทั้งหมด", "")
+
+
+def _filter_value_from_label(label: str) -> Optional[str]:
+    """ค่าที่ตัวกรองตัวนี้ถืออยู่ตอนนี้ ("User Role: ESS" -> "ESS") — None ถ้า label ไม่ได้อยู่ใน
+    รูป "ชื่อ field: ค่า" เลย (ตัดสินไม่ได้)"""
+    # W_label_marker_key: ตัด marker ก่อนเสมอ ไม่งั้นค่าที่ได้กลายเป็น "ESS [in open dialog]"
+    # แล้ว _cell_matches_value()/_FILTER_UNSET_VALUE_TEXTS อ่านผิดทั้งคู่
+    cleaned = _label_without_markers(label)
+    match = _FIELD_LABEL_PREFIX_RE.match(cleaned)
+    return cleaned[match.end():].strip() if match else None
+
+
+def _page_filter_matches_goal(
+    elements: Optional[list], pairs: list[tuple[str, str]],
+) -> Optional[bool]:
+    """ตัวกรองบนหน้าตอนนี้ตรงกับที่ goal สั่งไหม
+
+    True  = ทุก field ที่ goal ระบุ แสดงค่าที่ถูกต้องอยู่บนหน้าจริง
+    False = เจอ field นั้นแต่ค่าไม่ตรง (รวมกรณีค่ากลับไปเป็น "-- Select --" = ตัวกรองหลุด)
+    None  = อ่านตัวกรองไม่ได้เลย -> **ผู้เรียกต้อง fail-open** คงพฤติกรรมเดิมทุกประการ
+            (เว็บที่ perception อ่าน label ตัวกรองไม่ได้ต้องไม่พังเพราะ guard นี้)
+    """
+    if not pairs or not elements:
+        return None
+    decided = False
+    for field, value in pairs:
+        for el in elements:
+            label = str(el.get("label") or "")
+            page_field = _filter_field_from_label(label)
+            if not page_field or not _field_names_match(field, page_field):
+                continue
+            current = _filter_value_from_label(label)
+            if current is None:
+                continue
+            decided = True
+            if current.strip().lower() in _FILTER_UNSET_VALUE_TEXTS:
+                return False
+            if not _cell_matches_value(current, value):
+                return False
+            break
+    return True if decided else None
+
+
+def _extra_filters_set_on_page(elements: Optional[list], pairs: list[tuple[str, str]]) -> list[str]:
+    """ชื่อ+ค่าของตัวกรองตัวอื่นที่ "ถูกตั้งค่าไว้" ทั้งที่ goal ไม่ได้พูดถึง — ตารางว่างขณะที่มี
+    ตัวกรองส่วนเกินตั้งอยู่ เชื่อไม่ได้เหมือนกัน (เคส Status=Enabled ที่ user เจอตั้งแต่ต้น:
+    ESS ที่ถูก disable หายจากตาราง แล้ว "ลบให้หมด" จะจบทั้งที่ยังเหลือ)
+    W_filter_scope_guard กันตอน *จะตั้ง* ตัวกรองอยู่แล้ว ตัวนี้กันตอน *จะสรุปผล*"""
+    if not pairs or not elements:
+        return []
+    extras = []
+    for el in elements:
+        label = str(el.get("label") or "")
+        page_field = _filter_field_from_label(label)
+        if not page_field or any(_field_names_match(f, page_field) for f, _ in pairs):
+            continue
+        current = _filter_value_from_label(label)
+        if current is not None and current.strip().lower() not in _FILTER_UNSET_VALUE_TEXTS:
+            extras.append(label)
+    return extras
+
+
+_EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE = (
+    "[Rejected] The table is empty, but that is not evidence the job is done: {problem}. "
+    "An empty table only proves the work is complete when the filter on screen is exactly "
+    "the one the goal asked for ({condition}). Set the filter to that, press Search, and "
+    "look at the rows that come back before claiming anything."
+)
+
+
+_MAX_FILTER_SCOPE_RETRIES = 2
+
+# W_filter_already_satisfied: โควตาเท่ากับ guard พี่น้องด้วยเหตุผลเดียวกัน — บางเว็บต้องเปิด
+# dropdown ซ้ำจริงๆ (ค่าที่โชว์อยู่เป็นค่า default ที่ยังไม่ถูก apply) การบล็อกตายจะทำให้เว็บ
+# กลุ่มนั้นใช้งานไม่ได้เลย
+_MAX_FILTER_SATISFIED_RETRIES = 2
+
+_FILTER_SATISFIED_NUDGE_TEMPLATE = (
+    "[Rejected] '{label}' already holds the value the goal asked for ({field}={value}), so "
+    "clicking it again cannot change anything — you have re-opened this same filter "
+    "{count} times already. The filter is set: press Search now (or, if you already "
+    "searched, work on the rows in the result table)."
+)
+
+_FILTER_SCOPE_NUDGE_TEMPLATE = (
+    "[Rejected] This action sets the field '{label}', but the goal only asks you to filter "
+    "by {allowed} — it never mentions that field at all. Setting an extra filter narrows the "
+    "table by a condition the user did not ask for, so rows they DO care about disappear and "
+    "the job looks finished when it is not. Leave every other filter untouched: set only "
+    "{allowed}, then press Search."
+)
+
+
+def _goal_condition_values(goal: str) -> list[str]:
+    """W_delete_all_intent: ดึงค่าเงื่อนไขแบบ key=value ออกจาก goal ("userrole=ess" -> ["ess"])
+    — ใช้ตัวดึงตัวเดียวกับที่ W_deterministic_count ใช้อยู่แล้ว (actions._KEY_VALUE_IN_QUERY_RE)
+    ไม่เขียน regex ใหม่ซ้อน คืน [] ถ้า goal ไม่ได้ระบุเงื่อนไขแบบนี้ (= ไม่เปิด guard เลย
+    ปล่อยผ่านตามปกติ ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ)"""
+    # ตัด URL ทิ้งก่อนเสมอ — goal จริงมักมี URL ปนอยู่ด้วย ("ไปที่ https://x/?id=9 แล้วลบ user
+    # ที่ userrole=ess ให้หมด") ซึ่ง query string ของมันเข้าเงื่อนไข key=value เป๊ะๆ ทั้งที่
+    # ไม่ใช่เงื่อนไขของงานเลย ถ้าไม่ตัดจะได้เงื่อนไข AND ที่ไม่มีแถวไหนตรงได้เลย แล้ว guard
+    # จะบล็อกการลบที่ถูกต้องทิ้งไปเปล่าๆ
+    values: list[str] = []
+    seen: set[str] = set()
+    # W_column_aware_rows: ข้อจำกัดเดิมที่เขียนไว้ตรงนี้ ("แยกคอลัมน์ไม่ได้ จึงเล็งคอลัมน์
+    # ไม่ได้") **หมดไปแล้ว** — _scan_visible_table_rows() คืนเซลล์แยกคอลัมน์พร้อมหัวตารางแล้ว
+    # ฟังก์ชันนี้เหลือหน้าที่แค่ "ค่าที่ user ขอ" สำหรับข้อความรายงาน ส่วนการตัดสินว่าแถวไหน
+    # ตรงเงื่อนไขย้ายไปที่ _row_matches_condition() ซึ่งใช้ทั้ง field และ value
+    for _, value in _goal_condition_pairs(goal):
+        if value.lower() not in seen:
+            seen.add(value.lower())
+            values.append(value)
+    return values
+
+
+# W_delete_all_intent: อ่าน "แถวข้อมูลที่มองเห็นอยู่จริง" ของตารางที่ใหญ่ที่สุดบนหน้า — generic
+# ล้วนๆ (ไม่มี .oxd-* เลย) รองรับทั้ง <table><tr> และ ARIA grid (div[role=table|grid] +
+# [role=row]) ตาม pattern เดียวกับ perception._EXTRACT_TABLE_JS ที่พิสูจน์แล้วว่าถูกต้อง —
+# ตัดแถวหัวตารางทิ้งเสมอ (แถวที่มี th/[role=columnheader] อยู่ข้างใน) เพราะหัวตารางมีคำว่า
+# "User Role" อยู่ด้วยจะทำให้นับ match เกินจริง
+# W_column_aware_rows: คืน "เซลล์แยกคอลัมน์ + ชื่อหัวตาราง" ไม่ใช่ innerText ทั้งแถวก้อนเดียว
+# เหมือนเดิม — เพราะการเทียบเงื่อนไขกับข้อความทั้งแถวทำให้ค่าอย่าง "ess" ไปตรงกับชื่อคน
+# ("Jessica"), username ("ess.irhrg0") หรือสถานะ ("Assessed") ได้หมด ซึ่งเป็นเคสที่ comment
+# ของ _KEY_VALUE_IN_QUERY_RE (W_column_aware_count) เตือนไว้ตรงตัวแล้วแต่ยังไม่เคยถูกแก้จริง
+# ผลของการนับผิดคือของที่กู้คืนไม่ได้ทั้งสองทิศ: นับเกิน -> ปล่อยให้ลบจากตารางที่ยังไม่กรอง /
+# นับเกินตอนตรวจงานที่เสร็จแล้ว -> task ที่จบแล้วจบไม่ได้
+_VISIBLE_TABLE_ROWS_JS = r"""
+() => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  let best = null;
+  for (const t of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
+    let rowEls = Array.from(t.querySelectorAll('tr'));
+    if (rowEls.length === 0) rowEls = Array.from(t.querySelectorAll('[role="row"]'));
+    // W_column_headers_fallback: ชั้นที่ 1 คือหัวตารางจริง (th/[role=columnheader]) — ถ้าไม่มี
+    // ตารางจำนวนมากยังบอกชื่อคอลัมน์ไว้ที่ตัวเซลล์เอง โดยเฉพาะตาราง responsive ที่ต้องโชว์ชื่อ
+    // คอลัมน์บนมือถือ ลองไล่ต่ออีก 2 ชั้นก่อนจะยอมแพ้
+    const headerEl = rowEls.find((r) => r.querySelector('th, [role="columnheader"]'));
+    let headers = headerEl
+      ? Array.from(headerEl.querySelectorAll('th, [role="columnheader"]')).map((h) => clean(h.innerText))
+      : [];
+    let headerSource = headers.length ? 'header-row' : '';
+    if (!headers.length) {
+      // ชั้นที่ 2: เซลล์ชี้ไปหาหัวคอลัมน์ที่ประกาศไว้เอง (aria-labelledby / headers=)
+      const firstBody = rowEls.find(
+        (r) => !r.querySelector('th, [role="columnheader"]') &&
+               r.querySelector('td, [role="cell"], [role="gridcell"]'),
+      );
+      const bodyCells = firstBody
+        ? Array.from(firstBody.querySelectorAll('td, [role="cell"], [role="gridcell"]'))
+        : [];
+      const viaIds = bodyCells.map((c) => {
+        const ref = c.getAttribute('headers') || c.getAttribute('aria-labelledby') || '';
+        const target = ref ? document.getElementById(ref.split(/\s+/)[0]) : null;
+        return target ? clean(target.innerText) : '';
+      });
+      if (viaIds.some(Boolean)) { headers = viaIds; headerSource = 'aria'; }
+      if (!headers.length) {
+        // ชั้นที่ 3: data-* ที่ชื่อคอลัมน์ (พบบ่อยในตาราง responsive ที่โชว์ label ผ่าน CSS)
+        const viaData = bodyCells.map(
+          (c) => clean(c.getAttribute('data-col') || c.getAttribute('data-field') ||
+                       c.getAttribute('data-label') || c.getAttribute('data-title') || ''),
+        );
+        if (viaData.some(Boolean)) { headers = viaData; headerSource = 'data-attr'; }
+      }
+    }
+    const rows = [];
+    for (const r of rowEls) {
+      if (r.querySelector('th, [role="columnheader"]')) continue;
+      let cellEls = Array.from(r.querySelectorAll('td, [role="cell"], [role="gridcell"]'));
+      // ตารางที่ไม่ได้ใช้ td/[role=cell] เลย (div ล้วน) — ถอยไปใช้ทั้งแถวเป็นเซลล์เดียว
+      // ซึ่งให้พฤติกรรมเท่าเดิมกับก่อน W_column_aware_rows ไม่ใช่คืนแถวว่าง
+      const cells = cellEls.length > 0
+        ? cellEls.map((c) => clean(c.innerText))
+        : [clean(r.innerText)];
+      if (cells.some(Boolean)) rows.push(cells);
+    }
+    if (rows.length > 0 && (!best || rows.length > best.rows.length)) {
+      best = { headers, rows, headerSource };
+    }
+  }
+  return best;
+}
+"""
+
+
+async def _scan_visible_table_rows(page: Page) -> Optional[tuple[list[str], list[list[str]]]]:
+    """W_delete_all_intent / W_column_aware_rows: คืน (ชื่อหัวตาราง, แถวข้อมูลแยกเป็นเซลล์) ของ
+    ตารางที่ใหญ่ที่สุดบนหน้า หรือ None ถ้าหน้านี้ไม่มีตาราง/อ่านไม่ได้ — ห้าม throw ออกไปพัง loop
+    เด็ดขาด (หลักการเดียวกับ guard อื่นในไฟล์นี้) หัวตารางว่างได้ (ตารางที่ไม่มี header จริง)
+    ซึ่งจะทำให้ผู้เรียกถอยไปเทียบทั้งแถวเองตามเดิม"""
+    try:
+        table = await page.evaluate(_VISIBLE_TABLE_ROWS_JS)
+    except Exception:
+        return None
+    if not isinstance(table, dict) or not table.get("rows"):
+        return None
+    headers = [str(h) for h in (table.get("headers") or [])]
+    rows = [[str(c) for c in row] for row in table["rows"] if isinstance(row, list)]
+    return (headers, rows) if rows else None
+
+
+def _table_columns_are_addressable(headers: list[str], rows: list[list[str]]) -> bool:
+    """W_column_headers_fallback: เล็งคอลัมน์ได้จริงไหม — ต้องมีชื่อคอลัมน์ *และ* แถวถูกแยก
+    เป็นเซลล์จริง (ตาราง div ล้วนถูกยัดทั้งแถวเป็นเซลล์เดียวโดย _VISIBLE_TABLE_ROWS_JS
+    ซึ่งเทียบเท่ากับไม่มีคอลัมน์เลย)"""
+    return bool(headers) and any(len(row) > 1 for row in rows)
+
+
+def _column_index_for_field(headers: list[str], field: str) -> Optional[int]:
+    """W_column_aware_rows: index ของคอลัมน์ที่ชื่อตรงกับ field ที่ user เขียนใน goal —
+    ใช้ตัวเทียบชื่อตัวเดียวกับ W_filter_scope_guard (_field_names_match) ที่ทนการพิมพ์ผิด/
+    คำไทยติดหน้าอยู่แล้ว ไม่สร้างกฎการเทียบชุดที่สอง
+
+    None = หาไม่เจอ ซึ่งแปลว่า "ตัดสินไม่ได้" ไม่ใช่ "ไม่ตรง" — ผู้เรียกต้อง fail-open"""
+    if not field:
+        return None
+    for index, header in enumerate(headers):
+        if _field_names_match(field, _normalized_field_name(header)):
+            return index
+    return None
+
+
+def _cell_matches_value(cell: str, value: str) -> bool:
+    """W_column_aware_rows: เซลล์นี้มีค่าที่ user ขอไหม — ยอมรับ 2 แบบเท่านั้น: ตรงทั้งเซลล์
+    หรือเป็น "คำเต็มคำหนึ่ง" ที่คั่นด้วยช่องว่างในเซลล์ (เช่นเซลล์ "Senior ESS" กับค่า "ess")
+
+    จงใจใช้การตัดด้วยช่องว่าง ไม่ใช่ word boundary ของ regex — `` ถือว่า "." เป็นตัวคั่นด้วย
+    ทำให้ username "ess.irhrg0" ยังตรงกับค่า "ess" อยู่ดี ซึ่งเป็นเคสตัวอย่างที่ comment ของ
+    _KEY_VALUE_IN_QUERY_RE (W_column_aware_count) ยกไว้ตรงตัวว่าเคยนับผิดมาแล้วจริง
+    ที่ตัดทิ้งไปพร้อมกัน: "Jessica" / "Assessed" (ค่าอยู่กลางคำ)"""
+    cell_norm = (cell or "").strip().lower()
+    value_norm = (value or "").strip().lower()
+    if not value_norm:
+        return False
+    return cell_norm == value_norm or value_norm in cell_norm.split()
+
+
+def _row_matches_condition(
+    headers: list[str], cells: list[str], pairs: list[tuple[str, str]],
+) -> bool:
+    """W_column_aware_rows: ทุกคู่ field=value ต้องตรงในแถวเดียวกัน (AND) ตรงกับความหมายของ
+    "userrole=ess status=enabled" ที่ user เขียนจริง — เล็งคอลัมน์ได้ก็เทียบเฉพาะเซลล์นั้น
+    เล็งไม่ได้ (ตารางไม่มีหัว/ชื่อหัวไม่ตรงอะไรเลย) ถึงค่อยถอยไปเทียบทั้งแถวแบบเดิม"""
+    row_text = " ".join(cells)
+    for field, value in pairs:
+        index = _column_index_for_field(headers, field)
+        if index is not None and index < len(cells):
+            if not _cell_matches_value(cells[index], value):
+                return False
+        elif not _cell_matches_value(row_text, value):
+            return False
+    return True
+
+
+async def _count_rows_matching_condition(
+    page: Page, pairs: list[tuple[str, str]], *, require_columns: bool = False,
+) -> Optional[tuple[int, int]]:
+    """W_delete_all_intent: คืน (จำนวนแถวที่ตรงเงื่อนไขทุกคู่, จำนวนแถวทั้งหมดที่เห็น) ของตาราง
+    ที่แสดงอยู่ หรือ None ถ้าเช็คไม่ได้
+
+    W_column_headers_fallback: `require_columns=True` = "ถ้าเล็งคอลัมน์ไม่ได้ ให้ตอบว่าตัดสิน
+    ไม่ได้ (None) แทนที่จะถอยไปเทียบทั้งแถว" — ตารางที่ไม่มีหัวคอลัมน์เลยทำให้
+    _row_matches_condition() fail-open กลับไปเทียบข้อความทั้งแถว ซึ่งคือบั๊ก W97 เดิมเป๊ะ
+    (ค่า "ess" ไปตรงกับชื่อคน "Jessica") เพียงแต่เงียบกว่าเพราะไม่มีใครเห็น
+
+    ผู้เรียกต้องเลือกเองตามทิศทางของการตัดสินใจ:
+      - ทิศที่ปลอดภัย (บล็อกไว้ก่อน เช่น กันลบจากตารางที่ยังไม่กรอง) -> require_columns=False
+        เทียบทั้งแถวได้ เพราะเดาเกินไปแล้วบล็อก อย่างมากก็เสีย step
+      - ทิศที่อันตราย (ใช้เป็นหลักฐานว่า "จบงานแล้ว") -> require_columns=True เพราะการนับเกิน
+        จริงในทิศนี้แปลว่าอ้างว่าเสร็จทั้งที่ยังเหลือ"""
+    if not pairs:
+        return None
+    scanned = await _scan_visible_table_rows(page)
+    if scanned is None:
+        return None
+    headers, rows = scanned
+    if require_columns and not _table_columns_are_addressable(headers, rows):
+        return None
+    matching = sum(1 for cells in rows if _row_matches_condition(headers, cells, pairs))
+    return matching, len(rows)
+
+
+# W_delete_all_intent: click ที่ "ทำลายข้อมูล" — ครอบคลุมทั้ง action type ที่ permission layer
+# จัดเป็นกลุ่มยืนยันอยู่แล้ว (delete/submit/purchase/pay) และ click ธรรมดาที่ label บอกเองว่า
+# เป็นการลบ (โมเดลเลือก type "click" ให้ปุ่ม Delete ได้เสมอ — defense-in-depth เดียวกับที่
+# permission/rules.py ใช้ label keyword เสริม action type)
+_DESTRUCTIVE_LABEL_RE = re.compile(r"\b(delete|remove|destroy|trash)\b|ลบ", re.IGNORECASE)
+
+_MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES = 2
+
+_DESTRUCTIVE_BEFORE_FILTER_NUDGE_TEMPLATE = (
+    "This destructive action is BLOCKED for now. The goal says to delete only the entries "
+    "matching {condition}, but the table on screen right now shows {total} rows and only "
+    "{matching} of them match that condition — so the list you are about to delete from is NOT "
+    "filtered yet. Deleting from this list risks destroying data the goal never asked you to "
+    "touch. Set the filter for {condition} first, then press the Search button and wait for the "
+    "table to reload, and only act on the rows that come back."
+)
+
+_DELETE_ALL_NO_SEARCH_NUDGE = (
+    "This finish_task(success=true) is rejected. You changed a filter field but never pressed "
+    "the Search button afterwards, so the table you were looking at was never filtered by the "
+    "condition the goal asks for — whatever you did, it cannot be the complete job. Press "
+    "Search, look at the rows that come back, and finish the deletion on those rows."
+)
+
+_DELETE_ALL_UNVERIFIED_NUDGE_TEMPLATE = (
+    "This finish_task(success=true) is rejected. The goal is to delete EVERY entry matching "
+    "{condition}, but the page you are on right now shows no result table at all, so there is "
+    "no evidence left that the job is complete — you may have navigated away from the list. Go "
+    "back to the filtered list, look at how many rows still match {condition}, and only call "
+    "finish_task(success=true) once that list is genuinely empty."
+)
+
+# W_undefined_quota: โควตาของ guard 2 ตัวข้างบน (_DELETE_ALL_NO_SEARCH_NUDGE และ
+# _DELETE_ALL_UNVERIFIED_NUDGE_TEMPLATE) — ชื่อนี้ถูก "ใช้" มาตั้งแต่ W80 ที่จุดตรวจ
+# finish_task แต่ไม่เคยถูก "ประกาศ" เลยสักที่ ทั้งสอง guard จึงโยน NameError ทันทีที่ควรจะ
+# ทำงาน คือตอน agent อ้างว่าลบครบทั้งที่ยังไม่เคยกด Search ซึ่งเป็นเคสที่ W80 สร้างมาเพื่อจับ
+# โดยเฉพาะ — แล้ว W_loop_crash (W77) รับ NameError ไว้เงียบๆ แปลงเป็น success=False ทั้ง task
+# guard ชุด W80 จึงไม่เคยได้ทำงานจริงสักครั้งนับตั้งแต่เขียนมา
+#
+# เทสต์มองไม่เห็นเพราะ assert แค่ result["success"] is False ซึ่งเป็นจริงทั้งตอน guard ทำงาน
+# ถูกและตอน task crash — เทสต์ของ guard พวกนี้ต้อง assert "ข้อความ nudge" เสมอ ไม่ใช่แค่ผลลัพธ์
+# 2 = เท่ากับ _MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES ด้านบน (guard ตระกูลเดียวกัน ให้โมเดลแก้ตัว
+# ได้ 2 ครั้งแล้วยอมรับคำตอบของมัน ไม่ขังไว้จนหมด step budget)
+_MAX_DELETE_ALL_UNVERIFIED_RETRIES = 2
+
 _ROW_ACTION_LABEL_RE = re.compile(r"\b(edit|view details|delete|download|pencil)\b", re.IGNORECASE)
 
 # W64[7.1]: ใช้เช็คว่า click ที่เพิ่งสำเร็จคือการกด Search จริงหรือไม่ (ถ้าใช่ ล้าง
 # filter_dirty_since_search ทันที) — ครอบคลุมทั้งไทย/อังกฤษเหมือน keyword set อื่นในไฟล์นี้
 _SEARCH_LABEL_RE = re.compile(r"\bsearch\b|ค้นหา", re.IGNORECASE)
 
+# W_rowaction_own_quota: guard นี้เคยถูกจำกัดด้วย _MAX_PREMATURE_TABLE_VERIFY_RETRIES ซึ่ง
+# เป็นโควตาของ guard คนละตัว (W63[7.2] "Strict Table Assertion") — คนละบั๊ก คนละเงื่อนไข
+# ปรับค่าของ guard หนึ่งแล้วไปเปลี่ยนพฤติกรรมของอีก guard หนึ่งโดยไม่ตั้งใจ ให้โควตาของตัวเอง
+# ค่าเท่าเดิม (2) พฤติกรรมจึงไม่เปลี่ยนจากเดิมเลย แค่แยกปุ่มปรับออกจากกัน
+_MAX_PREMATURE_ROW_ACTION_BEFORE_SEARCH_RETRIES = 2
+
+# W_unknown_tool: ชื่อ tool ทั้งหมดที่มีอยู่จริง (ตรงกับที่ llm.py ประกาศให้ทุก provider) —
+# ใช้ปฏิเสธชื่อที่โมเดลมโนขึ้นเองก่อนจะหลุดไปถึง actions.execute() ดูจุดใช้งานในลูปหลัก
+_KNOWN_TOOL_NAMES = frozenset({"browser_action", "request_user_input", "finish_task"})
+
+# W_step_trace (failure taxonomy): ก่อนหน้านี้ทั้งระบบไม่มี field ไหนบอกเลยว่า step หนึ่ง
+# "ล้มเพราะอะไร" — มีแค่ success: true/false กับข้อความอิสระที่แต่ละ action เขียนเอง ทำให้
+# ตอบคำถามพื้นฐานอย่าง "task ที่ล้ม 15 ครั้งล่าสุด ล้มเพราะหา element ไม่เจอ หรือเพราะโมเดล
+# เลือก action ผิด" ไม่ได้เลยโดยไม่ไล่อ่าน log ทีละบรรทัด
+#
+# จัดหมวดจากข้อความของ ActionResult (deterministic ล้วนๆ ไม่เรียก LLM) — เรียงจากเฉพาะเจาะจง
+# ไปกว้าง เพราะข้อความหนึ่งอาจตรงหลายรูปแบบ (เช่น "[Skipped]" ที่เกิดจาก guard ต่างกัน)
+_FAILURE_TAXONOMY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("human_denied", (REJECTED_BY_USER_MESSAGE,)),
+    ("permission_blocked", ("blocked by the permission layer", "ถูกบล็อก")),
+    ("wrong_action_type", ("not a native <select>", "is a native <select>", "unknown action")),
+    ("skipped_no_op", ("[Skipped]",)),
+    ("element_not_found", ("element not found", "no option matching", "not clickable")),
+    ("timeout", ("timeout", "Timeout")),
+    ("missing_parameter", ("missing parameter",)),
+    ("read_failed", ("nothing matching or close to", "no element matching")),
+)
+
+
+def _classify_step_failure(result_text: str, success: bool) -> str:
+    """คืนชื่อหมวดความล้มเหลวของ step นี้ — "ok" ถ้าสำเร็จ, "other" ถ้าล้มแต่ไม่ตรงหมวดไหนเลย
+
+    ห้าม throw (ใช้ตอนประกอบ trace เท่านั้น ไม่ควรมีทางทำให้ task พัง)"""
+    if success:
+        return "ok"
+    lowered = (result_text or "").lower()
+    for name, needles in _FAILURE_TAXONOMY_PATTERNS:
+        if any(needle.lower() in lowered for needle in needles):
+            return name
+    return "other"
+
+# W_step_budget: ข้อความ default ตอนลูปจบเพราะหมดรอบ — ดึงเป็นค่าคงที่เพื่อให้ตอนจบ task
+# เช็คได้ว่า "ยังไม่มีใครตั้งข้อความจริงให้เลย" แล้วเติมเหตุผลล่าสุดของโมเดลต่อท้ายได้
+_MAX_STEPS_EXHAUSTED_MESSAGE = "ครบ max_steps โดยยังไม่จบ task"
+
 _PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE = (
-    "Action นี้ถูกปฏิเสธ — คุณเพิ่งกรอก/เลือกค่าใน field '{prev_label}' ไปเมื่อ step ที่แล้ว "
-    "แต่ยังไม่ได้กดปุ่ม Search/ค้นหา (หรือกด Enter) เพื่อยืนยัน filter นี้เลย ตารางที่เห็นอยู่"
-    "ตอนนี้ยังเป็นผลลัพธ์เก่าก่อนหน้า filter ใหม่ ไม่ใช่ผลลัพธ์ที่กรองแล้วจริง — ห้ามคลิกปุ่ม "
-    "'{label}' (row action) บนแถวนี้เด็ดขาดตอนนี้ ให้กดปุ่ม Search/ค้นหา ก่อน แล้วตรวจสอบ"
-    "indexed elements รอบใหม่ว่าตารางกรองตามเงื่อนไขที่ต้องการจริงแล้ว ก่อนค่อยเลือก action "
-    "กับแถวในตาราง"
+    "This action is rejected — you filled/selected a value in the field '{prev_label}' on the "
+    "previous step but have not yet pressed the Search button (or Enter) to apply that "
+    "filter. The table you see now is still the OLD result from before the new filter, not "
+    "the genuinely filtered one — do NOT click the '{label}' row action on this row right "
+    "now. Press Search first, then check the new round of indexed elements to confirm the "
+    "table really is filtered to the condition you wanted, before choosing an action on a row."
 )
 
 
@@ -364,11 +1386,12 @@ _PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE = (
 _MAX_PREMATURE_TABLE_VERIFY_RETRIES = 2
 
 _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE = (
-    "การเรียก finish_task(success=true) นี้ถูกปฏิเสธ — ตรวจสอบ DOM จริงของตารางผลลัพธ์บนหน้า"
-    "ปัจจุบันแล้วไม่พบข้อความ \"{text}\" (ที่ระบุใน verify_text) อยู่จริงเลยสักแถว ห้ามถือว่า"
-    "รายการนี้ถูกสร้าง/บันทึกสำเร็จทั้งที่ตารางยังไม่แสดงรายการนี้จริง — ตรวจสอบว่า submit ผ่าน"
-    "จริงไหม (มี validation error ค้างอยู่ไหม), navigate กลับไปหน้ารายการที่ถูกต้องแล้วหรือยัง "
-    "หรือต้องรีเฟรช/ค้นหาใหม่ก่อนเห็นรายการนี้ในตาราง ก่อนจะเรียก finish_task(success=true) อีกครั้ง"
+    "This finish_task(success=true) is rejected — checking the real DOM of the results table "
+    "on the current page finds the text \"{text}\" (given in verify_text) in no row at all. "
+    "Never treat the entry as created/saved while the table genuinely does not show it. Check "
+    "whether the submit actually went through (is a validation error still showing?), whether "
+    "you have navigated back to the correct list page, or whether you need to refresh/search "
+    "again before it appears, before calling finish_task(success=true) again."
 )
 
 # W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2, บั๊กจริง: agent บันทึกพนักงาน
@@ -379,11 +1402,12 @@ _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE = (
 # "ยังไม่ได้บันทึก" แล้วย้อนกลับไปกรอกฟอร์มใหม่เด็ดขาด เพราะมีหลักฐาน toast ยืนยันสำเร็จจริง
 # อยู่แล้ว การหาไม่เจอครั้งนี้น่าจะเป็นปัญหาการค้นหา/filter/pagination มากกว่า
 _TOAST_CONFIRMED_NO_RECREATE_SUFFIX = (
-    " *** สำคัญ: ก่อนหน้านี้ใน task เดียวกันนี้เคยมี action ที่ตรวจพบ toast/ข้อความยืนยัน"
-    "บันทึกสำเร็จแล้วจริง (ดู step ก่อนหน้าในประวัติ) — ข้อมูลถูกบันทึกไปแล้วจริงๆ การหาไม่เจอ"
-    "ในตารางตอนนี้ไม่ใช่หลักฐานว่ายังไม่ได้บันทึก ห้ามกดปุ่ม Reset/ปุ่มล้างฟอร์มแล้วกรอกฟอร์ม"
-    "สร้างรายการใหม่ซ้ำอีกครั้งเด็ดขาด (จะทำให้เกิดรายการซ้ำ/error ข้อมูลซ้ำ) — ให้ลองรอสักครู่"
-    "แล้ว re-query ตาราง (เช่นกด Search/ค้นหาซ้ำ) อีกครั้งเท่านั้น ***"
+    " *** IMPORTANT: earlier in this same task an action genuinely detected a toast/save-"
+    "success confirmation (see the earlier step in the history) — the data really was saved. "
+    "Not finding it in the table right now is NOT evidence that it wasn't. NEVER press "
+    "Reset/clear the form and fill in the creation form again (that produces duplicate "
+    "entries and duplicate-data errors) — the only thing to do is wait a moment and re-query "
+    "the table (e.g. press Search again). ***"
 )
 
 
@@ -394,12 +1418,62 @@ _TOAST_CONFIRMED_NO_RECREATE_SUFFIX = (
 # CSS มาตรฐาน) เป็นชั้นสำรองกว้างๆ เผื่อ layout เปลี่ยนไปในเวอร์ชันอื่นของ OrangeHRM ที่ยังคง
 # ข้อความนี้ไว้แต่ขยับ element/class ไป — ตั้งใจไม่ทำให้ generic ข้ามเว็บเหมือน
 # _VALIDATION_ERROR_SELECTOR เพราะ "Records Found" ไม่ใช่ข้อความมาตรฐานที่เว็บอื่นใช้ร่วมกันเลย
-_RECORD_COUNT_SELECTOR = (
-    '.orangehrm-horizontal-padding span:has-text("Records Found"), '
-    'span:has-text("No Records Found")'
+# W_record_count_generic (P3.9): เดิม selector + regex ผูกกับข้อความ "(N) Records Found"
+# ของ OrangeHRM อย่างเดียว — guard กัน false-completion ตัวเรือธง (ยืนยันว่าลบ/แก้ครบจริง)
+# จึงทำงานได้กับเว็บเดียวในโลก ที่เหลือ _scan_remaining_target_records() คืน None เงียบๆ
+# = ไม่มี guard เลย
+#
+# เพิ่มชั้น generic ที่ครอบรูปแบบที่เว็บทั่วไปใช้จริง โดยยังคง fail-safe เดิมทุกประการ:
+# อ่านไม่ได้/ไม่เจอ = None = ไม่บล็อกอะไร (ดีกว่าบล็อก finish_task ที่อาจถูกต้องอยู่แล้ว)
+# W_record_count_picks_wrapper: เดิมเป็น selector เดียวคั่นด้วย comma แล้วหยิบ `.first` โดยเชื่อ
+# ว่า "ของเจาะจงที่วางไว้ก่อนจะชนะ" — **ผิด** CSS ที่คั่นด้วย comma คืน element ตาม *ลำดับใน DOM*
+# ไม่ใช่ลำดับที่เขียนใน selector และ `:has-text()` ก็ match บรรพบุรุษทุกชั้นที่มีข้อความนั้นอยู่ข้างใน
+# `.first` จึงได้ `<div>` ก้อนใหญ่ที่ครอบทั้งหน้าเสมอ (เห็นจริงใน live run 2026-08-28: ข้อความ
+# ผลลัพธ์ของ task ยัด innerText ทั้งหน้าเข้าไปทั้งก้อน)
+# ไม่ใช่แค่เรื่องความสวย: ข้อความก้อนนั้นถูกส่งต่อให้ _RECORD_COUNT_PATTERNS หาตัวเลข ซึ่งอาจไป
+# เจอเลขอื่นบนหน้าที่ไม่เกี่ยวเลย = guard กัน hallucination ตัวเรือธงอ่านค่าผิด
+#
+# แยกเป็นลิสต์แล้วไล่ทีละตัว (pattern เดียวกับ actions.py::_find_visible_modal_confirm_button)
+# ลำดับใน list ถึงจะมีความหมายจริง และในแต่ละ selector เลือก element ที่ข้อความสั้นที่สุด =
+# ตัวที่เป็นข้อความสรุปเอง ไม่ใช่ container ที่ห่อมันอยู่
+_RECORD_COUNT_SELECTORS = (
+    # OrangeHRM (เจาะจงที่สุด เก็บไว้ก่อนเสมอ)
+    '.orangehrm-horizontal-padding span:has-text("Records Found")',
+    'span:has-text("No Records Found")',
+    # generic — ข้อความสรุปผลลัพธ์ที่ framework/เว็บทั่วไปใช้ วางไว้ทีหลังเพื่อให้ของเจาะจง
+    # ชนะก่อนถ้ามีทั้งคู่บนหน้าเดียวกัน
+    ':is(span, div, p, h2, h3):has-text("Records Found")',
+    ':is(span, div, p, h2, h3):has-text("results found")',
+    ':is(span, div, p, h2, h3):has-text("No results")',
+    ':is(span, div, p, h2, h3):has-text("รายการ")',
+)
+# element ที่ match ได้ต่อ selector หนึ่งตัว — ดูแค่ไม่กี่ตัวแรกพอ (ห่วงโซ่บรรพบุรุษที่ห่อข้อความ
+# เดียวกันยาวได้ แต่ตัวที่สั้นที่สุดอยู่ในกลุ่มแรกๆ เสมอ) กัน DOM query บานบนหน้าที่ใหญ่มาก
+_RECORD_COUNT_MAX_CANDIDATES = 8
+
+# รูปแบบตัวเลขที่ยอมรับ เรียงจากเจาะจงไปกว้าง — ตัวแรกที่ match ชนะ
+# ตั้งใจไม่รับ "ตัวเลขลอยๆ" ที่ไม่มีคำบอกบริบทกำกับเลย เพราะหน้าเว็บมีตัวเลขเต็มไปหมด
+# (ราคา/วันที่/เลขหน้า) การเดาผิดที่นี่แปลว่า guard ไปบล็อก finish_task ที่ถูกต้อง
+_RECORD_COUNT_PATTERNS = (
+    # OrangeHRM: "(41) Records Found"
+    re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE),
+    # "42 results found" / "42 results" / "42 items" — เจาะจงกว่า "of N" ด้านล่างจึงมาก่อน
+    re.compile(r"\b([\d,]+)\s+(?:results?|items?|records?|entries)\b", re.IGNORECASE),
+    # ไทย: "42 รายการ" / "ทั้งหมด 42 รายการ"
+    re.compile(r"([\d,]+)\s*รายการ"),
+    # "Showing 1-10 of 42" — เอาตัวหลัง "of" ซึ่งคือยอดรวมจริง ไว้ท้ายสุดเพราะกว้างที่สุด:
+    # ข้อความแบบ "page 2 of 5" ก็ match ได้ ถ้าเอาขึ้นก่อนจะแย่งเคสที่มีทั้งเลขหน้าและยอดรวม
+    # อยู่ในประโยคเดียวกัน (selector ด้านบนกรองแล้วว่าต้องเป็นข้อความสรุปผลลัพธ์ถึงจะมาถึงตรงนี้
+    # แต่ลำดับยังต้องถูกอยู่ดี)
+    re.compile(r"\bof\s+([\d,]+)\b", re.IGNORECASE),
 )
 
-_RECORD_COUNT_RE = re.compile(r"\((\d+)\)\s*Records?\s*Found", re.IGNORECASE)
+# ข้อความที่แปลว่า "ไม่มีผลลัพธ์เลย" (= 0) — ต้องเช็คก่อน pattern ตัวเลขเสมอ เพราะบางอันมี
+# เลข 0 อยู่ในประโยคอยู่แล้ว บางอันไม่มีเลขเลย
+_RECORD_COUNT_ZERO_TEXTS = (
+    "no records found", "no results", "no matching records", "no data",
+    "ไม่พบข้อมูล", "ไม่พบรายการ", "ไม่มีข้อมูล",
+)
 
 # W68b (บั๊กจริงที่ user รายงานซ้ำหลัง W68: goal "เปลี่ยน Role ของทุกคนที่ไม่ใช่ Admin เป็น
 # Admin" — agent ยัง claim "ผลการค้นหาแสดง 0 รายการ" ทั้งที่ตารางจริงโชว์ "(16) Records Found"
@@ -424,20 +1498,43 @@ async def _scan_remaining_target_records_once(page: Page) -> Optional[tuple[int,
     ไม่ block เหมือนหลักการเดียวกับ _scan_validation_errors ด้านบน: เช็คไม่ได้ ดีกว่าบล็อก
     finish_task ที่อาจถูกต้องอยู่แล้ว) "No Records Found" ตีความเป็น 0 เสมอ ไม่ throw ออกไปพัง
     guard เด็ดขาด (เหมือน _scan_validation_errors — จับ Exception กว้างๆ คืน None แทน)"""
+    text = ""
     try:
-        locator = page.locator(_RECORD_COUNT_SELECTOR).first
-        if await locator.count() == 0:
-            return None
-        text = (await locator.inner_text(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+        for selector in _RECORD_COUNT_SELECTORS:
+            locator = page.locator(selector)
+            total = await locator.count()
+            if total == 0:
+                continue
+            candidates = []
+            for i in range(min(total, _RECORD_COUNT_MAX_CANDIDATES)):
+                try:
+                    candidate = (await locator.nth(i).inner_text(
+                        timeout=_DOM_CHECK_TIMEOUT_MS,
+                    )).strip()
+                except Exception:
+                    continue
+                if candidate:
+                    candidates.append(candidate)
+            if candidates:
+                # สั้นที่สุด = ข้อความสรุปเอง ไม่ใช่ container ที่ห่อมันอยู่
+                text = min(candidates, key=len)
+                break
     except Exception:
         return None
     if not text:
         return None
-    if "no records found" in text.lower():
+    lowered = text.lower()
+    if any(zero_text in lowered for zero_text in _RECORD_COUNT_ZERO_TEXTS):
         return 0, text
-    match = _RECORD_COUNT_RE.search(text)
-    if match:
-        return int(match.group(1)), text
+    # W_record_count_generic: ไล่ pattern จากเจาะจงไปกว้าง ตัวแรกที่ match ชนะ — ตัวคั่นหลักพัน
+    # ต้องถอดก่อนแปลงเป็น int ("1,234 results")
+    for pattern in _RECORD_COUNT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return int(match.group(1).replace(",", "")), text
+            except ValueError:
+                continue
     return None
 
 
@@ -457,7 +1554,7 @@ async def _scan_remaining_target_records(page: Page) -> Optional[tuple[int, str]
 # W63[7.2] ("Strict Table Assertion & Truth Reporting" — ticket Issue 7.2): เรียงจากเจาะจง
 # ที่สุด (OrangeHRM .oxd-table-body) ไปกว้างสุด (<table><tbody>/ARIA rowgroup/class ที่มีคำว่า
 # table+body มาตรฐานที่ CSS framework ทั่วไปใช้ร่วมกัน — Material/Bootstrap/Ant Design ฯลฯ)
-# ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว ต่างจาก _RECORD_COUNT_SELECTOR ด้านบนที่ข้อความ
+# ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว ต่างจาก _RECORD_COUNT_SELECTORS ด้านบนที่ข้อความ
 # "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย แต่ <tbody>/[role=rowgroup] เป็น
 # มาตรฐาน HTML/ARIA ตรงๆ
 _TABLE_BODY_SELECTOR = (
@@ -549,14 +1646,56 @@ _FORM_SUBMIT_LABEL_KEYWORDS = (
 
 # "* Required"/"Required"/"Required." ล้วนๆ ไม่มีเนื้อหาอื่น (เห็นจริงบน OrangeHRM) — ต่างจาก
 # error ที่มีเนื้อหาจริงเช่น "Should have at least 7 characters" ซึ่งต้องไม่ถูกกรองทิ้ง
-_BARE_REQUIRED_MESSAGE_RE = re.compile(r'^[\*\s]*required[\.\!]?$', re.IGNORECASE)
+# W_bare_invalid_is_a_field_hint (release gate จับได้ 2026-09-07, งาน "search_no_results"
+# ตกซ้ำได้ 100% ทั้งสองรอบ): ช่อง Employee Name ของ OrangeHRM เป็น autocomplete พอพิมพ์ชื่อที่
+# ไม่มีอยู่จริง มันขึ้นคำว่า "Invalid" ใต้ช่อง ตัวสแกน validation error เห็นแล้วยุติ task ทั้งงาน
+# เพื่อขอค่าใหม่จาก user — ทั้งที่ goal ของงานนั้นคือ "ค้นหาชื่อที่ไม่มีอยู่แล้วยืนยันว่าไม่พบ"
+# คำว่า "Invalid" จึงเป็นผลลัพธ์ที่ถูกต้อง ไม่ใช่ความล้มเหลว (จบที่ 1 step ทุกครั้ง)
+#
+# เป็น false positive ชนิดเดียวกับ "* Required" เป๊ะ: คำเดียวโดดๆ ที่เป็นป้ายบอกสถานะของช่อง
+# ไม่ได้บอกว่าค่าที่กรอกผิดยังไง ต่างจากข้อความจริงอย่าง "Invalid email format" หรือ
+# "Should have at least 7 characters" ซึ่งบอกรายละเอียดและยังต้องหยุดเหมือนเดิม
+_BARE_FIELD_HINT_MESSAGE_RE = re.compile(
+    r'^[\*\s]*(?:required|invalid)[\.\!]?$', re.IGNORECASE,
+)
 
 
 def _is_bare_required_message(text: str) -> bool:
-    """True ถ้าข้อความเป็นแค่ "* Required"/"Required" เฉยๆ (ไม่มีรายละเอียดว่าค่าที่กรอกผิด
-    ยังไง) — เป็น false positive ที่โผล่ให้ช่องพี่น้องที่ "ยังไม่ได้กรอกเลย" เท่านั้น ไม่ใช่
-    ปัญหาของค่าที่เพิ่ง fill จริงๆ ต้องกรองทิ้งก่อน hard-stop"""
-    return bool(_BARE_REQUIRED_MESSAGE_RE.match((text or "").strip()))
+    """True ถ้าข้อความเป็นแค่ป้ายบอกสถานะของช่องคำเดียว ("* Required"/"Required"/"Invalid")
+    ไม่มีรายละเอียดว่าค่าที่กรอกผิดยังไง — false positive ที่โผล่ให้ช่องพี่น้องที่ยังไม่ได้กรอก
+    หรือให้ autocomplete ที่หาคำที่พิมพ์ไม่เจอ ไม่ใช่ปัญหาของค่าที่เพิ่ง fill จริงๆ
+    ต้องกรองทิ้งก่อน hard-stop (ดู W_bare_invalid_is_a_field_hint เหนือ regex)"""
+    return bool(_BARE_FIELD_HINT_MESSAGE_RE.match((text or "").strip()))
+
+
+# W_required_error_survives_the_fix (release gate จับได้ 2026-09-07, งาน rag_permission /
+# rag_integration / long_flow ตกด้วยอาการเดียวกันทั้งสามงาน): agent กด Continue บนฟอร์ม checkout
+# ของ SauceDemo ทั้งที่ยังไม่ได้กรอก เว็บขึ้น "Error: First Name is required" — agent แก้ถูกต้อง
+# ด้วยการกรอกช่องนั้นในเทิร์นถัดมา แต่ตัวสแกนที่รันทันทีหลัง fill ยังเห็นแบนเนอร์เดิมค้างอยู่
+# (SauceDemo ไม่ล้างจนกว่าจะกดส่งใหม่) แล้วเอา error ที่ล้าสมัยไปแล้วมาฆ่างานทิ้ง
+#
+# ข้อความแบบนี้มีรายละเอียดจริงจึงไม่เข้าตัวกรอง bare-hint — ต้องใช้เงื่อนไขที่ตรงกว่า:
+# error ที่บอกว่า "ช่อง X ต้องกรอก" ย่อมล้าสมัยทันทีที่เพิ่งกรอกช่อง X สำเร็จ
+# แคบโดยเจตนา: ต้องเป็นข้อความชนิด required *และ* ต้องอ้างถึงชื่อช่องที่เพิ่งกรอกจริงเท่านั้น
+# ข้อความที่บอกว่าค่าที่กรอก "ผิดรูปแบบ" (invalid format / at least N characters) ไม่เข้าเงื่อนไข
+# นี้และยังหยุด task เหมือนเดิม เพราะการกรอกใหม่ไม่ได้ทำให้มันหายไปเอง
+_REQUIRED_ERROR_WORDS = ("required", "ต้องกรอก", "จำเป็นต้องระบุ", "ห้ามเว้นว่าง")
+
+
+def _is_required_field_error(text: str) -> bool:
+    """True ถ้าข้อความบอกว่า "ช่องนี้ต้องกรอก" — เป็น error ที่ agent แก้เองได้เสมอ
+
+    W_required_error_is_not_a_dead_end (release gate จับได้ 2026-09-07, rag_integration และ
+    long_flow ตกด้วยข้อความเดียวกันเป๊ะ 'Error: Postal Code is required'): agent กรอก
+    First/Last Name เองแล้วพ่วงคลิก Continue ทั้งที่ยังไม่ได้กรอก Postal Code — error นี้เป็น
+    ความจริง ไม่ใช่ของค้าง แต่ระบบยุติงานทั้งงานเพื่อ "ขอค่าใหม่จาก user" ทั้งที่ค่าที่ขาดคือ
+    สิ่งที่ agent เติมเองได้ (มันเพิ่งเติมชื่อเองไปสองช่องในเทิร์นก่อนหน้า)
+    hard-stop ตัวนี้มีไว้สำหรับ error ที่ "แก้ได้ด้วยค่าใหม่จาก user เท่านั้น" — ข้อความชนิด
+    required ไม่เข้าข่ายนั้นเลย มันบอกชัดว่าต้องทำอะไรต่อและ agent ทำได้เอง ปล่อยให้ loop เดินต่อ
+    (แบนเนอร์ยังอยู่บนหน้า โมเดลเห็นใน snapshot ถัดไปอยู่แล้ว)
+    ส่วนข้อความที่บอกว่า "ค่าที่กรอกผิด" (invalid format / at least N characters / already
+    exists) ยังหยุดเหมือนเดิม เพราะกรอกใหม่เองมั่วๆ ไม่ได้ ต้องรู้ค่าที่ถูกจริงๆ"""
+    return any(w in (text or "").lower() for w in _REQUIRED_ERROR_WORDS)
 
 
 def _label_looks_like_form_submit(label: str) -> bool:
@@ -607,6 +1746,30 @@ def _is_fatal_validation_error(text: str) -> bool:
 # ก็ตาม แปลว่าไม่มีความคืบหน้าจริง — กันไว้ไม่ให้เสีย step/token ไปเรื่อยๆ จนหมด max_steps
 # โดยไม่ได้อะไรขึ้นมา ถ้าเจอ action เดิมติดกันครบจำนวนนี้ ให้หยุด task ทันที
 _MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
+
+# W_same_label_loop (บั๊กจริงที่ user รายงาน live บน OrangeHRM, goal "เปิดเว็ป แล้วไปที่เมนู
+# แอดมิน แล้วลบ user role=ess ออกให้หมด"): guard คาบ 1 ด้านบนเทียบ cmd ทั้ง dict รวม "index"
+# ด้วย — agent วนติ๊ก checkbox ของ "แถว" ไปเรื่อยๆ (click(35) -> click(36) -> click(34) ->
+# check(37) ...) ซึ่ง label เหมือนกันหมดว่า "Select row" แต่ index ต่างกันทุกครั้ง เลยไม่เข้า
+# เงื่อนไข "เดิมเป๊ะๆ" สักรอบ และ cycle detector (คาบ 2-4) ก็ไม่เห็นเป็นคาบเพราะ index ไม่ซ้ำ
+# เป็นแบบแผน — ผลคือวนได้ไม่จำกัดจนกว่าจะหมด max_steps หรือ user กด Stop เอง (รอบที่รายงาน
+# user กด Stop)
+#
+# element ที่ label เหมือนกันเป๊ะคือ "ของชนิดเดียวกันคนละแถว" เสมอในทางปฏิบัติ — สั่ง action
+# ชนิดเดิมใส่ label เดิมติดกันเกินจำนวนนี้โดยไม่ทำอย่างอื่นคั่นเลย แปลว่าไม่ได้เดินหน้าเข้าหา
+# goal จริง threshold ตั้งหลวมกว่าคาบ 1 (3) เพราะการติ๊กหลายแถวก่อนกดลบทีเดียวเป็นรูปแบบที่
+# ถูกต้องอยู่บ้าง — และเมื่อ trip ก็ใช้ _force_loop_recovery() เหมือน guard อื่น (บังคับ action
+# แล้วไปต่อ ไม่ใช่ฆ่า task ทิ้งทันที) งานที่ยาวจริงจึงยังมีทางไปต่อได้
+_MAX_CONSECUTIVE_SAME_LABEL_ACTIONS = 4
+
+# W_already_logged_in_but_told_to_log_in: บอกโมเดลว่าระบบล็อกอินให้แล้วเฉพาะช่วง step แรกๆ
+# พอเดินไปได้สักพักมันเห็นหน้าหลังล็อกอินเองแล้ว ไม่ต้องจ่ายค่าบรรทัดนี้ทุกเทิร์นจนจบงาน
+_MAX_ALREADY_LOGGED_IN_REMINDER_STEPS = 3
+
+# W_session_drift: จำนวนครั้งสูงสุดที่ระบบจะ login ใหม่ให้เองกลางทาง (ดู guard ต้นลูปหลัก) —
+# เผื่อ session หมดอายุจริงระหว่าง task ยาว แต่ไม่ปล่อยให้วน login ไม่รู้จบถ้า credential ใช้
+# ไม่ได้จริง (กรณีนั้น _maybe_auto_login() จะคืนเหตุผลความล้มเหลวออกมาอยู่แล้ว)
+_MAX_MID_TASK_RELOGINS = 2
 
 # (2026-07-13) เดิม guard ด้านบนจับได้แค่ pattern คาบ 1 (action เดิมเป๊ะๆ ซ้ำติดกัน
 # เช่น AAAA) — แต่ agent บางครั้งวนสลับ 2 action ที่ไม่เหมือนกันไปมาแทน (คาบ 2 เช่น
@@ -690,11 +1853,14 @@ def _detect_repeating_cycle_period(recent_actions: list[dict]) -> Optional[int]:
 # W6[B]: จำนวน chunk คู่มือสูงสุดที่จะดึงมาแนบให้ LLM เห็นทุก step ของ per-step loop —
 # ดึงใหม่ทุก step ตาม page_text ปัจจุบัน (ไม่ใช้กับ generate_plan ซึ่งเป็นแค่แผนคร่าวๆ
 # ครั้งเดียวก่อนเริ่ม loop จริง เก็บ scope ไว้แค่ per-step planner ตามที่คุยกันไว้)
-_RAG_CHUNKS_PER_STEP = 3
+# W_token_trim (P1/Q2): 3 -> 2 — chunk อันดับ 3 ถูก rank ว่า marginal อยู่แล้ว
+# (retriever เรียงตาม relevance) ตัดออก 1 ประหยัด ~1 chunk (~500 char) ต่อ step
+# ที่หน้าเปลี่ยน โดยแทบไม่เสีย recall จริง
+_RAG_CHUNKS_PER_STEP = 2
 
 # W7[A] (long-term): เหมือน _RAG_CHUNKS_PER_STEP แต่สำหรับ long_term_memory.recall()
 # (ประวัติ task run อื่นก่อนหน้า แทนคู่มือที่ user ป้อน) — ดึงใหม่ทุก step เหมือนกัน
-_LONG_TERM_MEMORY_CHUNKS_PER_STEP = 3
+_LONG_TERM_MEMORY_CHUNKS_PER_STEP = 2  # W_token_trim (P1/Q2): 3 -> 2
 
 # W9[A] vision fallback (Gemini เท่านั้นตอนนี้ — ดูเหตุผล scope ที่ llm.py::
 # describe_screenshot()): action ประเภทเหล่านี้เท่านั้นที่ต้องพึ่ง element visibility
@@ -750,8 +1916,194 @@ def _build_permission_query(cmd: dict, label: str) -> str:
 # _compact_groq_messages ด้านล่าง) ที่ต้องแยกตาม wire format ของแต่ละเจ้า — เลือกจาก
 # _llm_backend() เหมือน next_action/append_tool_result ที่มีอยู่แล้ว (ดู
 # Orchestrator._llm_backend())
-_COMPACT_AFTER_STEPS = 6
+# W_token_trim (P2/M1): 6 -> 4 — digest replay + stale-snapshot stub ด้านล่างจัดการ
+# bulk แล้ว compact ถี่ขึ้นเพื่อตัด raw turn เก่าออกเร็วขึ้น (_KEEP_RECENT_STEPS คงที่ 3)
+_COMPACT_AFTER_STEPS = 4
 _KEEP_RECENT_STEPS = 3
+
+# W_token_trim (P2/M1): stub เนื้อ "Current page:" ของ user turn เก่าทุกอันยกเว้น N
+# อันล่าสุด — page snapshot เก่าไร้ค่าทันทีที่มี snapshot ใหม่กว่า (SYSTEM_PROMPT W19
+# "Exact Element Matching"/"Action Trap" สั่งให้โมเดลยึดเฉพาะ snapshot ล่าสุดอยู่แล้ว
+# ไม่ให้อ้าง index เก่าข้าม step) — เก็บ 2 อันล่าสุดไว้เต็ม (อันก่อนหน้า + อันปัจจุบัน
+# ที่ next_action จะ append) เผื่อโมเดลต้องเทียบ "หน้าก่อน action ล่าสุด" กับ "หน้าตอนนี้"
+_STALE_SNAPSHOT_MARKER = "\n\nCurrent page:\n"
+_SUPERSEDED_SNAPSHOT_STUB = (
+    "[snapshot from an earlier step — superseded; act only on the latest snapshot below]"
+)
+
+
+def _stub_snapshot_in_text(text: str) -> Optional[str]:
+    """คืน text ที่แทนเนื้อ page snapshot ด้วย stub — None ถ้าไม่มี snapshot ในนี้เลย
+    page_text = "\\n".join(element lines) ไม่มี "\\n\\n" ข้างในเลย (perception.py) — block
+    จึงจบพอดีที่ "\\n\\n" ตัวถัดไป (section หน้าถัดไป) หรือท้าย string — parse ง่าย/ทน"""
+    i = text.find(_STALE_SNAPSHOT_MARKER)
+    if i == -1:
+        return None
+    start = i + len(_STALE_SNAPSHOT_MARKER)
+    j = text.find("\n\n", start)
+    end = len(text) if j == -1 else j
+    if text[start:end] == _SUPERSEDED_SNAPSHOT_STUB:
+        return None  # stubbed อยู่แล้ว — idempotent
+    return text[:start] + _SUPERSEDED_SNAPSHOT_STUB + text[end:]
+
+
+def _dedupe_stale_snapshots(messages: list, keep_last_full: int = 1) -> list:
+    """W_token_trim (P2/M1): provider-agnostic — จับ user turn ที่มี page snapshot
+    (content เป็น str ของ Anthropic/Groq/OpenAI หรือ parts[0].text ของ Gemini; tool_result
+    turn ของ Anthropic เป็น list ไม่ใช่ str จึงข้ามเอง) แล้ว stub ทุกอันยกเว้น
+    keep_last_full อันท้าย — ไม่แตะ turn อื่น ไม่ throw"""
+    hits: list[tuple[int, str, str]] = []
+    for k, m in enumerate(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            if _STALE_SNAPSHOT_MARKER in content:
+                hits.append((k, "content", content))
+        elif isinstance(m.get("parts"), list) and m["parts"]:
+            part_text = m["parts"][0].get("text") if isinstance(m["parts"][0], dict) else None
+            if isinstance(part_text, str) and _STALE_SNAPSHOT_MARKER in part_text:
+                hits.append((k, "parts", part_text))
+    if len(hits) <= keep_last_full:
+        return messages
+    targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+    out = list(messages)
+    for k, kind, text in targets:
+        stubbed = _stub_snapshot_in_text(text)
+        if stubbed is None:
+            continue
+        if kind == "content":
+            out[k] = {**messages[k], "content": stubbed}
+        else:
+            new_parts = list(messages[k]["parts"])
+            new_parts[0] = {**new_parts[0], "text": stubbed}
+            out[k] = {**messages[k], "parts": new_parts}
+    return out
+
+
+# W_token_cut W5 (หลักฐาน W_prompt_audit 2026-09-02): "assistant history" (turn เก่าที่สะสม
+# ใน messages) โตขึ้น ~4.5-5k tok ต่อ LLM call แบบไม่มีเพดาน และเป็น component ที่ใหญ่ที่สุด
+# ใน task ยาว — _dedupe_stale_snapshots ยุบแค่บล็อก "Current page:" ของ user turn เก่า ส่วน
+# ที่เหลือ (บล็อกกฎ gated ~3.9k tok, plan, scaffolding, manual, action-history) ยังค้างเต็ม
+# ทุก turn เก่า ทั้งที่ทุกอย่างถูกส่ง "สด" ใหม่ใน turn ปัจจุบันอยู่แล้ว + digest เก็บสิ่งที่
+# เกิดขึ้นไว้ครบ -> สำเนาเก่าไม่มีค่าเชิงข้อมูล มีแต่กิน token
+#
+# W5 = ยุบ user turn ของ step เก่า (เกิน _W5_KEEP_RECENT_FULL_TURNS อันท้าย) ให้เหลือแค่
+# บรรทัด Goal + stub สั้นๆ. idempotent, provider-agnostic (str content ของ Anthropic/Groq/
+# OpenAI + parts[0].text ของ Gemini), ไม่ throw. ไม่แตะ tool_result / assistant function_call
+# (API ต้องการ call_id ที่จับคู่กัน) และไม่แตะ nudge turn (ไม่มี snapshot marker)
+#
+# keep_last_full=1: เก็บ turn ของ step ล่าสุดใน messages ไว้เต็ม 1 อัน + turn ปัจจุบันที่
+# next_action จะ append เต็มอีก 1 = โมเดลเห็น 2 turn ล่าสุดครบทั้ง rules/plan/snapshot
+# (นโยบายเดียวกับ _dedupe_stale_snapshots) ทุกอย่างในนั้นถูกส่งสดใหม่ทุก turn อยู่แล้ว
+_W5_KEEP_RECENT_FULL_TURNS = 1
+_W5_SUPERSEDED_TURN_STUB = (
+    "[an earlier step's full context — page snapshot, indexed elements, rules, plan, "
+    "recent-action list — has been omitted here to keep the conversation short. It is "
+    "superseded. Act only on the latest turn below plus the digest of earlier steps.]"
+)
+# user turn ของ step จริงขึ้นต้นด้วยบรรทัดนี้เสมอ (ดู llm._build_user_turn_text) และมี
+# snapshot marker (หรือ stub ของมันหลัง _dedupe_stale_snapshots) อยู่ข้างใน — ใช้แยกออกจาก
+# nudge turn / _NO_TOOL_CALL_NUDGE / tool_result ที่ไม่ควรแตะ
+_W5_STEP_TURN_PREFIX = "Goal: "
+
+
+def _w5_step_turn_text(m) -> tuple[Optional[str], Optional[str]]:
+    """คืน (kind, text) ถ้า m คือ user turn ของ step จริงที่ยุบได้ — ไม่งั้น (None, None)"""
+    if not isinstance(m, dict) or m.get("role") != "user":
+        return None, None
+    content = m.get("content")
+    if isinstance(content, str):
+        text = content
+        kind = "content"
+    elif isinstance(m.get("parts"), list) and m["parts"] and isinstance(m["parts"][0], dict):
+        text = m["parts"][0].get("text")
+        kind = "parts"
+    else:
+        return None, None
+    if not isinstance(text, str) or not text.startswith(_W5_STEP_TURN_PREFIX):
+        return None, None
+    has_snapshot = (_STALE_SNAPSHOT_MARKER in text) or (_SUPERSEDED_SNAPSHOT_STUB in text)
+    if not has_snapshot:
+        return None, None  # nudge/other user turn — ไม่แตะ
+    return kind, text
+
+
+def _compact_stale_user_turns(messages: list, goal: str,
+                              keep_last_full: int = _W5_KEEP_RECENT_FULL_TURNS) -> tuple[list, int]:
+    """W_token_cut W5: ยุบ user turn ของ step เก่าให้เหลือ "Goal: ...\\n\\n<stub>"
+
+    คืน (messages_ใหม่, จำนวนตัวอักษรที่ตัดออกได้จริงรอบนี้). idempotent — turn ที่ยุบแล้ว
+    (content == goal+stub) ถูกข้าม ไม่ throw"""
+    try:
+        stub_body = f"{_W5_STEP_TURN_PREFIX}{goal}\n\n{_W5_SUPERSEDED_TURN_STUB}"
+        hits = [k for k, m in enumerate(messages) if _w5_step_turn_text(m)[0] is not None]
+        if len(hits) <= keep_last_full:
+            return messages, 0
+        targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+        out = list(messages)
+        removed = 0
+        for k in targets:
+            kind, text = _w5_step_turn_text(messages[k])
+            if text is None or text == stub_body:
+                continue
+            removed += len(text) - len(stub_body)
+            if kind == "content":
+                out[k] = {**messages[k], "content": stub_body}
+            else:
+                new_parts = list(messages[k]["parts"])
+                new_parts[0] = {**new_parts[0], "text": stub_body}
+                out[k] = {**messages[k], "parts": new_parts}
+        return out, max(0, removed)
+    except Exception:
+        return messages, 0
+
+
+# W_token_cut W7: บล็อกกฎที่ gate (~3.9k tok บนหน้าตาราง) ถูก W2 ย้ายจาก system prompt
+# (cache ได้) มาต่อท้าย user turn ทุก turn — เนื้อเหมือนกันหมด model ถูกสั่งให้ยึด turn
+# ล่าสุดอยู่แล้ว (W19 Action Trap) สำเนาใน turn เก่าจึงไม่มีค่า ตัดออกเหลือ 1 บรรทัดอ้างอิง
+# บล็อกอยู่ท้ายสุดของ user turn เสมอ (ดู llm._build_user_turn_text) หา header line แล้วตัด
+# ตั้งแต่ตรงนั้นถึงจบ string — keep_last_full=0 = ทุก turn ใน messages (turn ปัจจุบันที่
+# next_action จะ append ยังส่งเต็ม) idempotent, provider-agnostic, ไม่ throw
+def _dedupe_stale_gated(messages: list, keep_last_full: int = 0) -> tuple[list, int]:
+    try:
+        hdr = llm.GATED_BLOCK_HEADER
+        deref = llm._GATED_BLOCK_DEREF
+
+        def _turn_text(m):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                return None, None
+            c = m.get("content")
+            if isinstance(c, str):
+                return ("content", c) if ("\n\n" + hdr + "\n") in c else (None, None)
+            if isinstance(m.get("parts"), list) and m["parts"] and isinstance(m["parts"][0], dict):
+                t = m["parts"][0].get("text")
+                return ("parts", t) if (isinstance(t, str) and ("\n\n" + hdr + "\n") in t) else (None, None)
+            return None, None
+
+        hits = [k for k, m in enumerate(messages) if _turn_text(m)[0] is not None]
+        if len(hits) <= keep_last_full:
+            return messages, 0
+        targets = hits[:-keep_last_full] if keep_last_full > 0 else hits
+        out = list(messages)
+        removed = 0
+        for k in targets:
+            kind, text = _turn_text(messages[k])
+            cut = text.find("\n\n" + hdr + "\n")
+            new_text = text[:cut] + "\n\n" + deref
+            if new_text == text:
+                continue
+            removed += len(text) - len(new_text)
+            if kind == "content":
+                out[k] = {**messages[k], "content": new_text}
+            else:
+                new_parts = list(messages[k]["parts"])
+                new_parts[0] = {**new_parts[0], "text": new_text}
+                out[k] = {**messages[k], "parts": new_parts}
+        return out, max(0, removed)
+    except Exception:
+        return messages, 0
+
 
 # W50 (delta history / bounded digest): เดิม _build_history_digest() ถูกเรียกซ้ำทุกรอบ
 # compaction ด้วย upto_step ที่โตขึ้นเรื่อยๆ แต่ from_step เริ่มที่ 1 เสมอ (implicit) —
@@ -778,10 +2130,12 @@ def _build_history_digest(memory: ShortTermMemory, upto_step: int, from_step: in
     entries = [h for h in memory.all() if from_step <= h.get("step", 0) <= upto_step]
     if not entries:
         return ""
-    return "\n".join(f"- step {h['step']}: {h['cmd']} -> {h['result']}" for h in entries)
+    # W_token_trim (P1/Q1): clip result หัว+ท้ายเหมือน memory.py summaries — digest
+    # ค้างอยู่ทั้ง task ยิ่งต้องไม่ฝัง result เต็ม (เช่น ตาราง read_page_data)
+    return "\n".join(f"- step {h['step']}: {h['cmd']} -> {clip_result(h['result'])}" for h in entries)
 
 
-_DIGEST_PREFIX = "[สรุป step ก่อนหน้าที่ถูกย่อไว้กันบทสนทนายาวเกินไป]"
+_DIGEST_PREFIX = "[Digest of earlier steps, compacted to keep the conversation from growing too long]"
 
 
 def _compact_gemini_messages(messages: list, cut_at: int, digest_text: str) -> list:
@@ -919,9 +2273,9 @@ def _build_nudge_message(provider: str, text: str) -> dict:
 # ยังไม่ยอมกรอก ปล่อยผ่านไปตามที่โมเดลเลือกแทนที่จะค้างไม่รู้จบ
 _MAX_PREMATURE_LOGIN_SKIP_RETRIES = 2
 _PREMATURE_LOGIN_SKIP_NUDGE = (
-    "action นี้ถูกปฏิเสธ — หน้านี้ยังมีช่อง Password ที่ว่างอยู่ ห้ามข้ามไปทำ action อื่น "
-    "(รวมถึง wait) จนกว่าจะกรอก Username และ Password ให้ครบก่อน ดู indexed elements "
-    "แล้วเลือก fill ช่องที่ยังว่างอยู่ทันที"
+    "This action is rejected — this page still has an empty Password field. Do not move on to "
+    "any other action (including wait) until both Username and Password are filled in. Look "
+    "at the indexed elements and fill the empty field right now."
 )
 
 
@@ -932,8 +2286,18 @@ async def _login_form_needs_password(page: Page) -> bool:
 
     W19 (latency): .input_value() ไม่ระบุ timeout เองจะ default เป็น 30000ms ของ
     Playwright — ใส่ _DOM_CHECK_TIMEOUT_MS (3s) ตรงๆ กันรอนานเกินจำเป็นถ้า element หลุด/
-    detach ระหว่างทาง"""
+    detach ระหว่างทาง
+
+    W_change_password_form_is_not_a_login_form (บั๊กจริงจากรันสด 2026-09-03): หน้าเปลี่ยน
+    รหัสผ่านมีช่อง password ว่าง 3 ช่อง ตัวตรวจนี้จึงตอบ True แล้วผู้เรียกทั้งสองรายเข้าใจผิด
+    ว่าหลุดกลับมาหน้า login — guard session-drift ยิง auto-login ซ้ำ 2 รอบ และ guard
+    login-form ปฏิเสธทุก action ที่ไม่ใช่ fill/goto อีก 4 ครั้งจน backstop ฆ่า task ทิ้ง
+    (4 steps, ไม่มี action ไหนผิดเลยสักตัว) — ฟอร์มเปลี่ยนรหัสผ่านไม่ใช่ฟอร์ม login และ
+    หน้า login จริงมีช่อง password ช่องเดียวจึงไม่มีทางเข้าเงื่อนไขนี้ ความปลอดภัยเดิมคงอยู่ครบ
+    """
     try:
+        if await _page_looks_like_change_password_form(page):
+            return False
         password_inputs = page.locator('input[type="password"]:visible')
         count = await password_inputs.count()
         for i in range(count):
@@ -1035,7 +2399,165 @@ async def _launch_chromium(playwright: Playwright, headless: bool, channel: Opti
     return await playwright.chromium.launch(headless=headless)
 
 
-async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
+# W_consent_banner (บั๊กจริง live-reproduce บน opensource-demo.orangehrmlive.com หลายรอบ —
+# ไม่คงที่ โผล่บ้างไม่โผล่บ้าง): แบนเนอร์ขอความยินยอมคุกกี้ (Cookiebot) วางทับหน้า login อยู่
+# indexed elements 11 ตัวแรกกลายเป็นปุ่มของแบนเนอร์ทั้งหมด ทำให้ _maybe_auto_login() หาฟอร์ม
+# login ไม่เจอ -> ไม่ล็อกอินให้ -> agent หลงไปยิง action ใส่ element ของแบนเนอร์แทน (เจอทั้ง
+# fill_secret ใส่ div ของแบนเนอร์ และ recovery ที่คลิกปุ่ม "Show details" ของแบนเนอร์)
+#
+# ไม่ใช่ปัญหาเฉพาะเว็บนี้เลย — CMP รายใหญ่ (Cookiebot/OneTrust/Didomi/Usercentrics/CookieYes)
+# ใช้รูปแบบเดียวกันหมดและอยู่บนเว็บจริงจำนวนมาก จึงจัดการที่นี่ครั้งเดียวก่อนเข้า loop แทนที่จะ
+# หวังให้ LLM คลำเอาเองทุกครั้ง
+#
+# *** เลือก "ปฏิเสธ" เสมอ ไม่ใช่ "ยอมรับทั้งหมด" *** — ค่า default ที่เคารพความเป็นส่วนตัวของ
+# user มากที่สุด (ไม่เปิด tracking/marketing cookie ให้โดยที่เจ้าของงานไม่ได้สั่ง) ถ้าไม่เจอปุ่ม
+# ปฏิเสธจริงๆ ค่อย fallback ไปปุ่มปิด (×/Close) ซึ่งไม่ได้ให้ความยินยอมอะไรเลยเช่นกัน — ไม่มี
+# เส้นทางไหนในฟังก์ชันนี้ที่กด "Allow all" ให้เด็ดขาด
+_CONSENT_REJECT_TEXTS = (
+    "reject all", "reject cookies", "reject", "deny all", "deny", "decline all", "decline",
+    "only necessary", "necessary only", "use necessary cookies only", "essential only",
+    "ปฏิเสธทั้งหมด", "ปฏิเสธ", "ไม่ยอมรับ", "เฉพาะที่จำเป็น", "ที่จำเป็นเท่านั้น",
+)
+_CONSENT_CLOSE_TEXTS = ("close banner", "close", "ปิด")
+
+# W_consent_banner_midtask (บั๊กจริง live run 3): CMP บางเจ้าไม่ได้โผล่ตอนโหลดหน้าแรก แต่โผล่
+# กลางทาง (หลัง navigate ภายในแอป/หลัง auto-login) — การปิดตอนเริ่ม task อย่างเดียวจึงไม่พอ
+# ผลที่เจอ: step 3 โมเดลกดปุ่ม "Allow all" ของแบนเนอร์เอง (ให้ความยินยอม tracking cookie
+# แทน user โดยไม่มีใครสั่ง) แล้วหลังจากนั้นหลุดไปคลิกลิงก์โฆษณาบนหน้าจนหมด max_steps
+#
+# ตรวจจาก elements snapshot ที่มีอยู่แล้วในมือทุก step (ไม่ต้องยิง JS เพิ่มถ้าไม่มีแบนเนอร์) —
+# เจอ label ที่เป็นลายเซ็นของแบนเนอร์คุกกี้เมื่อไหร่ ค่อยเรียก _dismiss_consent_banner()
+_CONSENT_LABEL_SIGNATURES = (
+    "allow all", "accept all", "accept cookies", "allow selection", "reject all",
+    "deny all", "manage cookies", "cookie settings", "this website uses cookies",
+    "we use cookies", "ยอมรับคุกกี้", "เว็บไซต์นี้ใช้คุกกี้",
+)
+
+
+# W_captcha_detect (P3.8): ก่อนหน้านี้ทั้งโปรเจกต์ไม่มีการตรวจจับ CAPTCHA เลยสักบรรทัด —
+# เจอ reCAPTCHA/Turnstile/Cloudflare interstitial เมื่อไหร่ snapshot จะแทบว่างเปล่า (widget
+# อยู่ใน iframe ของ provider ที่อ่านข้ามไม่ได้) แล้ว agent จะไล่คลิกสิ่งที่เหลือจนหมด
+# step budget แล้วรายงานเหตุผลผิด (เช่น "ไม่พบปุ่มที่ต้องการ") — ทั้งที่ความจริงคือติดกำแพงบอท
+#
+# นโยบายชัดเจน: *ไม่* พยายามแก้ CAPTCHA เอง — แจ้ง user แล้วให้คนทำ ใช้ request_user_input
+# ที่มีอยู่แล้ว (กลไกเดียวกับที่ W_resume ใช้ขอข้อมูลกลางทาง) ไม่สร้างช่องทางใหม่
+#
+# ตรวจจากข้อมูลที่ perceive มาแล้วเท่านั้น ไม่แตะ browser เพิ่ม (หลักการเดียวกับ
+# _snapshot_shows_consent_banner) — ใช้ทั้งชื่อ frame/label ที่ CMP-like ของ provider ทิ้งไว้
+_CAPTCHA_LABEL_SIGNATURES = (
+    "recaptcha", "hcaptcha", "captcha", "turnstile",
+    "i'm not a robot", "im not a robot", "ยืนยันว่าไม่ใช่บอท",
+    "verify you are human", "verifying you are human",
+    "checking your browser", "cloudflare",
+)
+
+
+def _snapshot_shows_captcha(elements: list[dict], page_text: str = "") -> bool:
+    """True ถ้า snapshot รอบนี้มีลายเซ็นของ CAPTCHA/bot wall — ไม่ throw ไม่แตะ browser"""
+    for element in elements or []:
+        label = str(element.get("label", "")).lower()
+        if label and any(sig in label for sig in _CAPTCHA_LABEL_SIGNATURES):
+            return True
+    lowered = (page_text or "").lower()
+    return any(sig in lowered for sig in _CAPTCHA_LABEL_SIGNATURES)
+
+
+_CAPTCHA_USER_PROMPT = (
+    "This page is showing a CAPTCHA / bot check, which I am not allowed to solve. Please "
+    "complete it yourself in the browser window, then reply here (any text) so I can continue "
+    "from where the task left off."
+)
+
+
+def _snapshot_shows_consent_banner(elements: list[dict]) -> bool:
+    """W_consent_banner_midtask: True ถ้า elements ที่ perceive มารอบนี้มีลายเซ็นของแบนเนอร์
+    ขอความยินยอมคุกกี้ — เช็คจากข้อมูลที่มีอยู่แล้ว ไม่แตะ browser เลย ไม่ throw"""
+    for element in elements or []:
+        label = str(element.get("label", "")).lower()
+        if label and any(sig in label for sig in _CONSENT_LABEL_SIGNATURES):
+            return True
+    return False
+# container ของ CMP รายใหญ่ — ใช้ยืนยันว่าปุ่มที่เจออยู่ใน "แบนเนอร์คุกกี้" จริง ไม่ใช่ปุ่ม
+# "Reject"/"Deny" ของฟีเจอร์อื่นบนหน้า (เช่นหน้าอนุมัติใบลาที่มีปุ่ม Reject ของมันเอง —
+# กดผิดจะกลายเป็นการปฏิเสธคำขอจริงของ user)
+_CONSENT_CONTAINER_HINTS = (
+    "cookie", "consent", "gdpr", "cookiebot", "onetrust", "didomi", "usercentrics",
+    "cookieyes", "truste", "privacy-banner",
+)
+
+_CONSENT_DISMISS_JS = """(payload) => {
+  const { rejectTexts, closeTexts, containerHints } = payload;
+  const inConsentContainer = (el) => {
+    let node = el;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      const id = (node.id || "").toLowerCase();
+      const cls = (typeof node.className === "string" ? node.className : "").toLowerCase();
+      const label = (node.getAttribute && (node.getAttribute("aria-label") || "") || "").toLowerCase();
+      if (containerHints.some(h => id.includes(h) || cls.includes(h) || label.includes(h))) return true;
+    }
+    return false;
+  };
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const s = getComputedStyle(el);
+    return s.visibility !== "hidden" && s.display !== "none";
+  };
+  const candidates = Array.from(document.querySelectorAll('button, a, input[type="button"], [role="button"]'));
+  const pick = (texts) => candidates.find(el => {
+    if (!visible(el) || !inConsentContainer(el)) return false;
+    const t = ((el.innerText || el.value || el.getAttribute("aria-label") || "").trim()).toLowerCase();
+    return t && texts.some(x => t === x || t.startsWith(x));
+  });
+  // ปฏิเสธก่อนเสมอ ปิดแบนเนอร์เป็นทางเลือกสุดท้าย — ไม่มี branch ไหนกด "accept/allow"
+  const target = pick(rejectTexts) || pick(closeTexts);
+  if (!target) return "";
+  const shown = (target.innerText || target.value || "").trim().slice(0, 60);
+  target.click();
+  return shown || "(unlabelled)";
+}"""
+
+
+async def _dismiss_consent_banner(page: Page, verbose: bool = False) -> Optional[str]:
+    """ปิดแบนเนอร์ขอความยินยอมคุกกี้ถ้ามี — คืนข้อความบนปุ่มที่กด หรือ None ถ้าไม่เจอ/ทำไม่ได้
+
+    ห้าม throw เด็ดขาด (เหมือน _maybe_auto_login/perception): นี่คือส่วนเสริม ไม่ใช่สิ่งที่ task
+    ต้องพึ่งพา เจอ error อะไรก็เดินหน้าต่อตามปกติ
+
+    W_consent_banner_iframe (บั๊กจริง live run: เรียกฟังก์ชันนี้แล้วคืน None ทุกครั้งทั้งที่
+    perception เห็นปุ่ม "Allow all"/"Deny" ของแบนเนอร์เต็มหน้า — โมเดลถึงกดปุ่มแบนเนอร์เอง
+    ที่ step 4): CMP หลายเจ้า (รวม Cookiebot) render แบนเนอร์ใน iframe แยก — page.evaluate()
+    มองเห็นแค่ main document เท่านั้น ต่างจาก perception.py ที่เดินเข้าไปอ่านทุก frame อยู่แล้ว
+    (ดู resolve_frame) จึงเกิดสภาพ "เห็นแต่กดไม่ได้" — ต้องไล่ยิงทุก frame เหมือนกัน"""
+    clicked = None
+    for frame in [page, *page.frames]:
+        try:
+            clicked = await frame.evaluate(_CONSENT_DISMISS_JS, {
+                "rejectTexts": list(_CONSENT_REJECT_TEXTS),
+                "closeTexts": list(_CONSENT_CLOSE_TEXTS),
+                "containerHints": list(_CONSENT_CONTAINER_HINTS),
+            })
+        except Exception as e:
+            if verbose:
+                print(f"  [consent-banner] ข้าม frame หนึ่ง (evaluate ล้มเหลว): {e}", flush=True)
+            continue
+        if clicked:
+            break
+    if not clicked:
+        return None
+    if verbose:
+        print(f"  [consent-banner] กดปุ่มปฏิเสธ/ปิดแบนเนอร์: {clicked!r}", flush=True)
+    try:
+        await wait_stable(page)
+    except Exception:
+        pass
+    return clicked
+
+
+
+async def _maybe_auto_login(
+    page: Page, verbose: bool, outcome: Optional[dict] = None,
+) -> Optional[str]:
     """W17: เติม username/password ให้อัตโนมัติถ้ามี credential เก็บไว้สำหรับโดเมนนี้แล้ว
     (จาก POST /api/site-manual/learn หรือ .../credentials — ดู site_learning/storage.py::
     save_credentials) และหน้าปัจจุบัน (หลัง goto/skip_initial_goto ตอนต้น run_task())
@@ -1055,7 +2577,23 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
     เด็ดขาด) ถ้าเจอ credential + เป็นหน้า login จริง แต่ login ไม่ผ่านแม้ retry แล้ว — ให้
     caller (run_task ด้านล่าง) ยิง SSE event แจ้ง user ต่อ ไม่ throw ในทุกกรณี (agent ยัง
     fallback ไปกรอกเองผ่าน action ปกติได้อยู่แล้วถ้า auto-login ไม่สำเร็จ — แค่ต้องให้ user
-    รู้ตัวว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว ไม่ใช่ปล่อยผ่านเงียบๆ เหมือนเดิม)"""
+    รู้ตัวว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว ไม่ใช่ปล่อยผ่านเงียบๆ เหมือนเดิม)
+
+    W_auto_login_outcome_is_invisible: reason ที่คืนออกไปเป็น None ได้ทั้งกรณี "ข้าม" และ
+    "สำเร็จ" แยกสองกรณีนี้ออกจากกันไม่ได้เลย และบรรทัด log ที่มีอยู่ก็ผูกกับ verbose ซึ่ง
+    เส้นทาง API ส่ง False เสมอ ผลคือเวลา guard login_skip ยิงในงานจริง (เจอ 2 ใน 3 รอบของ
+    goal เดียวกัน ห่างกันไม่กี่นาที) ตอบไม่ได้ว่า auto-login ล้มเหลวหรือทำงานปกติ —
+    วัดก่อนแก้ตามกฎเดิมของโปรเจกต์นี้
+
+    รายงานผลผ่าน dict `outcome` ที่ผู้เรียกส่งเข้ามา (คีย์ "result": "skipped"/"ok"/"failed")
+    **โดยเจตนา ไม่เปลี่ยนชนิดของค่าที่คืน** — ลองเปลี่ยนเป็น tuple มาแล้วและเทสต์ล้ม 166 เคส
+    เพราะมี 13 จุดที่ patch ฟังก์ชันนี้ด้วย AsyncMock ที่คืนค่าเดี่ยว การ unpack จึงพังตั้งแต่
+    ก่อนเข้า try ของ run_task แล้วลามเป็นลูกโซ่ไปทั้งไฟล์ พารามิเตอร์ที่มีค่า default ทำให้
+    ผู้เรียกเดิมและ mock เดิมใช้ได้เหมือนเดิมทุกประการ"""
+    def _report(result: str) -> None:
+        if outcome is not None:
+            outcome["result"] = result
+
     try:
         from backend.app.site_learning import storage as site_storage
         from backend.app.site_learning.auto_login import find_login_fields, login_with_verification
@@ -1064,10 +2602,12 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
         domain = extract_domain(page.url)
         creds = site_storage.load_credentials(domain)
         if not creds:
+            _report("skipped")
             return None
         page_info, _ = await site_extract_page(page)
         username_selector, password_selector = find_login_fields(page_info)
         if not username_selector or not password_selector:
+            _report("skipped")
             return None
         if verbose:
             print(f"[auto-login] พบ credential ที่เก็บไว้สำหรับ {domain} — ลอง login อัตโนมัติ", flush=True)
@@ -1078,10 +2618,13 @@ async def _maybe_auto_login(page: Page, verbose: bool) -> Optional[str]:
             page, page_info, creds["username"], creds["password"], retries=1,
         )
         if not did_login:
+            _report("failed")
             return reason or "ล็อกอินไม่สำเร็จด้วย credential ที่บันทึกไว้สำหรับเว็บนี้"
         await wait_stable(page)
+        _report("ok")
         return None
     except Exception:
+        _report("skipped")
         return None
 
 
@@ -1143,6 +2686,1092 @@ async def _request_user_input(
     return True, answer
 
 
+
+def _plan_step_lines(plan_text: Optional[str]) -> list[str]:
+    """W_plan_step_cursor: บรรทัดที่ไม่ว่างของแผน = 1 step ต่อ 1 บรรทัด (นิยามเดียวกับที่
+    _total_plan_steps ใช้มาตลอด แยกออกมาเพื่อให้ทั้งการนับและการแสดงผลอ่านจากที่เดียวกัน)"""
+    return [line.strip() for line in (plan_text or "").splitlines() if line.strip()]
+
+
+def _total_plan_steps(plan_text: str) -> int:
+    return len(_plan_step_lines(plan_text))
+
+
+def _focused_plan_context(plan_text: Optional[str], cursor: int) -> str:
+    """W_plan_step_cursor: แผนที่ส่งให้โมเดลทุก step ต้องบอกด้วยว่า "ตอนนี้อยู่ข้อไหน"
+
+    เดิมส่งแผนทั้งก้อนดิบๆ ซ้ำทุก step โดยไม่มีอะไรบอกลำดับเลย โมเดลเล็กจึงกระโดดไปทำข้อ
+    ท้ายๆ หรือรายงานว่าข้อ 5 เสร็จตั้งแต่ action แรกได้ (บั๊กจริง live run 2026-08-27:
+    read_page_data มากับ completed_plan_step=5 แล้ว Goal Boundary Gate หยุด task พร้อม
+    อ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไรเลย)
+
+    ทำเครื่องหมายตามความจริงเท่านั้น: ข้อก่อน cursor = เสร็จแล้ว, ข้อที่ cursor = กำลังทำ,
+    ที่เหลือ = ยังไม่ถึง — ไม่บังคับ "วิธี" บังคับแค่ "ลำดับ"
+
+    W_token_trim (P1/Q6): เดิมส่งทุกข้อของแผนเต็มๆ ทุก step (แค่สลับ marker [done]/
+    CURRENT/[not yet]) — แผนยาวๆ เปลืองซ้ำทุก step โดยไม่จำเป็น ตอนนี้ส่งแค่
+    CURRENT + NEXT + FINAL step แบบเต็มข้อความ ข้อที่ทำไปแล้วยุบเป็นบรรทัดนับเดียว
+    ข้อระหว่าง NEXT กับ FINAL ยุบเป็นบรรทัดช่วงเดียว — ยังคง "เห็นปลายทาง" (FINAL step
+    เต็มข้อความ) ตามเหตุผลเดิมที่โมเดลต้องรู้จุดหมายถึงจะเลือกวิธีของข้อปัจจุบันได้ถูก
+
+    cursor เกินจำนวนข้อ = แผนจบครบแล้ว ยังคืนค่าที่ไม่ว่าง (guard ที่ตามมายังต้องเห็นว่า
+    มีแผนอยู่จริง)"""
+    steps = _plan_step_lines(plan_text)
+    if not steps:
+        return ""
+    total = len(steps)
+    done = cursor - 1
+    lines: list[str] = []
+    if done > 0:
+        shown = min(done, total)
+        lines.append(f"[steps 1-{shown} already done ({shown}/{total})]")
+    if cursor > total:
+        lines.append("(every step is already complete)")
+        return "\n".join(lines)
+    lines.append(f">>> CURRENT STEP ({cursor}/{total}): {steps[cursor - 1]}")
+    if cursor + 1 <= total:
+        lines.append(f"NEXT STEP ({cursor + 1}/{total}): {steps[cursor]}")
+    # ข้อระหว่าง NEXT (cursor+1) กับ FINAL (total) — ยุบเป็นบรรทัดเดียวถ้ามี >= 2 ข้อ
+    if total - (cursor + 1) >= 2:
+        lines.append(
+            f"[steps {cursor + 2}-{total - 1} not shown to save space — still do them in order]"
+        )
+    # FINAL step เต็มข้อความ (ถ้ายังไม่ถูกแสดงไปแล้วในบรรทัด CURRENT/NEXT)
+    if total >= cursor + 2:
+        lines.append(f"FINAL STEP ({total}/{total}): {steps[total - 1]}")
+    return "\n".join(lines)
+
+
+# W_goal_scope ("Goal Boundary Gate" — hard-enforcement companion to W_stop_when_done above:
+# real bug the user reported, same root cause as W_stop_when_done's own example: goal "go to
+# Admin page" -> agent clicks Admin -> Admin page loads (goal done) -> agent keeps going,
+# clicks into "Nationalities", one click away from creating a record nobody asked for.
+# W_stop_when_done only *nudges* the model to stop, and only when an explicit multi-step plan
+# was confirmed (plan_text set) — the literal "go to Admin page" ad-hoc goal in the bug report
+# has no plan at all, so that nudge never even fires for it. This guard is a bounded, code-level
+# HARD stop that covers both gaps: (1) an ad-hoc/no-plan path using a narrow heuristic for
+# single-objective navigation goals, (2) reuses the plan-based signal but actually blocks
+# dispatch instead of just asking nicely. See the enforcement guard further down (right after
+# the finish_task block) for where this is actually applied.
+_MAX_PREMATURE_GOAL_SCOPE_RETRIES = 1
+# Read-only/non-mutating action types still allowed once the goal is judged scope-satisfied —
+# same category this file already treats as "not real progress toward/away from a goal"
+# elsewhere (see _MUTATING_ACTION_TYPES's docstring above: "ไม่นับ read_page_data/wait/hover/
+# scroll").
+_GOAL_SCOPE_ALLOWED_ACTION_TYPES = {"read_page_data", "wait", "scroll", "hover"}
+
+# W_plan_panel_lags_the_log (user รายงาน 2026-09-07): PLAN panel ติ๊กครบทุกข้อพร้อมกันตอน task จบ
+# ทั้งที่ LOG เดินสดปกติ — สาเหตุคือ event เดียวที่บอกความคืบหน้าของแผน (plan_step_done) ยิงก็ต่อ
+# เมื่อโมเดลรายงาน completed_plan_step มาเอง และส่งค่า plan_cursor-1 ซึ่งเป็น 0 ตราบใดที่ cursor
+# ยังไม่ขยับ (แถวในแผนนับจาก 1 หน้าเว็บจึงไม่มีอะไรติ๊ก) ส่วน LOG ทันเพราะ event "step" ยิงทุก
+# action ไม่มีเงื่อนไข
+#
+# ตัวที่ทำให้ PLAN ทันคือ cursor ตัวที่สองที่ตัดสินจาก "หลักฐานที่มองเห็นบนหน้าเว็บ" (URL เปลี่ยน
+# หรือ action ตรงกับข้อความของข้อนั้น) ตามที่ user เลือกไว้ว่าเอาความทันใจ
+#
+# *** ข้อจำกัดที่ห้ามละเมิด: cursor ตัวนี้ใช้ "แสดงผลอย่างเดียว" ***
+# plan_cursor ตัวเดิมป้อน plan_fully_completed -> goal-scope hard stop ซึ่งเป็นต้นเหตุบั๊ก
+# false completion (W_plan_counter_claims_a_password_change: รายงานสำเร็จทั้งที่ยังไม่ได้กดบันทึก)
+# การเร่ง cursor เดิมให้ขยับง่ายขึ้นเพื่อให้ UI ทันจะเปิดบั๊กนั้นกลับมาทันที จึงต้องแยกกันเด็ดขาด
+_PLAN_NAV_STEP_KEYWORDS = (
+    "ไปที่", "ไปยัง", "เปิดหน้า", "เข้าหน้า", "เข้าสู่ระบบ", "ล็อกอิน", "หน้า",
+    "go to", "open", "navigate", "login", "log in", "sign in",
+)
+
+
+def _step_is_navigational(step_text: str) -> bool:
+    """ข้อนี้เป็นขั้น "ไปที่หน้า X" หรือเปล่า — ใช้ contains_keyword() ที่ทนการเว้นวรรคของภาษาไทย
+    ("ไป ที่ หน้า Admin" ต้องนับได้) ห้ามใช้ substring ดิบ ดูบทเรียนใน W_thai_keyword_space"""
+    return contains_keyword(step_text, _PLAN_NAV_STEP_KEYWORDS)
+
+
+def _display_step_evidence(
+    step_text: str, action_label: str, action_type: str, url_changed: bool, success: bool,
+) -> str:
+    """หลักฐานว่า action นี้กำลังทำข้อที่ cursor แสดงผลชี้อยู่ — "match" / "url" / "action" / ""
+
+    ฟังก์ชันบริสุทธิ์ ไม่มี side effect ทดสอบตรงๆ ได้ และไม่เรียก LLM (กฎเดิมของเส้นทางนี้)
+
+    ใช้ _action_matches_plan_step() ซ้ำโดยเจตนา — มันมีสะพานไทย<->อังกฤษผ่าน regex ที่มีอยู่แล้ว
+    (step "แล้วกดค้นหา" กับปุ่ม "Search") docstring ของมันห้ามเอาไป *บล็อก* dispatch ซึ่งไม่ใช่
+    กรณีนี้: cursor แสดงผลไม่ gate อะไรเลยสักอย่าง"""
+    if not success:
+        return ""
+    if action_type in _GOAL_SCOPE_ALLOWED_ACTION_TYPES:
+        return ""      # การอ่านหน้าไม่ใช่ความคืบหน้า — ใช้ชุดเดิม ไม่สร้างชุดที่สาม
+    if _action_matches_plan_step(
+        step_text, _label_without_markers(action_label or ""), action_type,
+    ) is True:
+        return "match"
+    if _step_is_navigational(step_text):
+        # goto/go_back/switch_tab นับเป็นการนำทางเสมอ แม้ URL จะเท่าเดิม (reload หน้าเดิม)
+        if url_changed or action_type in ("goto", "go_back", "switch_tab"):
+            return "url"
+    # W_plan_ticks_every_row (user เลือกเอง 2026-09-07 หลังเห็นของจริงว่าติ๊กสดได้แค่ 1 ใน 4 แถว):
+    # action ที่เปลี่ยนสถานะหน้าเว็บสำเร็จแล้ว แต่ผูกกับข้อความของข้อนี้ไม่ได้ ให้ถือว่าเดินหน้า
+    # ไปหนึ่งข้อ วัดจริงแล้วสองสาขาข้างบนครอบได้แค่ส่วนน้อย เพราะแถวส่วนใหญ่ในแผนที่ LLM ร่างมา
+    # เขียนกว้างเกินกว่าจะ match กับ label ของปุ่ม ("กรอกข้อมูลผู้ใช้", "ตรวจสอบผลลัพธ์") และ
+    # ไม่ใช่ขั้นนำทางจึงไม่มี URL เปลี่ยนให้จับ
+    #
+    # ราคาที่จ่ายโดยรู้ตัว: แถวติ๊กเร็วกว่าความจริงเมื่อข้อเดียวกินหลาย action และเมื่อจำนวน action
+    # มากกว่าจำนวนข้อ cursor จะไปค้างที่ข้อสุดท้ายจนกว่างานจะจบ — ทั้งสองอย่างไม่กระทบความถูกต้อง
+    # ของงานเลย เพราะ cursor ตัวนี้ไม่เคยป้อน plan_fully_completed / prompt / guard ใด ๆ (ดู
+    # ข้อจำกัดที่หัวข้อ W_plan_panel_lags_the_log ด้านบน) และการ cap ไว้ที่ข้อสุดท้ายทำให้มัน
+    # พูดว่า "แผนจบแล้ว" ไม่ได้อยู่ดี ข้อสุดท้ายยังต้องรอ task สำเร็จจริงถึงจะติ๊ก
+    return "action"
+
+# W_verify_text_needs_a_write (บั๊กจริงที่ user เจอจาก token 2026-09-04): goal "เปิดเว็ปแล้วไป
+# ที่หน้าแอดมิน" ใช้ LLM ไป 4 ครั้งเพื่อให้ได้ action เดียว หนึ่งในเทิร์นที่เสียไปคือ finish_task
+# ที่ถูก guard ตาราง (W63[7.2]) ตีกลับ เพราะโมเดลส่ง verify_text มาด้วยทั้งที่งานนี้เป็นการ
+# นำทางล้วน ไม่เคยสร้าง/แก้อะไรให้ไปโผล่ในตารางได้เลย
+#
+# comment เดิมของ guard นั้นเขียนไว้ว่า "เช็คเฉพาะตอนที่ LLM ระบุ verify_text มาเอง" ซึ่งตั้งอยู่
+# บนสมมติฐานว่าโมเดลจะใส่มาเมื่อจำเป็นเท่านั้น — สมมติฐานนี้ผิดกับ gpt-5.4-mini บน endpoint
+# ChatGPT OAuth ซึ่งกรอกทุก property ในสคีมาเสมอ (เหตุผลเดียวกับ W_fill_secret_schema_gate
+# และ W_secret_stays_in_schema_forever) verify_text จึงมาทุกครั้งไม่ว่างานจะเป็นชนิดไหน
+#
+# หลักฐานที่ใช้แทนคือ "งานนี้เคยเขียนค่าลงฟอร์มไหม" — ถ้าไม่เคย ก็ไม่มีอะไรที่จะไปโผล่ในตาราง
+# ต้องใช้สองสัญญาณ ไม่ใช่สัญญาณเดียว: เกณฑ์ "เคยเขียนค่าลงฟอร์มไหม" อย่างเดียวไม่พอ เพราะงาน
+# สร้าง record ที่เดินด้วยการคลิกล้วนก็มีจริง (เทสต์ 5 ตัวที่ตรึงสัญญาหลักของ guard นี้ใช้ลำดับ
+# แบบนั้นพอดี) จึงเช็คเจตนาของ goal ก่อน แล้วค่อยตกมาที่หลักฐานจาก action
+#   - operation เป็น create/edit -> guard ทำงานเสมอ ไม่ว่าจะเดินด้วย action ชนิดไหน
+#   - operation อ่านไม่ออก (unknown) -> เชื่อหลักฐาน: เคยเขียนค่าลงฟอร์มจริงไหม
+# เลือกให้ปลอดภัยไว้ก่อนโดยตั้งใจ — ปิด guard เฉพาะตอนที่มั่นใจทั้งสองทางว่างานนี้ไม่มีอะไร
+# ไปโผล่ในตารางได้เลย
+_VALUE_WRITING_ACTION_TYPES = {"fill", "fill_secret", "select", "check"}
+_TABLE_VERIFY_RELEVANT_OPERATIONS = {"create", "edit"}
+_GOAL_SCOPE_GATE_NUDGE_TEMPLATE = (
+    "[Rejected] The goal appears to already be satisfied ({reason}) — this action "
+    "({action_type}) is outside what the goal actually asked for. Never explore other "
+    "menus/pages or create/edit/delete data nobody asked for once the goal is done. If the "
+    "goal is genuinely complete, call finish_task(success=true) on your very next turn "
+    "instead."
+)
+_GOAL_SCOPE_GATE_HARD_STOP_MESSAGE_TEMPLATE = (
+    "Stopping task: the goal was already satisfied ({reason}), but the model kept trying to "
+    "act outside the goal's scope even after being told to stop — forcing "
+    "finish_task(success=true) instead of returning control for another action."
+)
+# Goals containing any of these are treated as compound/multi-objective and are never
+# classified as a simple navigation goal below (see _extract_simple_navigation_target) —
+# required so an ad-hoc goal like "go to Admin page and delete the ESS user" still gets to
+# execute every step it actually asked for, instead of being cut short the moment the
+# navigation half is done.
+_COMPOUND_GOAL_MARKERS = (
+    " and ", ",", " then ", "และ", "แล้ว", "จากนั้น", " before ", " after that",
+)
+# Recognized "just go somewhere, nothing else" phrasings (English + Thai — this codebase's own
+# tests already use phrasing like "ไปหน้า Admin จัดการผู้ใช้"). Checked as a literal prefix of
+# the (lowercased) goal.
+_SIMPLE_NAV_PREFIXES = (
+    "navigate to ", "go to ", "goto ", "open ",
+    "ไปที่หน้า", "ไปยังหน้า", "ไปหน้า", "ไปที่", "ไปยัง", "เปิดหน้า", "เข้าหน้า",
+)
+_SIMPLE_NAV_TRAILING_WORDS = ("page", "หน้า")
+
+
+def _extract_simple_navigation_target(goal: str) -> Optional[str]:
+    """W_goal_scope: True เฉพาะ goal ที่เป็น "ไปที่หน้า X" ล้วนๆ ไม่มี objective อื่นปนมาด้วย
+    (เช่น "ไปหน้า Admin แล้วลบ user" ต้องคืน None — ดู _COMPOUND_GOAL_MARKERS) คืน target
+    keyword ที่ตัด nav prefix + trailing "page"/"หน้า" ออกแล้ว (เช่น "Admin") หรือ None ถ้า
+    goal ไม่ตรงรูปแบบนี้เลย — ใช้คู่กับ _navigation_target_reached() ด้านล่างเป็นหลักฐานว่า
+    ถึงเป้าหมายจริงหรือยัง
+
+    W_goal_scope_regression: also strips a leading English definite article ("the") right
+    after the nav prefix — "go to the Admin page" was extracting "the Admin" (never a
+    substring of any real URL path), which silently broke _navigation_target_reached()'s
+    match for this common phrasing even though the destination genuinely was reached."""
+    stripped = (goal or "").strip()
+    if not stripped:
+        return None
+    lower = stripped.lower()
+    if any(marker in lower for marker in _COMPOUND_GOAL_MARKERS):
+        return None
+    for prefix in _SIMPLE_NAV_PREFIXES:
+        if lower.startswith(prefix.lower()):
+            remainder = stripped[len(prefix):].strip(" .!ๆ")
+            if remainder[:4].lower() == "the ":
+                remainder = remainder[4:].strip()
+            for trailing in _SIMPLE_NAV_TRAILING_WORDS:
+                if remainder.lower().endswith(trailing) and len(remainder) > len(trailing):
+                    remainder = remainder[: -len(trailing)].strip()
+            return remainder or None
+    return None
+
+
+# W_thai_nav_target_never_matches_url (วัดจากงานจริง 2026-09-04): user เขียน goal เป็นภาษาไทย
+# ("ไปที่หน้าแอดมิน") แต่ URL ของเว็บเป็นอังกฤษเสมอ (/web/admin/viewSystemUsers) การเทียบ
+# target กับ path ตรงๆ จึงเป็นเท็จตลอดกาลสำหรับ goal ภาษาไทย — gate ที่ควรปิดงานให้เองไม่เคย
+# ทำงานเลย แล้วงานก็ต้องจ่ายเทิร์นเพิ่มให้โมเดลเรียก finish_task เอง (และมักเสียอีกเทิร์นให้
+# guard already_active_skip ระหว่างนั้น)
+#
+# ตารางนี้ตั้งใจให้เล็กและเพิ่มจากหลักฐานเท่านั้น — ใส่เฉพาะคำที่เจอในงานจริงแล้ว ห้ามเดาเติม
+# ล่วงหน้าเป็นพจนานุกรม (บทเรียนเดียวกับที่ normalize_goal_for_matching เขียนไว้ว่าไม่แก้คำสะกด
+# ด้วยพจนานุกรม) ถ้าวันหลังเจอคำใหม่ในรันจริง ค่อยเติมพร้อมอ้างรันนั้น
+_NAV_TARGET_URL_ALIASES = {
+    "แอดมิน": "admin",
+    "ผู้ดูแลระบบ": "admin",
+}
+
+
+# W_order_complete_is_the_end (release-gate 3aaf213, task login_checkout): goal คือ "ล็อกอิน,
+# หยิบสินค้าชิ้นแรก, เปลี่ยนเป็นชิ้นที่สอง, แล้วไป checkout" — agent ทำครบและกด Finish จน
+# ถึงหน้า checkout-complete.html ที่ step 10 แล้ว "เดินเล่นต่อ" อีก 5 step (Back Home ->
+# Add to cart -> cart -> Remove -> Continue Shopping) จนชน max_steps โดยไม่เคยเรียก finish_task
+# ทั้งที่งานจบไปแล้ว — task ถูกนับว่าล้มทั้งที่ทำสำเร็จ
+#
+# goal-scope gate มีไว้สำหรับกรณีนี้ตรงๆ แต่ทางจุดชนวนที่มีอยู่สามทาง (แผนจบครบ / ถึงหน้า
+# เป้าหมายนำทาง / ตารางไม่เหลือแถวตามเงื่อนไข) ไม่มีทางไหนครอบงานสั่งซื้อเลย
+#
+# ต้องเข้าเงื่อนไขทั้งสองข้างพร้อมกัน ไม่ใช่ดู URL อย่างเดียว: เว็บทั่วไปมีคำว่า "success"
+# ในเส้นทางได้โดยไม่ได้แปลว่างานของ user จบ และ goal ที่ไม่ได้สั่งซื้ออะไรก็ไม่ควรถูกหยุด
+# ด้วยหน้าที่บังเอิญชื่อแบบนี้
+#
+# จงใจไม่ใส่คำว่า "order" เดี่ยวๆ ในคลังคำของ goal — benchmark ตัวหนึ่งในไฟล์เดียวกันคือ
+# "sort the products by Price (low to high)" ซึ่งพูดถึง order ในความหมาย "ลำดับ" ไม่ใช่การสั่งซื้อ
+_CHECKOUT_GOAL_KEYWORDS = (
+    "checkout", "check out", "purchase", "place the order", "buy",
+    "ชำระเงิน", "สั่งซื้อ", "เช็คเอาท์",
+)
+_ORDER_COMPLETE_URL_MARKERS = (
+    "checkout-complete", "checkout_complete", "order-complete", "order_complete",
+    "order-confirmation", "ordercomplete", "thank-you", "thankyou",
+    "purchase-complete", "payment-success", "payment_success",
+)
+
+
+def _order_is_complete(goal: str, page_url: str) -> bool:
+    """งานสั่งซื้อ/ชำระเงินที่หน้าปัจจุบันคือหน้ายืนยันว่าสั่งซื้อเสร็จแล้ว"""
+    if not contains_keyword(goal or "", _CHECKOUT_GOAL_KEYWORDS):
+        return False
+    url = (page_url or "").lower()
+    return any(marker in url for marker in _ORDER_COMPLETE_URL_MARKERS)
+
+def _navigation_target_reached(target: str, page_url: str, last_action_record: list[dict]) -> bool:
+    """W_goal_scope: หลักฐานว่าถึงหน้าเป้าหมายจริง (ไม่ใช่แค่เดา) — ต้องมีทั้ง (1) action
+    ล่าสุดที่ execute() จริง (self.memory.recent(1)) สำเร็จและเป็นประเภท navigate จริงๆ
+    (click/goto — ไม่นับ fill/wait/... ที่ไม่ได้ตั้งใจเปลี่ยนหน้า) และ (2) target keyword
+    ปรากฏใน URL PATH จริง (ไม่ใช่ page_text) — จงใจไม่เช็คจาก page_text เพราะเมนู sidebar ของ
+    เว็บพวกนี้มักโชว์ลิงก์ "Admin" ค้างอยู่ตลอดไม่ว่าจะอยู่หน้าไหน ถ้าเช็คจาก text จะ false
+    positive ทันทีตั้งแต่ก่อนคลิกด้วยซ้ำ"""
+    if not target or not last_action_record:
+        return False
+    record = last_action_record[0]
+    if record.get("success") is not True:
+        return False
+    if (record.get("cmd") or {}).get("type") not in ("click", "goto"):
+        return False
+    path = urllib.parse.urlparse(page_url or "").path.lower()
+    # W_thai_nav_target_never_matches_url: เทียบทั้งคำเดิมและคำที่ map เป็นอังกฤษแล้ว
+    candidates = {target.lower()}
+    for thai, english in _NAV_TARGET_URL_ALIASES.items():
+        if thai in target.lower():
+            candidates.add(english)
+    return any(c in path for c in candidates)
+
+
+# W_goal_scope_compound_login (ส่วนที่ backup ไม่มี — เพิ่มหลัง live-reproduce บั๊กเดิมซ้ำด้วย goal
+# จริงของ user): _extract_simple_navigation_target() ปฏิเสธ goal ที่มี compound marker ทุกกรณี
+# ซึ่งถูกต้องสำหรับ "ไปหน้า Admin แล้วลบ user" (ยังมีงานให้ทำต่อจริง) แต่ทำให้ goal อย่าง
+# "login then goto adminmenu" ไม่เคยถูก gate เลย ทั้งที่ clause แรกเป็นแค่ login ที่ระบบทำเอง
+# อยู่แล้วผ่าน _maybe_auto_login() ไม่ใช่งานที่โมเดลต้องลงมือ — ผลจริงที่เจอ: agent ถึงหน้า Admin
+# ตั้งแต่ step 1 แล้วไปกด Edit/Save/Delete บนข้อมูลจริงต่อ
+#
+# รับเป็น nav target ก็ต่อเมื่อ clause สุดท้ายเป็น nav ล้วนๆ *และ* ทุก clause ก่อนหน้าเป็น login
+# ล้วน — เงื่อนไขที่สองคือสิ่งที่กัน "ไปหน้า Admin แล้วลบ user" ไม่ให้ถูกตัดกลางคัน
+_LOGIN_ONLY_CLAUSE_KEYWORDS = (
+    "login", "log in", "sign in", "signin", "เข้าสู่ระบบ", "ล็อกอิน", "ล๊อกอิน", "ลงชื่อเข้าใช้",
+)
+
+
+def _is_login_only_clause(clause: str) -> bool:
+    """True ถ้า clause นี้เป็นแค่คำสั่ง login เฉยๆ (ไม่มี objective อื่นปนมา) — ตัดคำ login ออก
+    แล้วต้องไม่เหลือตัวอักษร/ตัวเลขอะไรที่สื่อถึงงานอื่นอีกเลย เพื่อไม่ให้ clause อย่าง
+    "login and delete the ESS user" หลุดผ่านไปเป็น login-only"""
+    lower = (clause or "").strip().lower()
+    if not lower:
+        return False
+    if not any(kw in lower for kw in _LOGIN_ONLY_CLAUSE_KEYWORDS):
+        return False
+    for kw in _LOGIN_ONLY_CLAUSE_KEYWORDS:
+        lower = lower.replace(kw, " ")
+    return not re.search(r"[a-zA-Z\u0e00-\u0e7f0-9]", lower)
+
+
+# W_open_site_prefix_blocks_nav_gate (วัดจากงานจริงของ user 2026-09-04): goal
+# "เปิดเว็ปแล้วไปที่หน้าแอดมิน" ไม่เคยได้ nav target เลย เพราะ clause แรกคือ "เปิดเว็ป" ซึ่งไม่ใช่
+# login จึงตกเงื่อนไขของ W_goal_scope_compound_login ทั้งที่เป็น no-op แบบเดียวกันเป๊ะ —
+# run_task() ยิง goto ไปที่ url ให้ตั้งแต่ก่อนเข้า loop อยู่แล้ว โมเดลไม่ต้องทำอะไรกับ clause นี้
+#
+# ผลของการไม่มี nav target: goal-scope gate ไม่เคยปิดงานให้เอง พอโมเดลกดเมนูซ้ำที่ตัวเอง
+# ยืนอยู่แล้วก็เสียเทิร์นไปกับ guard already_active_skip (วัดได้ 2 ใน 6 รอบ ครั้งละ ~15k token)
+# แล้วต้องรออีกเทิร์นให้โมเดลเรียก finish_task เอง
+_OPEN_SITE_ONLY_CLAUSE_KEYWORDS = (
+    "open the website", "open the site", "open the page", "open website", "open site",
+    "go to the website", "go to the site", "visit the site", "visit the website",
+    "เปิดเว็ปไซต์", "เปิดเว็บไซต์", "เปิดหน้าเว็บ", "เปิดเว็ป", "เปิดเว็บ",
+)
+
+
+def _is_open_site_only_clause(clause: str) -> bool:
+    """True ถ้า clause นี้แค่บอกให้ "เปิดเว็บ" เฉยๆ — รูปแบบเดียวกับ _is_login_only_clause()
+    เป๊ะ (ตัดคำออกแล้วต้องไม่เหลืออะไรที่สื่อถึงงานอื่น) จึงกัน "เปิดเว็บแล้วลบ user" ได้เหมือนกัน"""
+    lower = (clause or "").strip().lower()
+    if not lower:
+        return False
+    if not any(kw in lower for kw in _OPEN_SITE_ONLY_CLAUSE_KEYWORDS):
+        return False
+    for kw in _OPEN_SITE_ONLY_CLAUSE_KEYWORDS:
+        lower = lower.replace(kw, " ")
+    return not re.search(r"[a-zA-Z฀-๿0-9]", lower)
+
+
+def _is_noop_prefix_clause(clause: str) -> bool:
+    """clause นำหน้าที่ระบบทำให้เองอยู่แล้ว ไม่ใช่งานที่โมเดลต้องลงมือ — login หรือ เปิดเว็บ"""
+    return _is_login_only_clause(clause) or _is_open_site_only_clause(clause)
+
+
+def _extract_goal_navigation_target(goal: str) -> Optional[str]:
+    """W_goal_scope_compound_login (ดู comment ด้านบน): ลอง _extract_simple_navigation_target()
+    ก่อนเสมอ (พฤติกรรมเดิมทุกประการ) — ถ้าไม่ผ่านค่อยตัด goal ตาม compound marker แล้วรับเฉพาะ
+    กรณี "login แล้วไปหน้า X" ตามเงื่อนไขที่อธิบายไว้ข้างบน คืน None ในกรณีอื่นทั้งหมด"""
+    direct = _extract_simple_navigation_target(goal)
+    if direct:
+        return direct
+    text = (goal or "").strip()
+    if not text:
+        return None
+    pattern = "|".join(re.escape(marker) for marker in _COMPOUND_GOAL_MARKERS)
+    clauses = [c.strip() for c in re.split(pattern, text, flags=re.IGNORECASE) if c.strip()]
+    if len(clauses) < 2:
+        return None
+    if not all(_is_noop_prefix_clause(c) for c in clauses[:-1]):
+        return None
+    return _extract_simple_navigation_target(clauses[-1])
+
+
+# W_no_create_for_existing_goal (บั๊กจริงจากภาพหน้าจอที่ user ส่งมา, goal "...ลบ user
+# role=ess ออกให้หมด"): กรองแล้วไม่เจอแถว ESS เหลือ — agent กลับ "แก้ปัญหาแทน user" ด้วยการ
+# navigate ไปหน้า Add User (/web/admin/saveSystemUser) แล้วกรอกฟอร์มสร้าง user ใหม่ จน
+# ระบบตอบ "Username: Already exists" กลับมา แทนที่จะรายงานตรงๆ ว่าไม่พบเป้าหมาย
+#
+# SYSTEM_PROMPT มีกฎนี้อยู่แล้วเป๊ะๆ ("NEVER solve the problem for the user ... e.g. going to
+# an Add/Create page to create a replacement for what you couldn't find") — แต่เป็น prompt
+# ล้วน ไม่มีอะไรบังคับระดับโค้ด ซึ่งเป็นเหตุผลประจำของไฟล์นี้ที่ทุกกฎสำคัญต้องมี guard หนุน
+#
+# ขอบเขตแคบโดยเจตนา: เปิดใช้เฉพาะ goal ที่เป็นงาน "ลบ/แก้ของที่มีอยู่" และ *ไม่มี* คำสั่งสร้าง
+# ปนอยู่เลย — goal อย่าง "สร้าง user ใหม่แล้วลบคนเก่า" จะไม่โดนบล็อก
+_CREATE_INTENT_KEYWORDS = (
+    "add", "create", "new user", "register", "สร้าง", "เพิ่ม", "ลงทะเบียน",
+)
+# label/URL ที่บ่งบอกว่ากำลังจะเข้าสู่ flow สร้างรายการใหม่
+# "add to ..." ตั้งใจไม่นับ — เป็นการ "เอาของที่มีอยู่ไปใส่ที่ไหนสักแห่ง" (Add to cart/Add to
+# list) ไม่ใช่การสร้าง record ใหม่ ต่างจาก "Add User"/"+ Add"/"Create" ที่เปิดฟอร์มสร้างจริง
+_CREATE_ACTION_LABEL_RE = re.compile(
+    r"^\s*\+?\s*(?:add|create|new)\b(?!\s+to\b)|^\s*(?:เพิ่ม|สร้าง)", re.IGNORECASE,
+)
+_CREATE_URL_MARKERS = ("/add", "/create", "/new", "saveuser", "savesystemuser", "adduser")
+
+
+def _goal_wants_to_create(goal: str) -> bool:
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _CREATE_INTENT_KEYWORDS)
+
+
+def _goal_targets_existing_records_only(goal: str) -> bool:
+    """True ถ้า goal เป็นงานกับ "ของที่มีอยู่แล้ว" ล้วนๆ (ลบ/แก้ทั้งหมด) โดยไม่มีคำสั่งสร้างปน"""
+    if _goal_wants_to_create(goal):
+        return False
+    return _is_deletion_intent_goal(goal) or _is_edit_all_intent_goal(goal)
+
+
+def _action_starts_create_flow(tool_input: dict, label: str) -> bool:
+    """True ถ้า action นี้กำลังพาไปสู่ flow สร้างรายการใหม่ — ดูจาก label ของปุ่ม (Add/Create/
+    New/เพิ่ม/สร้าง ที่ "ขึ้นต้น" ด้วยคำพวกนี้เท่านั้น กัน label อย่าง "Add to cart"/"Address"
+    ที่ไม่เกี่ยว) หรือ URL ปลายทางของ goto"""
+    if _CREATE_ACTION_LABEL_RE.search(label or ""):
+        return True
+    url = str(tool_input.get("url") or "").lower()
+    return bool(url) and any(marker in url for marker in _CREATE_URL_MARKERS)
+
+
+_NO_CREATE_NUDGE_TEMPLATE = (
+    "[Rejected] This goal is about EXISTING records ({reason}) — it never asked you to create "
+    "anything. Going to an Add/Create page ({what}) to make a new record is outside the goal's "
+    "scope, even if the target you were looking for cannot be found. If the filtered table "
+    "genuinely has no matching rows left, that IS the answer: call finish_task and report "
+    "plainly what you found (or didn't find). Never invent a replacement record."
+)
+
+
+# W_no_credential_flow (บั๊กจริงจาก live run ของ goal user เอง "...ไปที่เมนูแอดมิน แล้วลบ user
+# role=ess ออกให้หมด" รอบล่าสุด): หลังลบไป 2 ราย agent หลงทาง แล้วแทนที่จะกรอง Role=ESS ใหม่
+# มันคลิก "Demo Source [Profile/Account Menu]" -> "Change Password" แล้วพยายามกรอกช่องรหัสผ่าน
+# จนระบบตอบ "Invalid" — task จบด้วยการ "ขอให้ user ป้อนรหัสผ่านใหม่" ทั้งที่ goal ไม่เคยพูดถึง
+# รหัสผ่านเลยสักคำ (เกิดซ้ำ 2 รอบใน run เดียว: step 9-13 และ step 17-18)
+#
+# ทำไม guard ที่มีอยู่ไม่ครอบ: exclusion ของ "[Profile/Account Menu]" ใน
+# _find_goal_matching_nav_element() คุมเฉพาะ element ที่ "ระบบ" เลือกเองตอน forced recovery
+# ส่วน fill_secret context guard คุมเฉพาะ action type fill_secret — ทั้งคู่ไม่แตะ "click ที่
+# โมเดลเลือกเอง" ซึ่งเป็นทางที่บั๊กนี้เดินจริง
+#
+# ทำไมต้องเป็น hard reject ไม่มีโควตาปล่อยผ่าน (เหมือน W_no_create_for_existing_goal): การ
+# เปลี่ยนรหัสผ่านของบัญชีที่ agent login อยู่ = ล็อกตัวเองออกจากระบบของ user จริง กู้คืนไม่ได้
+# ด้วยการ go_back — ต่างจาก guard ประเภท "เสีย step เปล่า" ที่ยอมให้ลองผิดได้สองสามครั้ง
+#
+# ขอบเขตแคบโดยเจตนา: ปิด guard ทันทีถ้า goal พูดถึงรหัสผ่าน/บัญชีเอง (รวมถึง goal ที่ให้
+# credential มาสำหรับ login ด้วย — ยอมปิด guard ในเคสนั้นดีกว่าไปบล็อกงานที่ user สั่งจริง)
+_CREDENTIAL_GOAL_KEYWORDS = (
+    "password", "passwd", "credential", "รหัสผ่าน", "พาสเวิร์ด", "เปลี่ยนรหัส",
+    "account setting", "my account", "ตั้งค่าบัญชี", "โปรไฟล์ของฉัน",
+)
+# label ที่บ่งบอกว่ากำลังเข้า flow เปลี่ยน credential — จับทั้งคำเต็มเท่านั้น กัน label อย่าง
+# "Password Policy" (หน้ารายงาน/ตั้งค่าระบบ ไม่ใช่การเปลี่ยนรหัสของตัวเอง) ไม่โดนไปด้วย
+_CREDENTIAL_FLOW_LABEL_RE = re.compile(
+    r"\b(?:change|update|reset|edit|forgot)\s+(?:your\s+|my\s+)?password\b"
+    r"|\bpassword\s+(?:change|reset)\b"
+    r"|เปลี่ยนรหัสผ่าน|ลืมรหัสผ่าน|ตั้งรหัสผ่านใหม่",
+    re.IGNORECASE,
+)
+_CREDENTIAL_FLOW_URL_MARKERS = (
+    "updatepassword", "changepassword", "resetpassword", "change-password",
+    "reset-password", "/password",
+)
+
+
+def _goal_mentions_credentials(goal: str) -> bool:
+    lower = (goal or "").lower()
+    return any(kw in lower for kw in _CREDENTIAL_GOAL_KEYWORDS)
+
+
+def _action_enters_credential_flow(tool_input: dict, label: str) -> bool:
+    """True ถ้า action นี้กำลังพาไปสู่หน้าเปลี่ยนรหัสผ่าน — ดูจาก label ของปุ่ม/เมนู หรือ URL
+    ปลายทางของ goto"""
+    if _CREDENTIAL_FLOW_LABEL_RE.search(label or ""):
+        return True
+    url = str(tool_input.get("url") or "").lower()
+    return bool(url) and any(marker in url for marker in _CREDENTIAL_FLOW_URL_MARKERS)
+
+
+_NO_CREDENTIAL_FLOW_NUDGE = (
+    "[Rejected] '{what}' opens a credential/account-settings flow, and this goal never mentions "
+    "passwords or account settings at all. Changing the password of the account you are logged "
+    "in with would lock the user out of their own system — that is not recoverable by going "
+    "back. This is almost always a sign you lost track of the task: re-read the goal, look at "
+    "the page you are actually on, and go back to the records you were working on (re-apply the "
+    "filter if it was cleared). If you believe the goal is already complete, call finish_task "
+    "instead."
+)
+
+
+# W_no_record_edit_for_delete_goal (บั๊กจริงจาก live run 227b771e ด้วย goal ของ user เอง
+# "...ไปที่เมนูแอดมิน แล้วลบ user role=ess ออกให้หมด"): agent เข้า flow Edit -> Save แล้ว
+# *เขียนทับ user record จริง 2 ครั้ง* — step 20 click 'Edit', step 22 click 'Save' ได้
+# [Success confirmation found: "Successfully Updated"] กลับมาทั้งคู่ ทั้งที่ goal ไม่มีคำว่า
+# แก้ไข/อัปเดตอยู่เลยสักคำ
+#
+# หนักกว่าบั๊ก Add User ที่ W_no_create_for_existing_goal แก้ไว้ด้วยซ้ำ: Add User ยังโดนระบบ
+# ปฏิเสธเอง ("Username: Already exists") แต่ Save สำเร็จจริงและ go_back() กู้ไม่ได้
+#
+# ทำไม W_no_create_for_existing_goal ไม่ครอบ: มันจับ "flow สร้างรายการใหม่" (Add/Create/New)
+# ส่วนนี่คือการแก้ record ที่มีอยู่แล้ว — mutation คนละชนิดที่ goal ก็ไม่ได้ขอเหมือนกัน
+#
+# เลือกบล็อกที่จังหวะ "Save" ไม่ใช่ที่ "Edit" โดยเจตนา: คลิก Edit เฉยๆ ไม่ทำอะไรเสียหาย และ
+# บางเว็บใช้หน้า Edit เป็นทางผ่านไปหาปุ่มลบด้วยซ้ำ แต่ Save คือจุดที่เขียนจริงและไม่มีทางเป็น
+# ส่วนหนึ่งของงานลบได้เลย
+#
+# ใช้ regex "ขึ้นต้นด้วย + word boundary" ไม่ใช่ substring (แบบเดียวกับ _CREATE_ACTION_LABEL_RE):
+# save\b ไม่ match "Saved Searches" (ลิงก์นำทาง) และ update\b ไม่ match "Updated on" (หัวคอลัมน์)
+#
+# คำที่จงใจ *ไม่* ใส่ — ทุกตัวเป็น false positive ที่จะทำให้ guard นี้พังงานลบเสียเอง:
+#   submit/confirm/ยืนยัน  เป็น label ของ *dialog ยืนยันการลบ* บนหลายเว็บ บล็อกแล้วลบไม่สำเร็จเลย
+#   change password        W_no_credential_flow ครอบไปแล้ว
+#   แก้ไข                   นั่นคือ "Edit" = ทางเข้า ไม่ใช่จุด commit (ดูย่อหน้าด้านบน)
+# ด้วยเหตุผลข้อแรกนี้เองจึงไม่เอา _FORM_SUBMIT_LABEL_KEYWORDS ที่มีอยู่แล้วมาใช้ซ้ำ — มันมี
+# confirm/ยืนยัน/submit ครบ เพราะถูกออกแบบมาตอบคำถาม "ควรสแกน validation error หลัง action ไหน"
+# ซึ่งกว้างได้อย่างปลอดภัย คนละเจตนากับการบล็อก action
+# W_plan_commits_a_record_edit: คำชุดเดียวกัน แต่ใช้คนละ anchoring เพราะตอบคำถามคนละข้อ —
+# ตัวมี ^ ใช้กับ *label ของปุ่ม* (label ขึ้นต้นด้วยคำนี้ = ปุ่ม commit จริง ไม่ใช่ "Saved Searches")
+# ส่วนตัวไม่มี ^ ใช้กับ *ข้อความของแผน* ซึ่งคำจะอยู่กลางประโยคเสมอ ("3. บันทึกการเปลี่ยนแปลง")
+# แยกคำออกมาเป็นค่าคงที่เดียวเพื่อไม่ให้มีคลังคำ 2 ชุดที่ต้องแก้พร้อมกัน
+_RECORD_COMMIT_WORDS = ("save", "update", "บันทึก", "อัปเดต")
+_RECORD_COMMIT_ALTERNATION = "|".join(_RECORD_COMMIT_WORDS)
+
+_RECORD_COMMIT_LABEL_RE = re.compile(
+    rf"^\s*(?:{_RECORD_COMMIT_ALTERNATION})\b", re.IGNORECASE,
+)
+_PLAN_COMMIT_STEP_RE = re.compile(
+    rf"(?:{_RECORD_COMMIT_ALTERNATION})", re.IGNORECASE,
+)
+
+
+# W_goal_values_before_save (บั๊กจริงจาก gate 2026-09-07, task add_candidate): goal สั่งกรอก
+# First Name / Last Name / Email แล้วบันทึก โมเดลกรอกแค่สองช่องแรกแล้วกด Save ทันที ฟอร์ม
+# ตีกลับด้วย "Required" ใต้ช่อง Email แล้วมันก็กด Save ซ้ำอีก 4 ครั้งจนหมด step
+#
+# ค่าที่ goal ใส่เครื่องหมายคำพูดไว้คือสิ่งที่ user พิมพ์มาเองตรงๆ ("ให้กรอก X") ไม่ใช่การ
+# ตีความ — จึงเป็นสัญญาณที่เช็คได้แบบ deterministic ว่าอะไรยังไม่ถูกกรอกก่อนจะกดบันทึก
+# ตั้งใจไม่เดาค่าจากภาษาธรรมชาติที่ไม่มีเครื่องหมายคำพูด (หลักการเดิมของ
+# _goal_condition_values: ไม่เดาเงื่อนไขเองจาก goal)
+_GOAL_QUOTED_VALUE_RE = re.compile(r"""['"“‘]([^'"”’
+]{2,80})['"”’]""")
+# ค่าที่ยาวเกินไปหรือมีช่องว่างเยอะมักเป็นประโยคที่ user ยกมาอ้าง ไม่ใช่ค่าที่ต้องกรอก
+_MAX_GOAL_VALUE_WORDS = 4
+
+
+def _goal_literal_values(goal: str) -> list[str]:
+    """ค่าที่ goal ระบุไว้ตรงๆ ว่าต้องกรอก — จาก 'ค่าในเครื่องหมายคำพูด' และฝั่งขวาของ
+    field=value (ใช้ _goal_condition_pairs() ตัวเดิม ไม่เขียน regex ที่สาม)"""
+    values: list[str] = []
+    for raw in _GOAL_QUOTED_VALUE_RE.findall(goal or ""):
+        value = raw.strip()
+        if value and len(value.split()) <= _MAX_GOAL_VALUE_WORDS:
+            values.append(value)
+    for _field, value in _goal_condition_pairs(goal or ""):
+        if value:
+            values.append(value)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(value)
+    return unique
+
+
+_FORM_VALUES_JS = """() => ({
+    values: Array.from(document.querySelectorAll("input, textarea, select"))
+        .map((el) => (el.value == null ? "" : String(el.value))).filter(Boolean),
+    hasPassword: !!document.querySelector('input[type="password"]'),
+})"""
+
+# ค่าที่ goal ระบุไว้ให้ "ล็อกอิน" — วัดจากของจริงแล้วว่า auto-login (W17) กรอกให้เองนอก
+# ลูปผ่าน Playwright ตรงๆ ค่าพวกนี้จึงไม่เคยผ่าน action ของ agent และไม่เหลืออยู่ใน DOM
+# ของหน้าถัดไป -> guard จะรายงานว่า "ยังไม่ได้กรอก" ไปตลอดกาลทุกครั้งที่กดบันทึก
+# (probe บนฟอร์มจริง 2026-09-08: ขาด ['Admin', 'admin123'] ค้างอยู่แม้กรอกครบทุกช่องแล้ว)
+_GOAL_CREDENTIAL_VALUE_RE = re.compile(
+    r"(?:username|user\s*name|password|pass|ชื่อผู้ใช้|รหัสผ่าน)\s*"
+    r"(?:is|=|:|คือ)?\s*['\"“‘]([^'\"”’\n]{1,80})['\"”’]",
+    re.IGNORECASE,
+)
+
+
+async def _values_missing_before_commit(
+    page: Page, goal: str, written: set,
+) -> list[str]:
+    """ค่าจาก goal ที่ยัง "ไม่เคยถูกกรอกเลยใน task นี้ และไม่ได้อยู่ในฟอร์มตอนนี้"
+
+    เช็คสองแหล่งเพราะแต่ละแหล่งพลาดคนละทาง: ค่าที่กรอกไปแล้วในหน้าก่อน (เช่น username
+    ตอน login) ไม่เหลืออยู่ใน DOM ของหน้าปัจจุบัน ส่วนค่าที่ระบบกรอกให้เอง (auto-login
+    หรือ browser autofill) ไม่เคยผ่าน action ของ agent จึงไม่อยู่ใน written
+
+    ห้าม throw (กฎเดียวกับ guard อื่นในไฟล์นี้) — อ่าน DOM ไม่ได้ = ถือว่าไม่มีอะไรขาด"""
+    wanted = _goal_literal_values(goal)
+    if not wanted:
+        return []
+    try:
+        state = await page.evaluate(_FORM_VALUES_JS)
+    except Exception:
+        return []
+    if not isinstance(state, dict):
+        return []
+    present = {
+        str(v).strip().casefold() for v in (state.get("values") or []) if str(v).strip()
+    }
+    present |= {str(v).strip().casefold() for v in written if str(v).strip()}
+    if not state.get("hasPassword"):
+        # ไม่มีช่องรหัสผ่านบนหน้านี้ = ไม่ใช่หน้า login แล้ว ค่า credential จาก goal จึงไม่มี
+        # ที่ให้กรอกและไม่ควรถูกนับว่าขาด (ดูคอมเมนต์เหนือ _GOAL_CREDENTIAL_VALUE_RE)
+        present |= {
+            v.strip().casefold() for v in _GOAL_CREDENTIAL_VALUE_RE.findall(goal or "")
+        }
+    return [value for value in wanted if value.casefold() not in present]
+
+
+_MAX_MISSING_VALUE_REJECTIONS = 2
+_MISSING_GOAL_VALUES_NUDGE = (
+    "[Rejected] '{what}' would submit this form, but {count} value(s) the goal explicitly "
+    "asked for have not been entered anywhere yet: {values}. Find the field for each one on "
+    "this page and fill it in first, then submit. Never submit a form with the goal's own "
+    "values still missing — the site rejects it (a 'Required' message appears next to the "
+    "empty field) and pressing the button again cannot fix it."
+)
+
+def _goal_is_deletion_only(goal: str) -> bool:
+    """True ถ้า goal เป็นงาน "ลบ" ล้วนๆ โดยไม่มีคำสั่งแก้ไข/สร้างปนอยู่เลย — แคบกว่า
+    _goal_targets_existing_records_only() (ที่รวม edit-all ด้วย) เพราะ guard นี้ต้องไม่แตะ
+    goal ที่สั่งแก้ไขจริงอย่าง "เปลี่ยน Role ของทุกคนที่เป็น ESS เป็น Admin" """
+    if _goal_wants_to_create(goal) or _is_edit_all_intent_goal(goal):
+        return False
+    return _is_deletion_intent_goal(goal)
+
+
+def _action_commits_a_record_edit(tool_input: dict, label: str) -> bool:
+    """True ถ้า action นี้คือการกด "บันทึก" ฟอร์มแก้ไข — ดูจาก label เท่านั้น ไม่ดู URL เลย
+    (ต่างจาก _action_starts_create_flow) เพราะ _CREATE_URL_MARKERS มี "savesystemuser"/
+    "saveuser" อยู่แล้ว ถ้าตัวนี้ดู URL ด้วยจะยิงซ้ำกับ W_no_create บน action เดียวกัน แล้ว
+    nudge สองข้อความจะขัดกันเอง"""
+    return bool(_RECORD_COMMIT_LABEL_RE.search(label or ""))
+
+
+_NO_RECORD_EDIT_NUDGE = (
+    "[Rejected] '{what}' commits an edit to an existing record, but this goal only asks you to "
+    "DELETE things — it never asks you to change or update anything. Saving here would "
+    "permanently overwrite real data, and going back cannot undo it. Being on an edit form at "
+    "all means you took a wrong turn: leave it (Cancel, or go_back), return to the list, and "
+    "use the row's own Delete action instead. If the filtered list genuinely has no matching "
+    "rows left, that IS the answer — call finish_task and report it plainly."
+)
+
+
+# --- W_fill_secret_hardening: fill_secret context guard ------------------------------------
+# Ported from the w77-w91 line of work after this exact failure was live-reproduced again on
+# opensource-demo.orangehrmlive.com with the OpenAI provider, goal "login then goto adminmenu":
+# auto-login had ALREADY succeeded (Dashboard visible, sidebar showing "[3] a 'Admin'"), yet
+# the model kept proposing fill_secret over and over — across 3 separate runs it burned 8-10
+# steps and 220k-350k input tokens, at one point typing the real saved password into three
+# unrelated fields (index 21/22/23) before giving up without ever calling finish_task.
+#
+# There is never a legitimate reason to dispatch fill_secret outside a genuine change-password
+# context, so every attempt outside one is rejected here BEFORE dispatch — SYSTEM_PROMPT already
+# says so (W65[3]), but relying on prompt compliance alone is precisely the failure this guard
+# exists for. Provider-agnostic on purpose: Gemini happens not to make this mistake today, which
+# is exactly why the difference showed up as "openai is broken" rather than as a missing guard.
+_PASSWORD_CHANGE_INTENT_KEYWORDS = (
+    "change password", "reset password", "update password", "new password",
+    "change my password", "security settings",
+    "เปลี่ยนรหัสผ่าน", "เปลี่ยนรหัส", "ตั้งรหัสผ่านใหม่", "รีเซ็ตรหัสผ่าน", "รหัสผ่านปัจจุบัน",
+)
+
+# ป้ายที่บอกว่าช่องนั้นคือ "รหัสผ่านปัจจุบัน" จริงๆ (ไม่ใช่ช่องตั้งรหัสใหม่) — เก็บไว้ที่นี่
+# เพราะเวอร์ชันนี้ยังไม่มี state_filter.CURRENT_PASSWORD_LABEL_HINTS ให้ใช้ร่วมกัน ถ้าวันหลัง
+# เพิ่มเข้าไปใน state_filter ให้ย้ายไปใช้ตัวเดียวกัน อย่าปล่อยให้มี 2 ชุด drift ออกจากกัน
+_CURRENT_PASSWORD_LABEL_HINTS = (
+    "current password", "old password", "existing password",
+    "รหัสผ่านปัจจุบัน", "รหัสผ่านเดิม",
+)
+
+
+def _goal_or_plan_requests_password_change(text: str) -> bool:
+    # W_thai_keyword_space: เทียบผ่าน contains_keyword() ที่ทนการเว้นวรรคของภาษาไทย —
+    # ดูเหตุผลเต็ม (พร้อมบั๊กจริงที่มันแก้) ใน goal_intent.contains_keyword()
+    return contains_keyword(text, _PASSWORD_CHANGE_INTENT_KEYWORDS)
+
+
+# W_password_field_has_no_label_attributes (บั๊กจริงที่วัดกับหน้าเว็บจริงแล้ว 2026-09-03):
+# ช่องรหัสผ่านของ OrangeHRM บนหน้า /web/pim/updatePassword ไม่มี label/aria-label/placeholder/
+# name/id เลยสักตัว (วัดแล้วได้ '' ทั้ง 3 ช่อง) เพราะ <label> เป็น *พี่น้อง* อยู่ใน
+# div.oxd-input-group ไม่ได้ผูกด้วย for= และไม่ได้ห่อ input ไว้ el.labels จึงว่างเปล่า
+# ผลคือ gate ด้านล่างคืน False บนหน้าเปลี่ยนรหัสผ่านจริง -> fill_secret ถูกตัดออกจาก tool
+# schema -> โมเดลไม่มีทางกรอกรหัสปัจจุบันได้เลย จึงยิง fill(21, "") ซ้ำจนโดน loop detector
+# ฆ่าทิ้ง (รันสด 2026-09-03: 8 steps, จบด้วย Failed)
+#
+# เดินขึ้น ancestor หา <label> ตัวแรก — วิธีเดียวกับที่ perception.py ใช้อยู่แล้ว
+# (getPrecedingSiblingLabelText) จำกัด 4 ชั้นเพื่อไม่ให้ไปคว้า label ของ field อื่นในฟอร์ม
+# ความเข้มงวดของ W_add_user_form_false_positive ไม่หายไป: ยืนยันกับหน้า Add User จริงแล้วว่า
+# ได้ 'password' / 'confirm password' เท่านั้น ไม่มี 'current password' -> ยัง False ตามเดิม
+_PASSWORD_FIELD_LABEL_JS = r"""el => {
+    const direct = (
+        (el.labels && el.labels[0] && el.labels[0].innerText) ||
+        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+        el.getAttribute('name') || el.id || ''
+    );
+    if (direct.trim()) return direct.toLowerCase();
+    const byIds = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+        .map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
+    if (byIds.trim()) return byIds.toLowerCase();
+    let node = el;
+    for (let i = 0; i < 4 && node; i++) {
+        node = node.parentElement;
+        if (!node) break;
+        const lab = node.querySelector('label');
+        if (lab && lab.innerText.trim()) return lab.innerText.toLowerCase();
+    }
+    return '';
+}"""
+
+
+async def _page_looks_like_change_password_form(page: Page) -> bool:
+    """True ถ้าหน้าปัจจุบันมี input[type=password] ที่มองเห็นได้ >= 2 ช่อง (current/new[/confirm])
+    *และ* อย่างน้อย 1 ช่องมี label/placeholder/name/id สื่อว่าเป็น "Current Password" จริงๆ
+
+    W_add_user_form_false_positive: เช็คแค่ "มีช่อง password >= 2" ไม่พอ — ฟอร์ม "Add User"
+    (Password + Confirm Password สำหรับตั้งรหัสให้ user ใหม่ ไม่ใช่รหัสปัจจุบันของคนที่ login
+    อยู่) มี 2 ช่องเหมือนกันเป๊ะ ถ้านับแค่จำนวนจะถูกเข้าใจผิดว่าเป็น change-password form
+
+    fail-safe คืน False ถ้าเช็คไม่ได้จริงๆ (ปลอดภัยกว่าเดาว่าใช่ — เดาว่าใช่แปลว่าปล่อยให้
+    fill_secret พิมพ์รหัสผ่านจริงลงช่องที่ไม่รู้ว่าคืออะไร)"""
+    try:
+        password_inputs = await page.locator('input[type="password"]:visible').all()
+        if len(password_inputs) < 2:
+            return False
+        for el in password_inputs:
+            label = await el.evaluate(_PASSWORD_FIELD_LABEL_JS)
+            if any(hint in label for hint in _CURRENT_PASSWORD_LABEL_HINTS):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+async def _current_password_field_is_empty(page: Page) -> bool:
+    """True ถ้าหน้านี้เป็นฟอร์มเปลี่ยนรหัสผ่าน *และ* ช่อง Current Password ยังว่างอยู่
+
+    W_secret_stays_in_schema_forever (บั๊กจริง วัดจาก debug ของรันสด 2026-09-03 รอบที่ 5):
+    บนหน้าเปลี่ยนรหัสผ่าน ทุก tool call ที่โมเดลส่งมาคือ
+    {'secret': 'current_password', 'type': 'fill_secret', 'index': 21} เหมือนกันหมดทุกเทิร์น
+    แม้ระบบจะปฏิเสธพร้อมชี้ index ของช่องที่ยังว่าง ([22] Password, [23] Confirm Password)
+    ไปแล้ว 2 ครั้งติด — นี่คืออาการเดิมที่ W_fill_secret_schema_gate บันทึกไว้เป๊ะ: gpt-5.4-mini
+    กรอกทุก property ในสคีมาเสมอ พอ `secret` มี enum ค่าเดียวมันจึงส่งมาทุกครั้งแล้วลาก `type`
+    เป็น fill_secret ไปด้วย หลักฐานยืนยัน: step ที่โมเดลเลือก click ได้ปกติ ล้วนเป็น step บน
+    หน้าที่ fill_secret ไม่อยู่ในสคีมา
+    บทสรุปเดิมของ W_fill_secret_schema_gate จึงใช้ได้ตรงตัว — nudge เอาไม่อยู่ ต้อง *ตัดออกจาก
+    สคีมา* และตัดทันทีที่ช่อง Current Password ถูกกรอกแล้ว เพราะจากจุดนั้นไปมันไม่มีประโยชน์อีก"""
+    try:
+        password_inputs = await page.locator('input[type="password"]:visible').all()
+        if len(password_inputs) < 2:
+            return False
+        for el in password_inputs:
+            label = await el.evaluate(_PASSWORD_FIELD_LABEL_JS)
+            if any(hint in label for hint in _CURRENT_PASSWORD_LABEL_HINTS):
+                return not (await el.input_value(timeout=_DOM_CHECK_TIMEOUT_MS)).strip()
+        return False
+    except Exception:
+        return False
+
+
+async def _change_password_form_still_unfilled(page: Page) -> bool:
+    """True ถ้ายังยืนอยู่บนฟอร์มเปลี่ยนรหัสผ่านที่มีช่องว่างเหลือ — หลักฐานตรงๆ ว่างานยังไม่จบ
+
+    W_plan_counter_claims_a_password_change (บั๊กจริงจากรันสดผ่าน REST API 2026-09-04):
+    task จบด้วย **success=true** ที่ step 4 ทั้งที่ยังไม่เคยกรอกช่อง Confirm Password และไม่เคย
+    กดบันทึกเลย — ground truth ด้วยสคริปต์ไม่ใช้ LLM ยืนยันว่ารหัสผ่านของเดโมไม่ถูกเปลี่ยน
+    (รหัสเดิมยังล็อกอินได้ ส่วน 12345678 ไม่ได้) สาเหตุคือ goal-scope hard stop เชื่อ
+    plan_fully_completed ซึ่งมาจาก completed_plan_step ที่ *โมเดลรายงานเอง*
+
+    นี่คือบั๊กคลาสเดียวกับ W_plan_cursor_not_proof เป๊ะ ต่างแค่ชนิดงาน — และกฎเดียวกันใช้ได้:
+    "การวัดต้องชนะตัวนับเสมอ" งานเปลี่ยนรหัสผ่านมีการวัดตรงๆ อยู่แล้วเหมือนที่งานลบแบบมีเงื่อนไขมี
+    คือ "ฟอร์มยังมีช่องรหัสผ่านว่างอยู่ไหม" ซึ่งอ่านจาก DOM ได้ตรงๆ ไม่ต้องเชื่อใคร
+
+    ห้าม raise ตามกฎของไฟล์นี้ — คืน False (= ไม่ขัดขวาง) ถ้าอ่านไม่ได้"""
+    try:
+        if not await _page_looks_like_change_password_form(page):
+            return False
+        return any(not st.get("filled") for st in await _password_field_states(page))
+    except Exception:
+        return False
+
+
+# W_secret_refilled_forever (บั๊กจริงจากรันสด 2026-09-03 ซ้ำ 2 รอบติดด้วยผลเหมือนกันเป๊ะ):
+# พอ fill_secret กรอกช่อง Current Password สำเร็จ โมเดลสั่ง fill_secret ที่ index เดิมซ้ำทันที
+# ทุกครั้ง ไม่เคยขยับไปช่อง Password/Confirm Password (ซึ่งอยู่ใน snapshot ครบพร้อม index ที่
+# ถูกต้อง — ยืนยันด้วย probe หน้าจริงแล้ว) จนโดน same-label-loop ฆ่าที่ step 12 ทั้งสองรอบ
+# ทุก action "สำเร็จ" หมดแต่ไม่มีความคืบหน้าเลยแม้แต่นิดเดียว
+#
+# รูปแบบเดียวกับ W_state_guard_shortcut: บอกว่า "อย่าทำซ้ำ" ไม่พอ ต้องชี้ index จริงของช่อง
+# ถัดไปให้ ความว่าง/ไม่ว่างอ่านจาก DOM ตรงๆ ไม่ใช่จาก label (label ปิดค่าไว้แล้วตาม
+# W_password_value_leaks_into_label) และไม่ส่งค่าจริงของช่องไหนออกไปทั้งสิ้น
+_MAX_SECRET_REFILL_RETRIES = 2
+
+# W_click_submits_with_empty_password_fields: โควตาเหมือน guard อื่นในไฟล์นี้ ไม่บล็อกตาย —
+# ฟอร์มบางแบบมีช่องรหัสผ่านที่ "เว้นว่างได้" จริง (หน้าแก้โปรไฟล์ที่รวมการเปลี่ยนรหัสผ่านไว้
+# ด้วย) ถ้าบล็อกถาวรจะทำให้เว็บกลุ่มนั้นกดบันทึกไม่ได้เลย
+_MAX_EMPTY_PASSWORD_SUBMIT_RETRIES = 2
+
+_PASSWORD_FIELD_STATE_JS = """() => Array.from(
+    document.querySelectorAll('input[type="password"]')
+).filter(
+    el => el.getClientRects().length > 0
+).map(el => ({
+    index: el.getAttribute('data-ai-index'),
+    filled: !!(el.value || '').trim(),
+}))"""
+
+
+# W_index_drift_measure (2026-09-07): จาก release gate เห็น action ที่ยิงใส่ index แล้วไปโดน
+# element คนละตัวกับที่ตั้งใจ (fill(24) ไปโดน '-- Select --' แทน Email) แต่ trace ที่มีแยกไม่ออก
+# ระหว่างสองสาเหตุที่แก้คนละทาง:
+#   (1) หน้า re-render ระหว่าง snapshot กับ dispatch (LLM คิดอยู่หลายวินาที) -> index เดิมชี้
+#       คนละ element กับที่โมเดลเห็นตอนตัดสินใจ
+#   (2) โมเดลอ้าง index จากเทิร์นเก่าที่จำมาจาก history -> snapshot ปัจจุบันถูกต้องอยู่แล้ว
+# ตัววัดนี้เทียบ label ตอน snapshot กับ label สดตอนจะ dispatch: ต่างกัน = สาเหตุ (1)
+# เหมือนกันแต่ action ยังผิดเป้า = สาเหตุ (2) — วัดก่อน ค่อยตัดสินว่าจะแก้ทางไหน
+_LIVE_LABEL_JS = """(el) => (el.getAttribute('data-ai-label') || el.innerText || el.value || '').trim()"""
+
+
+async def _live_label_at_index(page: Page, index) -> Optional[str]:
+    """label สดของ element ที่ index นั้น ณ ตอนนี้ — None ถ้าไม่มี element นั้นแล้ว/อ่านไม่ได้"""
+    try:
+        found = await page.query_selector(f'[data-ai-index="{index}"]')
+        if found is None:
+            return None
+        return (await found.evaluate(_LIVE_LABEL_JS)) or ""
+    except Exception:
+        return None
+
+
+async def _password_field_states(page: Page) -> list[dict]:
+    """[{index, filled}] ของช่อง password ที่มองเห็นได้ — ห้าม raise ตามกฎของไฟล์นี้"""
+    try:
+        return await page.evaluate(_PASSWORD_FIELD_STATE_JS)
+    except Exception:
+        return []
+
+
+def _label_for_index(elements: list[dict], index) -> str:
+    for el in elements or []:
+        if str(el.get("index")) == str(index):
+            return str(el.get("label") or "")
+    return ""
+
+
+# W_state_guard_shortcut ("Point at the actual answer, not just 'try something else'" — real
+# bug the user reported and live-reproduced (3 separate live runs) against OrangeHRM with the
+# OpenAI provider: on a goal like "goto admin page", with the sidebar plainly showing
+# "[3] a 'Admin' (navigation)", the model kept choosing fill_secret over and over — turn after
+# turn, even across forced go_back/scroll recoveries (see
+# _MAX_FILL_SECRET_CONTEXT_REJECT_RETRIES above). The generic nudge text alone ("take the
+# action that actually matches the goal instead") wasn't enough to redirect it. Two distinct
+# patterns were observed across the live runs, so the hint below checks both, cheaply and
+# deterministically (never changes what gets dispatched, never overrides the guard):
+#   (1) Sometimes the model picks the WRONG element entirely — e.g. index 35, "span 'manda
+#       userTester [Profile/Account Menu]'", unrelated to "admin". Fix: scan the current
+#       indexed elements for a navigation-region link whose label already matches a keyword
+#       from the goal, and name its exact index/label.
+#   (2) Sometimes the model picks the RIGHT element (index 3, the actual "Admin" link) but the
+#       WRONG ACTION VERB — it tries to fill_secret a plain <a> tag as if authenticating with
+#       it, instead of clicking it. Fix (1) is useless here since the target was never wrong —
+#       this needs its own check: look up the model's own chosen index, and if that element
+#       isn't a real <input>, tell it directly to use 'click' on that SAME index instead.
+# _fill_secret_context_hint() below tries (2) first (it's the more specific, more actionable
+# diagnosis when it applies), then falls back to (1).
+# A third pattern was found later (W_fill_secret_recovery_excludes_already_active — the goal's
+# own nav target is already "[already active]", i.e. the agent has ARRIVED and neither (1) nor
+# (2) applies) and is checked ahead of both; see _fill_secret_context_hint()'s docstring.
+_GOAL_KEYWORD_STOPWORDS = frozenset({
+    "go", "goto", "to", "the", "a", "an", "page", "pages", "navigate", "open", "click",
+    "on", "into", "and", "then", "please", "menu", "section", "screen", "view",
+})
+
+
+def _find_goal_matching_nav_element(
+    elements: list[dict], goal: str, skip_already_active: bool = False,
+) -> Optional[dict]:
+    """คืน element แรกที่ region="navigation" (ดู perception.py::getRegion) ที่ label มีคำจาก
+    goal ปนอยู่ (คำที่ยาว >= 3 ตัวอักษร ตัด stopword ทั่วไปทิ้งก่อน) — คืน None ถ้าไม่มี
+    keyword ให้เทียบเลย/ไม่เจอ element ไหนตรงเลย ไม่ throw
+
+    skip_already_active (default False, W_fill_secret_recovery_excludes_already_active): ข้าม
+    element ที่ label มี "[already active]" (perception.py แปะให้เมนู/แท็บที่เป็นหน้าปัจจุบัน
+    อยู่แล้ว) แล้ว "ไล่หาต่อ" ไม่ใช่เลิกหาทันที — nav element อื่นที่ตรง goal เหมือนกันแต่ยัง
+    ไม่ active (เช่น เมนูย่อยของหน้าเดียวกัน) ยังควรถูกเลือกได้ตามปกติ ดู
+    _fill_secret_recovery_target() สำหรับเหตุผลว่าทำไมเฉพาะ caller นั้นถึงต้องข้าม
+
+    W_goal_token_substring (บั๊กจริงที่เจอตอน live test บน OrangeHRM): เดิมเทียบทางเดียว
+    (goal word อยู่ใน label) — user พิมพ์ goal ว่า "login then goto adminmenu" ติดกันเป็นคำ
+    เดียว ส่วน label บนหน้าเว็บคือ "Admin" ทำให้ "adminmenu" ไม่มีวัน match "admin" ได้เลย
+    (คำที่ยาวกว่าหา substring ในคำที่สั้นกว่าไม่เจอเสมอ) แล้วตกไปเลือก element มั่วแทน —
+    เทียบสองทางแทน โดยฝั่ง label ต้องเป็นคำยาว >= 4 ตัวอักษรถึงจะยอมให้ match กลับด้าน
+    (กันคำสั้นอย่าง "PIM"/"Buzz" ไป match คำใน goal โดยบังเอิญ)
+
+    W_goal_token_wordboundary (บั๊กจริงที่เจอตอน live test ต่อมา): เทียบแบบ substring ดิบๆ
+    ทำให้ goal ภาษาไทย "...ลบuserole=ess ออกให้หมด" ดึงคำ ASCII ได้ ["userole", "ess"] แล้ว
+    "ess" ไป match ข้างใน "businESS Solutions" — recovery เลยคลิกลิงก์ Business Solutions ที่
+    ไม่เกี่ยวอะไรเลย ต้องเทียบที่ "ขอบเขตคำ" ไม่ใช่ substring กลางคำ ทั้งสองทิศทาง"""
+    words = [w for w in re.findall(r"[a-zA-Z]{3,}", (goal or "").lower()) if w not in _GOAL_KEYWORD_STOPWORDS]
+    if not words:
+        return None
+    for element in elements:
+        if element.get("region") != "navigation":
+            continue
+        label = str(element.get("label", ""))
+        if skip_already_active and "[already active]" in label:
+            continue
+        label_lower = label.lower()
+        # ทิศทางที่ 1: คำจาก goal ปรากฏใน label แบบเป็น "คำ" จริงๆ (ไม่ใช่กลางคำอื่น)
+        if any(re.search(rf"\b{re.escape(word)}\b", label_lower) for word in words):
+            return element
+        # ทิศทางที่ 2 (W_goal_token_substring): คำใน label เป็นส่วนหนึ่งของคำใน goal ที่ user
+        # พิมพ์ติดกัน (เช่น label "admin" อยู่ใน goal word "adminmenu") — ต้องเป็นคำยาว >= 4
+        # และต้องอยู่ต้นคำของ goal word เท่านั้น กันการชนกลางคำแบบ ess/business ซ้ำอีก
+        label_words = [w for w in re.findall(r"[a-z]{4,}", label_lower) if w not in _GOAL_KEYWORD_STOPWORDS]
+        if any(word.startswith(lw) for lw in label_words for word in words):
+            return element
+    return None
+
+
+def _fill_secret_recovery_target(elements: list[dict], tool_input: dict, goal: str) -> Optional[dict]:
+    """คืน element ที่ควร click แทน fill_secret ที่ถูกปฏิเสธ ถ้า heuristic แบบ deterministic
+    หาเจอจริง (ไม่งั้นคืน None) — ใช้ pattern เดียวกับที่ _fill_secret_context_hint() ใช้สร้าง
+    ข้อความเตือน (ดู comment เหนือ _fill_secret_context_hint สำหรับ pattern ทั้ง 2 แบบที่เจอจริง)
+    แยกออกมาต่างหากเพื่อให้ _force_loop_recovery() เอาไปสั่ง click จริงได้ (W_state_guard_shortcut
+    "Targeted Recovery") ไม่ใช่แค่บอกในข้อความเฉยๆ แล้วหวังว่าโมเดลจะทำตาม
+
+    W_fill_secret_recovery_target_priority (real bug, live-reproduced twice on
+    opensource-demo.orangehrmlive.com with the OpenAI provider — the very "pattern (1)" case
+    the comment above _fill_secret_context_hint() already documented seeing live ("span
+    'manda userTester [Profile/Account Menu]'"), now reproduced again as "span 'Automation QE'"
+    — same account-dropdown-menu confusion, not a coincidence): unlike
+    _fill_secret_context_hint() (pure suggestion text — the model can ignore it and try
+    something else next turn, so a wrong guess there just wastes one hint, not one dispatch),
+    this function's result gets clicked BLINDLY with no LLM double-check in between. Trying
+    "pattern (2)" (trust the model's own chosen index) FIRST meant that whenever the model's
+    fill_secret guess pointed at ANY non-<input> element — including one entirely unrelated to
+    the goal, like an account/profile dropdown — it got force-clicked as-is, sending the
+    recovery further from the goal instead of toward it (live-reproduced: 2 wasted rounds
+    clicking the account dropdown before recovery finally reached the real "Admin" link on
+    attempt 3). Goal-keyword matching is tried FIRST now instead — it is the safer signal for a
+    BLIND dispatch (matches something the goal actually asked for), falling back to trusting the
+    model's own chosen index only when no goal-matching nav element exists at all (preserves
+    "pattern (2)": right element index, wrong action verb — e.g. the model correctly targeted
+    the real "Admin" link by index but chose fill_secret instead of click).
+
+    W_fill_secret_recovery_excludes_profile_menu (real bug, live-reproduced a THIRD time on
+    the same site: "span 'Amber Floyd [Profile/Account Menu]'" this time — same account-
+    dropdown-menu confusion again): the goal-keyword fix above did not close this case, because
+    the goal itself never shared any vocabulary with the page's English nav labels — goal
+    keyword extraction is ASCII-only (see _find_goal_matching_nav_element()'s regex), so a Thai
+    goal (or any non-Latin-script goal) always returns None from goal-matching, falling through
+    to blindly trust the model's own chosen index again with nothing left to stop it. The model
+    can also target the SAME wrong profile-menu element turn after turn without self-correcting,
+    exhausting the whole recovery budget on one repeated wrong guess. "[Profile/Account Menu]"
+    (perception.py, W20/Task10) is a deterministic, non-site-specific marker — attached
+    programmatically to whichever element genuinely opens the account/profile menu on ANY site,
+    specifically so the model can find it for an intentional password-change flow. That is
+    exactly the OPPOSITE of what this recovery path should ever target: it only fires once we
+    already know this is NOT a password-change flow, so force-clicking the one element whose
+    entire purpose is password-related account actions is actively counterproductive here, not
+    merely unhelpful. Excluding it means a goal giving neither signal now falls through to None
+    — the caller's existing generic go_back/scroll escape valve (_force_loop_recovery()'s own
+    fallback for forced_cmd=None) takes over instead, which is bounded and terminates, unlike
+    repeating the same wrong click indefinitely.
+
+    W_fill_secret_recovery_excludes_already_active (real bug, live-reproduced on
+    opensource-demo.orangehrmlive.com, goal "เปิดเว็บ แล้วไปที่หน้าadmin"): the agent had ALREADY
+    ARRIVED — page was /web/admin/viewSystemUsers with the System Users list rendered — yet the
+    task ran 5 steps, burned 227k input tokens and ended "Stopping task: fill_secret was rejected
+    3 times in a row ... (a recovery action was forced but the loop persisted)". Activity Log
+    showed the same forced click three times over: click(3), the sidebar "Admin" link, whose
+    label was literally "Admin [already active]" (perception.py marks the current nav item, see
+    W19 "Log Cleanliness" there). _find_goal_matching_nav_element() substring-matches that same
+    label and had no reason to care about the marker, so goal-matching picked the link to the page
+    we were standing on. Every forced click was therefore a guaranteed no-op: execute() returned
+    success, the page never changed, the model saw an identical snapshot and re-proposed
+    fill_secret — until _MAX_AUTHENTICATED_FILL_SECRET_FAST_RECOVERIES, then
+    _MAX_FILL_SECRET_CONTEXT_REJECT_RETRIES, then _MAX_FORCED_LOOP_RECOVERIES were all drained and
+    the whole task hard-failed on work it had actually completed.
+
+    The main loop already refuses to click "[already active]" elements (see
+    _MAX_ALREADY_ACTIVE_SKIP_RETRIES at its dispatch site), but forced recovery calls execute()
+    directly and never passes through that check — so the exclusion has to be repeated here. Same
+    reasoning as the profile-menu paragraph above and it is the stronger case of the two: an
+    already-active nav element cannot possibly break the loop it was chosen to break, because
+    clicking it is definitionally a no-op. Excluded on BOTH paths (goal-match and the model's own
+    chosen index), since the model re-proposing the same already-active index every turn is
+    exactly what was observed."""
+    goal_match = _find_goal_matching_nav_element(elements, goal, skip_already_active=True)
+    if goal_match is not None:
+        return goal_match
+    chosen_index = tool_input.get("index")
+    chosen_element = next((e for e in elements if e.get("index") == chosen_index), None)
+    chosen_label = str(chosen_element.get("label", "")) if chosen_element is not None else ""
+    if (
+        chosen_element is not None
+        and chosen_element.get("tag") != "input"
+        and "[Profile/Account Menu]" not in chosen_label
+        and "[already active]" not in chosen_label
+    ):
+        return chosen_element
+    return None
+
+
+def _fill_secret_context_hint(elements: list[dict], tool_input: dict, goal: str) -> str:
+    """คืนข้อความเสริม (เติมต่อท้าย _FILL_SECRET_NOT_PASSWORD_CONTEXT_NUDGE) ที่ชี้เป้าให้
+    ตรงจุดที่สุดเท่าที่ heuristic แบบ deterministic ทำได้ — คืน "" ถ้าไม่มีอะไรให้ชี้ได้จริง
+    (ไม่ throw ไม่ว่ากรณีใด) ดู comment เหนือฟังก์ชันนี้สำหรับ pattern ทั้ง 2 แบบที่เจอจริง
+
+    W_fill_secret_recovery_excludes_already_active (pattern (3), เช็คก่อน pattern (2)/(1) —
+    ดูเหตุการณ์จริงเต็มๆ ใน docstring ของ _fill_secret_recovery_target()): ถ้า nav element ที่
+    ตรงกับ goal ถูกแปะ "[already active]" อยู่แล้ว แปลว่า "ไปถึงหน้าที่ goal ขอแล้ว" ไม่ใช่
+    "ยังหาทางไปไม่เจอ" — hint ที่ถูกต้องคือบอกให้ปิดงาน (finish_task) ไม่ใช่ชี้ให้คลิกลิงก์
+    เดิมซ้ำเหมือน pattern (1) (ซึ่งในเคสจริงนั้นคือคำแนะนำที่ผิดและช่วยเลี้ยง loop ไว้ด้วยซ้ำ)
+    เช็คก่อน pattern (2) เพราะ (2) วินิจฉัยแค่ "action verb ผิด" ซึ่งเป็นข้อสังเกตที่เล็กกว่า
+    และไม่ขัดกัน — ถ้าไปถึงหน้าปลายทางแล้วจริงๆ นั่นคือสิ่งที่โมเดลต้องรู้ก่อนเรื่องอื่น
+
+    ยังเป็นแค่ "ข้อความ" เหมือน pattern อื่นทุกประการ — ไม่เปลี่ยน action ที่ dispatch จริง
+    ไม่บังคับ finish_task ให้เอง และไม่รายงานสำเร็จแทนโมเดล (SYSTEM_PROMPT มีกฎนี้อยู่แล้ว —
+    ดู W_goal_precheck ใน llm.py — แต่เคสจริงข้างบนพิสูจน์แล้วว่า prompt อย่างเดียวไม่พอ ซึ่ง
+    เป็นเหตุผลประจำของไฟล์นี้ที่ต้องมี code หนุนกฎใน prompt อีกชั้น)"""
+    already_active_goal_match = _find_goal_matching_nav_element(elements, goal)
+    if already_active_goal_match is not None and "[already active]" in str(
+        already_active_goal_match.get("label", "")
+    ):
+        return (
+            f" Note: index {already_active_goal_match.get('index')} labeled "
+            f"{already_active_goal_match.get('label')!r} is the navigation entry matching this "
+            "goal, and it is already marked [already active] — you are ALREADY on the page the "
+            "goal asked for, so there is nothing left to navigate to. Do not click it again and "
+            "do not call fill_secret. Read what is on the page right now: if it satisfies the "
+            "goal, call finish_task with that as your evidence; if some part genuinely remains, "
+            "act on that remaining part specifically."
+        )
+    chosen_index = tool_input.get("index")
+    chosen_element = next((e for e in elements if e.get("index") == chosen_index), None)
+    # W_login_form_wrong_verb (pattern (4), บั๊กจริง live-reproduce บน saucedemo.com — คนละเว็บ
+    # กับที่ pattern อื่นเจอมา จึงเป็นเรื่องทั่วไปไม่ใช่ของเว็บใดเว็บหนึ่ง): goal บอกรหัสผ่านมา
+    # ตรงๆ ("login as standard_user with password secret_sauce") โมเดลเล็ง "ช่อง password ถูก
+    # ตัวแล้ว" แต่ใช้ verb ผิดเป็น fill_secret (ซึ่งสงวนไว้ให้ฟอร์มเปลี่ยนรหัสผ่านเท่านั้น)
+    # — guard ปฏิเสธถูกต้อง แต่ pattern (2) ด้านล่างข้าม element ที่เป็น <input> ทั้งหมด เลย
+    # ไม่มี hint อะไรกลับไปเลยสักคำ โมเดลจึงเสนอ fill_secret ซ้ำจนครบโควตาแล้ว task ตายใน 2
+    # step ทั้งที่ทางแก้ชัดเจนมาก: ใช้ "fill" ธรรมดากับ index เดิมนั่นแหละ
+    if chosen_element is not None and chosen_element.get("tag") == "input":
+        return (
+            f" Index {chosen_index} labeled {chosen_element.get('label', '')!r} is an "
+            "<input> on what looks like an ordinary LOGIN form, not a Change Password form. "
+            "fill_secret is only for the Current Password field of a genuine change-password "
+            f"flow — to log in, use action type 'fill' on this same index {chosen_index} with "
+            "the password value taken from the goal or from earlier in this conversation. If "
+            "the goal never provided one, call request_user_input to ask for it."
+        )
+    if chosen_element is not None and chosen_element.get("tag") != "input":
+        return (
+            f" Index {chosen_index} labeled {chosen_element.get('label', '')!r} is a "
+            f"<{chosen_element.get('tag', '')}> element, not a password input — it can never "
+            f"accept fill_secret no matter what. If that's genuinely the element the goal "
+            f"needs, use action type 'click' on index {chosen_index} instead of fill_secret."
+        )
+    matching_nav_element = _find_goal_matching_nav_element(elements, goal)
+    if matching_nav_element is not None:
+        return (
+            f" There is already a navigation link matching the goal right here: index "
+            f"{matching_nav_element.get('index')} labeled {matching_nav_element.get('label')!r} "
+            "— click that instead."
+        )
+    return ""
+
+
+_FILL_SECRET_NOT_PASSWORD_CONTEXT_NUDGE = (
+    "This action is rejected — fill_secret is only for the Current Password field on a "
+    "genuine Change Password form, and nothing about the current goal/plan or this page "
+    "indicates that's what's happening right now. If you're already authenticated and the "
+    "goal doesn't ask to change a password, drop this approach entirely and take the action "
+    "that actually matches the goal instead. If you do intend to change the password, first "
+    "navigate to the real Change Password form (see the Account Security & Password Actions "
+    "protocol) before calling fill_secret."
+)
+
+_MAX_FILL_SECRET_CONTEXT_REJECT_RETRIES = 2
+
+# W_goal_precheck ("Already-Achieved Pre-check" escape valve): guard นี้มีโควตาเหมือนทุก
+# pre-dispatch guard ในไฟล์นี้ — โมเดลที่อ่อนกว่าอาจเสนอ click เดิมซ้ำไปเรื่อยๆ โดยไม่ยอม
+# เปลี่ยนใจ ถ้าบล็อกไม่มีที่สิ้นสุด loop จะไม่มีวันคืบหน้าเลย (เผา token ปฏิเสธข้อเสนอเดิมจน
+# หมด max_steps โดยไม่มีอะไรถูกบันทึกลง history เพราะ record() เกิดตอน dispatch จริงเท่านั้น)
+# — เกินโควตาแล้วปล่อยผ่านไป dispatch จริง ปลอดภัยกว่าเพราะคลิก element ที่ active อยู่แล้ว
+# เป็น no-op ตามนิยาม
+_MAX_ALREADY_ACTIVE_SKIP_RETRIES = 2
+
+
 class Orchestrator:
     def __init__(self):
         self.memory = ShortTermMemory()
@@ -1181,7 +3810,28 @@ class Orchestrator:
                 llm.append_tool_result,
                 _compact_anthropic_messages,
             )
-        raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq)")
+        # W_openai_oauth: auth ผ่าน OAuth token (ดู core/openai_oauth.py หัวไฟล์สำหรับ risk
+        # disclosure เต็ม) ไม่ใช่ api key จาก settings เหมือน 3 provider ข้างบน —
+        # build_openai_client() แค่สร้าง client shell (ไม่มี network call, ไม่มี token จริง
+        # ตอนนี้) เพราะ _llm_backend() เป็น sync แต่การขอ/refresh OAuth token ต้อง await
+        # httpx call ได้ — เลี่ยงการทำให้ _llm_backend() เป็น async (จะกระทบ call site อื่น
+        # ในไฟล์นี้อีกหลายจุด) ด้วยการผลัก async work ลงไปใน llm.next_action_openai() แทน
+        # (มันเป็น async def อยู่แล้ว ถูก await ทุก step โดย loop ข้างล่างอยู่แล้ว)
+        if provider == "openai":
+            return (
+                llm.build_openai_client(),
+                settings.openai_model,
+                llm.next_action_openai,
+                llm.append_tool_result_openai,
+                # W_openai_oauth: OpenAI provider เก็บ user turn เป็น {"role": "user",
+                # "content": "<str>"} เหมือน Anthropic เป๊ะ (ดู llm.next_action_openai —
+                # ตั้งใจให้ shape นี้ตรงกัน) เลย reuse _compact_anthropic_messages ได้ตรงๆ
+                # ไม่ต้องเขียน _compact_openai_messages แยกซ้ำโค้ดเดิม (function_call/
+                # function_call_output item ใช้ key "type" ไม่ใช่ "role" เลยไม่ถูกเข้าใจผิด
+                # ว่าเป็น user turn โดยไม่ตั้งใจ)
+                _compact_anthropic_messages,
+            )
+        raise ValueError(f"ไม่รู้จัก LLM provider: {provider!r} (รองรับแค่ anthropic/gemini/groq/openai)")
 
     async def generate_plan(
         self, url: str, goal: str, provider: Optional[str] = None, page: Optional[Page] = None,
@@ -1239,6 +3889,16 @@ class Orchestrator:
             client, model, goal, page_text, resolved_provider, current_url=current_url_for_plan,
             previous_user_goal=previous_user_goal, previous_assistant_message=previous_assistant_message,
         )
+        # W_plan_keeps_goal_verb: ร่างใหม่ *ครั้งเดียว* พร้อมบอกตรงๆ ว่าผิดตรงไหน — ถ้ารอบสอง
+        # ยังผิดอีกก็ไม่ร่างซ้ำไปเรื่อยๆ ปล่อยแผนนั้นกลับไปให้ user เห็นบนหน้าจอยืนยันแผน
+        # แล้ว run_task() จะเป็นคนหยุดถามเองก่อนเริ่มลงมือ (ดู guard ที่นั่น)
+        if _plan_drops_goal_operation(goal, plan_text):
+            print("⚠️ แผนที่ร่างมาไม่ตรงชนิดงานที่สั่ง (goal สั่งลบ แต่แผนไม่ลบ) — ร่างใหม่อีกครั้ง", flush=True)
+            plan_text = await llm.generate_plan(
+                client, model, f"{goal}\n\n{_PLAN_KEEPS_GOAL_VERB_CORRECTION}", page_text,
+                resolved_provider, current_url=current_url_for_plan,
+                previous_user_goal=previous_user_goal, previous_assistant_message=previous_assistant_message,
+            )
         return plan_text, False
 
 
@@ -1422,17 +4082,26 @@ class Orchestrator:
             เคสนี้ ไม่ต้อง stream screenshot ซ้ำซ้อนกับหน้าต่างจริงที่เปิดโชว์อยู่แล้ว"""
             if on_event is None or not is_headless:
                 return
+            # W_screenshot_never_throws: try เดิมครอบแค่ page.screenshot() ทั้งที่ docstring
+            # ด้านบนสัญญาว่า "ไม่ throw เด็ดขาด" — base64.b64encode() และ _emit() อยู่นอก try
+            # ทั้งคู่ ทำให้ค่าที่ screenshot คืนมาผิดชนิด หรือ subscriber ที่พังตอน emit สามารถ
+            # ฆ่า task ทั้งตัวได้ ทั้งที่ live view เป็นแค่ของประดับ ไม่ใช่ส่วนหนึ่งของงาน
+            # (พบจากเทสต์ 4 เคสที่ล้มค้างมานาน: mock คืน AsyncMock ให้ screenshot แล้ว
+            # b64encode โยน TypeError ออกมาจนทั้ง run ตาย — บนของจริงเกิดได้เหมือนกันเวลา
+            # page กำลังปิด/หน่วยความจำไม่พอ)
             try:
                 raw = await page.screenshot(type="jpeg", quality=55)
+                b64 = base64.b64encode(raw).decode("ascii")
+                await _emit({
+                    "kind": "screenshot", "step": step,
+                    "image": f"data:image/jpeg;base64,{b64}",
+                })
             except Exception:
                 return
-            b64 = base64.b64encode(raw).decode("ascii")
-            await _emit({
-                "kind": "screenshot", "step": step,
-                "image": f"data:image/jpeg;base64,{b64}",
-            })
 
-        async def _force_loop_recovery(reason: str) -> bool:
+        async def _force_loop_recovery(
+            reason: str, forced_cmd: Optional[dict] = None, forced_target: Optional[dict] = None,
+        ) -> bool:
             """W31: เรียกตอน loop-detection guard (คาบ 1 หรือคาบ 2-4 — ดู
             _MAX_CONSECUTIVE_IDENTICAL_ACTIONS/_detect_repeating_cycle_period ด้านบนสุด
             ของไฟล์) trigger — บังคับทำ recovery action (go_back ก่อน แล้ว scroll ถ้ายัง
@@ -1446,36 +4115,51 @@ class Orchestrator:
             ผลลัพธ์ของ recovery action ถูกป้อนกลับเข้า messages ผ่าน tool_use_id ของ
             action เดิมที่ agent เพิ่งขอ (ต้องตอบทุก tool_use ด้วย tool_result เสมอ ไม่งั้น
             Anthropic/Groq API จะ error) พร้อมอธิบายตรงๆ ว่าเกิดอะไรขึ้น ไม่ใช่แกล้งทำเป็น
-            ว่า action เดิมที่ agent ขอไปสำเร็จ"""
+            ว่า action เดิมที่ agent ขอไปสำเร็จ
+
+            forced_cmd (optional, W_state_guard_shortcut "Targeted Recovery"): ถ้า caller ระบุ
+            command มาเอง (เช่น click index ที่ heuristic หาเจอว่าตรงกับ goal จริงๆ — ดู
+            _fill_secret_recovery_target()) ใช้ command นั้นแทนการไล่ทีละตัวจาก
+            _LOOP_RECOVERY_ACTIONS — go_back/scroll เป็นแค่ "หนีออกจาก state ที่ค้าง" ทั่วไป
+            ไม่เคยพาไปใกล้ goal จริงเลย ถ้ารู้เป้าหมายที่ถูกต้องชัดเจนแล้วควรคลิกตรงนั้นแทน
+
+            forced_target (optional): element dict ที่ forced_cmd ชี้ไป — ส่ง label/tag/type
+            ต่อให้ execute()/classify_action() เหมือน dispatch ปกติทุกประการ กัน forced click
+            หลุด risk-keyword/anchor-tag heuristic ไปเพราะไม่มี label (go_back/scroll ไม่มี
+            element เป้าหมายอยู่แล้ว label="" เดิมจึงปลอดภัยสำหรับ 2 type นั้นเท่านั้น)"""
             nonlocal forced_recovery_count, messages, last_action_cmd, consecutive_repeat_count, steps_taken
             if forced_recovery_count >= _MAX_FORCED_LOOP_RECOVERIES:
                 return False
-            forced_cmd = _LOOP_RECOVERY_ACTIONS[min(forced_recovery_count, len(_LOOP_RECOVERY_ACTIONS) - 1)]
+            if forced_cmd is None:
+                forced_cmd = _LOOP_RECOVERY_ACTIONS[min(forced_recovery_count, len(_LOOP_RECOVERY_ACTIONS) - 1)]
             forced_recovery_count += 1
             forced_result: ActionResult = await execute(
-                page, forced_cmd, ask_user_func=ask_user_func, label="",
+                page, forced_cmd, ask_user_func=ask_user_func,
+                label=(forced_target.get("label", "") if forced_target else ""),
                 manual_guidance="", allowed_domains=effective_allowed_domains,
+                element_tag=(forced_target.get("tag", "") if forced_target else ""),
+                element_type=(forced_target.get("type", "") if forced_target else ""),
             )
             steps_taken += 1
             self.memory.record({
                 "step": steps_taken,
                 "cmd": forced_cmd,
-                "label": "[ระบบบังคับ - กันวนซ้ำ]",
+                "label": "[System forced — loop prevention]",
                 "result": str(forced_result),
                 "success": forced_result.success,
                 "tokens": _tokens_dict(llm.TokenUsage()),
             })
             await _emit({
                 "kind": "step", "step": steps_taken, "cmd": forced_cmd,
-                "label": "[ระบบบังคับ - กันวนซ้ำ]",
+                "label": "[System forced — loop prevention]",
                 "result": str(forced_result), "success": forced_result.success,
             })
             forced_text = (
-                f"[ระบบตรวจพบการวนซ้ำ: {reason} — ระบบจึงบังคับทำ {forced_cmd} แทน action ที่"
-                f"คุณเพิ่งขอโดยอัตโนมัติ (ครั้งที่ {forced_recovery_count}/"
-                f"{_MAX_FORCED_LOOP_RECOVERIES}) ผลลัพธ์: {forced_result}] ตรวจสอบ URL ปัจจุบัน"
-                "และ indexed elements ของหน้าเว็บใหม่ทั้งหมด แล้วเลือก action ที่ต่างจากที่วน"
-                "ซ้ำมาก่อนหน้านี้จริงๆ"
+                f"[The system detected a repeat loop: {reason} — so it automatically forced "
+                f"{forced_cmd} instead of the action you just requested (attempt "
+                f"{forced_recovery_count}/{_MAX_FORCED_LOOP_RECOVERIES}) result: "
+                f"{forced_result}] Check the current URL and all indexed elements of the new "
+                "page, then choose an action genuinely different from the one that was looping."
             )
             messages = append_tool_result(messages, tool_use_id, forced_text)
             # W29: route ผ่าน _cmd_for_repeat_comparison() เหมือนจุดอื่นเพื่อความสอดคล้องกัน
@@ -1503,7 +4187,32 @@ class Orchestrator:
         playwright = None
         context = None
         opened_new_tab = False
+        # default-deny ทุกโดเมนอื่นนอกจาก target ของ task นี้เอง แม้ผู้เรียกลืมระบุ
+        # allowed_domains มาเอง — กัน agent หลุดไปแตะ session อื่นที่ login ค้างไว้ในเครื่อง
+        # เดียวกัน (เช่น mail) โดยไม่ตั้งใจ
+        #
+        # W_domain_guard_default (บั๊กจริง live-reproduce 3 รอบด้วย goal ของ user เอง): เดิม
+        # default นี้ตั้งอยู่ "ข้างใน" branch ของ connect_to_user_browser เท่านั้น ส่วนเส้นทาง
+        # BrowserPool (ที่ POST /tasks ใช้จริงทุก task และไม่เคยส่ง allowed_domains มาเลย)
+        # ปล่อยค้างเป็น None — และ domain guard ท้ายลูปทำงานเฉพาะตอนไม่ใช่ None จึงตายสนิท
+        # กับทุก task ที่ยิงผ่าน API ผลจริง: agent คลิกลิงก์โปรโมทบนหน้า login ของ
+        # opensource-demo.orangehrmlive.com หลุดออกไป orangehrm.com (เว็บการตลาด คนละโดเมน)
+        # แล้วเสีย step ที่เหลือทั้งหมดคลิก "Contact Sales"/"Start Your 30 Day Free Trial"/
+        # "Asset Tracking" จนหมด max_steps — เกิดซ้ำ 3 รอบติดกัน
+        #
+        # ย้ายมาตั้งที่นี่ให้ครอบทุกเส้นทาง (pool/self-launched/CDP/session) — เจตนาเดิมที่
+        # คอมเมนต์ด้านบนเขียนไว้ก็คือ "แม้ผู้เรียกลืมระบุ" อยู่แล้ว ไม่ได้ตั้งใจให้ CDP เท่านั้น
+        # ผู้เรียกที่ต้องการข้ามโดเมนจริง (SSO/OAuth redirect) ยังส่ง allowed_domains เองได้
+        # เหมือนเดิมทุกประการ ค่านี้แค่เป็น default ตอนไม่ได้ระบุ
         effective_allowed_domains = allowed_domains
+        if effective_allowed_domains is None:
+            # ถ้า url ผิดรูป/ว่าง extract_domain() คืน "" — อย่าตั้ง allowlist เป็น {""}
+            # เพราะนั่นแปลว่า "บล็อกทุกโดเมนรวมทั้งของตัวเอง" ปล่อยเป็น None (ไม่มี guard)
+            # เหมือนพฤติกรรมเดิมดีกว่า เคสนี้เกิดกับ task ที่ caller ส่ง page มาเองแล้ว
+            # ไม่ได้ระบุ url
+            _self_domain = extract_domain(url)
+            if _self_domain:
+                effective_allowed_domains = {_self_domain}
         browser_channel = _detect_default_browser_channel() if (owns_browser and not is_headless) else None
         # W11[A]: ถ้าจะเปิดหน้าต่างให้เห็น (is_headless=False) *และ* ต้องรอ user ยืนยัน
         # แผนก่อน (confirm_plan=True) — อย่าเพิ่งเปิดหน้าต่างจริงตอนนี้ ไปเปิดแบบซ่อน
@@ -1528,11 +4237,6 @@ class Orchestrator:
             page, opened_new_tab = await resolve_target_page(
                 context, url, ask_user_func, resolved_tab_reuse_policy,
             )
-            if effective_allowed_domains is None:
-                # default-deny ทุกโดเมนอื่นนอกจาก target ของ task นี้เอง แม้ผู้เรียกลืม
-                # ระบุ allowed_domains มาเอง — กัน agent หลุดไปแตะ session อื่นที่ login
-                # ค้างไว้ในเครื่องเดียวกัน (เช่น mail) โดยไม่ตั้งใจ
-                effective_allowed_domains = {extract_domain(url)}
         elif owns_browser:
             playwright = await async_playwright().start()
             browser = await _launch_chromium(
@@ -1548,9 +4252,124 @@ class Orchestrator:
 
         messages: list[dict] = []
         success = False
-        final_message = "ครบ max_steps โดยยังไม่จบ task"
+        final_message = _MAX_STEPS_EXHAUSTED_MESSAGE
+        # W_step_budget: งบจริงของลูปคือ "จำนวนรอบ" (for _ in range(max_steps)) แต่ steps_taken
+        # เพิ่มเฉพาะตอน dispatch action จริง — เส้นทาง guard ~14 จุดที่ `continue` กินรอบไปโดย
+        # ไม่เพิ่ม steps_taken เลย สองตัวนี้จึงห่างกันเรื่อยๆ ระหว่าง task
+        #
+        # ต้องแยกให้ชัดเพราะ guard กัน premature finish_task(false) เอา steps_taken (ตัวนับ
+        # action) ไปเทียบกับ max_steps (งบรอบ) — พอใกล้จบ เงื่อนไข "ยังเหลือ step ให้ลอง"
+        # ยังเป็นจริงอยู่ทั้งที่รอบหมดแล้วจริง ผลคือ finish_task(false) ที่ถูกต้องถูกปฏิเสธ
+        # แล้วลูปจบเองด้วยข้อความ default ด้านบน — คำอธิบายจริงของโมเดลว่าทำไมทำไม่ได้ถูกทิ้ง
+        iterations_used = 0
+        # ข้อความล่าสุดจาก finish_task(false) ที่ guard ปฏิเสธไป — ใช้แทนข้อความ default ถ้า
+        # สุดท้ายลูปจบเพราะหมดรอบจริงๆ (โมเดลอธิบายไว้แล้วว่าติดอะไร ไม่มีเหตุผลให้ทิ้ง)
+        last_rejected_finish_message = ""
         steps_taken = 0
         total_usage = llm.TokenUsage()
+        # W_llm_call_count: จำนวน "เทิร์น" ที่ยิงไปหา LLM จริง — ไม่เท่ากับจำนวน step เพราะ
+        # เทิร์นที่ถูก guard ปฏิเสธ/เทิร์นที่จบงาน ไม่ได้ลงมือทำ action จึงไม่มีบรรทัดใน
+        # step_trace (หนึ่งครั้งนี้อาจรวม retry ภายใน next_action ด้วย — ดู W_notoolcall)
+        llm_turns = 0
+        # W_token_cut W1: แยกให้เห็นว่าเทิร์น LLM ถูกใช้ไปกับอะไร — ไป token_usage.jsonl
+        # action_calls = browser_action ที่ dispatch จริง; finish_task_calls = ทุกครั้งที่
+        # โมเดลเรียก finish_task (รับหรือไม่ก็นับ); guard_rejections = {ชื่อ guard: จำนวนครั้ง}
+        # ที่เทิร์นถูกตีกลับโดยไม่ได้ลงมือ (W3 ใช้ตารางนี้ตัดสินว่าจะไปรวบเทิร์นตรงไหน)
+        action_calls = 0
+        finish_task_calls = 0
+        guard_rejections: dict[str, int] = {}
+        cache_hit_turns = 0
+        cache_miss_turns = 0
+        # W_prompt_audit: 1 entry ต่อการเรียก LLM — char count ของ request สุดท้ายแยกตาม
+        # หมวด + input/cache_read/output token จริงของ call นั้น (แปลง char->token ตอน
+        # วิเคราะห์โดยเทียบสัดส่วน ไม่เดา ratio ล่วงหน้า) ดู llm._char_payload_audit
+        payload_audits: list[dict] = []
+        # W_token_cut W5: การยุบ user turn ของ step เก่า (ดู _compact_stale_user_turns)
+        history_compaction_events = 0
+        history_chars_saved = 0
+        _W5_CHARS_PER_TOKEN = 4.3  # calibrated จาก W_prompt_audit (4.23-4.36 คงที่)
+        # W_token_cut W7: การยุบบล็อกกฎที่ gate ใน turn เก่า (ดู _dedupe_stale_gated)
+        gated_deref_events = 0
+        gated_chars_saved = 0
+
+        def _record_payload_audit(_usage: "llm.TokenUsage") -> None:
+            pc = getattr(_usage, "payload_chars", None)
+            if not pc:
+                return
+            payload_audits.append({
+                **pc,
+                "_input_tokens": _usage.input_tokens,
+                "_cache_read": _usage.cache_read_tokens,
+                "_output_tokens": _usage.output_tokens,
+            })
+
+        def _bump_guard(_name: str) -> None:
+            guard_rejections[_name] = guard_rejections.get(_name, 0) + 1
+
+        # W_token_cut W3: finish_task ที่ถูก guard ตีกลับด้วยเหตุผลไหนไปแล้ว 1 ครั้ง — ครั้งที่
+        # สองที่โมเดลกลับมาเรียก finish ด้วยสถานการณ์เดิม ไม่เตือนซ้ำ (เสียเทิร์น LLM ฟรี —
+        # หลักฐาน c2 ของ baseline: nudge รอบสองไม่เปลี่ยนผล) ตกไปเส้นทาง "ยอมรับพร้อม tag
+        # ความจริง" ที่ guard นั้นมีอยู่แล้วทันที — เฉพาะ guard ที่ไม่ใช่ safety ของข้อมูล
+        finish_reject_reasons_seen: set[str] = set()
+        finish_loop_prevented = 0
+
+        def _first_guard_hit(_reason: str) -> bool:
+            """W_token_cut W3: เรียก *หลัง* _bump_guard(_reason) แล้ว — 1 = ครั้งแรกของ
+            เหตุผลนี้ (แนบ user-turn nudge เสริมได้), >1 = ซ้ำ (tool_result อย่างเดียวพอ
+            ไม่ทบ history เปล่าๆ ทุกรอบ)"""
+            return guard_rejections.get(_reason, 0) <= 1
+
+        _AUDIT_BASE_CATS = (
+            "system_prompt", "tool_schema", "page_snapshot", "action_history", "plan",
+            "tool_result", "user_message", "gated_prompt", "other",
+        )
+
+        def _apportion_audit_tokens(_cat: str) -> int:
+            """W_prompt_audit/W5: รวม token ของหมวดหนึ่งข้ามทุก call โดย apportion char
+            ของหมวดนั้นเทียบ char รวมของ call แล้วคูณ _input_tokens จริงของ call"""
+            total = 0.0
+            for _c in payload_audits:
+                _ct = sum(_c.get(k, 0) for k in _AUDIT_BASE_CATS) or 1
+                total += _c.get(_cat, 0) / _ct * _c.get("_input_tokens", 0)
+            return round(total)
+
+        def _run_stats() -> dict:
+            calls = llm_turns or 1
+            tok = _tokens_dict(total_usage)
+            return {
+                "llm_calls": llm_turns,
+                "action_calls": action_calls,
+                "finish_task_calls": finish_task_calls,
+                "guard_rejections": dict(guard_rejections),
+                # W_token_cut W3 telemetry
+                "guard_reason_counts": dict(guard_rejections),
+                "repeated_guard_count": sum(max(0, v - 1) for v in guard_rejections.values()),
+                "finish_loop_prevented": finish_loop_prevented,
+                "notool_retries": total_usage.notool_retries,
+                "cache_hit_turns": cache_hit_turns,
+                "cache_miss_turns": cache_miss_turns,
+                # W_prompt_audit calibration (2026-09-02): the provider's input_tokens IS the
+                # full prompt count (cached portion included) — measured 4.23-4.36 chars/token
+                # against input_tokens alone; adding cache_read double-counted ~1.5-2x. Use
+                # input alone. cache_read reported separately below for the discount view.
+                "avg_input_tokens_per_call": round(tok["input"] / calls, 1),
+                "avg_cached_tokens_per_call": round(tok["cache_read"] / calls, 1),
+                "avg_output_tokens_per_call": round(tok["output"] / calls, 1),
+                # W_prompt_audit: char count ของทุก request แยกตามหมวด + token จริงต่อ call
+                "payload_audit": list(payload_audits),
+                # W_token_cut W5 telemetry
+                "history_compaction_events": history_compaction_events,
+                "history_chars_saved": history_chars_saved,
+                "history_tokens_saved": round(history_chars_saved / _W5_CHARS_PER_TOKEN),
+                # W_token_cut W7 telemetry
+                "gated_deref_events": gated_deref_events,
+                "gated_tokens_saved": round(gated_chars_saved / _W5_CHARS_PER_TOKEN),
+                # assistant_history ที่โมเดลเห็นจริง (หลัง W5) — apportion char->token ต่อ
+                # call จาก payload_audit; compacted = ค่านี้ (post), saved = ที่ตัดออกไป
+                "assistant_history_tokens": _apportion_audit_tokens("other_assistant_history"),
+                "assistant_history_compacted_tokens": _apportion_audit_tokens("other_assistant_history"),
+            }
+
         premature_false_finish_count = 0
         premature_true_finish_count = 0
         premature_all_failed_count = 0
@@ -1559,6 +4378,32 @@ class Orchestrator:
         premature_deletion_incomplete_count = 0
         premature_table_verify_count = 0
         premature_row_action_before_search_count = 0
+        premature_destructive_before_filter_count = 0
+        premature_count_answer_mismatch_count = 0
+        # W_count_answer_check: {ค่าเงื่อนไข: จำนวนที่โค้ดนับได้} ที่สะสมมาจาก read_page_data
+        # ของ task นี้ — ค่าใหม่ทับค่าเก่าเสมอ (ตารางเปลี่ยนได้ระหว่าง task เช่นหลังลบไปบางแถว
+        # ตัวเลขล่าสุดจึงเป็นตัวที่จริงที่สุด)
+        system_counted: dict[str, int] = {}
+        premature_delete_all_unverified_count = 0
+        # W_delete_all_intent: เงื่อนไขแบบ key=value ที่ user เขียนไว้ใน goal เอง (เช่น
+        # "userrole=ess" -> ["ess"]) — ว่างเปล่า = goal ไม่ได้ระบุเงื่อนไขชัดเจน guard ทั้งชุด
+        # นี้จะไม่ทำงานเลย (ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ)
+        delete_all_condition_values = (
+            _goal_condition_values(goal) if _is_delete_all_intent_goal(goal) else []
+        )
+        # W_column_aware_rows: guard ที่ต้องตัดสินว่า "แถวไหนตรงเงื่อนไข" ต้องรู้ทั้งชื่อคอลัมน์
+        # และค่า ไม่ใช่ค่าอย่างเดียว — ส่วน *_values ด้านบนเหลือไว้ใช้กับข้อความรายงานเท่านั้น
+        delete_all_condition_pairs = (
+            _goal_condition_pairs(goal) if _is_delete_all_intent_goal(goal) else []
+        )
+        # W_delete_all_intent: sticky ต่อ task — True หลังยืนยันแล้วครั้งแรกว่าตารางที่เห็น
+        # กรองตรงเงื่อนไขจริง (หรือหลังหมดโควตา nudge) ไม่ต้องอ่าน DOM ซ้ำทุกครั้งที่ลบแถวถัดไป
+        destructive_filter_verified = False
+        # W_delete_all_intent: sticky ต่อ task ต่างจาก filter_dirty_since_search ที่ scope แค่
+        # 1 step — True ตั้งแต่มีการเปลี่ยนค่า filter แล้วยังไม่เคยกด Search ตามหลังเลย ใช้
+        # ปฏิเสธ finish_task(success=true) ของงานลบทั้งหมด (trace ยืนยันว่า run ที่ claim
+        # สำเร็จผิดๆ ไม่เคยกด Search เลยสักครั้งตลอด run)
+        filter_changed_without_search = False
         # W_resume: จำนวนครั้งที่เรียก request_user_input ไปแล้วใน task นี้ (ดู
         # _MAX_REQUEST_USER_INPUT_CALLS ด้านบนสุดของไฟล์)
         request_user_input_count = 0
@@ -1583,6 +4428,15 @@ class Orchestrator:
         # แล้วเคลียร์ทิ้ง (ไม่ persist ข้าม step เพราะเป็น diagnostic ของสถานการณ์ตอนนั้น
         # ไม่ใช่ fact ถาวรแบบ manual/memory context)
         pending_vision_context = ""
+        # W_token_trim (P3/M3): the site manual is constant per task — send it in full once
+        # (first step + first step after every compaction), then reference it by a stable
+        # id + summary. site_manual_full/_ref are "" when there is no manual, so the whole
+        # scheme collapses to "pass '' every step" exactly as before.
+        site_manual_full, site_manual_ref = llm.site_manual_blocks(
+            site_manual_context, extract_domain(url),
+        )
+        site_manual_full_sent = False
+        force_full_site_manual = False
         plan_text: Optional[str] = None
         # W10[F]: goal ที่ next_action() เห็นจริงทุก step — ปกติเท่ากับ goal เดิมเป๊ะ แต่ถ้า
         # confirm_plan=True จะถูกผนวกด้วยแผน (ที่อาจถูก user แก้ไขก่อน confirm) เข้าไปด้วย
@@ -1597,6 +4451,83 @@ class Orchestrator:
         last_llm_call_at: Optional[float] = None
         last_action_cmd: Optional[dict] = None
         consecutive_repeat_count = 0
+        # W_same_label_loop: นับซ้ำด้วย (type, label) แทน (type, index) — ดู docstring ของ
+        # _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS ด้านบนสุดของไฟล์
+        last_same_label_key: Optional[tuple] = None
+        consecutive_same_label_count = 0
+        # W_index_drift_measure: นับว่า element ที่ index ชี้เปลี่ยนไป/หายไปกี่ครั้งต่อ task
+        index_drift_changed = 0
+        index_drift_gone = 0
+        # W_session_drift: จำนวนครั้งที่ login ใหม่ให้กลางทาง (ดู guard ต้นลูป)
+        mid_task_relogin_count = 0
+        # W_fill_secret_hardening: จำนวนครั้งติดกันที่ fill_secret ถูกปฏิเสธเพราะไม่ใช่
+        # change-password context (รีเซ็ตทันทีที่ dispatch อย่างอื่นผ่าน — ดู guard ในลูป)
+        consecutive_fill_secret_context_reject_count = 0
+        secret_refill_reject_count = 0
+        # W_retry_value_has_no_home: label ของช่องที่ agent กรอกค่าเองในงานนี้ ตามลำดับ
+        # ที่กรอก — ใช้บอก user ตอนขอค่าใหม่ว่าจะเอาไปแทนที่ช่องไหน (label ไม่ใช่ index
+        # เพราะ index ถูกแจกใหม่ทุก snapshot จึงข้ามเทิร์นไม่ได้)
+        agent_filled_field_labels: list[str] = []
+        # ว่าง = ไม่ได้กำลังรอค่าใหม่จาก user
+        retry_value_field_labels: list[str] = []
+        # W_auto_login_outcome_is_invisible: ค่าเริ่มต้นสำหรับ path ที่ไม่เคยเรียก auto-login
+        auto_login_outcome = "skipped"
+        # W_verify_text_needs_a_write: งานนี้เคยเขียนค่าลงฟอร์มจริงไหม
+        wrote_a_value_this_task = False
+        # W_goal_values_before_save: ค่าที่ agent เขียนลงหน้าไปแล้วใน task นี้ (ค่าที่กรอกใน
+        # หน้าก่อนหน้าไม่เหลืออยู่ใน DOM ของหน้าปัจจุบัน จึงต้องจำไว้เอง)
+        values_written_this_task: set = set()
+        missing_value_rejection_count = 0
+        goal_wants_a_record_change = (
+            canonical_intent(goal).operation in _TABLE_VERIFY_RELEVANT_OPERATIONS
+        )
+        empty_password_submit_count = 0
+        # W_goal_precheck: จำนวนครั้งติดกันที่ข้ามการคลิก element ที่มี marker "[already active]"
+        consecutive_already_active_skip_count = 0
+        # W_goal_scope: sticky ทั้งคู่ — ไม่ reset กลับ False อีกเลยตลอด task ("แผนเสร็จครบแล้ว"/
+        # "ถึงหน้าเป้าหมายแล้ว" เป็นความจริงถาวร ไม่ใช่สถานะชั่วคราวของ step เดียว) โดยเฉพาะตัว
+        # nav: ถ้าคำนวณใหม่ทุก step จะพังทันทีที่ action ถัดไปเป็น read-only เพราะ
+        # self.memory.recent(1) จะกลายเป็น read_page_data ไม่ใช่ click/goto อีกต่อไป ทำให้
+        # _navigation_target_reached() คืน False ทั้งที่ยังอยู่หน้าเป้าหมายอยู่
+        plan_fully_completed = False
+        # W_plan_step_cursor: "ตอนนี้อยู่ข้อไหนของแผน" ต้องเป็นของโค้ด ไม่ใช่ตัวเลขที่โมเดล
+        # ใส่มาเอง — completed_plan_step เป็น self-report ล้วนๆ มาตลอด ไม่มีตัวนับฝั่งโค้ด
+        # เลยสักตัว โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้ แล้ว plan_fully_completed ติดทันที
+        plan_cursor = 1
+        # W_plan_panel_lags_the_log: cursor "สำหรับแสดงผลเท่านั้น" — ตัดสินจากหลักฐานบน
+        # หน้าเว็บ (URL/action) เพื่อให้ PLAN panel เดินทันกับ LOG
+        # ค่านี้ *ไม่เคย* ป้อน plan_fully_completed, ไม่เคยเข้า prompt, และไม่มีวันเกิน
+        # จำนวนข้อของแผน — ข้อสุดท้ายจึงยังต้องรอ task สำเร็จจริงถึงจะติ๊ก (ดู allDone ฝั่ง
+        # frontend) โครงสร้างนี้ทำให้มันแปลว่า "แผนจบแล้ว" ไม่ได้เลยแม้จะเดินไปสุดทาง
+        display_plan_cursor = 1
+        # W_plan_cursor_needs_a_matching_action: กี่ครั้งติดกันแล้วที่ไม่ยอมให้ cursor เดินหน้า
+        # เพราะ action ดู "ไม่ตรง" กับ step ปัจจุบัน — ต้องมีเพดาน ไม่งั้นล็อกตาย (ดูจุดใช้งาน)
+        blocked_cursor_advances = 0
+        # W_plan_progress_stall: กี่ action ที่สำเร็จแล้วผ่านไปโดย plan_cursor ไม่ขยับเลย
+        actions_since_plan_progress = 0
+        plan_stall_notes_sent = 0
+        # W_action_matches_plan_step: นับแยกจากตัวบน และ *ไม่* รีเซ็ตเมื่อ cursor ขยับ
+        actions_mismatching_plan_step = 0
+        plan_mismatch_notes_sent = 0
+        # W_filter_scope_guard: field ที่ goal อนุญาตให้กรอง (ว่าง = ไม่เปิด guard นี้เลย)
+        goal_filter_fields = _goal_condition_fields(goal)
+        # W_filter_already_satisfied: คู่ field=value เต็มๆ (ไม่ใช่แค่ชื่อ field) — ใช้ตัวเดียว
+        # กับที่ _goal_condition_fields() อ่านมา ไม่เรียก regex ซ้ำทุก step
+        goal_condition_pairs = _goal_condition_pairs(goal)
+        filter_satisfied_reject_count = 0
+        filter_scope_reject_count = 0
+        prefer_row_delete_reject_count = 0
+        profile_menu_reject_count = 0
+        obscured_click_reject_count = 0
+        # W_prefer_row_delete: goal นี้เกี่ยวกับบัญชีของผู้ใช้เองหรือเปล่า (คำนวณครั้งเดียว)
+        goal_is_about_account = _goal_is_about_the_signed_in_account(goal)
+        nav_target_reached_confirmed = False
+        # W_order_complete_is_the_end: sticky เหมือน nav_target_reached_confirmed — พอกด
+        # Back Home หน้าก็เปลี่ยนไปแล้ว ถ้าอ่านจาก URL ปัจจุบันอย่างเดียวสัญญาณจะหายทันที
+        order_completed_confirmed = False
+        # W_goal_scope: จำนวนครั้งติดกันที่ action ถูกปฏิเสธเพราะ goal ถือว่าสำเร็จแล้ว — เงื่อนไข
+        # reset ไม่เหมือน counter อื่นในไฟล์นี้ (ดู comment ตรงจุดใช้งานจริง)
+        consecutive_goal_scope_reject_count = 0
         # W21 ("Batch/Bulk Action Protocol"): ผลลัพธ์ (success/fail) ของ action ล่าสุดที่
         # เพิ่ง execute() จริงไปเมื่อ step ก่อนหน้า — ใช้คู่กับ _BULK_SAFE_REPEAT_TYPES
         # ด้านล่างตอนเช็ค consecutive_repeat_count (ดู docstring ตรงจุดเช็คด้านล่าง)
@@ -1632,7 +4563,7 @@ class Orchestrator:
         last_page_text_for_context: Optional[str] = None
         last_manual_context = ""
         last_long_term_context = ""
-        _CONTEXT_UNCHANGED_NOTE = "(เหมือนกับ step ก่อนหน้า — หน้าเว็บยังไม่เปลี่ยน)"
+        _CONTEXT_UNCHANGED_NOTE = "(identical to the previous step — the page has not changed)"
 
         # W12: "detect หน้าปัจจุบัน" แทนการบังคับ goto(url) เสมอ — เช็คจากสถานะจริงของ
         # page.url ตรงๆ (ไม่ผูกกับโหมดไหนเจาะจง) แทนเดิมที่เคยเช็คแค่ connect_to_user_browser
@@ -1697,7 +4628,17 @@ class Orchestrator:
             # ทั้งที่ไม่มี permission ที่ถูกต้องโดย user ไม่รู้ตัว ไม่ throw/ไม่หยุด task เพราะ
             # agent ยัง fallback ไปกรอกฟอร์ม login เองผ่าน action ปกติได้อยู่แล้ว — แค่ต้อง
             # ให้ user เห็นว่า credential ที่บันทึกไว้ใช้ไม่ได้แล้ว
-            auto_login_failure_reason = await _maybe_auto_login(page, verbose)
+            # W_consent_banner: ปิดแบนเนอร์คุกกี้ก่อนเสมอ — ถ้ามันบังอยู่ _maybe_auto_login()
+            # จะหาฟอร์ม login ไม่เจอแล้วไม่ล็อกอินให้ ทั้งที่มี credential เก็บไว้จริง
+            await _dismiss_consent_banner(page, verbose)
+            _auto_login_box: dict = {}
+            auto_login_failure_reason = await _maybe_auto_login(page, verbose, _auto_login_box)
+            auto_login_outcome = _auto_login_box.get("result", "skipped")
+            # W_consent_banner (รอบสอง): CMP หลายเจ้าโหลด script แบบ async แล้ว render
+            # แบนเนอร์ "หลัง" wait_stable คืนค่าไปแล้ว — ยิงซ้ำอีกรอบตรงนี้จึงจับเคสนั้นได้
+            # (ยืนยันจาก live run: เรียกครั้งเดียวก่อน auto-login คืน None เพราะยังไม่มีแบนเนอร์
+            # แต่ step ถัดๆ มาโมเดลเห็นปุ่มของแบนเนอร์เต็มหน้าไปแล้ว) — no-op ถ้าไม่มีอะไรให้ปิด
+            await _dismiss_consent_banner(page, verbose)
             if auto_login_failure_reason:
                 await _emit({
                     "kind": "auto_login_failed",
@@ -1779,21 +4720,74 @@ class Orchestrator:
                 # เห็น page_text เดิมก่อนค้นหาอยู่ ทั้งที่หน้าเปลี่ยนไปแล้วจริงหลัง submit ค้นหา
                 qa_elements, qa_page_text = initial_elements, initial_page_text
                 qa_goal = f"{goal}{_QA_ANSWER_FORMAT_GUIDANCE}"
+                # W_count_answer_check: mini-loop นี้คือที่ที่คำถามเชิงนับเกือบทั้งหมดไปจบจริง
+                # (classify_intent ส่ง "มี ... กี่คน" มาที่ qa_summary) และเป็นที่ที่บั๊กที่ user
+                # เจอสดเกิดขึ้น — ตารางมี 7 แถวที่เป็น ESS แต่ agent ตอบ 6 โดยไม่มี guard ตัวไหน
+                # จับได้เลย เพราะทุก guard ที่มีตรวจ "ทำ action สำเร็จไหม" ไม่ใช่ "ตัวเลขในคำตอบ
+                # ถูกไหม" (main loop มี guard เดียวกันนี้ด้วย ใช้ helper ตัวเดียวกัน)
+                qa_system_counted: dict[str, int] = {}
+                qa_count_mismatch_retries = 0
                 for _ in range(_QA_SUMMARY_MAX_STEPS):
                     qa_tool_name, qa_tool_input, qa_tool_use_id, qa_messages, qa_usage = await next_action(
                         client, model, qa_goal, qa_page_text, qa_messages, plan_context="",
+                        # W_fill_secret_schema_gate: qa_summary เป็น mini-loop แบบอ่านอย่างเดียว
+                        # (อนุญาตแค่ read_page_data/fill-ค้นหา/click อยู่แล้ว ดูด้านล่าง) —
+                        # fill_secret ไม่มีวันถูกต้องที่นี่ ตัดออกจาก schema ไปเลย
+                        allow_fill_secret=False,
+                        # W_token_cut W2: qa ไม่ได้วน _resolve_prompt_sections — ส่งบล็อก gate
+                        # ครบเหมือนที่เคยได้จาก build_system_prompt(None) เดิม (table สำคัญกับ
+                        # คำถามเชิงนับ/สรุปตาราง) แค่ย้ายไปอยู่ท้าย user turn
+                        prompt_sections=llm.ALL_PROMPT_SECTIONS,
                     )
                     total_usage += qa_usage
+                    llm_turns += 1
+                    _record_payload_audit(qa_usage)  # W_prompt_audit
+                    if qa_usage.cache_read_tokens > 0:  # W_token_cut W1
+                        cache_hit_turns += 1
+                    else:
+                        cache_miss_turns += 1
                     if qa_tool_name == "finish_task":
-                        summary_text = qa_tool_input.get("message", "")
+                        finish_task_calls += 1
+                        qa_answer = qa_tool_input.get("message", "")
+                        # W_count_answer_check: คำตอบต้องมีตัวเลขที่โค้ดนับไว้จริง ไม่งั้นตีกลับ
+                        # ให้ตอบใหม่ (มีโควตา escape valve เหมือน guard อื่นในไฟล์นี้ — ตอบ
+                        # คำถามผิดยังดีกว่าไม่ได้คำตอบเลย ถ้าโมเดลยืนยันซ้ำๆ)
+                        qa_contradiction = _count_answer_contradiction(
+                            goal, qa_answer, qa_system_counted,
+                        )
+                        if (
+                            qa_contradiction is not None
+                            and qa_count_mismatch_retries < _MAX_COUNT_ANSWER_MISMATCH_RETRIES
+                        ):
+                            qa_count_mismatch_retries += 1
+                            qa_value, qa_count = qa_contradiction
+                            if verbose:
+                                print(
+                                    f"[qa: คำตอบขัดกับตัวเลขที่โค้ดนับ "
+                                    f"{qa_count_mismatch_retries}/"
+                                    f"{_MAX_COUNT_ANSWER_MISMATCH_RETRIES}] "
+                                    f"{qa_value!r} นับได้ {qa_count} แต่ไม่มีในคำตอบ",
+                                    flush=True,
+                                )
+                            qa_messages = append_tool_result(
+                                qa_messages, qa_tool_use_id,
+                                _COUNT_ANSWER_MISMATCH_NUDGE_TEMPLATE.format(
+                                    count=qa_count, value=qa_value,
+                                ),
+                            )
+                            continue
+                        summary_text = qa_answer
                         break
 
                     qa_action_type = qa_tool_input.get("type")
                     if qa_action_type == "read_page_data":
+                        action_calls += 1  # W_token_cut W1
                         qa_result: ActionResult = await execute(
                             page, qa_tool_input, ask_user_func=ask_user_func, label="",
                             manual_guidance="", allowed_domains=effective_allowed_domains,
                         )
+                        if qa_result.success:
+                            qa_system_counted.update(system_counted_conditions(qa_result.message))
                         qa_messages = append_tool_result(qa_messages, qa_tool_use_id, str(qa_result))
                         continue
 
@@ -1822,6 +4816,7 @@ class Orchestrator:
                     ) if qa_index is not None else ""
                     qa_is_nav_click = qa_action_type == "click" and qa_region == "navigation"
                     if (qa_action_type in ("fill", "click") and _label_looks_like_search(qa_label)) or qa_is_nav_click:
+                        action_calls += 1  # W_token_cut W1
                         qa_result: ActionResult = await execute(
                             page, qa_tool_input, ask_user_func=ask_user_func, label=qa_label,
                             manual_guidance="", allowed_domains=effective_allowed_domains,
@@ -1860,6 +4855,7 @@ class Orchestrator:
                     "message": summary_text,
                     "history": self.memory.recent(max_steps),
                     "tokens": _tokens_dict(total_usage),
+                    **_run_stats(),
                     "plan": None,
                     "final_page_state": qa_page_text,
                 }
@@ -1881,6 +4877,14 @@ class Orchestrator:
                 cached_elements = cached_page_text = None
                 _, plan_page_text = await get_snapshot(page)
                 plan_text = await llm.generate_plan(client, model, goal, plan_page_text, resolved_provider)
+                # W_plan_keeps_goal_verb: เหมือนเส้นทาง API ด้านบน — ร่างใหม่ครั้งเดียว
+                if _plan_drops_goal_operation(goal, plan_text):
+                    if verbose:
+                        print("[plan] ไม่ตรงชนิดงานที่สั่ง — ร่างใหม่อีกครั้ง", flush=True)
+                    plan_text = await llm.generate_plan(
+                        client, model, f"{goal}\n\n{_PLAN_KEEPS_GOAL_VERB_CORRECTION}",
+                        plan_page_text, resolved_provider,
+                    )
                 if verbose:
                     print(f"[plan]\n{plan_text}", flush=True)
                 approved, plan_text = await _confirm_plan(plan_text, ask_user_func)
@@ -1893,6 +4897,7 @@ class Orchestrator:
                         "message": "ผู้ใช้ไม่ยืนยันแผน — ยกเลิกก่อนเริ่มทำงาน",
                         "history": self.memory.recent(max_steps),
                         "tokens": _tokens_dict(total_usage),
+                        **_run_stats(),
                         "plan": plan_text,
                         "final_page_state": plan_page_text,
                     }
@@ -1920,21 +4925,229 @@ class Orchestrator:
                     await goto(page, url)
                     await wait_stable(page)
 
+            # W_goal_scope: resolve ครั้งเดียว ไม่ใช่ทุก iteration — คำนวณจากตัว goal ล้วนๆ
+            # W_plan_keeps_goal_verb: จุดนี้ plan_text นิ่งแล้วทั้งเส้นทาง approved_plan (user
+            # กดยืนยันบนหน้าจอ อาจแก้ข้อความมาเองด้วย) และเส้นทาง confirm_plan ในลูป
+            #
+            # W_plan_warn_not_abort: เดิมจุดนี้ `return {"steps": 0}` หยุดทั้ง task ทันที —
+            # แต่กว่าจะมาถึงตรงนี้ plan_text มาจาก approved_plan หรือ _confirm_plan() ซึ่ง
+            # **ทั้งสองทางคือแผนที่ user ยืนยันมาแล้ว** (และอาจแก้ข้อความเองด้วยซ้ำ) การหยุดจึง
+            # เท่ากับตัดสินใจแทน user บนสิ่งที่เขาเพิ่งอ่านและกดยืนยันไปเอง
+            # ตามที่ user เลือกไว้: เตือนให้ดังตั้งแต่เทิร์นแรก แต่ไม่หยุด
+            #
+            # ความปลอดภัยไม่ได้หายไปไหน — guard ตอน execution ยังบล็อกการกด Save จริงอยู่ครบ
+            # (W_no_record_edit_for_delete_goal เป็น hard reject ไม่มีโควตา + W_prefer_row_delete)
+            # ที่เปลี่ยนคือ "ไม่ตัดสินใจแทน user ตั้งแต่ยังไม่เริ่ม" ไม่ใช่ "ปล่อยให้เขียนทับข้อมูล"
+            plan_mismatch_reason = (
+                _plan_drops_goal_operation(goal, plan_text) if plan_text else None
+            )
+            if plan_mismatch_reason:
+                # ต่อท้าย effective_goal ไม่ใช่ยัดเข้า messages: ตรงนี้ messages ยังว่างอยู่
+                # (ประกาศไว้ต้น run_task) การใส่ข้อความแรกเป็น nudge จะได้ user turn สองอัน
+                # ติดกันก่อน goal ซึ่ง provider บางเจ้าไม่รับ — และการอยู่ใน goal ทำให้คำเตือน
+                # ติดไปกับ *ทุก* step ไม่ใช่หายไปหลังเทิร์นแรก
+                print(f"\u26a0\ufe0f [plan] {plan_mismatch_reason}", flush=True)
+                effective_goal = (
+                    f"{effective_goal}\n\n"
+                    + _PLAN_MISMATCH_WARNING_TEMPLATE.format(reason=plan_mismatch_reason)
+                )
+
+            # ไม่ข้ามแม้จะมี confirmed plan อยู่ (plan_fully_completed อาจไม่มีวันเป็น True ถ้า
+            # planner เติมบรรทัดสุดท้ายเป็นการ "ยืนยันผล" ที่ไม่มี action ไหนทำให้เสร็จได้ —
+            # goal_nav_target จึงต้องเป็น signal สำรองที่ใช้ได้เสมอ)
+            # W_prompt_sections: สะสมข้าม step ของ task นี้ (ดู _resolve_prompt_sections)
+            prompt_sections: frozenset = frozenset()
+            # W_captcha_detect: ถามคนเรื่อง CAPTCHA แค่ครั้งเดียวต่อ task
+            captcha_reported = False
+            goal_nav_target = _extract_goal_navigation_target(goal)
+            # W_no_create_for_existing_goal: resolve ครั้งเดียวเหมือน goal_nav_target
+            goal_targets_existing_only = _goal_targets_existing_records_only(goal)
+            # W_no_credential_flow: resolve ครั้งเดียวเหมือนกัน (goal ไม่เปลี่ยนกลาง task)
+            goal_mentions_credentials = _goal_mentions_credentials(goal)
+            # W_no_record_edit_for_delete_goal: resolve ครั้งเดียวเหมือนกัน
+            goal_is_deletion_only = _goal_is_deletion_only(goal)
+
+            # W_plan_panel_lags_the_log: ยิงความคืบหน้าครั้งแรกก่อนเข้าลูป เพื่อให้ spinner ไป
+            # อยู่ข้อ 1 ตั้งแต่ต้น ไม่ต้องรอ action แรกจบก่อน (แผนถูกยืนยันเสร็จแล้วตรงนี้)
+            if plan_text:
+                await _emit({
+                    "kind": "plan_progress", "current": 1, "done_through": 0,
+                    "total": _total_plan_steps(plan_text), "confirmed": 0,
+                    "evidence": "start", "url": page.url,
+                })
+
             for _ in range(max_steps):
+                # W_step_budget: นับ "รอบ" แยกจาก steps_taken (ดูคำอธิบายที่จุดประกาศตัวแปร)
+                iterations_used += 1
+
+                # W_token_cut W3: backstop ลูปแก้ตัวไม่รู้จบ — guard ปฏิเสธ action ของโมเดล
+                # ซ้ำเกินเพดาน (รวมทุกเหตุผล หรือเหตุผลเดียวข้ามรอบ reset) โดยไม่คืบหน้า =
+                # จบ task ตามความจริง แทนการเผา step budget ที่เหลือทั้งหมด (เช็คที่หัวลูป
+                # จุดเดียวที่ break ได้โดยไม่มี tool_use ค้างไม่มี tool_result ตอบ)
+                if guard_rejections and (
+                    sum(guard_rejections.values()) >= _MAX_TASK_GUARD_REJECTIONS
+                    or max(guard_rejections.values()) >= _MAX_SAME_GUARD_REASON_REJECTIONS
+                ):
+                    _worst = max(guard_rejections, key=lambda k: guard_rejections[k])
+                    success = False
+                    final_message = (
+                        f"หยุด task: ระบบปฏิเสธ action ของโมเดลซ้ำหลายครั้งโดยไม่คืบหน้า "
+                        f"(guard '{_worst}' x{guard_rejections[_worst]}, รวมทุกเหตุผล "
+                        f"{sum(guard_rejections.values())} ครั้ง) — โมเดลหาวิธีทำงานที่ผ่าน"
+                        f"ข้อจำกัดไม่ได้"
+                    )
+                    completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+                    if verbose:
+                        print(f"[W3 guard-loop backstop] {final_message}", flush=True)
+                    break
+
+                # W_login_check_once (P4.7): _login_form_needs_password() ถูกเรียก 2 ครั้งต่อ
+                # รอบ (guard session-drift ก่อนเรียก LLM + guard login-form ก่อน dispatch) และ
+                # แต่ละครั้งรอได้ถึง _DOM_CHECK_TIMEOUT_MS ต่อช่อง password ที่มองเห็น
+                #
+                # ระหว่างสองจุดนั้นมีแค่การเรียก LLM คั่น ไม่มี action ใดแตะหน้าเว็บเลย DOM จึง
+                # เหมือนเดิมแน่นอน — อ่านซ้ำได้คำตอบเดิมเสมอ cache ต่อรอบจึงปลอดภัย (ไม่ cache
+                # ข้ามรอบเด็ดขาด: หลัง execute() หน้าเปลี่ยนได้ตลอด)
+                login_form_state: Optional[bool] = None
+
+                async def _login_form_needs_password_cached() -> bool:
+                    nonlocal login_form_state
+                    if login_form_state is None:
+                        login_form_state = await _login_form_needs_password(page)
+                    return login_form_state
                 # Speed 2.1: รอบแรกของ loop (steps_taken ยังเป็น 0) ใช้ snapshot ที่ cache
                 # ไว้ตอน intent classification แทน get_snapshot() ซ้ำ ถ้ายังไม่ถูก invalidate
                 # (ดู comment ตอนตั้งค่า cached_elements/cached_page_text ด้านบน) — รอบถัดๆ
                 # ไปยังคง get_snapshot() ใหม่ทุกครั้งเหมือนเดิมทุกประการ
+
+                # W_goal_scope: หลักฐานว่า goal สำเร็จแล้ว ณ ตอนนี้ — เช็คก่อน next_action() ทุก
+                # step (ใช้บังคับ gate ด้านล่าง หลัง finish_task block) page.url เป็นสถานะจริง
+                # ล่าสุดของ browser เสมอ ไม่ต้องรอ get_snapshot() ของรอบนี้ — steps_taken > 0
+                # กันไม่ให้ lock ตั้งแต่ step แรกสุดที่ยังไม่ได้ทำอะไรเลย
+                goal_scope_satisfied_reason: Optional[str] = None
+                if steps_taken > 0:
+                    # W_plan_cursor_not_proof (บั๊กจริง live run 2026-08-28, เจอตอน verify P7):
+                    # plan_cursor เป็น "ตัวนับ action ที่สำเร็จ" ไม่ใช่ "หลักฐานว่างานเสร็จ" —
+                    # รันนั้นเดินถูกทุกอย่าง (Admin -> dropdown -> ESS -> Search -> Select All)
+                    # แต่ Select All คือ action ที่ 5 พอดี cursor จึงผ่านจำนวนข้อของแผน แล้ว
+                    # goal-scope gate ก็ไป **บล็อกปุ่ม Delete ที่ตามมา** และปิด task ด้วย
+                    # success=True ทั้งที่ ESS ยังอยู่ครบ 9 คน (ยืนยันด้วยสคริปต์ไม่ใช้ LLM
+                    # ก่อน/หลังรัน) — W93 แก้ "โมเดลอ้างเลขข้อสุดท้ายทันที" ไปแล้ว แต่ยังเหลือ
+                    # "นับครบจำนวนข้อ = จบ" ซึ่งผิดด้วยเหตุผลเดียวกัน
+                    #
+                    # goal ลบแบบมีเงื่อนไขมี "การวัดตรงๆ" อยู่แล้ว (เหลือกี่แถวที่ตรงเงื่อนไข)
+                    # การวัดต้องชนะตัวนับเสมอ จึงข้าม shortcut ของแผนไปใช้เส้นทางที่อ่านหลักฐาน
+                    # จริงด้านล่างแทน — goal อื่นที่ไม่มีวิธีวัดตรงๆ ยังใช้ธงของแผนเหมือนเดิม
+                    # W_plan_counter_claims_a_password_change: ฟอร์มเปลี่ยนรหัสผ่านที่ยังกรอก
+                    # ไม่ครบคือหลักฐานตรงๆ ว่างานยังไม่จบ — ต้องชนะตัวนับของแผนเช่นเดียวกับที่
+                    # การนับแถวที่เหลือชนะมันในงานลบ (ดู docstring ของ helper)
+                    if (
+                        plan_fully_completed
+                        and not delete_all_condition_values
+                        and not await _change_password_form_still_unfilled(page)
+                    ):
+                        goal_scope_satisfied_reason = "the confirmed plan's last step is already complete"
+                    else:
+                        if not nav_target_reached_confirmed and goal_nav_target and _navigation_target_reached(
+                            goal_nav_target, page.url, self.memory.recent(1)
+                        ):
+                            nav_target_reached_confirmed = True
+                        if nav_target_reached_confirmed:
+                            goal_scope_satisfied_reason = (
+                                f"the goal's navigation target ('{goal_nav_target}') has already been reached"
+                            )
+                        elif _order_is_complete(goal, page.url) or order_completed_confirmed:
+                            order_completed_confirmed = True
+                            goal_scope_satisfied_reason = (
+                                "the order was already placed and the site showed its "
+                                "order-complete page"
+                            )
+                        elif _goal_targets_existing_records_only(goal):
+                            # W_zero_records_done: งานลบ/แก้ตามเงื่อนไข "เสร็จ" เมื่อตารางที่
+                            # กรองแล้วไม่เหลือแถวที่ตรงเงื่อนไข — สัญญาณเดียวกับที่ guard
+                            # premature-deletion ใช้ปฏิเสธ finish_task ตอนยังเหลือ >0 อยู่แล้ว
+                            # (_scan_remaining_target_records_once) แค่ใช้ในทิศทางตรงข้าม
+                            # คืน None ถ้าหน้านี้ไม่ใช่หน้าตาราง = ไม่มีสัญญาณ ไม่ gate อะไรเลย
+                            remaining = await _scan_remaining_target_records_once(page)
+                            if remaining is not None and remaining[0] == 0:
+                                goal_scope_satisfied_reason = (
+                                    "the filtered table has no matching rows left "
+                                    f"({remaining[1]!r}), so there is nothing more to act on"
+                                )
+
+                # W_step_trace: จับเวลาของ 3 ส่วนที่กินเวลาจริงต่อ step (snapshot / LLM /
+                # action) แยกกัน — ทั้งระบบไม่เคยมี instrumentation เวลาเลยสักจุด จึงตอบไม่ได้
+                # ว่า task ที่ใช้ 693 วินาทีหมดเวลาไปกับอะไร (ดู config.py::step_trace_log_path)
+                _snapshot_started_at = time.monotonic()
                 if steps_taken == 0 and cached_elements is not None:
                     elements, page_text = cached_elements, cached_page_text
                 else:
                     elements, page_text = await get_snapshot(page)
+                step_snapshot_seconds = time.monotonic() - _snapshot_started_at
                 await _emit_screenshot(steps_taken)
                 # W5[A] verify: เก็บ page_text ล่าสุดไว้เป็นหลักฐานจริงจาก DOM ตอนจบ
                 # task (ทุก path — finish_task/loop-detected/หมด max_steps) แนบไปกับ
                 # result ให้ผู้ประเมิน (เช่น W12[B] eval script/human review) เทียบกับ
                 # message ที่ LLM อ้างได้เอง ไม่ต้องเชื่อคำเคลมของ LLM ลอยๆ อย่างเดียว
                 final_page_text = page_text
+
+                # W_consent_banner_midtask (ดู docstring ของ _snapshot_shows_consent_banner):
+                # แบนเนอร์คุกกี้โผล่กลางทางได้ ไม่ใช่แค่ตอนโหลดหน้าแรก — ปิดให้ทันทีที่เห็นใน
+                # snapshot แล้ว perceive ใหม่ ไม่งั้นโมเดลจะเสีย step ไปกดปุ่มของแบนเนอร์เอง
+                # (live run: กด "Allow all" ให้ tracking cookie แทน user โดยไม่มีใครสั่ง)
+                if _snapshot_shows_consent_banner(elements):
+                    if await _dismiss_consent_banner(page, verbose):
+                        elements, page_text = await get_snapshot(page)
+                        final_page_text = page_text
+
+                # W_captcha_detect (P3.8): เช็คหลังปิดแบนเนอร์คุกกี้แล้ว เพราะแบนเนอร์บางเจ้า
+                # บังหน้าไว้จน snapshot ดูว่างเปล่าคล้าย bot wall — เช็คก่อนจะเข้าใจผิดได้
+                # ถามคนแค่ครั้งเดียวต่อ task (โควตาเดียวกับ request_user_input ปกติ) แล้ว
+                # perceive ใหม่ ถ้ายังติดอยู่ก็ปล่อยให้ลูปเดินต่อตามปกติ ไม่ฆ่า task ทิ้ง
+                if (
+                    not captcha_reported
+                    and _snapshot_shows_captcha(elements, page_text)
+                    and request_user_input_count < _MAX_REQUEST_USER_INPUT_CALLS
+                ):
+                    captcha_reported = True
+                    request_user_input_count += 1
+                    if verbose:
+                        print("[captcha] เจอ CAPTCHA/bot wall — ขอให้ user ทำเองแล้วรอ", flush=True)
+                    await _request_user_input(_CAPTCHA_USER_PROMPT, False, ask_user_func)
+                    elements, page_text = await get_snapshot(page)
+                    final_page_text = page_text
+
+                # W_session_drift (บั๊กจริง live-reproduce ด้วย goal ของ user เอง: "เปิดเว็ป
+                # แล้วไปที่เมนูแอดมิน แล้วลบ user role=ess ออกให้หมด"): auto-login สำเร็จและ
+                # agent ไปถึงหน้า Admin คลิกแถวได้แล้วจริง แต่ step ถัดมาโมเดลสั่ง go_back เอง
+                # แล้วเด้งกลับไปหน้า login/หน้าโฆษณาของเว็บ — ไม่มีอะไรพากลับเข้าระบบอีกเลย
+                # agent เลยใช้ step ที่เหลือทั้งหมด (18 จาก 22) ไปคลิกลิงก์การตลาดบนหน้านั้น
+                #
+                # ไม่ใช่ปัญหาเฉพาะเว็บนี้: session หมดอายุกลางทาง/กด go_back ข้ามขอบเขตแอป เป็น
+                # เรื่องปกติของเว็บที่ต้อง auth ทุกตัว — พอเจอฟอร์ม login โผล่มาอีกครั้งทั้งที่มี
+                # credential เก็บไว้แล้ว ให้ปิดแบนเนอร์ + login ใหม่ให้เลย (กลไกเดิมทั้งคู่
+                # ไม่ได้สร้างใหม่) แล้ว perceive ใหม่ก่อนถาม LLM
+                #
+                # มีโควตาเหมือน guard อื่นในไฟล์นี้: ถ้า login ซ้ำแล้วยังเด้งกลับมาอีก แปลว่า
+                # credential ใช้ไม่ได้จริง/เว็บบังคับ logout อยู่ — เลิกพยายามแล้วปล่อยให้ loop
+                # ปกติจัดการต่อ ไม่วน re-login ไม่รู้จบ
+                if (
+                    steps_taken > 0
+                    and mid_task_relogin_count < _MAX_MID_TASK_RELOGINS
+                    and await _login_form_needs_password_cached()
+                ):
+                    mid_task_relogin_count += 1
+                    if verbose:
+                        print(
+                            f"[session-drift {mid_task_relogin_count}/{_MAX_MID_TASK_RELOGINS}] "
+                            f"เจอฟอร์ม login กลางทาง ({page.url}) — ปิดแบนเนอร์แล้วลอง login ใหม่",
+                            flush=True,
+                        )
+                    await _dismiss_consent_banner(page, verbose)
+                    relogin_reason = await _maybe_auto_login(page, verbose)
+                    if relogin_reason is None:
+                        elements, page_text = await get_snapshot(page)
+                        final_page_text = page_text
 
                 # W6[B]: ดึงคู่มือที่เกี่ยวข้องกับ goal+หน้าปัจจุบันใหม่ทุก step ที่หน้าเปลี่ยน
                 # จริง (retrieve()/recall() ไม่ throw เอง คืน [] เงียบๆ ถ้าไม่มีคู่มือ/error)
@@ -1999,6 +5212,27 @@ class Orchestrator:
                 # แจ้งเตือน LLM รอบนี้ว่า action นั้นอาจเป็น no-op ทั้งที่ดูเหมือนสำเร็จ กัน
                 # การเสีย step ต่อๆ ไปคิดว่า "ทำไปแล้ว" ทั้งที่จริงไม่มีผล
                 verification_context = ""
+                # W_already_logged_in_but_told_to_log_in (release gate จับได้ 2026-09-07, งาน
+                # add_candidate): goal ขึ้นต้นว่า "Log in with username 'Admin' and password
+                # 'admin123', go to Recruitment..." แต่ _maybe_auto_login() พาเข้าระบบไปแล้ว
+                # ตั้งแต่ก่อนเข้า loop จึงไม่มีฟอร์ม login ให้กรอก โมเดลไม่รู้เรื่องนี้เลยจึงพยายาม
+                # ทำตามคำสั่งแรกของ goal ด้วยการยัด username/password ลงช่อง Search ใน sidebar
+                # แล้วหลงทางต่ออีก 5 step จนไม่เคยไปถึงฟอร์มเป้าหมาย
+                #
+                # ระบบรู้คำตอบอยู่แล้ว (auto_login_outcome) แค่ไม่เคยบอกโมเดล — บอกเฉพาะตอนที่
+                # login สำเร็จจริง *และ* goal พูดถึงการ login เท่านั้น งานที่ไม่เกี่ยวไม่ต้องจ่าย
+                # ค่าบรรทัดนี้ และหยุดบอกหลังพ้น step แรกๆ ไปแล้ว (โมเดลเห็นหน้าหลังล็อกอินเองแล้ว)
+                if (
+                    auto_login_outcome == "ok"
+                    and steps_taken < _MAX_ALREADY_LOGGED_IN_REMINDER_STEPS
+                    and contains_keyword(goal, _LOGIN_ONLY_CLAUSE_KEYWORDS)
+                ):
+                    verification_context = (
+                        "[The system already signed in with the stored credentials before this "
+                        "task started — the log-in part of the goal is DONE. There is no log-in "
+                        "form on screen; never type a username or password into a search box or "
+                        "any other field. Carry on from the next part of the goal.]"
+                    )
                 if steps_taken > 0 and not page_changed_for_context:
                     last_record = self.memory.recent(1)
                     if last_record:
@@ -2008,11 +5242,12 @@ class Orchestrator:
                             and last_cmd.get("type") in _VERIFICATION_SIGNAL_ACTION_TYPES
                         ):
                             verification_context = (
-                                f"[ตรวจสอบผล action ก่อนหน้า ({last_cmd}): ไม่พบการเปลี่ยนแปลง"
-                                "บนหน้าเว็บเลย (element/เนื้อหาของหน้าเหมือนเดิมทุกตัวอักษร) — "
-                                "action นี้อาจไม่มีผลจริงแม้จะได้ [OK] ก็ตาม ลองพิจารณาทางอื่น "
-                                "(เช่น hover ก่อนคลิก, คลิกตำแหน่ง/index อื่น หรือถ้าเป็น custom "
-                                "dropdown ให้ลองใช้ press_key แทน)]"
+                                f"[Verification of the previous action ({last_cmd}): no change "
+                                "was detected on the page at all (its elements/content are "
+                                "byte-for-byte identical) — this action may have had no real "
+                                "effect even though it returned [OK]. Consider another route "
+                                "(e.g. hover before clicking, click a different position/index, "
+                                "or for a custom dropdown try press_key instead)]"
                             )
 
                 # W7[A]: สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (ดู
@@ -2034,24 +5269,127 @@ class Orchestrator:
                 # retrieve()/recall() ด้านบน) นับรวมเข้าไปในระยะห่างนี้ด้วย ระยะห่างขั้นต่ำ
                 # ระหว่างการเรียก LLM 2 ครั้งยังเท่าเดิมทุกประการ (ไม่ลดความปลอดภัยจาก
                 # rate-limit) แค่ไม่ sleep ซ้ำกับเวลาที่ผ่านไปแล้วจริง
+                # W_timing_gap: การรอนี้ตั้งใจ (กัน rate limit) แต่ต้อง "เห็นได้" ในรายงาน
+                # ไม่ใช่หายไปในช่องว่างที่ไม่มีใครวัด — ตอนวิเคราะห์ทีหลังจะได้แยกออกจาก
+                # ความช้าที่แก้ได้จริง
+                step_pacing_seconds = 0.0
                 if last_llm_call_at is not None:
                     elapsed = time.monotonic() - last_llm_call_at
                     remaining = settings.step_pacing_delay_seconds - elapsed
                     if remaining > 0:
+                        step_pacing_seconds = remaining
                         await asyncio.sleep(remaining)
 
                 # W43: plan_text (ดู confirm_plan/approved_plan ด้านบน) เป็น None สำหรับ
                 # ad-hoc task ที่ไม่มีแผนเลย — ส่งเป็น "" ให้ next_action()/
                 # _build_user_turn_text() ไม่ต้องรู้จัก Optional เอง (plan_context="" =
                 # ไม่มี section "แพลนปัจจุบัน" โผล่มาปนเลย ตรงกับพฤติกรรมเดิมทุกประการ)
-                tool_name, tool_input, tool_use_id, messages, usage = await next_action(
-                    client, model, effective_goal, page_text, messages,
-                    manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context, page.url, action_history_context, plan_text or "",
-                    verification_context=verification_context,
+                # W_fill_secret_schema_gate (ดูเหตุผลเต็มใน llm.py ที่ค่าคงที่ชื่อเดียวกัน):
+                # คำนวณ "หน้านี้ใช้ fill_secret ได้จริงไหม" *ก่อน* เรียก LLM แล้วส่งเข้าไปให้
+                # llm.py ตัด fill_secret ออกจาก tool schema เลยถ้าใช้ไม่ได้ — แทนที่จะเสนอ
+                # ตลอดเวลาแล้วให้ guard ด้านล่างไล่ปฏิเสธทีหลัง (ซึ่งเสีย step/token และจบด้วย
+                # loop-detected ทุกครั้งในเคสจริง)
+                #
+                # เงื่อนไขเดียวกันเป๊ะกับ guard ด้านล่าง และคำนวณที่นี่ที่เดียว แล้ว guard
+                # ใช้ค่าเดิมซ้ำ — schema กับ guard จึงพูดตรงกันเสมอ และไม่ต้องยิง DOM check
+                # ซ้ำสองรอบต่อ step
+                #
+                # W_secret_gate_stays_page_only (regression 2026-09-03 ที่ผมทำเองแล้ว user
+                # เจอจากการรันสด 2 รอบติด): เคยแก้บรรทัดนี้ให้เปิด fill_secret ตั้งแต่ตอน
+                # goal/แผน *พูดถึง* การเปลี่ยนรหัสผ่าน เพื่อให้กฎ W20 ถูกส่งเร็วขึ้น — ผิดจุด
+                # และรื้อ W_fill_secret_schema_gate ทิ้งพอดี: gpt-5.4-mini บน endpoint
+                # ChatGPT OAuth กรอกทุก property ในสคีมาทุกครั้ง พอ `secret` มี enum ค่าเดียว
+                # มันจึงส่งมาตลอดแล้วลาก `type` เป็น fill_secret ไปด้วย ผลคือ agent ยิง
+                # fill_secret ใส่ index มั่วตั้งแต่หน้า login (หลุดไปถึงหน้า Help & Support)
+                # ไม่เคยกดเมนูโปรไฟล์เลยสักรอบ — คือ 5/5 failure แบบเดิมเป๊ะ
+                #
+                # กฎ W20 ไม่ต้องพึ่งธงตัวนี้อยู่แล้ว: _resolve_prompt_sections() เปิดบล็อก
+                # password จาก _goal_or_plan_requests_password_change() ของมันเองแยกต่างหาก
+                # (ดู W_password_rules_arrive_too_late) ธงตัวนี้จึงกลับไปถามแค่ข้อเดียวตามเดิม
+                # — "ตอนนี้ยืนอยู่บนฟอร์มเปลี่ยนรหัสผ่านจริงไหม"
+                allow_fill_secret = await _page_looks_like_change_password_form(page)
+                # W_secret_stays_in_schema_forever: สคีมาแคบกว่าบริบทหนึ่งขั้น — พอช่อง Current
+                # Password ถูกกรอกแล้ว fill_secret ไม่มีประโยชน์อีกเลย ตัดออกทันทีเพื่อให้โมเดล
+                # ไม่มีทางส่งมันมาซ้ำได้ ส่วน guard/บล็อก prompt ยังใช้ allow_fill_secret ตัวกว้าง
+                # ต่อไป (ไม่งั้น guard hardening จะเข้าใจผิดว่า "ไม่ใช่หน้าเปลี่ยนรหัสผ่าน" แล้ว
+                # บังคับ recovery ทั้งที่หน้าถูกแล้ว)
+                fill_secret_in_schema = (
+                    allow_fill_secret and await _current_password_field_is_empty(page)
+                )
+
+                # W_steptimeout: ครอบ timeout เหมือนที่ routes.py::generate_plan ทำกับ
+                # generate_plan อยู่แล้ว (ดู config.py::llm_step_timeout_seconds) — ปล่อยให้
+                # TimeoutError ทะลุขึ้นไปหา except ของ run_task (W_loop_crash) ซึ่งจะรายงาน
+                # ว่าค้างที่ step ไหนพร้อมคืนงานที่ทำไปแล้วครบ แทนที่จะค้างเงียบตลอดไป
+                _llm_started_at = time.monotonic()
+                prompt_sections = _resolve_prompt_sections(
+                    prompt_sections, goal=goal, plan_text=plan_text, elements=elements,
+                    allow_fill_secret=allow_fill_secret,
+                    # site_manual_context เป็นพารามิเตอร์ของ run_task จึงมีค่าเสมอ —
+                    # ห้ามใช้ effective_site_manual ตรงนี้ มันถูกกำหนดค่าทีหลังในลูป
+                    manual_context=site_manual_context or manual_context or "",
+                )
+
+                # W_token_trim (P2/M1): ยุบ page snapshot ของ turn เก่าใน history ก่อน
+                # ยิง LLM — เก็บอันก่อนหน้าไว้เต็ม 1 อัน (+ อันปัจจุบันที่ next_action จะ
+                # append) = เห็น snapshot เต็ม 2 อันล่าสุดในทุก request
+                messages = _dedupe_stale_snapshots(messages, keep_last_full=1)
+
+                # W_token_cut W5: ยุบ *ทั้ง* user turn ของ step เก่า (เกิน 2 อันท้าย) เหลือ
+                # แค่ Goal + stub — บล็อกกฎ/plan/scaffolding/manual ในนั้นถูกส่งสดใหม่ทุก
+                # turn อยู่แล้ว + digest เก็บผลลัพธ์ไว้ครบ (หลักฐาน W_prompt_audit: turn เก่า
+                # ที่สะสม = component ที่ใหญ่ที่สุดในงานยาว โต ~4.5-5k tok/call ไม่มีเพดาน)
+                messages, _w5_removed = _compact_stale_user_turns(messages, goal)
+                if _w5_removed:
+                    history_compaction_events += 1
+                    history_chars_saved += _w5_removed
+
+                # W_token_cut W7: บล็อกกฎที่ gate ใน turn เก่าทุกอันเหลือ 1 บรรทัดอ้างอิง
+                # (turn ปัจจุบันที่ next_action จะ append ยังส่งเต็ม) — เนื้อกฎเหมือนเดิม
+                # ทุก turn, model ถูกสั่งให้ยึด turn ล่าสุด
+                messages, _w7_removed = _dedupe_stale_gated(messages, keep_last_full=0)
+                if _w7_removed:
+                    gated_deref_events += 1
+                    gated_chars_saved += _w7_removed
+
+                # W_token_trim (P3/M3): full manual on the first step and on the first step
+                # after any compaction (which would have spliced the earlier full copy
+                # out); a short id+summary reference every other step
+                if not site_manual_full:
+                    effective_site_manual = ""
+                elif force_full_site_manual or not site_manual_full_sent:
+                    effective_site_manual = site_manual_full
+                    site_manual_full_sent = True
+                    force_full_site_manual = False
+                else:
+                    effective_site_manual = site_manual_ref
+
+                tool_name, tool_input, tool_use_id, messages, usage = await asyncio.wait_for(
+                    next_action(
+                        client, model, effective_goal, page_text, messages,
+                        manual_context, memory_context, long_term_context, vision_context,
+                        effective_site_manual, page.url, action_history_context,
+                        # W_plan_step_cursor: ส่งแผนพร้อมเครื่องหมายว่าอยู่ข้อไหน แทนแผนดิบ
+                        _focused_plan_context(plan_text, plan_cursor),
+                        verification_context=verification_context,
+                        allow_fill_secret=fill_secret_in_schema,
+                        prompt_sections=prompt_sections,
+                    ),
+                    timeout=settings.llm_step_timeout_seconds,
                 )
                 last_llm_call_at = time.monotonic()
+                # W_step_trace: เวลาที่ใช้กับ LLM ของ step นี้ล้วนๆ (ไม่รวม pacing delay ด้านบน
+                # ซึ่งเป็นการรอโดยตั้งใจ ไม่ใช่ความช้าของ provider)
+                step_llm_seconds = last_llm_call_at - _llm_started_at
                 total_usage += usage
+                llm_turns += 1
+                _record_payload_audit(usage)  # W_prompt_audit
+                # W_token_cut W1: cache ติดไหมต่อเทิร์น — บน endpoint openai ที่รันจริงมีแค่
+                # cached_tokens ให้ดู (ดู W_token_cut ในหมายเหตุ) ตัวเลขนี้ x/llm_calls = hit ratio
+                if usage.cache_read_tokens > 0:
+                    cache_hit_turns += 1
+                else:
+                    cache_miss_turns += 1
                 if verbose:
                     print(
                         f"  [tokens] input={usage.input_tokens} output={usage.output_tokens}"
@@ -2060,6 +5398,24 @@ class Orchestrator:
                         f" cache_read={total_usage.cache_read_tokens} cache_write={total_usage.cache_creation_tokens})",
                         flush=True,
                     )
+
+                # W_unknown_tool: เดิมเช็คแค่ "request_user_input" กับ "finish_task" ที่เหลือ
+                # ตกลงไปเส้นทาง browser_action หมดโดยไม่ตรวจอะไรเลย — ชื่อ tool ที่โมเดลมโนขึ้น
+                # เอง (เกิดได้จริง โดยเฉพาะกับ provider ที่เราเห็นแล้วว่ากรอกสคีมามั่ว) จึงถูก
+                # ส่งเข้า actions.execute() แล้วได้ ActionResult(False, "unknown action") กลับมา
+                # ซึ่งไม่ได้บอกโมเดลเลยว่า "ชื่อ tool ผิด" และมี tool อะไรให้ใช้บ้าง — เสีย step
+                # ฟรีๆ แล้ววนผิดซ้ำได้เรื่อยๆ ตอบให้ตรงจุดแทน แล้วไปต่อโดยไม่นับเป็น step
+                if tool_name not in _KNOWN_TOOL_NAMES:
+                    _bump_guard("unknown_tool")  # W_token_cut W1
+                    if verbose:
+                        print(f"[unknown-tool] โมเดลเรียก tool ที่ไม่มีอยู่จริง: {tool_name!r}", flush=True)
+                    messages = append_tool_result(
+                        messages, tool_use_id,
+                        f"[Rejected by the system] there is no tool named {tool_name!r}. The only "
+                        f"tools that exist are: {', '.join(sorted(_KNOWN_TOOL_NAMES))}. Call one of "
+                        "those instead — use browser_action for anything you want to do on the page.",
+                    )
+                    continue
 
                 # W_resume ("Mid-Task Input Request"): ตรวจก่อน finish_task เสมอ (คนละ tool
                 # กันเลย ไม่ใช่ alias/ไม่ผ่าน guard ของ finish_task ด้านล่างเลยสักจุด) —
@@ -2072,6 +5428,7 @@ class Orchestrator:
                     sensitive = bool(tool_input.get("sensitive", False))
 
                     if request_user_input_count >= _MAX_REQUEST_USER_INPUT_CALLS:
+                        _bump_guard("request_user_input_quota")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[request_user_input เกินโควตา {_MAX_REQUEST_USER_INPUT_CALLS} "
@@ -2079,10 +5436,11 @@ class Orchestrator:
                             )
                         messages = append_tool_result(
                             messages, tool_use_id,
-                            f"[ระบบปฏิเสธ] ถามคำถามลักษณะนี้ครบ {_MAX_REQUEST_USER_INPUT_CALLS} "
-                            "ครั้งแล้วใน task นี้ ห้ามเรียก request_user_input อีก ให้ตัดสินใจ"
-                            "เองจากข้อมูลที่มีอยู่แล้ว หรือเรียก finish_task(success=false) "
-                            "ถ้าทำต่อไม่ได้จริงๆ",
+                            f"[Rejected by the system] you have already asked this kind of "
+                            f"question {_MAX_REQUEST_USER_INPUT_CALLS} times in this task — do "
+                            "not call request_user_input again. Decide from the information you "
+                            "already have, or call finish_task(success=false) if you genuinely "
+                            "cannot continue.",
                         )
                         continue
 
@@ -2090,30 +5448,65 @@ class Orchestrator:
                     steps_taken += 1
                     provided, answer = await _request_user_input(prompt_text, sensitive, ask_user_func)
                     log_cmd = {"type": "request_user_input", "prompt": prompt_text, "sensitive": sensitive}
-                    result_text = (
-                        f"user ตอบ: {answer}" if provided
-                        else "[ไม่ได้คำตอบ] user ปฏิเสธ/ไม่ตอบภายในเวลาที่กำหนด"
+                    # W_nobody_is_watching (วัดจาก step_trace 2026-09-08): request_user_input
+                    # ถูกเรียก 51 ครั้ง และ **ทั้ง 51 ครั้งได้คำตอบว่างเปล่า** ทุกครั้งอยู่ในรัน
+                    # eval/gate ซึ่งไม่มีคนเฝ้าจอ — ask_user_func ของ harness ตอบ "อนุมัติ" เสมอ
+                    # แต่ไม่มีข้อความจริงให้ ผลคือโมเดลได้ประโยค "the user answered:" ที่ไม่มี
+                    # อะไรตามหลัง แล้วต้องเดาต่อเอง โดยจ่ายไปแล้วทั้งหนึ่ง step และหนึ่ง LLM call
+                    #
+                    # บอกความจริงว่าไม่มีใครตอบ ดีกว่าปล่อยให้เข้าใจว่าคนตอบมาว่า "" และปิดทาง
+                    # ถามซ้ำทั้ง task ไปเลย เพราะรอบต่อไปก็จะว่างเหมือนเดิมทุกครั้ง
+                    if provided and not (answer or "").strip():
+                        provided = False
+                        request_user_input_count = _MAX_REQUEST_USER_INPUT_CALLS
+                        # W_no_answer_is_not_an_exit (gate fedd2ed): ข้อความเวอร์ชันแรก
+                        # ลงท้ายด้วยทางออก "หรือเรียก finish_task(success=false)" — โมเดล
+                        # หยิบทางนั้นทันที task rag_integration จึงจบใน 3 step ทั้งที่คู่มือ
+                        # RAG มีค่าที่ต้องใช้อยู่แล้ว เดิมมันได้คำตอบว่างแล้วมั่วต่อจนจบงาน
+                        # ได้ การบอกว่า "ไม่มีใครตอบ" จึงต้องไม่กลายเป็นใบอนุญาตให้ยอมแพ้
+                        result_text = (
+                            "[No answer] nobody is available to answer in this run — this is normal "
+                            "and not a failure. Carry on with the task using what is already on the "
+                            "page, the goal, and any attached manual; pick sensible values yourself "
+                            "for anything routine (a name, a postcode). Do not call request_user_input "
+                            "again. Give up only if the goal genuinely cannot be done without a value "
+                            "that exists nowhere — and say which value that is."
+                        )
+                    else:
+                        result_text = (
+                            f"the user answered: {answer}" if provided
+                            else "[No answer] the user declined or did not answer within the time limit"
+                        )
+                    # W_secret_answer_not_logged: คำตอบต้องไปถึงโมเดล (ไม่งั้นกรอกไม่ได้) แต่ไม่
+                    # ควรไปโผล่ในที่ที่ถูกเก็บไว้ยาวๆ — panel LOG บนหน้าจอ, data/step_trace.jsonl
+                    # บนดิสก์ และ ShortTermMemory ที่ถูกสรุปกลับเข้า prompt ทุก step ล้วนไม่จำเป็น
+                    # ต้องรู้ค่าจริง (ค่าจริงอยู่ใน messages ของเทิร์นนี้อยู่แล้ว) — ปิดบังเฉพาะตอน
+                    # sensitive=True เท่านั้น คำตอบทั่วไป (ชื่อ/ตัวเลข) ยังเห็นได้เหมือนเดิม
+                    logged_result_text = (
+                        "the user answered: [hidden]" if provided and sensitive else result_text
                     )
                     if verbose:
-                        print(f"[request_user_input] {prompt_text!r} -> {result_text}", flush=True)
+                        print(f"[request_user_input] {prompt_text!r} -> {logged_result_text}", flush=True)
                     self.memory.record({
                         "step": steps_taken,
                         "cmd": log_cmd,
                         "label": "",
-                        "result": result_text,
+                        "result": logged_result_text,
                         "success": provided,
                         "tokens": _tokens_dict(usage),
                         "locator_descriptor": None,
                     })
                     await _emit({
                         "kind": "step", "step": steps_taken, "cmd": log_cmd,
-                        "label": "", "result": result_text, "success": provided,
+                        "label": "", "result": logged_result_text, "success": provided,
                         "tokens": _tokens_dict(total_usage),
+                        "llm_calls": llm_turns,
                     })
                     messages = append_tool_result(messages, tool_use_id, result_text)
                     continue
 
                 if tool_name == "finish_task":
+                    finish_task_calls += 1  # W_token_cut W1
                     claimed_success = bool(tool_input.get("success", False))
 
                     # ยังเหลือ step ให้ลอง + เป็น finish_task call จริง (มี tool_use_id ให้
@@ -2122,10 +5515,18 @@ class Orchestrator:
                     if (
                         not claimed_success
                         and tool_use_id
-                        and steps_taken < max_steps - 1
+                        # W_step_budget: เทียบ "รอบที่ใช้ไป" กับงบรอบจริง ไม่ใช่ steps_taken
+                        # (ตัวนับ action ซึ่งน้อยกว่าเสมอ) — เดิมเงื่อนไขนี้ยังเป็นจริงอยู่ตอน
+                        # รอบใกล้หมดแล้ว ทำให้ finish_task(false) ที่ถูกต้องถูกปฏิเสธ แล้วลูปจบ
+                        # เองด้วยข้อความ default ทิ้งคำอธิบายจริงของโมเดลไปเปล่าๆ
+                        and iterations_used < max_steps
                         and premature_false_finish_count < _MAX_PREMATURE_FALSE_FINISH_RETRIES
                     ):
                         premature_false_finish_count += 1
+                        _bump_guard("premature_false_finish")  # W_token_cut W1
+                        # W_step_budget: เก็บคำอธิบายของโมเดลไว้ เผื่อสุดท้ายลูปจบเพราะหมดรอบ
+                        # จริงๆ — ดีกว่ารายงานแค่ "ครบ max_steps โดยยังไม่จบ task" ลอยๆ
+                        last_rejected_finish_message = str(tool_input.get("message", "")).strip()
                         if verbose:
                             print(
                                 f"[finish_task(false) ไม่ยอมรับ {premature_false_finish_count}/"
@@ -2138,9 +5539,10 @@ class Orchestrator:
                         # 2. ฉีด User Prompt ซ้ำเข้าไปท้ายบทสนทนา (ช่วยดึงสติโมเดลขนาดเล็กอย่าง Llama ได้ดีมาก)
                         messages.append(_build_nudge_message(
                             resolved_provider,
-                            f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(false) รอบล่าสุดถูกปฏิเสธอย่างสิ้นเชิง! "
-                            f"ตรวจพบว่าเป้าหมาย '{goal}' ยังไม่สมบูรณ์ และหน้าเว็บยังมี Elements เหลืออยู่ "
-                            f"ห้ามกดยอมแพ้จนกว่าจะลองพยายาม Action กับส่วนที่เหลือ ดูลิสต์ใหม่อีกครั้งแล้วทำต่อ!",
+                            f"⚠️ [Important system command]: your latest finish_task(false) was "
+                            f"rejected outright! The goal '{goal}' is not complete and the page "
+                            "still has elements left. Do not give up until you have tried acting "
+                            "on what remains — look at the list again and continue!",
                         ))
                         continue
 
@@ -2155,6 +5557,7 @@ class Orchestrator:
                         and premature_true_finish_count < _MAX_PREMATURE_TRUE_FINISH_RETRIES
                     ):
                         premature_true_finish_count += 1
+                        _bump_guard("premature_true_finish")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[finish_task(true) ไม่ยอมรับทันที {premature_true_finish_count}/"
@@ -2164,9 +5567,10 @@ class Orchestrator:
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_TRUE_FINISH_NUDGE)
                         messages.append(_build_nudge_message(
                             resolved_provider,
-                            f"⚠️ [ระบบคำสั่งสำคัญ]: การเรียก finish_task(true) โดยยังไม่ทำ action ใดๆ เลย "
-                            f"ต้องมีหลักฐานชัดเจนจาก indexed elements ปัจจุบันว่าเป้าหมาย '{goal}' สำเร็จแล้ว "
-                            f"จริงๆ ก่อนยืนยันอีกครั้ง",
+                            f"⚠️ [Important system command]: calling finish_task(true) without "
+                            "having performed any action requires clear evidence from the "
+                            f"current indexed elements that the goal '{goal}' really is "
+                            "complete, before you confirm again.",
                         ))
                         continue
 
@@ -2183,6 +5587,7 @@ class Orchestrator:
                         and premature_all_failed_count < _MAX_PREMATURE_ALL_FAILED_RETRIES
                     ):
                         premature_all_failed_count += 1
+                        _bump_guard("premature_all_failed")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[finish_task(true) ไม่มี mutating action ไหนสำเร็จเลย "
@@ -2193,7 +5598,7 @@ class Orchestrator:
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_ALL_FAILED_NUDGE)
                         messages.append(_build_nudge_message(
                             resolved_provider,
-                            f"⚠️ [ระบบคำสั่งสำคัญ]: {_PREMATURE_ALL_FAILED_NUDGE}",
+                            f"⚠️ [Important system command]: {_PREMATURE_ALL_FAILED_NUDGE}",
                         ))
                         continue
 
@@ -2216,6 +5621,7 @@ class Orchestrator:
                             print(f"[finish_task(true) พบ fatal validation error — ข้าม retry] {fatal_text}", flush=True)
                         completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
                         claimed_success = False
+                        retry_value_field_labels = list(agent_filled_field_labels)
                         tool_input["message"] = (
                             "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
                             f"ของระบบ: {fatal_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
@@ -2226,6 +5632,7 @@ class Orchestrator:
                         and premature_validation_error_count < _MAX_PREMATURE_VALIDATION_ERROR_RETRIES
                     ):
                         premature_validation_error_count += 1
+                        _bump_guard("validation_error")  # W_token_cut W1
                         errors_text = "; ".join(detected_errors)
                         if verbose:
                             print(
@@ -2235,7 +5642,7 @@ class Orchestrator:
                             )
                         nudge_text = _PREMATURE_VALIDATION_ERROR_NUDGE_TEMPLATE.format(errors=errors_text)
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
-                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
                         continue
                     elif detected_errors:
                         # retry ครบโควตาแล้วยังเจอ error ค้างอยู่ — ปล่อยผ่านไปตามที่โมเดล
@@ -2258,12 +5665,67 @@ class Orchestrator:
                         and (_is_deletion_intent_goal(goal) or _is_edit_all_intent_goal(goal))
                     ):
                         remaining_records = await _scan_remaining_target_records(page)
+
+                    # W_delete_all_intent: guard สองชั้นที่ _scan_remaining_target_records()
+                    # เดิมจับไม่ได้ ทั้งคู่เจอจริงใน run ที่ claim สำเร็จผิดๆ เมื่อ 2026-08-26
+                    #
+                    # (1) ไม่เคยกด Search เลย — ตัวเลข "(N) Records Found" ที่ guard เดิมอ่าน
+                    #     จึงเป็นของตารางที่ยังไม่ถูกกรอง ไม่มีความหมายกับเงื่อนไขของ goal เลย
+                    # (2) finish_task ถูกเรียกบนหน้าที่ไม่มีตารางแล้ว (run จริงเผลอคลิกลิงก์
+                    #     footer "OrangeHRM, Inc" ก่อนจบ) — guard เดิมคืน None = "เช็คไม่ได้"
+                    #     แล้วปล่อยผ่านเงียบๆ ซึ่งสำหรับงาน "ลบทั้งหมด" คือการยอมรับคำกล่าวอ้าง
+                    #     ที่ไม่มีหลักฐานรองรับเลยสักชิ้น ต่างจาก goal ทั่วไปตรงที่ความเสียหาย
+                    #     ของการเชื่อผิดคือข้อมูลที่ยังไม่ถูกลบจริง แต่ user เข้าใจว่าลบแล้ว
+                    if claimed_success and tool_use_id and delete_all_condition_values:
+                        condition_text = " + ".join(repr(v) for v in delete_all_condition_values)
+                        row_match = (
+                            None if remaining_records is not None
+                            else await _count_rows_matching_condition(page, delete_all_condition_pairs)
+                        )
+                        blocking_nudge = None
+                        if filter_changed_without_search:
+                            blocking_nudge = _DELETE_ALL_NO_SEARCH_NUDGE
+                        elif remaining_records is None and row_match is None:
+                            blocking_nudge = _DELETE_ALL_UNVERIFIED_NUDGE_TEMPLATE.format(
+                                condition=condition_text,
+                            )
+                        if (
+                            blocking_nudge
+                            and premature_delete_all_unverified_count < _MAX_DELETE_ALL_UNVERIFIED_RETRIES
+                        ):
+                            premature_delete_all_unverified_count += 1
+                            _bump_guard("delete_all_unverified")  # W_token_cut W1
+                            if verbose:
+                                print(
+                                    f"[ลบทั้งหมดยังพิสูจน์ไม่ได้ "
+                                    f"{premature_delete_all_unverified_count}/"
+                                    f"{_MAX_DELETE_ALL_UNVERIFIED_RETRIES}] {blocking_nudge[:80]}",
+                                    flush=True,
+                                )
+                            messages = append_tool_result(messages, tool_use_id, blocking_nudge)
+                            messages.append(_build_nudge_message(
+                                resolved_provider, f"⚠️ [Important system command]: {blocking_nudge}",
+                            ))
+                            continue
+
+                        # W_delete_all_intent: ถ้าหน้านี้ไม่มี "(N) Records Found" (เว็บส่วนใหญ่
+                        # ในโลกไม่มี — ดู _RECORD_COUNT_SELECTOR) แต่มีตารางจริงอยู่ ให้นับแถวที่
+                        # ยังตรงเงื่อนไขเองแบบ generic แล้วป้อนเข้า guard เดิมด้านล่างตามปกติ
+                        # (ใช้ทางเดิมทั้งหมด: nudge, โควตา, และการเขียนทับ claimed_success)
+                        if remaining_records is None:
+                            if row_match is not None and row_match[0] > 0:
+                                remaining_records = (
+                                    row_match[0],
+                                    f"{row_match[0]} of the {row_match[1]} rows on this page still "
+                                    f"match {condition_text}",
+                                )
                     if (
                         remaining_records is not None
                         and remaining_records[0] > 0
                         and premature_deletion_incomplete_count < _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES
                     ):
                         premature_deletion_incomplete_count += 1
+                        _bump_guard("deletion_incomplete")  # W_token_cut W1
                         remaining_count, remaining_text = remaining_records
                         if verbose:
                             print(
@@ -2277,8 +5739,55 @@ class Orchestrator:
                             action_hint=_premature_mutation_action_hint(goal),
                         )
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
-                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
                         continue
+                    # W_empty_table_needs_right_filter: ตารางว่างเป็นหลักฐานความสำเร็จได้ก็
+                    # ต่อเมื่อตัวกรองบนหน้าคือตัวที่ goal สั่งจริง — ไม่งั้น "ว่างเพราะกรองผิด"
+                    # จะถูกนับเป็น "ว่างเพราะลบครบ" (ดูเหตุผลเต็มที่จุดประกาศ helper)
+                    if (
+                        claimed_success
+                        and tool_use_id
+                        and delete_all_condition_pairs
+                        and remaining_records is not None
+                        and remaining_records[0] == 0
+                        and premature_deletion_incomplete_count
+                        < _MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES
+                    ):
+                        filter_ok = _page_filter_matches_goal(elements, delete_all_condition_pairs)
+                        extra_filters = _extra_filters_set_on_page(
+                            elements, delete_all_condition_pairs,
+                        )
+                        problem = ""
+                        if filter_ok is False:
+                            problem = "the filter on screen is not set to what the goal asked for"
+                        elif extra_filters:
+                            problem = (
+                                "an extra filter the goal never mentioned is still narrowing the "
+                                f"table ({', '.join(repr(f) for f in extra_filters)})"
+                            )
+                        if problem:
+                            premature_deletion_incomplete_count += 1
+                            _bump_guard("empty_table_wrong_filter")  # W_token_cut W1
+                            nudge_text = _EMPTY_TABLE_WRONG_FILTER_NUDGE_TEMPLATE.format(
+                                problem=problem,
+                                condition=" + ".join(
+                                    f"{f}={v}" for f, v in delete_all_condition_pairs
+                                ),
+                            )
+                            if verbose:
+                                print(
+                                    f"[ตารางว่างแต่ตัวกรองไม่ตรง "
+                                    f"{premature_deletion_incomplete_count}/"
+                                    f"{_MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES}] {problem}",
+                                    flush=True,
+                                )
+                            messages = append_tool_result(messages, tool_use_id, nudge_text)
+                            messages.append(_build_nudge_message(
+                                resolved_provider,
+                                f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                            ))
+                            continue
+
                     if remaining_records is not None and remaining_records[0] > 0:
                         # retry ครบโควตาแล้วยังลบ/แก้ไขไม่ครบจริง — ต่างจาก validation-error
                         # guard ด้านบนที่ปล่อยผ่านตามคำยืนยันของโมเดล (error message ตีความได้
@@ -2307,6 +5816,38 @@ class Orchestrator:
                                 f"แก้ไขอีกครั้งหรือดำเนินการต่อด้วยตนเอง"
                             )
 
+                    # W_count_answer_check: คำตอบของ goal เชิงนับต้องมีตัวเลขที่โค้ดนับไว้
+                    # อยู่จริง — ดู docstring ของ _MAX_COUNT_ANSWER_MISMATCH_RETRIES ด้านบนสุด
+                    # ของไฟล์สำหรับเงื่อนไขทั้ง 3 ข้อที่ต้องครบพร้อมกันก่อนจะยิง
+                    if (
+                        claimed_success and tool_use_id and system_counted
+                        and _goal_asks_for_a_count(goal)
+                        and premature_count_answer_mismatch_count < _MAX_COUNT_ANSWER_MISMATCH_RETRIES
+                    ):
+                        contradicted = _count_answer_contradiction(
+                            goal, str(tool_input.get("message") or ""), system_counted,
+                        )
+                        if contradicted is not None:
+                            premature_count_answer_mismatch_count += 1
+                            _bump_guard("count_answer_mismatch")  # W_token_cut W1
+                            value, count = contradicted
+                            if verbose:
+                                print(
+                                    f"[คำตอบขัดกับตัวเลขที่โค้ดนับ "
+                                    f"{premature_count_answer_mismatch_count}/"
+                                    f"{_MAX_COUNT_ANSWER_MISMATCH_RETRIES}] "
+                                    f"{value!r} นับได้ {count} แต่ไม่มีในคำตอบ",
+                                    flush=True,
+                                )
+                            nudge_text = _COUNT_ANSWER_MISMATCH_NUDGE_TEMPLATE.format(
+                                count=count, value=value,
+                            )
+                            messages = append_tool_result(messages, tool_use_id, nudge_text)
+                            messages.append(_build_nudge_message(
+                                resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                            ))
+                            continue
+
                     # W63[7.2] ("Strict Table Assertion & Truth Reporting"): เช็คเฉพาะตอนที่
                     # LLM ระบุ verify_text มาเอง (ดู llm.py::_FINISH_TASK_PARAMS) — อ่าน DOM
                     # จริงของ table body ก่อนยอมรับว่ารายการที่สร้าง/บันทึกไปโผล่ในตารางจริง
@@ -2314,26 +5855,63 @@ class Orchestrator:
                     # guard ด้านบน)
                     verify_text = str(tool_input.get("verify_text") or "").strip()
                     table_item_found = True
-                    if claimed_success and tool_use_id and verify_text:
-                        table_item_found = await _scan_created_item_in_table(page, verify_text)
+                    if (
+                        claimed_success and tool_use_id and verify_text
+                        and (goal_wants_a_record_change or wrote_a_value_this_task)
+                    ):
+                        # W_verify_text_on_delete_goal (บั๊กจริง live stability check 2026-08-31):
+                        # verify_text ถูกออกแบบมาสำหรับงาน *สร้าง* รายการ ("ชื่อที่เพิ่งสร้างต้อง
+                        # โผล่ในตารางจริง") — SYSTEM_PROMPT (W63[7.2]) ก็สั่งไว้ตรงตัวว่างานลบให้
+                        # เว้นว่าง แต่โมเดลส่ง verify_text="No Records Found" มาบนงานลบ แล้ว guard
+                        # ก็ไล่หาข้อความนั้นเป็น *แถวหนึ่งในตาราง* ตามหน้าที่ ไม่เจอ (มันเป็น
+                        # ข้อความสถานะ ไม่ใช่แถว) จึงพลิกงานที่สำเร็จจริงให้กลายเป็น
+                        # VERIFICATION_FAILED — ตารางว่างเปล่าคือ *หลักฐานว่าสำเร็จ* ของงานลบ
+                        # ไม่ใช่หลักฐานว่าล้มเหลว
+                        #
+                        # สองชั้น ชั้นแรกตรงตามสัญญาที่ prompt เขียนไว้แล้ว ชั้นสองกันเคสทั่วไป
+                        # (โมเดลส่งวลี "ไม่มีผลลัพธ์" มาบน goal ชนิดอื่น) ใช้ชุดคำเดิม
+                        # _RECORD_COUNT_ZERO_TEXTS ไม่สร้างชุดใหม่
+                        verify_text_is_zero_phrase = any(
+                            zero_text in verify_text.lower()
+                            for zero_text in _RECORD_COUNT_ZERO_TEXTS
+                        )
+                        if goal_is_deletion_only or verify_text_is_zero_phrase:
+                            if verbose:
+                                print(
+                                    f"[verify_text] ข้ามการหาแถวในตาราง ({verify_text!r}) — "
+                                    "งานลบใช้ 'ตารางว่าง' เป็นหลักฐานความสำเร็จ ไม่ใช่ความล้มเหลว",
+                                    flush=True,
+                                )
+                        else:
+                            table_item_found = await _scan_created_item_in_table(page, verify_text)
                     if (
                         not table_item_found
                         and premature_table_verify_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES
                     ):
-                        premature_table_verify_count += 1
-                        if verbose:
-                            print(
-                                f"[finish_task(true) ไม่พบ verify_text ในตาราง "
-                                f"{premature_table_verify_count}/"
-                                f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] {verify_text}",
-                                flush=True,
-                            )
-                        nudge_text = _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE.format(text=verify_text)
-                        if any_toast_confirmed_this_task:
-                            nudge_text += _TOAST_CONFIRMED_NO_RECREATE_SUFFIX
-                        messages = append_tool_result(messages, tool_use_id, nudge_text)
-                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
-                        continue
+                        if "table_verify" in finish_reject_reasons_seen:
+                            # W_token_cut W3: เคยตีกลับ finish ด้วยเหตุผลนี้แล้ว 1 ครั้ง —
+                            # ไม่เสียเทิร์นเตือนซ้ำ ตกไปเส้นทาง "ยอมรับพร้อม tag ความจริง"
+                            # ด้านล่าง (EXECUTION_FAILED_NEEDS_REPAIR / OK_SAVE_CONFIRMED...)
+                            finish_loop_prevented += 1
+                            if verbose:
+                                print("[W3] finish_task(table_verify) collapse — ไม่เตือนซ้ำ", flush=True)
+                        else:
+                            premature_table_verify_count += 1
+                            finish_reject_reasons_seen.add("table_verify")
+                            _bump_guard("table_verify")  # W_token_cut W1
+                            if verbose:
+                                print(
+                                    f"[finish_task(true) ไม่พบ verify_text ในตาราง "
+                                    f"{premature_table_verify_count}/"
+                                    f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] {verify_text}",
+                                    flush=True,
+                                )
+                            nudge_text = _PREMATURE_TABLE_VERIFY_NUDGE_TEMPLATE.format(text=verify_text)
+                            if any_toast_confirmed_this_task:
+                                nudge_text += _TOAST_CONFIRMED_NO_RECREATE_SUFFIX
+                            messages = append_tool_result(messages, tool_use_id, nudge_text)
+                            messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
+                            continue
                     if not table_item_found and any_toast_confirmed_this_task:
                         # W64[7.2]: มีหลักฐาน toast ยืนยันสำเร็จจริงมาก่อนหน้านี้ใน task
                         # เดียวกัน — ต่างจาก branch ด้านล่าง (ไม่มีหลักฐานอะไรเลยนอกจากคำยืนยัน
@@ -2374,12 +5952,16 @@ class Orchestrator:
                 # แก้เส้นทางที่ผิด, หรือ multi-hop กว่าจะถึงฟอร์ม login จริง) ห้ามดักเช็ค
                 # สถานะฟอร์มของหน้าปัจจุบันจนบล็อก goto ไม่ให้ออกจากหน้านั้นได้เลย —
                 # ปล่อยผ่านทันทีเสมอไม่ว่า password จะว่างอยู่หรือไม่ ***
+                # W_secret_fill_is_a_fill: fill_secret คือ *วิธีเดียว* ที่ระบบเปิดให้กรอก
+                # ช่องรหัสผ่านด้วยค่าที่เก็บไว้ การไม่มีชื่อมันอยู่ในรายการนี้แปลว่า guard ที่
+                # ตั้งใจบังคับ "กรอกรหัสผ่านให้ครบก่อน" กลับไปปฏิเสธการกรอกรหัสผ่านเสียเอง
                 if (
-                    tool_input.get("type") not in ("fill", "goto")
-                    and await _login_form_needs_password(page)
+                    tool_input.get("type") not in ("fill", "fill_secret", "goto")
+                    and await _login_form_needs_password_cached()
                 ):
                     if premature_login_skip_count < _MAX_PREMATURE_LOGIN_SKIP_RETRIES:
                         premature_login_skip_count += 1
+                        _bump_guard("login_skip")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[login-form ยังไม่ครบ {premature_login_skip_count}/"
@@ -2387,16 +5969,156 @@ class Orchestrator:
                                 flush=True,
                             )
                         messages = append_tool_result(messages, tool_use_id, _PREMATURE_LOGIN_SKIP_NUDGE)
-                        messages.append(_build_nudge_message(
-                            resolved_provider,
-                            "⚠️ [ระบบคำสั่งสำคัญ]: หน้านี้ยังมีช่อง Password ที่ว่างอยู่ "
-                            "ห้ามข้ามไปทำ action อื่น (รวมถึง wait) จนกว่าจะกรอก Username "
-                            "และ Password ให้ครบก่อน ดู indexed elements แล้วเลือก fill "
-                            "ช่องที่ยังว่างอยู่ทันที",
-                        ))
+                        # W_token_cut W3: ครั้งแรกของเหตุผลนี้เท่านั้นที่แนบ user-turn nudge
+                        # เสริม (~500 tok) — ครั้งซ้ำ tool_result อย่างเดียวพอ ไม่ทบ history
+                        if _first_guard_hit("login_skip"):
+                            messages.append(_build_nudge_message(
+                                resolved_provider,
+                                "⚠️ [Important system command]: this page still has an empty "
+                                "Password field. Do not move on to any other action (including "
+                                "wait) until both Username and Password are filled in. Look at "
+                                "the indexed elements and fill the empty field right now.",
+                            ))
                         continue
                     # เกินโควตาเตือนแล้วยังไม่ยอมกรอก ปล่อยผ่านไปตามที่โมเดลเลือกแทนที่จะ
                     # ค้างไม่รู้จบ (เหมือน escape valve ของ premature-false-finish guard)
+
+
+                # W_fill_secret_hardening (ดู comment เหนือ _PASSWORD_CHANGE_INTENT_KEYWORDS
+                # สำหรับบั๊กจริงที่แก้): ปฏิเสธ fill_secret ก่อน dispatch เสมอ ถ้าไม่มีสัญญาณว่านี่
+                # คือ change-password context จริง — ไม่มี escape valve แบบ "เกินโควตาแล้วปล่อย
+                # ผ่าน" เหมือน guard อื่นในไฟล์นี้ เพราะปล่อยผ่านแปลว่าพิมพ์รหัสผ่านจริงลง element
+                # ที่ไม่รู้ว่าคืออะไร — โควตาที่นี่จึงใช้ "บังคับ recovery action" แทน (กลไก
+                # _force_loop_recovery ตัวเดียวกับ loop-detection ด้านล่าง ไม่ใช่กลไกใหม่)
+                # W_fill_secret_schema_gate: ใช้ค่าที่คำนวณไว้แล้วก่อนเรียก LLM (ดูจุดนั้น) —
+                # guard นี้ยังต้องอยู่แม้ schema จะตัด fill_secret ออกไปแล้ว เพราะ (1) provider
+                # อาจ "หลุด" ส่ง type ที่ไม่มีใน enum มาได้อยู่ดี (model compliance ไม่การันตี
+                # — เหตุผลเดียวกับที่ไฟล์นี้มี guard เกือบทุกตัว) และ (2) fastpath/แผนที่บันทึก
+                # ไว้ก่อนหน้าอาจ replay action นี้เข้ามาโดยไม่ผ่าน tool schema เลย
+                if tool_input.get("type") == "fill_secret" and not allow_fill_secret:
+                    consecutive_fill_secret_context_reject_count += 1
+                    _bump_guard("fill_secret_context")  # W_token_cut W1
+                    if verbose:
+                        print(
+                            f"[fill-secret-context {consecutive_fill_secret_context_reject_count}/"
+                            f"{_MAX_FILL_SECRET_CONTEXT_REJECT_RETRIES}] ปฏิเสธ (ไม่ใช่ change-password context) action={tool_input}",
+                            flush=True,
+                        )
+                    if consecutive_fill_secret_context_reject_count > _MAX_FILL_SECRET_CONTEXT_REJECT_RETRIES:
+                        loop_reason = (
+                            f"fill_secret was rejected {consecutive_fill_secret_context_reject_count} times in "
+                            "a row because there is still no genuine change-password context (the goal/plan "
+                            "doesn't ask for one, and this page doesn't look like a Change Password form)"
+                        )
+                        # W_state_guard_shortcut: ก่อน fallback ไป go_back/scroll ทั่วไป (ซึ่งไม่
+                        # เคยพาไปใกล้ goal เลย) ลองหา element ที่ตรงกับ goal จริงๆ ด้วย heuristic
+                        # เดียวกับที่ใช้สร้าง nudge text — เจอแล้วสั่ง click ตรงนั้นแทนเลย
+                        # (ปลอดภัยกว่า fill_secret มาก เพราะ click ไม่มีทางเขียน credential ผิดที่)
+                        recovery_target = _fill_secret_recovery_target(elements, tool_input, goal)
+                        forced_click_cmd = (
+                            {"type": "click", "index": recovery_target["index"]}
+                            if recovery_target is not None
+                            else None
+                        )
+                        if await _force_loop_recovery(
+                            loop_reason, forced_cmd=forced_click_cmd, forced_target=recovery_target,
+                        ):
+                            consecutive_fill_secret_context_reject_count = 0
+                            if verbose:
+                                print(f"[fill-secret-context] {loop_reason} -> forcing recovery action instead", flush=True)
+                            continue
+                        success = False
+                        final_message = f"Stopping task: {loop_reason} (a recovery action was forced but the loop persisted)"
+                        if verbose:
+                            print(f"[fill-secret-context] {final_message}", flush=True)
+                        break
+                    context_nudge_text = _FILL_SECRET_NOT_PASSWORD_CONTEXT_NUDGE + _fill_secret_context_hint(
+                        elements, tool_input, goal,
+                    )
+                    messages = append_tool_result(messages, tool_use_id, context_nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider,
+                        f"⚠️ [Important system command]: {context_nudge_text}",
+                    ))
+                    continue
+                consecutive_fill_secret_context_reject_count = 0
+
+                # W_secret_refilled_forever: ช่องที่ fill_secret เล็งอยู่ถูกกรอกไปแล้ว การกรอกซ้ำ
+                # จึงไม่ใช่ความคืบหน้า — ปฏิเสธแล้วชี้ index ของช่องที่ยังว่างอยู่จริงให้
+                if tool_input.get("type") == "fill_secret":
+                    _pw_states = await _password_field_states(page)
+                    _target_index = str(tool_input.get("index"))
+                    _already_filled = any(
+                        str(st.get("index")) == _target_index and st.get("filled")
+                        for st in _pw_states
+                    )
+                    _still_empty = [
+                        st for st in _pw_states if not st.get("filled") and st.get("index")
+                    ]
+                    if (
+                        _already_filled
+                        and _still_empty
+                        and secret_refill_reject_count < _MAX_SECRET_REFILL_RETRIES
+                    ):
+                        secret_refill_reject_count += 1
+                        _bump_guard("secret_refill")  # W_token_cut W1
+                        _empty_desc = ", ".join(
+                            f"[{st['index']}] {_label_for_index(elements, st['index'])}"
+                            for st in _still_empty
+                        )
+                        _refill_nudge = (
+                            f"[Rejected] The Current Password field (index {_target_index}) is "
+                            "ALREADY filled — the system typed the saved password into it and it "
+                            "worked. Filling it again changes nothing and wastes a step. The "
+                            "password fields still EMPTY right now are: "
+                            f"{_empty_desc}. Put the new password into those with a normal "
+                            "'fill' action (fill_secret only ever works on Current Password), "
+                            "then submit the form."
+                        )
+                        if verbose:
+                            print(
+                                f"[secret-refill {secret_refill_reject_count}/"
+                                f"{_MAX_SECRET_REFILL_RETRIES}] ปฏิเสธ กรอกซ้ำช่องที่เต็มแล้ว "
+                                f"— ช่องที่ยังว่าง: {_empty_desc}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _refill_nudge)
+                        continue
+
+                # W_click_submits_with_empty_password_fields: กดส่งฟอร์มทั้งที่ช่องรหัสผ่าน
+                # ในฟอร์มเดียวกันยังว่าง = ล้ม validation แน่นอน แล้วบดบัง error จริงที่ต้องแก้
+                if tool_input.get("type") == "click":
+                    _pw_problem = await state_filter.password_form_submit_problem(
+                        page, tool_input.get("index"),
+                    )
+                    _empty_pw = (_pw_problem or {}).get("indexes") or []
+                    if _pw_problem and empty_password_submit_count < _MAX_EMPTY_PASSWORD_SUBMIT_RETRIES:
+                        empty_password_submit_count += 1
+                        _bump_guard("empty_password_submit")  # W_token_cut W1
+                        _empty_pw_desc = ", ".join(
+                            f"[{idx}] {_label_for_index(elements, idx)}" for idx in _empty_pw
+                        )
+                        _empty_pw_nudge = (
+                            "[Rejected] This button submits a form whose password field(s) are "
+                            f"still empty: {_empty_pw_desc}. Submitting now fails validation "
+                            "and hides the real problem. Fill every one of those fields first, "
+                            "then submit."
+                        ) if _pw_problem.get("kind") == "empty" else (
+                            "[Rejected] The new-password fields on this form do not hold the "
+                            f"same value: {_empty_pw_desc}. Submitting now fails with "
+                            "'Passwords do not match'. Type the SAME new password into every "
+                            "one of them — including the confirmation field, which may still "
+                            "hold a value you typed earlier — then submit."
+                        )
+                        if verbose:
+                            print(
+                                f"[empty-password-submit {empty_password_submit_count}/"
+                                f"{_MAX_EMPTY_PASSWORD_SUBMIT_RETRIES}] ปฏิเสธ กดส่งฟอร์มทั้งที่"
+                                f"ช่องรหัสผ่านยังว่าง: {_empty_pw_desc}",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, _empty_pw_nudge)
+                        continue
 
                 # loop-detection: action เดิมเป๊ะๆ ติดกันกี่ครั้งแล้ว (นับรวมทั้ง success/fail
                 # เพราะแม้ execute() สำเร็จทุกครั้ง แต่ถ้า LLM สั่งซ้ำเดิมไม่เปลี่ยน ก็ไม่ใช่
@@ -2427,10 +6149,36 @@ class Orchestrator:
                     last_action_cmd = normalized_tool_input
                     consecutive_repeat_count = 1
 
+                # W_same_label_loop (ดู docstring ของ _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS
+                # ด้านบนสุดของไฟล์): นับซ้ำอีกชั้นด้วย (type, label) แทน (type, index) —
+                # จับเคสที่ agent วนทำ "ของชนิดเดียวกันคนละแถว" ไปเรื่อยๆ ซึ่ง guard คาบ 1
+                # ด้านบนมองไม่เห็นเลยเพราะ index ต่างกันทุกครั้ง ข้ามไปถ้าไม่มี label ให้เทียบ
+                # (ตัดสินไม่ได้ ปลอดภัยกว่าปล่อย) หรือเป็น bulk-safe repeat แบบเดียวกับด้านบน
+                # หา label เองตรงนี้ ไม่รอ action_label ที่คำนวณทีหลัง (อยู่หลัง guard นี้ในลูป
+                # — ย้ายขึ้นมาจะไปสลับลำดับ guard อื่นที่พึ่งตำแหน่งเดิม) ใช้ snapshot ชุดเดียวกัน
+                _same_label_index = tool_input.get("index")
+                _same_label_text = next(
+                    (e["label"] for e in elements if e["index"] == _same_label_index), ""
+                ) if _same_label_index is not None else ""
+                # W_label_marker_key: เทียบด้วย "ตัวตน" ของ element ไม่ใช่ label ดิบ —
+                # ดูเหตุผลเต็มที่จุดประกาศ _label_without_markers()
+                _same_label_identity = _label_without_markers(_same_label_text)
+                same_label_key = (
+                    (tool_input.get("type"), _same_label_identity) if _same_label_identity else None
+                )
+                if same_label_key is None or is_bulk_safe_repeat:
+                    last_same_label_key = None
+                    consecutive_same_label_count = 0
+                elif same_label_key == last_same_label_key:
+                    consecutive_same_label_count += 1
+                else:
+                    last_same_label_key = same_label_key
+                    consecutive_same_label_count = 1
+
                 if consecutive_repeat_count >= _MAX_CONSECUTIVE_IDENTICAL_ACTIONS:
                     loop_reason = (
-                        f"agent สั่ง action เดิมซ้ำติดกัน {consecutive_repeat_count} ครั้ง "
-                        f"({tool_input}) โดยไม่มีความคืบหน้า"
+                        f"the agent issued the same action {consecutive_repeat_count} times "
+                        f"in a row ({tool_input}) with no progress"
                     )
                     # W31: บังคับ recovery action แทนการจบ task ทันที ให้โอกาส agent กู้
                     # สถานการณ์เอง (ดู _force_loop_recovery() — คืน False ถ้าเกิน
@@ -2443,6 +6191,23 @@ class Orchestrator:
                     final_message = f"หยุด task: {loop_reason} (บังคับ recovery action ไปแล้วแต่ยังไม่หาย)"
                     if verbose:
                         print(f"[loop-detected] {final_message}", flush=True)
+                    break
+
+                if consecutive_same_label_count >= _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS:
+                    loop_reason = (
+                        f"the agent issued '{tool_input.get('type')}' on an element labelled "
+                        f"{_same_label_text.strip()!r} {consecutive_same_label_count} times in a row "
+                        "(different indexes, same element kind) with no progress toward the goal"
+                    )
+                    if await _force_loop_recovery(loop_reason):
+                        consecutive_same_label_count = 0
+                        if verbose:
+                            print(f"[same-label-loop] {loop_reason} -> บังคับ recovery action แทน", flush=True)
+                        continue
+                    success = False
+                    final_message = f"หยุด task: {loop_reason} (บังคับ recovery action ไปแล้วแต่ยังไม่หาย)"
+                    if verbose:
+                        print(f"[same-label-loop] {final_message}", flush=True)
                     break
 
                 # loop-detection (2026-07-13, generalize 2026-07-15): จับ pattern วนซ้ำ
@@ -2461,7 +6226,7 @@ class Orchestrator:
                 detected_period = _detect_repeating_cycle_period(recent_actions)
                 if detected_period is not None:
                     cycle_desc = " -> ".join(str(a) for a in recent_actions[-detected_period:])
-                    loop_reason = f"agent วน action ซ้ำเป็นคาบ {detected_period} ({cycle_desc}) โดยไม่มีความคืบหน้า"
+                    loop_reason = f"the agent is cycling actions with period {detected_period} ({cycle_desc}) with no progress"
                     if await _force_loop_recovery(loop_reason):
                         if verbose:
                             print(f"[loop-detected] {loop_reason} -> บังคับ recovery action แทน", flush=True)
@@ -2490,6 +6255,19 @@ class Orchestrator:
                 action_tag = next(
                     (e.get("tag", "") for e in elements if e["index"] == action_index), ""
                 ) if action_index is not None else ""
+                # W_index_drift_measure: element ที่ index นี้ยังเป็นตัวเดิมกับตอน snapshot ไหม
+                if action_index is not None and action_label:
+                    _live = await _live_label_at_index(page, action_index)
+                    if _live is None:
+                        index_drift_gone += 1
+                    elif _live and _label_without_markers(action_label) not in _live:
+                        index_drift_changed += 1
+                        if verbose:
+                            print(
+                                f"[index-drift] index {action_index}: snapshot={action_label!r} "
+                                f"-> ตอน dispatch={_live[:40]!r}",
+                                flush=True,
+                            )
                 # W_search follow-up 2: attribute "type" ของ element (เช่น input ที่
                 # type="text"/"search") ส่งคู่กับ tag ให้ execute()/classify_action() แยก
                 # ช่องกรอกข้อความ/ค้นหาธรรมดาออกจาก input ที่แท้จริงอาจเสี่ยง (ดู
@@ -2515,6 +6293,461 @@ class Orchestrator:
                     (e.get("type", "") for e in elements if e["index"] == then_click_index), ""
                 ) if then_click_index is not None else ""
 
+                # W_goal_scope ("Goal Boundary Gate" — ดู docstring เต็มใกล้
+                # _extract_simple_navigation_target/_navigation_target_reached ด้านบน): พอ
+                # goal_scope_satisfied_reason (คำนวณต้น iteration นี้) บอกว่า goal สำเร็จแล้ว
+                # เหลือให้ทำได้แค่ action แบบอ่านอย่างเดียว (_GOAL_SCOPE_ALLOWED_ACTION_TYPES)
+                # อย่างอื่นทั้งหมด (เดินเข้าเมนู/โมดูลอื่น, สร้าง/แก้/ลบข้อมูล) ถูกปฏิเสธที่นี่
+                # ก่อน dispatch เหมือน pre-dispatch guard ตัวอื่นในไฟล์นี้ — มี nudge ให้แค่
+                # 1 ครั้ง (_MAX_PREMATURE_GOAL_SCOPE_RETRIES) แล้ว HARD stop เลย จงใจไม่ทำ
+                # escape valve แบบ "เกินโควตาแล้วปล่อยผ่าน" เหมือน guard อื่น เพราะการปล่อย
+                # action นอก scope ผ่านไปคือ failure mode ที่ guard นี้ถูกสร้างมาแก้พอดี
+                #
+                # edge case ที่รู้อยู่และตั้งใจไม่จัดการ: ถ้าฟอร์ม login โผล่กลับมาหลัง goal ถูก
+                # ตัดสินว่าสำเร็จแล้ว (เช่น session หมดอายุพอดีหลังถึงหน้าเป้าหมาย) guard นี้จะ
+                # บล็อก "fill" ที่ใช้กู้สถานะด้วย — หายากพอที่จะบันทึกไว้เฉยๆ แทนการเขียนเคสพิเศษ
+                if goal_scope_satisfied_reason and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES:
+                    if consecutive_goal_scope_reject_count < _MAX_PREMATURE_GOAL_SCOPE_RETRIES:
+                        consecutive_goal_scope_reject_count += 1
+                        _bump_guard("goal_scope")  # W_token_cut W1
+                        if verbose:
+                            print(
+                                f"[goal-scope {consecutive_goal_scope_reject_count}/"
+                                f"{_MAX_PREMATURE_GOAL_SCOPE_RETRIES}] ปฏิเสธ action นอก scope "
+                                f"({goal_scope_satisfied_reason}): {tool_input}",
+                                flush=True,
+                            )
+                        nudge_text = _GOAL_SCOPE_GATE_NUDGE_TEMPLATE.format(
+                            reason=goal_scope_satisfied_reason, action_type=tool_input.get("type"),
+                        )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                        ))
+                        continue
+                    # W_goal_scope_false_success (บั๊กจริง live run 2026-08-27): เส้นทางนี้
+                    # ตั้ง success=True ตรงๆ แล้ว break — *ไม่ผ่าน finish_task เลย* guard กัน
+                    # false-completion ทั้งชุดของ W_delete_all_intent จึงไม่มีโอกาสได้ตรวจสัก
+                    # ตัว ผลจริง: agent กรอง Role ผิด (ได้ Admin แทน ESS) ไม่ได้ลบอะไรเลย
+                    # แต่ UI ขึ้น Done + success
+                    #
+                    # ใช้หลักฐาน deterministic ชุดเดียวกับที่ guard ของ finish_task ใช้อยู่แล้ว
+                    # (_scan_remaining_target_records) — ถ้า goal ระบุเงื่อนไขไว้ชัดและยังอ่าน
+                    # ได้ว่าเหลือแถวตรงเงื่อนไข ห้ามอ้างว่าสำเร็จ ให้รายงานตามความจริงแทน
+                    # fail-safe: อ่านไม่ได้/หน้านี้ไม่ใช่หน้าตาราง คืน None = ไม่มีหลักฐานขัดแย้ง
+                    # ก็คงพฤติกรรมเดิมทุกประการ
+                    success = True
+                    final_message = _GOAL_SCOPE_GATE_HARD_STOP_MESSAGE_TEMPLATE.format(
+                        reason=goal_scope_satisfied_reason,
+                    )
+                    if delete_all_condition_values:
+                        # W_empty_table_needs_right_filter: เช็คตัวกรองก่อนตัวนับแถว — ถ้ากรอง
+                        # ผิดอยู่ ตัวเลข 0 ที่อ่านได้ไม่มีความหมายเลยตั้งแต่ต้น ไม่ต้องไปดูมัน
+                        # (elements ตรงนี้เป็น snapshot ของ iteration ปัจจุบันแล้ว — คนละกรณี
+                        # กับจุดที่ตั้ง goal_scope_satisfied_reason ซึ่งเกิดก่อน get_snapshot)
+                        _filter_ok = _page_filter_matches_goal(elements, delete_all_condition_pairs)
+                        _extra_filters = _extra_filters_set_on_page(
+                            elements, delete_all_condition_pairs,
+                        )
+                        if _filter_ok is False or _extra_filters:
+                            success = False
+                            final_message = (
+                                "Stopping task without completing it: the table looks empty, but "
+                                "that is not evidence the job is done — "
+                                + (
+                                    "the filter on screen is not set to what the goal asked for"
+                                    if _filter_ok is False
+                                    else "an extra filter the goal never mentioned is still "
+                                    f"narrowing it ({', '.join(repr(f) for f in _extra_filters)})"
+                                )
+                                + f". Nothing is being claimed as done for "
+                                f"{delete_all_condition_values!r}."
+                            )
+                            if verbose:
+                                print(f"[goal-scope] {final_message}", flush=True)
+                            break
+
+                        remaining = await _scan_remaining_target_records(page)
+                        evidence = None
+                        if remaining is not None and remaining[0] > 0:
+                            evidence = remaining[1]
+                        elif remaining is None:
+                            # W_plan_cursor_not_proof: ข้อความนับของหน้านั้นอาจไม่ใช่รูปแบบที่
+                            # _RECORD_COUNT_PATTERNS รู้จัก (ของจริงที่เจอ: หลังกด Select All
+                            # OrangeHRM เปลี่ยนจาก "(9) Records Found" เป็น "(9) Records
+                            # Selected") — ตกลงมานับแถวจากตารางตรงๆ แทน ซึ่งเป็นหลักฐานที่
+                            # แข็งกว่าข้อความสรุปอยู่แล้ว ใช้ helper ตัวเดียวกับ guard ของ
+                            # finish_task ไม่เขียนตัวนับใหม่
+                            # W_column_headers_fallback: ตรงนี้ใช้ตัดสินว่า "ยังเหลืองานไหม"
+                            # ซึ่งเป็นทิศที่ผิดแล้วอ้างว่าเสร็จ -> ต้องเล็งคอลัมน์ได้จริงเท่านั้น
+                            row_match = await _count_rows_matching_condition(
+                                page, delete_all_condition_pairs, require_columns=True,
+                            )
+                            if row_match is not None and row_match[0] > 0:
+                                evidence = (
+                                    f"{row_match[0]} of {row_match[1]} visible rows still match"
+                                )
+                        if evidence is not None:
+                            success = False
+                            final_message = (
+                                f"Stopping task without completing it: the goal asked to delete "
+                                f"every record matching {delete_all_condition_values!r}, but the "
+                                f"table still reports {evidence!r}. Nothing is being claimed "
+                                "as done — re-check that the filter was applied to the right "
+                                "column and that the rows were actually deleted."
+                            )
+                            if verbose:
+                                print(f"[goal-scope] ปฏิเสธการอ้างสำเร็จ: {final_message}", flush=True)
+                    if verbose:
+                        print(f"[goal-scope] {final_message}", flush=True)
+                    break
+                elif not goal_scope_satisfied_reason:
+                    consecutive_goal_scope_reject_count = 0
+                # else: goal_scope_satisfied_reason ถูกตั้งแล้วแต่ action นี้อยู่ในชุด read-only ที่
+                # อนุญาต — จงใจ *ไม่* reset counter ตรงนี้ ถ้า reset ทุก allowed action โมเดลจะ
+                # หนี hard-stop ได้ตลอดกาลด้วยการแทรก read_page_data/wait/scroll/hover คั่นระหว่าง
+                # การละเมิดแต่ละครั้ง (guard อื่นในไฟล์นี้ reset ได้ปลอดภัยเพราะไม่มี action
+                # ประเภท "ผ่านฟรี" แบบนี้ให้ใช้)
+
+                # W_no_credential_flow (ดูคอมเมนต์เหนือ _CREDENTIAL_GOAL_KEYWORDS ด้านบน
+                # สำหรับบั๊กจริง): goal ที่ไม่ได้พูดถึงรหัสผ่าน/บัญชีเลย ต้องไม่เข้าหน้า
+                # Change Password เด็ดขาด — hard reject ไม่มีโควตา เพราะเปลี่ยนรหัสของบัญชี
+                # ที่ login อยู่ = ล็อก user ออกจากระบบจริง go_back() กู้ไม่ได้
+                if (
+                    not goal_mentions_credentials
+                    and tool_input.get("type") in ({"click", "goto"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and _action_enters_credential_flow(tool_input, action_label)
+                ):
+                    what = action_label.strip() or str(tool_input.get("url") or tool_input.get("type"))
+                    nudge_text = _NO_CREDENTIAL_FLOW_NUDGE.format(what=what)
+                    if verbose:
+                        print(f"[no-credential-flow] ปฏิเสธ action ที่พาไปหน้าเปลี่ยนรหัสผ่าน: {what!r}", flush=True)
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
+                # W_reject_obscured_click (P8/M3, ดูเหตุผลเต็มที่จุดประกาศค่าคงที่): เป้าที่ถูก
+                # บังอยู่ + มี dialog เปิดค้าง = คลิกไปก็ timeout แน่นอน ไม่ต้องเสียเวลาไปพิสูจน์
+                # อ่าน "มี dialog ไหม" จาก snapshot ที่เพิ่งดึงมาแล้ว (W_dialog_in_snapshot ติด
+                # ป้าย [in open dialog] ให้) ไม่ยิง DOM query เพิ่มต่อ action
+                if (
+                    _OBSCURED_LABEL_MARKER in (action_label or "")
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and obscured_click_reject_count < _MAX_OBSCURED_CLICK_RETRIES
+                ):
+                    dialog_labels = [
+                        str(el.get("label") or "")
+                        for el in (elements or [])
+                        if _DIALOG_LABEL_MARKER in str(el.get("label") or "")
+                    ]
+                    if dialog_labels:
+                        obscured_click_reject_count += 1
+                        _bump_guard("obscured_click")  # W_token_cut W1
+                        nudge_text = _OBSCURED_CLICK_NUDGE_TEMPLATE.format(
+                            label=action_label,
+                            dialog_hint=(
+                                " (the dialog currently shows: "
+                                + ", ".join(repr(l) for l in dialog_labels[:5])
+                                + ")"
+                            ),
+                        )
+                        if verbose:
+                            print(
+                                f"[obscured-click {obscured_click_reject_count}/"
+                                f"{_MAX_OBSCURED_CLICK_RETRIES}] {action_label!r} "
+                                f"ถูก dialog บังอยู่ ({len(dialog_labels)} element ใน dialog)",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                        ))
+                        continue
+
+                # W_prefer_row_delete: เมนูโปรไฟล์/บัญชีของผู้ใช้เองไม่เคยเป็นทางไปสู่งานที่
+                # goal สั่ง (นอกจาก goal จะพูดถึงบัญชีเอง) แถมนำไปสู่ flow logout/เปลี่ยน
+                # รหัสผ่าน — perception ติดป้ายให้แล้ว ใช้ป้ายนั้นตรงๆ ไม่ต้องเดา
+                if (
+                    _PROFILE_MENU_LABEL_MARKER in (action_label or "")
+                    and not goal_is_about_account
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and profile_menu_reject_count < _MAX_PROFILE_MENU_RETRIES
+                ):
+                    profile_menu_reject_count += 1
+                    _bump_guard("profile_menu")  # W_token_cut W1
+                    if verbose:
+                        print(
+                            f"[profile-menu {profile_menu_reject_count}/{_MAX_PROFILE_MENU_RETRIES}] "
+                            f"ปฏิเสธการเปิดเมนูบัญชีบน goal ที่ไม่เกี่ยวกับบัญชี: {action_label!r}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, _PROFILE_MENU_NUDGE)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {_PROFILE_MENU_NUDGE}",
+                    ))
+                    continue
+
+                # W_prefer_row_delete (ดูคอมเมนต์ที่จุดประกาศค่าคงที่): goal สั่งลบล้วนๆ แล้ว
+                # โมเดลจะกด Edit ทั้งที่หน้านี้มีปุ่มลบให้กดอยู่แล้ว = เดินผิดทาง ไม่ใช่ทางผ่าน
+                # ที่จำเป็น — หา element ที่ label บอกว่าเป็นการลบจาก snapshot ปัจจุบันตรงๆ
+                # (ไม่ถาม LLM) ถ้าไม่มีเลยก็ปล่อยผ่านเหมือนเดิม รักษาเคสเว็บที่ต้องลบผ่านหน้า Edit
+                if (
+                    goal_is_deletion_only
+                    and tool_input.get("type") == "click"
+                    and action_label
+                    and _ROW_ACTION_LABEL_RE.search(action_label)
+                    and not _DESTRUCTIVE_LABEL_RE.search(action_label)
+                    and prefer_row_delete_reject_count < _MAX_PREFER_ROW_DELETE_RETRIES
+                ):
+                    delete_label = next(
+                        (
+                            str(el.get("label") or "")
+                            for el in (elements or [])
+                            if _DESTRUCTIVE_LABEL_RE.search(str(el.get("label") or ""))
+                        ),
+                        "",
+                    )
+                    if delete_label:
+                        prefer_row_delete_reject_count += 1
+                        _bump_guard("prefer_row_delete")  # W_token_cut W1
+                        nudge_text = _PREFER_ROW_DELETE_NUDGE_TEMPLATE.format(
+                            label=action_label, delete_label=delete_label,
+                        )
+                        if verbose:
+                            print(
+                                f"[prefer-row-delete {prefer_row_delete_reject_count}/"
+                                f"{_MAX_PREFER_ROW_DELETE_RETRIES}] {action_label!r} "
+                                f"ทั้งที่มี {delete_label!r} ให้กดอยู่แล้ว",
+                                flush=True,
+                            )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                        ))
+                        continue
+
+                # W_goal_values_before_save (บั๊กจริงจาก gate 2026-09-07 task add_candidate):
+                # goal สั่งกรอก First Name / Last Name / Email แล้วบันทึก โมเดลกรอกสองช่องแรก
+                # แล้วกด Save ทันที ฟอร์มตีกลับด้วย "Required" ใต้ช่อง Email แล้วมันกด Save ซ้ำ
+                # อีก 4 ครั้งจนหมด step — ทั้ง task พังเพราะค่าที่ goal บอกไว้ตรงๆ ค่าหนึ่งไม่เคย
+                # ถูกกรอกเลย
+                #
+                # ครอบทั้งการกดปุ่มบันทึกตรงๆ และการพ่วงปุ่มนั้นมากับ fill (then_click_index)
+                # เพราะโมเดลตัวนี้พ่วงปุ่ม submit มากับ fill แทบทุกครั้ง — guard ที่ดูแค่ type
+                # "click" จะไม่เห็นเส้นทางที่ใช้จริงบ่อยที่สุด (บทเรียนเดียวกับ
+                # W_chained_submit_after_check ที่ปิดแค่ทางเดียวแล้วไม่ได้ปิดอะไรเลย)
+                #
+                # โควตา 2 ครั้งตาม pattern ของ guard อื่นในไฟล์นี้: ถ้าเดาผิด (ค่าอยู่ในหน้าที่
+                # อ่านไม่ได้ / เป็นค่าที่ user ยกมาอ้างเฉยๆ ไม่ใช่ค่าที่ต้องกรอก) จะเสียแค่สอง
+                # เทิร์นแล้วปล่อยผ่าน ไม่ใช่บล็อกตายจนงานทำไม่ได้
+                _commits_form = (
+                    tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and _action_commits_a_record_edit(tool_input, action_label)
+                ) or (
+                    tool_input.get("then_click_index") is not None
+                    and bool(_RECORD_COMMIT_LABEL_RE.search(then_label or ""))
+                )
+                if _commits_form and missing_value_rejection_count < _MAX_MISSING_VALUE_REJECTIONS:
+                    _pending = {
+                        v.strip() for v in (tool_input.get("text"), tool_input.get("label"))
+                        if isinstance(v, str) and v.strip()
+                    }
+                    missing_values = await _values_missing_before_commit(
+                        page, goal, values_written_this_task | _pending,
+                    )
+                    if missing_values:
+                        missing_value_rejection_count += 1
+                        nudge_text = _MISSING_GOAL_VALUES_NUDGE.format(
+                            what=(action_label.strip() or str(tool_input.get("type"))),
+                            count=len(missing_values),
+                            values=", ".join(f"'{v}'" for v in missing_values),
+                        )
+                        if verbose:
+                            print(f"[missing-values] ยังไม่ได้กรอก: {missing_values}")
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                        ))
+                        continue
+
+                # W_no_record_edit_for_delete_goal (ดูคอมเมนต์เหนือ _RECORD_COMMIT_LABEL_RE
+                # ด้านบนสำหรับบั๊กจริง): goal ที่สั่ง "ลบ" ล้วนๆ ต้องไม่กดบันทึกฟอร์มแก้ไข
+                # เด็ดขาด — hard reject ไม่มีโควตา เหมือน W_no_create_for_existing_goal/
+                # W_no_credential_flow เพราะเขียนทับ record จริงกู้คืนไม่ได้ ไม่ใช่แค่เสีย step
+                #
+                # goto ไม่อยู่ในชุด type โดยเจตนา (URL ไม่เคย commit ฟอร์ม และ URL ที่มีคำว่า
+                # save เป็นของหน้า Add ซึ่ง W_no_create จับไปแล้ว) ส่วน DEFAULT_NEEDS_CONFIRMATION
+                # ใส่ไว้ครอบ action type "submit" ที่โมเดลอาจเลือกแทน click
+                if (
+                    goal_is_deletion_only
+                    and tool_input.get("type") in ({"click"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and _action_commits_a_record_edit(tool_input, action_label)
+                ):
+                    what = action_label.strip() or str(tool_input.get("type"))
+                    nudge_text = _NO_RECORD_EDIT_NUDGE.format(what=what)
+                    if verbose:
+                        print(f"[no-record-edit] ปฏิเสธการบันทึกฟอร์มแก้ไขบน goal ที่สั่งลบ: {what!r}", flush=True)
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
+                # W_no_create_for_existing_goal (ดู docstring ของ
+                # _goal_targets_existing_records_only ด้านบนสำหรับบั๊กจริง): goal ที่พูดถึง
+                # "ของที่มีอยู่" (ลบ/แก้ทั้งหมด) ต้องไม่แตะ flow สร้างรายการใหม่เด็ดขาด —
+                # ปฏิเสธก่อน dispatch เหมือน pre-dispatch guard ตัวอื่นในไฟล์นี้ ไม่มีโควตา
+                # ปล่อยผ่าน เพราะ "สร้างของใหม่แทนของที่หาไม่เจอ" คือความเสียหายที่กู้คืนยาก
+                # (สร้าง record จริงในระบบจริง) ไม่ใช่แค่เสีย step เปล่า
+                if (
+                    goal_targets_existing_only
+                    and tool_input.get("type") in ({"click", "goto"} | DEFAULT_NEEDS_CONFIRMATION)
+                    and _action_starts_create_flow(tool_input, action_label)
+                ):
+                    what = action_label.strip() or str(tool_input.get("url") or tool_input.get("type"))
+                    nudge_text = _NO_CREATE_NUDGE_TEMPLATE.format(
+                        reason="a delete/edit goal, with no create instruction anywhere in it",
+                        what=what,
+                    )
+                    if verbose:
+                        print(f"[no-create] ปฏิเสธ action ที่พาไปสร้างรายการใหม่: {what!r}", flush=True)
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
+                # W_goal_precheck ("Already-Achieved Pre-check" — โค้ดหนุนกฎ W19 "Log
+                # Cleanliness" ใน SYSTEM_PROMPT ที่สั่งไว้แล้วว่า "ห้ามคลิก element ที่มี marker
+                # [already active] ซ้ำ"): marker นี้ perception.py คำนวณจาก DOM จริง เป็น
+                # deterministic signal อยู่แล้ว — คลิกซ้ำไม่มีผลอะไรแน่นอน (โครงสร้างหน้าเหมือน
+                # เดิมทุกตัวอักษร) ไม่มีเหตุผลจะพึ่ง prompt compliance อย่างเดียวกับสิ่งที่เช็คใน
+                # โค้ดได้ถูกๆ แบบนี้
+                #
+                # บั๊กจริงที่ทำให้ต้องเพิ่ม (live-reproduce บน OrangeHRM กับ provider openai,
+                # goal "login then goto adminmenu"): agent ไปถึงหน้า Admin ตั้งแต่ step 1-2 จริง
+                # (label ขึ้น "Admin [already active]") แต่ยังคลิกซ้ำอีก 5 ครั้งจนหมด max_steps
+                # และระหว่างนั้นเผลอไปกด Edit/Save บนข้อมูลจริงของระบบ — เสีย step ไปเปล่าๆ
+                # และเสี่ยงแก้ข้อมูลที่ goal ไม่ได้สั่งเลย
+                #
+                # มีโควตาเหมือน guard อื่นในไฟล์นี้: เกินแล้วปล่อย dispatch จริงแทนที่จะบล็อก
+                # ต่อไม่รู้จบ (คลิก element ที่ active อยู่แล้วเป็น no-op ปลอดภัยกว่าค้างทั้ง task)
+                if (
+                    tool_input.get("type") == "click"
+                    and "[already active]" in action_label
+                    and consecutive_already_active_skip_count < _MAX_ALREADY_ACTIVE_SKIP_RETRIES
+                ):
+                    consecutive_already_active_skip_count += 1
+                    _bump_guard("already_active_skip")  # W_token_cut W1
+                    if verbose:
+                        print(
+                            f"[already-active {consecutive_already_active_skip_count}/"
+                            f"{_MAX_ALREADY_ACTIVE_SKIP_RETRIES}] ข้ามการคลิกซ้ำ label={action_label!r}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(
+                        messages, tool_use_id,
+                        "[Skipped] This element is already active/selected (marked "
+                        '"[already active]") — clicking it again would have no effect. That '
+                        "part of the goal is ALREADY DONE. Read what is on the page right now: "
+                        "if it satisfies the goal, call finish_task with that as your evidence; "
+                        "otherwise move on to a genuinely different action toward the goal.",
+                    )
+                    continue
+
+                # W_filter_scope_guard: goal ระบุเงื่อนไขไว้ชัดเจนแบบ field=value แล้ว
+                # การไปตั้งค่า filter *ช่องอื่น* ที่ goal ไม่เคยพูดถึงไม่ใช่แค่เสียเวลา —
+                # มันกรองแถวที่ user ต้องการออกจากตารางไปด้วย (บั๊กจริง live run 2026-08-27:
+                # goal บอกแค่ userrole=ess แต่ agent ไปตั้ง Status=Enabled ด้วย ทำให้ ESS ที่
+                # ถูก disable หายไปจากตาราง แล้ว "ลบให้หมด" จะลบไม่ครบโดยที่ทุกฝ่ายเข้าใจว่าครบ)
+                #
+                # ทำได้ deterministic ล้วนๆ เพราะ perception ใส่ชื่อ field เป็น prefix ให้
+                # dropdown trigger อยู่แล้ว ("Status: Enabled") ไม่ต้องถาม LLM ว่าช่องนี้คือช่องอะไร
+                #
+                # ใช้โควตาไม่ใช่บล็อกตาย: บางเว็บบังคับให้ต้องเลือกค่าบางช่องก่อนถึงจะกด Search
+                # ได้จริง ถ้าบล็อกตายจะทำให้เว็บกลุ่มนั้นใช้งานไม่ได้เลย
+                #
+                # W_filter_scope_via_dropdown (live 2026-09-01: agent ตั้ง Status=Enabled ได้
+                # ทั้งที่ goal บอกแค่ userrole=ess — trace: press_key(Status: -- Select --)
+                # แล้วตามด้วย click(Enabled)): ลิสต์ชนิด action เดิมมีแค่ fill/select/click
+                # จึงข้าม press_key ที่เลือกค่าใน dropdown ได้จริง และ check ที่ติ๊ก filter
+                # แบบ checkbox/toggle ได้ — ต้องครอบ *ทุก* ชนิดที่ตั้งค่า filter ได้
+                #
+                # อีกทางที่เคยสงสัยว่าหลุด คือ "กดตัวเลือกในลิสต์" (label เป็นแค่ "Enabled"
+                # ไม่มีชื่อ field นำหน้า guard จึงอ่านไม่ออก) — ตรวจแล้วว่าปิดเองโดยอัตโนมัติ
+                # เมื่อครอบ trigger ครบทุกชนิด: ลิสต์ตัวเลือกจะเปิดขึ้นมาได้ก็ต่อเมื่อ action ที่
+                # เปิดมันผ่าน guard นี้ไปแล้ว ซึ่งแปลว่าช่องนั้นอยู่ในขอบเขต goal หรือโควตาหมด
+                # ไปแล้วทั้งคู่ การไล่ตามหา "ตัวเลือกของ trigger ตัวไหน" จึงเป็นโค้ดที่ยิงไม่ได้จริง
+                touched_field = _filter_field_from_label(
+                    action_label or "", str(tool_input.get("type") or ""),
+                )
+                # W_filter_already_satisfied: ตัวกรองตัวนี้ถือค่าที่ goal ขอไว้อยู่แล้ว การกด
+                # ซ้ำจึงเป็น no-op — เป็นวงวนที่ guard เดิมมองไม่เห็น (ดู scratchpad/บันทึกของ
+                # W_filter_already_satisfied: loop detector เทียบ index ที่เปลี่ยนทุก snapshot
+                # และตัวนับ label ซ้ำตั้งไว้ที่ 4 เพราะ "Select row" ต้องกดซ้ำหลายแถวได้จริง)
+                # อ่านค่าจาก label ที่ perception เติมให้อยู่แล้ว ไม่ต้องถาม LLM และไม่ต้องอ่าน DOM
+                satisfied_pair = None
+                if touched_field and tool_input.get("type") in ("click", "press_key"):
+                    _current_value = _filter_value_from_label(action_label or "")
+                    if _current_value:
+                        satisfied_pair = next(
+                            (
+                                (f, v) for f, v in goal_condition_pairs
+                                if _field_names_match(f, touched_field)
+                                and _cell_matches_value(_current_value, v)
+                            ),
+                            None,
+                        )
+                if satisfied_pair and filter_satisfied_reject_count < _MAX_FILTER_SATISFIED_RETRIES:
+                    filter_satisfied_reject_count += 1
+                    nudge_text = _FILTER_SATISFIED_NUDGE_TEMPLATE.format(
+                        label=action_label,
+                        field=satisfied_pair[0],
+                        value=satisfied_pair[1],
+                        count=filter_satisfied_reject_count,
+                    )
+                    if verbose:
+                        print(
+                            f"[filter ถูกตั้งไว้แล้ว {filter_satisfied_reject_count}/"
+                            f"{_MAX_FILTER_SATISFIED_RETRIES}] label={action_label!r}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
+                if (
+                    goal_filter_fields
+                    and touched_field
+                    and not any(_field_names_match(f, touched_field) for f in goal_filter_fields)
+                    and tool_input.get("type") in (
+                        "fill", "select", "click", "press_key", "check",
+                    )
+                    and filter_scope_reject_count < _MAX_FILTER_SCOPE_RETRIES
+                ):
+                    filter_scope_reject_count += 1
+                    _bump_guard("filter_scope")  # W_token_cut W1
+                    nudge_text = _FILTER_SCOPE_NUDGE_TEMPLATE.format(
+                        label=action_label,
+                        allowed=", ".join(goal_filter_fields),
+                    )
+                    if verbose:
+                        print(
+                            f"[filter นอกขอบเขต {filter_scope_reject_count}/"
+                            f"{_MAX_FILTER_SCOPE_RETRIES}] label={action_label!r} "
+                            f"field={touched_field!r} allowed={goal_filter_fields}",
+                            flush=True,
+                        )
+                    messages = append_tool_result(messages, tool_use_id, nudge_text)
+                    messages.append(_build_nudge_message(
+                        resolved_provider, f"\u26a0\ufe0f [Important system command]: {nudge_text}",
+                    ))
+                    continue
+
                 # W64[7.1] ("Filter Order & False Completion" — ดู docstring เต็มของ
                 # _ROW_ACTION_LABEL_RE ด้านบนสุดของไฟล์): บล็อกการคลิกปุ่ม row-action
                 # (Edit/View/Delete/Download) ทันทีถ้า step ก่อนหน้าคือ fill/select ที่สำเร็จ
@@ -2527,24 +6760,78 @@ class Orchestrator:
                     and action_label
                     and _ROW_ACTION_LABEL_RE.search(action_label)
                 ):
-                    if premature_row_action_before_search_count < _MAX_PREMATURE_TABLE_VERIFY_RETRIES:
+                    if premature_row_action_before_search_count < _MAX_PREMATURE_ROW_ACTION_BEFORE_SEARCH_RETRIES:
                         premature_row_action_before_search_count += 1
+                        _bump_guard("row_action_before_search")  # W_token_cut W1
                         if verbose:
                             print(
                                 f"[row-action ก่อน search {premature_row_action_before_search_count}/"
-                                f"{_MAX_PREMATURE_TABLE_VERIFY_RETRIES}] label={action_label!r} "
+                                f"{_MAX_PREMATURE_ROW_ACTION_BEFORE_SEARCH_RETRIES}] label={action_label!r} "
                                 f"prev_field={last_filter_field_label!r}",
                                 flush=True,
                             )
                         nudge_text = _PREMATURE_ROW_ACTION_BEFORE_SEARCH_NUDGE_TEMPLATE.format(
-                            prev_label=last_filter_field_label or "(ไม่ทราบชื่อ field)", label=action_label,
+                            prev_label=last_filter_field_label or "(field name unknown)", label=action_label,
                         )
                         messages = append_tool_result(messages, tool_use_id, nudge_text)
-                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [ระบบคำสั่งสำคัญ]: {nudge_text}"))
+                        messages.append(_build_nudge_message(resolved_provider, f"⚠️ [Important system command]: {nudge_text}"))
                         filter_dirty_since_search = False
                         continue
                     # เกินโควตาเตือนแล้วยังไม่ยอมกด Search ก่อน ปล่อยผ่านไปตามที่โมเดลเลือก
                     # แทนที่จะค้างไม่รู้จบ (escape valve เดียวกับ guard อื่นในไฟล์นี้)
+
+                # W_delete_all_intent (safety gate สำคัญที่สุดของชุดนี้): ก่อน click ที่ทำลาย
+                # ข้อมูล "ครั้งแรก" ของ goal ลบแบบมีเงื่อนไข ต้องเห็นก่อนว่าตารางที่กำลังจะลบ
+                # ออกมานั้นกรองตรงเงื่อนไขจริงแล้ว — อ่าน DOM ตรงๆ (ไม่ถาม LLM, ไม่เชื่อคำ
+                # อธิบายของมัน) แล้วเทียบกับค่าที่ user เขียนไว้ใน goal เอง
+                #
+                # นี่คือสถานการณ์ที่ W21 เขียนมาป้องกันโดยตรงและเป็นความเสียหายจริงที่เกิดไป
+                # แล้ว 1 ครั้งบนเดโมสาธารณะ: agent ลบแถวจากตารางที่ยังไม่ได้กรอง = ลบข้อมูล
+                # ที่ goal ไม่เคยสั่งให้แตะ ซึ่งกู้คืนไม่ได้ ต่างจาก guard อื่นในไฟล์นี้ที่แค่
+                # เสีย step เปล่า
+                #
+                # เจตนาคือบังคับ "ลำดับ" (ต้องกรองก่อนลบ) ไม่ใช่ "วิธี" — จะลบด้วย Select All
+                # หรือลบทีละแถวก็ได้ทั้งคู่ ตราบใดที่ตารางที่เห็นตรงเงื่อนไขแล้ว
+                if (
+                    delete_all_condition_values
+                    and not destructive_filter_verified
+                    and (
+                        tool_input.get("type") in DEFAULT_NEEDS_CONFIRMATION
+                        or (
+                            tool_input.get("type") == "click" and action_label
+                            and _DESTRUCTIVE_LABEL_RE.search(action_label)
+                        )
+                    )
+                ):
+                    row_match = await _count_rows_matching_condition(page, delete_all_condition_pairs)
+                    condition_text = " + ".join(repr(v) for v in delete_all_condition_values)
+                    if (
+                        row_match is not None and row_match[0] < row_match[1]
+                        and premature_destructive_before_filter_count < _MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES
+                    ):
+                        premature_destructive_before_filter_count += 1
+                        _bump_guard("destructive_before_filter")  # W_token_cut W1
+                        matching, total = row_match
+                        if verbose:
+                            print(
+                                f"[ลบก่อนกรอง {premature_destructive_before_filter_count}/"
+                                f"{_MAX_DESTRUCTIVE_BEFORE_FILTER_RETRIES}] label={action_label!r} "
+                                f"ตรงเงื่อนไข {matching}/{total} แถว",
+                                flush=True,
+                            )
+                        nudge_text = _DESTRUCTIVE_BEFORE_FILTER_NUDGE_TEMPLATE.format(
+                            condition=condition_text, matching=matching, total=total,
+                        )
+                        messages = append_tool_result(messages, tool_use_id, nudge_text)
+                        messages.append(_build_nudge_message(
+                            resolved_provider, f"⚠️ [Important system command]: {nudge_text}",
+                        ))
+                        continue
+                    # ตารางตรงเงื่อนไขครบแล้ว / เช็คไม่ได้ (หน้านี้ไม่มีตาราง — fail-safe
+                    # เหมือน guard อื่นในไฟล์นี้: เช็คไม่ได้ ดีกว่าบล็อก action ที่อาจถูกอยู่
+                    # แล้ว) / หมดโควตาเตือน — ปล่อยผ่านและไม่เช็คซ้ำอีกตลอด task นี้ (การลบแถว
+                    # ถัดๆ ไปทำกับตารางชุดเดียวกันที่เพิ่งยืนยันไปแล้ว)
+                    destructive_filter_verified = True
 
                 # W7[B]: RAG-based permission — ดึงคู่มือด้วย query แคบเฉพาะ action นี้
                 # (ไม่ใช่ manual_context ด้านบนที่ query=goal กว้างทั้ง task) แล้วส่งให้
@@ -2573,7 +6860,7 @@ class Orchestrator:
                 ):
                     element_description = (
                         f"<{action_tag or 'element'}> '{action_label}'" if action_label
-                        else f"<{action_tag}>" if action_tag else "(ไม่ทราบ label)"
+                        else f"<{action_tag}>" if action_tag else "(label unknown)"
                     )
                     middleware = await llm.evaluate_safety_and_performance(
                         client, model, effective_goal, extract_domain(page.url),
@@ -2586,8 +6873,8 @@ class Orchestrator:
                         skip_reason = middleware.get("redundancy_evaluation", {}).get("redundancy_reason", "")
                         messages = append_tool_result(
                             messages, tool_use_id,
-                            f"[ระบบข้าม step นี้อัตโนมัติ] {skip_reason} "
-                            "เลือก action อื่นที่ทำให้เป้าหมายคืบหน้าจริงแทน",
+                            f"[The system skipped this step automatically] {skip_reason} "
+                            "Choose a different action that genuinely advances the goal instead.",
                         )
                         continue
                     # escalate-only (ดู module comment ใน llm.py): risk_level REQUIRES_CONSENT/
@@ -2625,8 +6912,8 @@ class Orchestrator:
                         skip_reason = redundancy.get("reasoning", "")
                         messages = append_tool_result(
                             messages, tool_use_id,
-                            f"[ระบบข้าม step นี้อัตโนมัติ] {skip_reason} "
-                            "เลือก action อื่นที่ทำให้เป้าหมายคืบหน้าจริงแทน",
+                            f"[The system skipped this step automatically] {skip_reason} "
+                            "Choose a different action that genuinely advances the goal instead.",
                         )
                         continue
 
@@ -2636,26 +6923,108 @@ class Orchestrator:
                 # อยู่แล้ว ไม่ต้องเตือนซ้ำ)
                 url_before_action = page.url
 
+                # W_tab_rebind: ต้องเก็บ "ก่อน" ไว้เทียบ ไม่งั้นแยกแท็บที่ action นี้เพิ่งเปิด
+                # ออกจากแท็บที่ user เปิดค้างไว้เองตั้งแต่ก่อนเริ่ม task ไม่ได้
+                try:
+                    tabs_before_action = list(page.context.pages)
+                except Exception:
+                    tabs_before_action = []
+                _action_started_at = time.monotonic()
+                action_calls += 1  # W_token_cut W1
                 result: ActionResult = await execute(
                     page, tool_input, ask_user_func=ask_user_func, label=action_label,
                     manual_guidance=manual_permission_guidance, allowed_domains=effective_allowed_domains,
                     element_tag=action_tag, element_type=action_element_type,
                     then_label=then_label, then_tag=then_tag, then_type=then_element_type,
                 )
+                # W_step_trace: เวลาที่ใช้กับ browser จริงของ step นี้ (รวม retry ภายใน
+                # actions.py และ wait ต่างๆ ที่ execute() ทำเอง)
+                step_action_seconds = time.monotonic() - _action_started_at
+
+                # W_retry_value_has_no_home: จำ label ของช่องที่ agent กรอกค่าเอง ไว้บอก user
+                # ตอนขอค่าใหม่ว่าจะเอาไปแทนที่ตรงไหน — เก็บเฉพาะ fill ธรรมดา เพราะ fill_secret
+                # คือรหัสปัจจุบันที่ระบบกรอกให้เอง ไม่ใช่ค่าที่ user จะเปลี่ยน
+                if result.success and tool_input.get("type") in _VALUE_WRITING_ACTION_TYPES:
+                    wrote_a_value_this_task = True  # W_verify_text_needs_a_write
+                    for _written in (tool_input.get("text"), tool_input.get("label")):
+                        if isinstance(_written, str) and _written.strip():
+                            values_written_this_task.add(_written.strip())
+                if (
+                    result.success
+                    and tool_input.get("type") == "fill"
+                    and action_label
+                    and action_label not in agent_filled_field_labels
+                ):
+                    agent_filled_field_labels.append(action_label)
+
+                # W_tab_rebind: เปลี่ยน page ที่ลูปถืออยู่ *ก่อน* อย่างอื่นจะอ่านหน้าเว็บต่อ
+                # (W30 url-changed check, wait_stable, get_snapshot ของ step ถัดไป) — ผูก
+                # dialog handler ให้แท็บใหม่ด้วย ไม่งั้น alert() บนแท็บนั้นจะค้างไม่มีใครปิด
+                # (ดู _make_dialog_handler) แล้วทุก action หลังจากนั้น timeout เงียบๆ
+                _switched_page, _tab_note = _detect_tab_switch(page, tabs_before_action, tool_input)
+                if _switched_page is not page:
+                    page = _switched_page
+                    page.on("dialog", _make_dialog_handler(self.memory, verbose))
+                    if verbose:
+                        print(f"[tab-rebind] {_tab_note.strip()}", flush=True)
                 # W21: เก็บผลลัพธ์ของ action นี้ไว้ให้ loop-guard ตอนต้น step ถัดไปเช็ค
                 # is_bulk_safe_repeat (ดู docstring ตรงจุดเช็คด้านบน)
                 last_action_succeeded = result.success
                 steps_taken += 1
 
+                # W_guard_quota_reset: ตัวนับ premature_* ทุกตัว (และ already-active) เดิมมีแต่
+                # `+= 1` ไม่มีจุด reset ที่ไหนเลยทั้งไฟล์ — โควตา 2 ครั้งจึงเป็น "โควตาตลอดทั้ง
+                # task" ไม่ใช่ "โควตาต่อครั้งที่โมเดลหลงทาง" ผลคือ guard กัน false-completion
+                # ทุกตัวตายถาวรตั้งแต่กลาง task เป็นต้นไป: งานยาวๆ ที่โมเดลเผลอ claim สำเร็จ
+                # ตอนต้น 2 ครั้ง จะไม่มีอะไรกันการ claim สำเร็จผิดๆ ในตอนท้ายอีกเลย ทั้งที่นั่น
+                # คือจุดที่ verification สำคัญที่สุด
+                #
+                # reset เมื่อมี action ที่ "สำเร็จจริง" คั่น (result.success) เท่านั้น — นั่นคือ
+                # นิยามของความคืบหน้าที่เชื่อถือได้ที่สุดที่มีในลูปนี้ ไม่ใช่แค่ "ยิง action ไป"
+                # (action ที่ล้มเหลวไม่ควรคืนโควตาให้ ไม่งั้นวนขอ nudge ได้ไม่จำกัด) — pattern
+                # เดียวกับที่ consecutive_same_label_count/consecutive_fill_secret_context_reject_count
+                # ทำถูกอยู่แล้ว เพดานรวมยังคุมด้วย max_steps และ loop-detection เหมือนเดิมทุกประการ
+                if result.success:
+                    premature_false_finish_count = 0
+                    premature_true_finish_count = 0
+                    premature_all_failed_count = 0
+                    premature_login_skip_count = 0
+                    premature_validation_error_count = 0
+                    premature_deletion_incomplete_count = 0
+                    premature_table_verify_count = 0
+                    premature_row_action_before_search_count = 0
+                    consecutive_already_active_skip_count = 0
+
                 # W64[7.1]: อัปเดต filter_dirty_since_search — True เฉพาะตอน fill/select
                 # สำเร็จรอบนี้เท่านั้น (reset เป็น False เสมอไม่ว่า action อื่นจะเป็นอะไร รวมถึง
                 # ตอน guard ด้านบนเพิ่งบล็อกไปเอง — ดู docstring ของ _ROW_ACTION_LABEL_RE
                 # สำหรับเหตุผลที่ scope แคบแค่ 1 step)
-                if tool_input.get("type") in ("fill", "select") and result.success:
+                #
+                # W_dropdown_sets_filter_dirty (บั๊กจริง live-reproduce บน OrangeHRM ผ่าน step
+                # trace 2026-08-26: agent เปลี่ยน User Role เป็น ESS แล้วกด Edit ต่อทันทีโดย
+                # ไม่เคยกด Search เลย และไม่เคยถูก nudge สักครั้ง): เงื่อนไข fill/select เดิม
+                # ไม่มีทางเป็นจริงบน custom dropdown เลย เพราะ W50 + state_filter.
+                # check_select_target_is_native() *บังคับ* ให้โมเดลใช้ "click" กับ dropdown
+                # พวกนี้ — แถม else ด้านล่างยัง reset ธงเป็น False ด้วยการคลิกตัวเลือกนั้นเอง
+                # ผลคือ guard "ห้ามคลิก row action ก่อนกด Search" ตายสนิทบนเว็บ SPA สมัยใหม่
+                # แทบทั้งหมด ซึ่งเป็นกลุ่มที่ต้องการ guard นี้ที่สุด — นับ click ที่ actions
+                # ยืนยันว่าเป็นการ "เลือกตัวเลือกใน dropdown" จริง (ดู ActionResult.
+                # dropdown_option_selected) เป็น filter change เท่ากับ fill/select
+                if result.success and (
+                    tool_input.get("type") in ("fill", "select") or result.dropdown_option_selected
+                ):
                     filter_dirty_since_search = True
                     last_filter_field_label = action_label
+                    filter_changed_without_search = True
                 else:
                     filter_dirty_since_search = False
+
+                # W_delete_all_intent: ธง sticky ตัวนี้ล้างได้ทางเดียวเท่านั้น — กด Search
+                # สำเร็จจริง (_SEARCH_LABEL_RE ครอบคลุมไทย/อังกฤษ เดิมประกาศไว้แต่ไม่เคยถูกใช้
+                # เลยสักที่) ไม่ล้างตาม action อื่นเหมือน filter_dirty_since_search เพราะ
+                # คำถามที่มันตอบคือ "ตลอด task นี้ เคยกรองจริงหรือยัง" ไม่ใช่ "step ที่แล้วทำอะไร"
+                if result.success and action_label and _SEARCH_LABEL_RE.search(action_label):
+                    filter_changed_without_search = False
 
                 # W64[7.2]: บันทึกว่า task นี้เคยมี action ที่ toast ยืนยันสำเร็จจริงแล้วหรือยัง
                 # (ดู actions.py::ActionResult.toast_confirmed) — ใช้ตัดสิน leniency ของ
@@ -2664,17 +7033,53 @@ class Orchestrator:
                 # action ถัดๆ ไปจะเป็นอะไรก็ตาม)
                 if result.toast_confirmed:
                     any_toast_confirmed_this_task = True
+                # W_count_answer_check: ดูดตัวเลขที่ _deterministic_count_note() นับไว้ออกจาก
+                # ข้อความผลลัพธ์ (read_page_data เท่านั้นที่มีบรรทัดนั้น — action อื่นคืน {})
+                if result.success:
+                    system_counted.update(system_counted_conditions(result.message))
+                # W30: แจ้งเตือนชัดๆ ถ้าหน้าเว็บเปลี่ยนไปเองหลัง action ที่ไม่ได้ตั้งใจจะ
+                # navigate (เช่น click ธรรมดาที่ดันมี redirect/JS navigation ซ่อนอยู่) —
+                # user รายงานว่า agent บางครั้งดูเหมือนตัดสินใจ step ถัดไปจาก state เก่า
+                # (คิดว่ายังอยู่หน้าเดิม) ทั้งที่จริงๆ หน้าเปลี่ยนไปแล้ว — get_snapshot()
+                # ของ step ถัดไปอ่านสดจาก page จริงเสมออยู่แล้ว (ไม่มี cache ทางโค้ด) แต่
+                # ไม่เคยมีสัญญาณชัดๆ บอกโมเดลตรงๆ ว่า "หน้าเปลี่ยนไปแล้วนะ อย่าเพิ่งเชื่อ
+                # แผนเดิม" มาก่อน — เช็คแม้ result.success=True ด้วย (การ "สำเร็จ" ที่แอบ
+                # พาไปหน้าอื่นโดยไม่ตั้งใจอันตรายกว่า fail ธรรมดา เพราะโมเดลอาจไม่รู้ตัวว่า
+                # ต้อง re-evaluate) ไม่เช็คกับ goto/switch_tab/go_back เพราะ navigate คือ
+                # จุดประสงค์หลักของ action พวกนี้อยู่แล้ว ไม่ต้องเตือนซ้ำ
+                result_text = str(result) + _tab_note
+                # W_plan_panel_lags_the_log: อ่านครั้งเดียว ใช้สองที่ (โน้ต W30 ด้านล่าง และ
+                # การขยับ cursor แสดงผล) ไม่เพิ่มการอ่าน DOM
+                url_changed_this_action = page.url != url_before_action
+                if tool_input.get("type") not in ("goto", "switch_tab", "go_back") and url_changed_this_action:
+                    result_text += (
+                        f"\n[The page changed by itself after this action: from "
+                        f"{url_before_action} to {page.url} — the earlier plan may no longer "
+                        "match the current page; check this new page's indexed elements before "
+                        "deciding your next action]"
+                    )
                 # W10[D]: แนบ label ของ element เป้าหมาย (ชื่อปุ่ม/ช่องกรอกจริงบนหน้าเว็บ
                 # เช่น "Login", "Username" — มาจาก perception.py::get_snapshot() ตัวเดียว
                 # กับที่ action_label ด้านบนใช้เช็ค permission อยู่แล้ว) เข้า history/event
                 # ด้วย ให้ UI (Log panel) โชว์ชื่อจริงแทน index เปล่าๆ ที่มนุษย์อ่านไม่รู้
                 # เรื่องว่ากดอะไร/กรอกช่องไหน — ไม่มีผลกับ dispatch จริง (ยังใช้ tool_input
                 # เดิมเป๊ะ) แค่ข้อมูลเสริมไว้แสดงผล
-                self.memory.record({
+                # W_timing_gap: ถือ reference ของ dict ไว้ (ShortTermMemory.record เก็บ object
+                # ตัวเดียวกัน ไม่ได้ copy) เพื่อเติมเวลา wait_stable ลงไปทีหลังได้ — wait_stable
+                # เกิดหลังบันทึก step ไปแล้ว จะย้ายการบันทึกไปไว้ทีหลังไม่ได้เพราะ guard หลายตัว
+                # ด้านล่างอ่าน memory ของ step นี้
+                step_record = {
                     "step": steps_taken,
                     "cmd": tool_input,
                     "label": action_label,
-                    "result": str(result),
+                    # W_click_navigated: บันทึก result_text (ตัวเดียวกับที่ส่งให้ LLM
+                    # ด้านบน) ไม่ใช่ str(result) เปล่าๆ — ShortTermMemory.failed_actions_
+                    # summary() (ดู core/memory.py) ยัดบรรทัด "[FAIL] click(3)" เข้า prompt
+                    # ทุก step ที่เหลือของ task ถ้าเก็บแต่ข้อความดิบ โน้ต W30 "หน้าเปลี่ยนไป
+                    # เอง" ที่คำนวณไว้แล้วจะหายไปจาก memory ทั้งที่เป็นหลักฐานชิ้นเดียวที่
+                    # อธิบายว่า action นั้นได้ผลจริง — memory poisoning ที่ขยายผลบั๊ก
+                    # W_click_navigated ให้ลามไปทั้ง run
+                    "result": result_text,
                     "success": result.success,
                     "tokens": _tokens_dict(usage),
                     # W_procmem: locator ที่ "อยู่รอด" ข้าม task run ได้ (ดู
@@ -2682,7 +7087,21 @@ class Orchestrator:
                     # click/fill/select/check ที่สำเร็จจริง ใช้เป็น input ของ
                     # llm.abstract_trajectory() ตอน task จบสำเร็จ (ดูจุดเรียกด้านล่าง)
                     "locator_descriptor": result.locator_descriptor,
-                })
+                    # W_step_trace: 3 field ใหม่ ไว้ให้ task_manager เขียนลง
+                    # settings.step_trace_log_path ตอน task จบ (ดู config.py ที่ค่านั้น) —
+                    # ไม่ถูกใช้ตัดสินใจอะไรในลูปเลย เป็นข้อมูลวินิจฉัยล้วนๆ
+                    "failure_class": _classify_step_failure(str(result), result.success),
+                    "timing": {
+                        "snapshot": round(step_snapshot_seconds, 3),
+                        "llm": round(step_llm_seconds, 3),
+                        "action": round(step_action_seconds, 3),
+                        # W_timing_gap: pacing วัดได้ตั้งแต่ต้น step ส่วน wait เติมทีหลัง
+                        # (wait_stable เกิดหลังจุดนี้ — ดูด้านล่าง)
+                        "pacing": round(step_pacing_seconds, 3),
+                        "wait": 0.0,
+                    },
+                }
+                self.memory.record(step_record)
                 if verbose:
                     print(f"  -> {result}", flush=True)
                 await _emit({
@@ -2693,6 +7112,7 @@ class Orchestrator:
                     # โชว์ token count สดๆ ตอน task ยัง "running" อยู่ (ก่อนหน้านี้มีแค่ใน
                     # result["tokens"] ตอนจบ task เท่านั้น ซึ่ง SSE consumer เห็นช้าเกินไป)
                     "tokens": _tokens_dict(total_usage),
+                    "llm_calls": llm_turns,
                 })
 
                 # W43: LLM ระบุว่า action นี้ทำให้ step ของแผนเสร็จสมบูรณ์แล้ว (ดู
@@ -2703,8 +7123,135 @@ class Orchestrator:
                 # None/ว่างเปล่า — ad-hoc task ไม่มีแผนไม่ควรยิง event นี้เลยแม้ LLM จะใส่
                 # completed_plan_step มาผิดๆ ก็ตาม เพราะไม่มี checkbox ให้ติ๊กอยู่แล้วฝั่ง UI)
                 completed_plan_step = tool_input.get("completed_plan_step")
+                # W_plan_step_cursor: การที่โมเดลรายงานเลขมา = หลักฐานว่า *หนึ่ง* step จบ
+                # ไม่ใช่ว่าทุกข้อจนถึงเลขนั้นจบ — cursor จึงเดินหน้าได้ทีละ 1 เสมอ ต่อให้
+                # โมเดลส่ง 5 มาตอนที่ยังอยู่ข้อ 1 (และไม่ถอยหลังเด็ดขาด) เลขที่ยิงออก SSE
+                # จึงเป็น cursor จริง ไม่ใช่เลขที่โมเดลอ้าง — Test Console จะติ๊กช้าลงแต่ตรง
+                # กับงานที่ทำจริง
+                # เงื่อนไข action type ใช้ชุดเดียวกับ W_goal_scope_false_success ด้านล่าง
+                # ไม่สร้างชุดใหม่ซ้อน (อ่านอย่างเดียวไม่ทำให้ step ไหน "เสร็จ" ได้จริง)
+                # W_plan_progress_stall: นิยาม "action ที่ควรทำให้แผนคืบ" ใช้ชุดเดียวกับที่
+                # cursor ใช้ (ไม่อยู่ใน _GOAL_SCOPE_ALLOWED_ACTION_TYPES = ไม่ใช่การอ่านเฉยๆ) —
+                # ในไฟล์นี้มีนิยาม "mutating" อยู่ 2 ชุดแล้วและต่างกัน อย่าสร้างชุดที่สาม
+                plan_progressing_action = (
+                    bool(plan_text)
+                    and result.success
+                    and tool_input.get("type") not in _GOAL_SCOPE_ALLOWED_ACTION_TYPES
+                )
+                # W_plan_cursor_needs_a_matching_action: completed_plan_step เป็น self-report
+                # ล้วนๆ และ W111 วัดมาแล้วว่าโมเดลแนบมากับแทบทุก action — cursor จึงวิ่งจนแผน
+                # ติ๊กครบก่อนงานจริงจะเสร็จ (user รายงานพร้อมภาพหน้าจอ 2026-09-03: แผนติ๊กครบ
+                # 5 ข้อขณะที่ยังลบไม่เสร็จ) ใช้ตัวเทียบตัวเดียวกับ W111 เป็นประตู: ถ้า action
+                # ที่เพิ่งทำ "ไม่ตรงกับ step ปัจจุบัน" อย่างชัดเจน (False) ห้ามเดินหน้า cursor
+                # ส่วน None = ตัดสินไม่ได้ ยังปล่อยผ่านเหมือนเดิม เพราะตัวเทียบนี้เป็นสัญญาณอ่อน
+                # โดยเจตนา (step ที่ LLM เขียนกว้าง/กำกวมได้เสมอ — ดู docstring ของมัน)
+                # การบล็อกทุกเคสที่อ่านไม่ออกจะทำให้แผนไม่มีวันติ๊กเลยบนงานจริงส่วนใหญ่
+                _cursor_step_text = ""
+                if plan_text:
+                    _cursor_steps = _plan_step_lines(plan_text)
+                    if 0 < plan_cursor <= len(_cursor_steps):
+                        _cursor_step_text = _cursor_steps[plan_cursor - 1]
+                _cursor_action_matches = _action_matches_plan_step(
+                    _cursor_step_text, action_label or "", str(tool_input.get("type") or ""),
+                ) if _cursor_step_text else None
+
+                # W_plan_cursor_needs_a_matching_action (แก้รอบสอง — บั๊กจริงที่ user เจอทันที
+                # หลังรอบแรก 2026-09-03): รอบแรกบล็อกการเดินหน้าทุกครั้งที่ตัวเทียบตอบ "ไม่ตรง"
+                # ซึ่งกลายเป็น **ล็อกตาย** — พอ cursor ไม่ขยับ step ปัจจุบันก็ยังเป็นข้อเดิม
+                # action ถัดไปก็ยิ่งไม่ตรงกับข้อเดิมนั้น วนแบบนี้ตลอด task (หน้าจอ: แผนค้างอยู่
+                # ข้อ 1 หมุนยาวๆ ทั้งที่ log เดินไปถึง step 13 แล้ว)
+                #
+                # ต้นเหตุที่แท้จริงคือเอาสัญญาณที่ docstring ของ _action_matches_plan_step()
+                # เขียนไว้เองว่าเป็น "สัญญาณอ่อน ห้ามเอาไปบล็อก" มาใช้เป็นประตูแข็ง — ใช้เป็น
+                # ตัวหน่วงแทน: บล็อกได้ไม่เกิน _MAX_BLOCKED_CURSOR_ADVANCES ครั้งติดกัน แล้ว
+                # ปล่อยผ่าน ทำให้ยังกันโมเดลไล่ติ๊กแผนรวดเดียวได้ (ปัญหาเดิม) โดยไม่มีทางค้าง
+                if plan_progressing_action and completed_plan_step is not None:
+                    if (
+                        _cursor_action_matches is False
+                        and blocked_cursor_advances < _MAX_BLOCKED_CURSOR_ADVANCES
+                    ):
+                        blocked_cursor_advances += 1
+                        actions_since_plan_progress += 1
+                    else:
+                        blocked_cursor_advances = 0
+                        plan_cursor = min(plan_cursor + 1, _total_plan_steps(plan_text) + 1)
+                        actions_since_plan_progress = 0
+                elif plan_progressing_action:
+                    actions_since_plan_progress += 1
+
+                # W_plan_panel_lags_the_log: ขยับ cursor แสดงผลจากหลักฐานบนหน้าเว็บ แล้วยิง
+                # ความคืบหน้า *ทุก action* — จังหวะเดียวกับ event "step" ที่ทำให้ LOG ทัน สอง
+                # panel จึงเดินคู่กันโดยโครงสร้าง ไม่มีทางหลุดจากกันได้
+                #
+                # ยิงทุกครั้งแม้ไม่มีความคืบหน้า เพราะแถว "กำลังทำข้อนี้" ต้องรีเฟรชให้ตรงเสมอ
+                # และ event นี้พา done_through ไปด้วย ทำให้ tab ที่เพิ่งเชื่อมสายกลางคัน
+                # กู้ติ๊กที่พลาดไปได้ครบ (ระบบไม่มี replay buffer — ดู routes.py::_stream_task_events)
+                #
+                # ค่าใช้จ่ายอยู่บน SSE ล้วน ไม่มีอะไรเข้า prompt ของ LLM
+                if plan_text:
+                    _plan_total = _total_plan_steps(plan_text)
+                    _plan_lines = _plan_step_lines(plan_text)
+                    _display_text = (
+                        _plan_lines[display_plan_cursor - 1]
+                        if 0 < display_plan_cursor <= len(_plan_lines) else ""
+                    )
+                    _display_evidence = _display_step_evidence(
+                        _display_text, action_label or "", str(tool_input.get("type") or ""),
+                        url_changed_this_action, bool(result.success),
+                    )
+                    # cap ที่ _plan_total ไม่ใช่ _plan_total + 1 — ข้อสุดท้ายยังต้องรอ task สำเร็จ
+                    if _display_evidence and display_plan_cursor < _plan_total:
+                        display_plan_cursor += 1
+                    # floor: ฝั่งแสดงผลต้องไม่ตามหลัง cursor ตัวอนุรักษ์นิยม
+                    display_plan_cursor = max(
+                        display_plan_cursor, min(plan_cursor, _plan_total),
+                    )
+                    await _emit({
+                        "kind": "plan_progress",
+                        "current": display_plan_cursor,
+                        "done_through": display_plan_cursor - 1,
+                        "total": _plan_total,
+                        "confirmed": min(plan_cursor - 1, _plan_total),
+                        "evidence": _display_evidence or "none",
+                        "url": page.url,
+                    })
+
+                # W_action_matches_plan_step: เทียบกับ step ที่กำลังทำอยู่ *หลัง* cursor ขยับแล้ว
+                # (ถ้า cursor เพิ่งขยับ แปลว่า step ปัจจุบันคือข้อถัดไป ซึ่งเป็นข้อที่ต้องเทียบจริง
+                # ในเทิร์นหน้า) — รีเซ็ตเฉพาะตอน "ตรง" เท่านั้น ไม่ใช่ตอน cursor ขยับ
+                if plan_progressing_action:
+                    # W_action_matches_plan_step: cursor วิ่งเลยข้อสุดท้ายได้ (โมเดลใส่
+                    # completed_plan_step มาทุก action) — ตรึงไว้ที่ข้อสุดท้ายแทนที่จะปล่อยให้
+                    # ไม่มี step ให้เทียบ ซึ่งจะทำให้ guard เงียบพอดีในเคสที่ต้องการมันที่สุด
+                    # (แผน "เสร็จ" ตามตัวนับแล้วแต่ agent ยังทำอะไรอยู่ = ต้องเกี่ยวกับข้อสุดท้าย)
+                    _steps_now = _plan_step_lines(plan_text)
+                    _current_now = (
+                        _steps_now[min(plan_cursor, len(_steps_now)) - 1] if _steps_now else ""
+                    )
+                    _matched = _action_matches_plan_step(
+                        _current_now, action_label or "", str(tool_input.get("type") or ""),
+                    )
+                    if _matched is True:
+                        actions_mismatching_plan_step = 0
+                    elif _matched is False:
+                        actions_mismatching_plan_step += 1
                 if plan_text and result.success and completed_plan_step is not None:
-                    await _emit({"kind": "plan_step_done", "step": completed_plan_step})
+                    await _emit({"kind": "plan_step_done", "step": min(plan_cursor - 1, _total_plan_steps(plan_text))})
+                    # W_goal_scope: step สุดท้ายของแผนเสร็จแล้ว = goal ถือว่าสำเร็จ ใช้เป็น
+                    # สัญญาณให้ Goal Boundary Gate ด้านบน (sticky — ดู declaration) เงื่อนไข
+                    # ผูกกับ result.success อยู่แล้วจาก if ด้านบน จึงไม่มีทางติดธงจาก action
+                    # ที่ล้มเหลว หรือจาก completed_plan_step ที่ LLM ใส่มาทั้งที่ไม่มีแผนเลย
+                    # W_goal_scope_false_success: action แบบอ่านอย่างเดียวไม่ทำให้ step
+                    # สุดท้ายของแผน "เสร็จ" ได้ในทางปฏิบัติ — comment ด้านบนบอกว่าปลอดภัยเพราะ
+                    # ผูกกับ result.success แต่ read_page_data ที่ "สำเร็จ" คือการอ่านล้วนๆ
+                    # ไม่ได้พิสูจน์อะไรเกี่ยวกับงานที่ต้องทำเลย (บั๊กจริง live run 2026-08-27:
+                    # โมเดลส่ง completed_plan_step=5 มากับ read_page_data แล้ว Goal Boundary
+                    # Gate ก็หยุด task พร้อมอ้างว่าสำเร็จทั้งที่ยังไม่ได้ลบอะไร)
+                    # ใช้ชุด action เดียวกับ gate เองใช้ ไม่สร้างชุดใหม่ซ้อน
+                    # W_plan_step_cursor: ผูกกับ cursor ของโค้ด ไม่ใช่ตัวเลขดิบจากโมเดล —
+                    # เดิมโมเดลส่งเลขข้อสุดท้ายมาเป็น action แรกก็ทำให้ธงนี้ติดได้ทันที
+                    if plan_cursor > _total_plan_steps(plan_text):
+                        plan_fully_completed = True
 
                 # W10[F]: human ปฏิเสธ action นี้ตรงๆ (กด Deny บน permission prompt) —
                 # ต้องจบ task ทันที ไม่ใช่ป้อนผลลัพธ์กลับเข้า messages แล้ววน loop ต่อให้
@@ -2755,11 +7302,16 @@ class Orchestrator:
                     validation_errors = [
                         e for e in await _scan_validation_errors(page, within_form=True)
                         if not _is_bare_required_message(e)
+                        # W_required_error_is_not_a_dead_end: ข้อความชนิด "ช่องนี้ต้องกรอก"
+                        # ไม่ใช่ทางตัน — agent เติมเองได้ ไม่ว่าจะเป็นของค้างจากช่องที่กรอกไปแล้ว
+                        # (W_required_error_survives_the_fix) หรือเป็นช่องที่ยังไม่ได้กรอกจริงๆ
+                        and not _is_required_field_error(e)
                     ]
                     if validation_errors:
                         errors_text = " | ".join(f"'{e}'" for e in validation_errors)
                         success = False
                         completion_verification = "TASK_FAILED_USER_INPUT_ERROR"
+                        retry_value_field_labels = list(agent_filled_field_labels)
                         final_message = (
                             "ไม่สามารถดำเนินการต่อได้ เนื่องจากข้อมูลที่กรอกไม่ผ่านการตรวจสอบ"
                             f"ของระบบ: {errors_text} — กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน "
@@ -2773,7 +7325,7 @@ class Orchestrator:
                 # visibility ล้มเหลวซ้ำแม้ retry ครบแล้ว (actions.py::
                 # _dispatch_with_retry หมดโควตา) ทั้งที่ index มีอยู่จริงใน DOM ตอน
                 # perceive — สงสัยว่ามี popup/overlay บัง element ที่ perception
-                # (DOM-based ล้วนๆ) ตรวจไม่เจอครบ (แม้จะมี marker "[ถูกบังอยู่]" เสริม
+                # (DOM-based ล้วนๆ) ตรวจไม่เจอครบ (แม้จะมี marker "[obscured]" เสริม
                 # จาก perception.py แล้วก็ตาม — ยังมีเคสที่ elementFromPoint() พลาดได้
                 # เช่น overlay ที่มี pointer-events: none) ถ่าย screenshot จริงส่งให้
                 # Gemini vision วิเคราะห์ ป้อนผลลัพธ์เข้า step ถัดไปเป็น context เสริม
@@ -2795,23 +7347,63 @@ class Orchestrator:
                         if verbose:
                             print(f"  [vision-fallback] ล้มเหลว: {e}", flush=True)
 
-                # W30: แจ้งเตือนชัดๆ ถ้าหน้าเว็บเปลี่ยนไปเองหลัง action ที่ไม่ได้ตั้งใจจะ
-                # navigate (เช่น click ธรรมดาที่ดันมี redirect/JS navigation ซ่อนอยู่) —
-                # user รายงานว่า agent บางครั้งดูเหมือนตัดสินใจ step ถัดไปจาก state เก่า
-                # (คิดว่ายังอยู่หน้าเดิม) ทั้งที่จริงๆ หน้าเปลี่ยนไปแล้ว — get_snapshot()
-                # ของ step ถัดไปอ่านสดจาก page จริงเสมออยู่แล้ว (ไม่มี cache ทางโค้ด) แต่
-                # ไม่เคยมีสัญญาณชัดๆ บอกโมเดลตรงๆ ว่า "หน้าเปลี่ยนไปแล้วนะ อย่าเพิ่งเชื่อ
-                # แผนเดิม" มาก่อน — เช็คแม้ result.success=True ด้วย (การ "สำเร็จ" ที่แอบ
-                # พาไปหน้าอื่นโดยไม่ตั้งใจอันตรายกว่า fail ธรรมดา เพราะโมเดลอาจไม่รู้ตัวว่า
-                # ต้อง re-evaluate) ไม่เช็คกับ goto/switch_tab/go_back เพราะ navigate คือ
-                # จุดประสงค์หลักของ action พวกนี้อยู่แล้ว ไม่ต้องเตือนซ้ำ
-                result_text = str(result)
-                if tool_input.get("type") not in ("goto", "switch_tab", "go_back") and page.url != url_before_action:
-                    result_text += (
-                        f"\n[หน้าเว็บเปลี่ยนไปเองหลัง action นี้: จาก {url_before_action} เป็น "
-                        f"{page.url} — แผนเดิมอาจไม่ตรงกับหน้าปัจจุบันแล้ว ตรวจสอบ indexed "
-                        "elements ของหน้าใหม่นี้ก่อนตัดสินใจ action ถัดไป]"
+                # W_plan_progress_stall: แนบตรงนี้เพราะเป็นจุดเดียวที่ตอบ tool_result ของเทิร์นนี้
+                # — การ continue ก่อนถึงบรรทัดนี้จะทิ้ง tool_use ไว้โดยไม่มีคำตอบ
+                if (
+                    plan_text
+                    and actions_since_plan_progress >= _MAX_ACTIONS_WITHOUT_PLAN_PROGRESS
+                    and plan_stall_notes_sent < _MAX_PLAN_STALL_NOTES
+                ):
+                    plan_stall_notes_sent += 1
+                    _plan_steps = _plan_step_lines(plan_text)
+                    _current_step_text = (
+                        _plan_steps[plan_cursor - 1] if 0 < plan_cursor <= len(_plan_steps) else ""
                     )
+                    if _current_step_text:
+                        if verbose:
+                            print(
+                                f"[plan-stall {plan_stall_notes_sent}/{_MAX_PLAN_STALL_NOTES}] "
+                                f"{actions_since_plan_progress} action แล้วยังอยู่ข้อ {plan_cursor}",
+                                flush=True,
+                            )
+                        result_text = result_text + _PLAN_STALL_NOTE_TEMPLATE.format(
+                            count=actions_since_plan_progress,
+                            step=plan_cursor,
+                            total=len(_plan_steps),
+                            step_text=_current_step_text,
+                        )
+                        # นับใหม่หลังเตือน ไม่งั้นจะเตือนซ้ำทุก action ที่เหลือ
+                        actions_since_plan_progress = 0
+
+                # W_action_matches_plan_step: แนบที่เดียวกับ W_plan_progress_stall ด้วยเหตุผล
+                # เดียวกัน — จุดนี้คือที่เดียวที่ตอบ tool_result ของเทิร์นนี้
+                if (
+                    plan_text
+                    and actions_mismatching_plan_step >= _MAX_ACTIONS_MISMATCHING_PLAN_STEP
+                    and plan_mismatch_notes_sent < _MAX_PLAN_MISMATCH_NOTES
+                ):
+                    _mismatch_steps = _plan_step_lines(plan_text)
+                    _mismatch_text = (
+                        _mismatch_steps[min(plan_cursor, len(_mismatch_steps)) - 1]
+                        if _mismatch_steps else ""
+                    )
+                    if _mismatch_text:
+                        plan_mismatch_notes_sent += 1
+                        if verbose:
+                            print(
+                                f"[plan-mismatch {plan_mismatch_notes_sent}/"
+                                f"{_MAX_PLAN_MISMATCH_NOTES}] "
+                                f"{actions_mismatching_plan_step} action \u0e44\u0e21\u0e48\u0e15\u0e23\u0e07\u0e01\u0e31\u0e1a step {plan_cursor}",
+                                flush=True,
+                            )
+                        result_text = result_text + _PLAN_MISMATCH_NOTE_TEMPLATE.format(
+                            count=actions_mismatching_plan_step,
+                            step=plan_cursor,
+                            total=len(_mismatch_steps),
+                            step_text=_mismatch_text,
+                        )
+                        actions_mismatching_plan_step = 0
+
                 messages = append_tool_result(messages, tool_use_id, result_text)
 
                 # W7[A] (context compaction) / W22 (ทุก provider): เก็บ boundary ของ
@@ -2844,7 +7436,7 @@ class Orchestrator:
                     digest_text_lines = candidate_lines
                     if dropped_count > 0:
                         digest_text_lines = [
-                            f"- (มี step ก่อนหน้าอีก {dropped_count} step ถูกย่อทิ้งแล้ว ไม่แสดงรายละเอียด)",
+                            f"- (there are {dropped_count} earlier steps, compacted away and not shown in detail)",
                         ] + digest_text_lines
                     digest = "\n".join(digest_text_lines)
                     len_before_compact = len(messages)
@@ -2864,6 +7456,12 @@ class Orchestrator:
                         step_boundaries = [
                             (s, b - removed) for s, b in step_boundaries[cut_list_index:]
                         ]
+                        # W_token_trim (P3/M3): the compaction just spliced away the turns
+                        # that held the full site manual — re-send it in full next step so
+                        # the id reference always has something earlier to point back to
+                        # ([PRE_LEARNED_MANUAL] strict mode in particular must reach the
+                        # model at least once per compaction window)
+                        force_full_site_manual = True
                         if verbose:
                             print(
                                 f"[context-compact] ย่อ step ..{cut_step_num} เหลือ digest สะสม "
@@ -2872,7 +7470,10 @@ class Orchestrator:
                             )
 
                 if tool_input.get("type") in _PAGE_CHANGING_ACTIONS:
+                    _wait_started_at = time.monotonic()
                     await wait_stable(page)
+                    # W_timing_gap: เติมย้อนเข้า record ของ step นี้ (ดู step_record ด้านบน)
+                    step_record["timing"]["wait"] = round(time.monotonic() - _wait_started_at, 3)
 
                     # domain guard: classify_action() เช็ค allowlist แค่ตอน type=="goto"
                     # เท่านั้น — click ที่พาออกนอกโดเมน (เช่นลิงก์ "Sign in with Google"/
@@ -2880,8 +7481,10 @@ class Orchestrator:
                     # เลย เพราะ perception.py ไม่ได้เก็บ href ของ element ไว้เช็คล่วงหน้า
                     # — เช็คซ้ำอีกชั้นหลัง action จบแล้วจริงแทน (defense-in-depth) ถ้าหลุด
                     # ออกนอก allowlist ให้ดึงกลับทันทีก่อนจะ perceive/ส่งให้ LLM เห็นหน้า
-                    # นอกขอบเขต — ทำงานเฉพาะตอน effective_allowed_domains ถูกตั้งไว้จริง
-                    # (ไม่ใช่ None) ไม่กระทบ task ปกติที่ไม่ได้จำกัดโดเมน
+                    # นอกขอบเขต — ตั้งแต่ W_domain_guard_default เป็นต้นมา
+                    # effective_allowed_domains มีค่าเสมอ (default = โดเมนของ url เอง)
+                    # จึงครอบ task ทุกเส้นทางรวมทั้งที่ยิงผ่าน API ไม่ใช่แค่ CDP เหมือนเดิม
+                    # ยังคงเช็ค None ไว้เผื่อ url ผิดรูปจน extract_domain() คืน ""
                     if effective_allowed_domains is not None:
                         current_domain = extract_domain(page.url)
                         if current_domain not in effective_allowed_domains:
@@ -2891,10 +7494,10 @@ class Orchestrator:
                             except Exception:
                                 pass
                             domain_guard_msg = (
-                                f"[BLOCKED] Action นี้พาไปยังโดเมนนอกขอบเขตที่อนุญาต "
-                                f"({current_domain!r}) — ถูกดึงกลับอัตโนมัติแล้ว โดเมนที่"
-                                f" อนุญาตสำหรับ task นี้: {sorted(effective_allowed_domains)}"
-                                " ห้ามพยายามไปโดเมนนี้ซ้ำอีก"
+                                "[BLOCKED] this action leads to a domain outside the allowed "
+                                f"scope ({current_domain!r}) — it was reverted automatically. "
+                                f"Domains allowed for this task: {sorted(effective_allowed_domains)}"
+                                " Do not try to reach that domain again."
                             )
                             if verbose:
                                 print(f"  [domain-guard] {domain_guard_msg}", flush=True)
@@ -2960,16 +7563,82 @@ class Orchestrator:
                         "kind": "persona_message", "user_message": persona_message, "action_status": persona_status,
                     })
 
+            # W_step_budget: ลูปจบเพราะหมดรอบ แต่โมเดลเคยอธิบายไว้แล้วว่าติดอะไร (ตอนที่ guard
+            # ปฏิเสธ finish_task(false) ไป) — เอาเหตุผลนั้นมาบอกผู้ใช้ ดีกว่าข้อความ default ลอยๆ
+            if final_message == _MAX_STEPS_EXHAUSTED_MESSAGE and last_rejected_finish_message:
+                final_message = (
+                    f"{_MAX_STEPS_EXHAUSTED_MESSAGE} — เหตุผลล่าสุดที่โมเดลรายงาน: "
+                    f"{last_rejected_finish_message}"
+                )
+
             return {
                 "success": success,
                 "steps": steps_taken,
                 "message": final_message,
                 "history": self.memory.recent(max_steps),
                 "tokens": _tokens_dict(total_usage),
+                **_run_stats(),
                 "plan": plan_text,
                 "final_page_state": final_page_text,
                 "persona_message": persona_message,
                 "persona_status": persona_status,
+                "completion_verification": completion_verification,
+                # W_retry_value_has_no_home: ข้อความ TASK_FAILED_USER_INPUT_ERROR สัญญากับ user
+                # ว่า "ตอบค่าใหม่มาแล้วระบบจะกรอกแทนที่ในช่องเดิมให้ทันที" — ฟิลด์นี้คือสิ่งที่
+                # ทำให้คำสัญญานั้นเป็นจริงได้ ผู้เรียก (api/routes.py) จำไว้กับ session แล้วเทิร์น
+                # ถัดไปที่ user ตอบมาเป็น "ค่า" เปล่าๆ จะถูกแปลงเป็นคำสั่งที่ระบุช่องชัดเจน
+                "retry_value_field_labels": retry_value_field_labels,
+                # W_auto_login_outcome_is_invisible: "skipped" | "ok" | "failed"
+                "auto_login": auto_login_outcome,
+                # W_index_drift_measure: element ที่ index ชี้เปลี่ยนตัว/หายไประหว่าง
+                # snapshot กับ dispatch กี่ครั้ง
+                "index_drift_changed": index_drift_changed,
+                "index_drift_gone": index_drift_gone,
+            }
+        except Exception as e:
+            # W_loop_crash: เดิม try ก้อนนี้มีแต่ finally ไม่มี except เลยสักตัว — exception
+            # ใดๆ จาก get_snapshot()/next_action()/execute()/wait_stable()/compact_messages()
+            # จึงทะลุออกจาก run_task() ไปทั้งดุ้น ทำให้ return dict ด้านบนไม่ถูกรันเลย: history
+            # ทุก step ที่ทำสำเร็จมาแล้ว, token ที่จ่ายไปจริง, final_page_state, และการเขียน
+            # long_term_memory.record_task() หายทั้งหมด — ผู้ใช้เห็นแค่ข้อความ Python ดิบๆ จาก
+            # task_manager.py (record.error = str(e)) โดยไม่มีผลงานบางส่วนอะไรเลย
+            #
+            # เคสจริงที่เจอได้บ่อย: TargetClosedError ตอน page ถูกปิดกลางคัน, "Execution context
+            # was destroyed" ตอน SPA re-render พอดีจังหวะ, OAuthLoginRequired ตอน token หมดอายุ
+            # กลาง task ยาว, Gemini ResourceExhausted ที่ retry ครบโควตาแล้ว re-raise
+            #
+            # จับแล้วรายงานตามความจริง (success=False + ข้อความที่บอกว่าพังที่ step ไหน) แต่
+            # *ยังคืน dict เดิมครบทุก field* — งานที่ทำไปแล้วไม่หาย และ caller ทุกตัว (routes/
+            # task_manager/evaluation) ไม่ต้องรู้จักเส้นทางพิเศษอะไรใหม่เลย
+            #
+            # ไม่พยายาม "ทำ step ต่อ" หลัง exception: สาเหตุส่วนใหญ่ที่หลุดมาถึงตรงนี้คือ
+            # browser/page ตายไปแล้ว (action-level error ธรรมดาถูกจับเป็น ActionResult(False)
+            # ใน actions.py อยู่แล้ว ไม่เคยมาถึงที่นี่) การวนต่อจึงมีแต่จะพังซ้ำจนหมด max_steps
+            success = False
+            final_message = (
+                f"Task stopped by an unexpected error at step {steps_taken}: "
+                f"{type(e).__name__}: {e}"
+            )
+            completion_verification = "EXECUTION_FAILED_NEEDS_REPAIR"
+            if verbose:
+                print(f"[crash] {final_message}", flush=True)
+            self.memory.record({
+                "step": steps_taken,
+                "cmd": {"type": "crash"},
+                "result": final_message,
+                "success": False,
+            })
+            return {
+                "success": success,
+                "steps": steps_taken,
+                "message": final_message,
+                "history": self.memory.recent(max_steps),
+                "tokens": _tokens_dict(total_usage),
+                **_run_stats(),
+                "plan": plan_text,
+                "final_page_state": final_page_text,
+                "persona_message": "",
+                "persona_status": "FAILED",
                 "completion_verification": completion_verification,
             }
         finally:
@@ -3085,6 +7754,7 @@ class Orchestrator:
                 await goto(page, url)
             await wait_stable(page)
 
+            await _dismiss_consent_banner(page, verbose=False)  # W_consent_banner (ดู main loop)
             auto_login_failure_reason = await _maybe_auto_login(page, verbose=False)
             if auto_login_failure_reason:
                 await _emit({

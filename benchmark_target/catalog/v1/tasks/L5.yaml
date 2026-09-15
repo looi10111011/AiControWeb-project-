@@ -1,0 +1,225 @@
+- task_id: EXPERT-MULTI-ACTOR-LEAVE-THEN-REPORT-VERIFY
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - jack.adams
+  - emma.johnson
+  - admin
+  goal:
+    description: Log in as "james.wilson" and submit a leave request. Log in as supervisor "emma.johnson"
+      and approve it. Log in as admin, export the Leave Report as CSV, and confirm the approved request
+      appears in it.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0008
+    leave_type: Annual
+    min_days: 2
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Annual
+      start_date: '2026-06-01'
+      expected_status: approved
+- task_id: EXPERT-PRIVILEGE-ESCALATION-BLOCKED
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - sarah.chan
+  goal:
+    description: Log in as "sarah.chan" and attempt to create a new admin user account by submitting a
+      request directly to the Admin Users creation endpoint. Confirm it is denied and no user is created.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes:
+  - user.create
+  url: http://localhost:8100/admin/users/new
+  verification:
+    type: state_diff
+    expected:
+      users:
+        created: []
+- task_id: EXPERT-CONCURRENT-TIMESHEET-APPROVAL
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - alice.nguyen
+  - bob.martinez
+  goal:
+    description: James Wilson's submitted timesheet is approved by two different actors in rapid succession
+      (simulating two supervisors racing to approve). Confirm the final state is a single consistent 'approved'
+      status, not a corrupted or double-applied state.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets?view=team
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0008
+      week_start_date: '2026-01-05'
+      expected_status: approved
+- task_id: EXPERT-FULL-HIRE-TO-FIRST-LEAVE-LIFECYCLE
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - admin
+  - matthew.lopez
+  - sarah.chen
+  goal:
+    description: Hire a shortlisted candidate into a new employee record, create a linked ESS user account
+      for them, assign a supervisor, log in as the new employee and submit a leave request, then log in
+      as their supervisor and approve it. Verify the leave request is approved.
+  preconditions: []
+  allowed_changes:
+  - candidate.status
+  - employee.create
+  - user.create
+  - leave_request.create
+  - leave_request.status
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/vacancies
+  verification:
+    type: state_diff
+    expected:
+      employees:
+        created:
+        - {}
+      users:
+        created:
+        - {}
+      leave_requests:
+        created:
+        - {}
+- task_id: EXPERT-COMPLEX-FILTER-TO-PAGE-3-MATCH
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Using combined department and status filters, locate employee EMP-0042 on the Employees
+      list, which is not on page 1.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0042
+      field: status
+      value: active
+- task_id: EXPERT-DOCUMENT-FULL-LIFECYCLE
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Upload a document to employee EMP-0014, attempt a duplicate-filename upload (rejected),
+      delete the original, re-upload the same filename (now accepted), then download it and confirm the
+      content is correct.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/14
+  verification:
+    type: custom
+    verifier: document.exists
+    args:
+      employee_code: EMP-0014
+      filename: offer_letter.txt
+- task_id: EXPERT-MULTI-TAB-SESSION-ISOLATION
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - admin
+  - joseph.taylor
+  goal:
+    description: With two browser tabs, log in as "admin" in one and "joseph.taylor" in the other. Confirm
+      actions in one tab do not affect or leak into the other's session (each tab keeps its own logged-in
+      identity and permitted view).
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: http_redirect
+    expected:
+      location: /dashboard
+- task_id: EXPERT-CROSS-MODULE-RECRUITMENT-PERFORMANCE-REPORT
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Hire a shortlisted candidate, then confirm the new employee appears correctly in the
+      Employees Report export with the right department and job title.
+  preconditions: []
+  allowed_changes:
+  - candidate.status
+  - employee.create
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/vacancies
+  verification:
+    type: download_artifact
+    expected:
+      filename_contains: employees_report
+      content_type: text/csv
+- task_id: EXPERT-FAULT-INJECTED-LEAVE-APPROVAL-RECOVERY
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - michael.smith
+  goal:
+    description: A leave approval you attempt may be interrupted by a simulated conflict error. Recover
+      from it (reload, retry) and confirm the leave request ends up approved with no duplicate or corrupted
+      state.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0025
+      leave_type: Sick
+      start_date: '2026-01-12'
+      expected_status: approved
+- task_id: EXPERT-LONG-WORKFLOW-REVIEW-CYCLE-CLOSE
+  revision: 1
+  level: L5
+  fixture: base
+  actors:
+  - john.park
+  - emma.johnson
+  - admin
+  goal:
+    description: Log in as "john.park" and submit a self-review. Log in as supervisor "emma.johnson" and
+      submit the manager review. Log in as admin and close the entire review cycle. Confirm the cycle
+      status is closed and the review is finalized.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: performance.review.finalized
+    args:
+      employee_code: EMP-0021
+      cycle_name: 2026 H1 Review

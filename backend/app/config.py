@@ -11,12 +11,83 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
 
-    primary_llm_provider: str = "anthropic"
+    # W_openai_oauth: provider "openai" ไม่มี openai_api_key แบบ provider อื่นข้างบน — ตั้งใจ
+    # ใช้ OAuth login (reuse Codex CLI's public client_id) แทน API key ปกติ เพื่อดึงโควต้า
+    # ChatGPT Plus/Pro subscription ของ operator เองแทนจ่าย API credit แยก — ดู
+    # core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม (ToS gray area, ban risk,
+    # ตัดสินใจร่วมกับ user แล้วเมื่อ 2026-08-17, single-tenant เท่านั้น) token เก็บเป็น local
+    # credential ไฟล์เดียว เข้ารหัส Fernet (เหมือน site_learning/storage.py) ไม่ใช่ field
+    # ตรงนี้เลย — ไม่ต้องตั้งอะไรใน .env สำหรับ provider นี้ นอกจาก login ผ่าน UI ครั้งเดียว
+
+    # W_openai_oauth: ตั้ง "openai" เป็น default provider แทน "anthropic" เดิม — ต่างจาก
+    # decision เดิมตอนออกแบบฟีเจอร์นี้ครั้งแรก ("openai" ไม่ควรเป็น default เพราะต้อง login
+    # ก่อน) แต่ user ต้องการใช้ ChatGPT quota เป็นหลัก — ถ้า token หมดอายุ/ยังไม่ login,
+    # next_action_openai()/generate_text() จะ raise OAuthLoginRequired ที่แปลงเป็น task
+    # failure อ่านเข้าใจได้อยู่แล้ว (ไม่ต้องเพิ่ม fallback logic อัตโนมัติ) — เปลี่ยนกลับได้
+    # ผ่าน .env (LLM_PROVIDER=anthropic) หรือเลือก provider อื่นจาก dropdown ต่อ task ได้
+    # เสมอ ไม่กระทบ provider อื่นเลย
+    primary_llm_provider: str = "openai"
     fallback_llm_provider: str = "gemini"
-    llm_provider: str = "anthropic"
+    llm_provider: str = "openai"
     anthropic_model: str = "claude-haiku-4-5-20251001"
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-flash-lite-latest"
+    # W_openai_oauth: provider "openai" เรียกผ่าน chatgpt.com/backend-api/codex (Responses
+    # API, ไม่ใช่ api.openai.com ปกติ — endpoint นี้ผูกกับ OAuth token เท่านั้น) จึงใช้ได้
+    # เฉพาะชื่อ model ที่ endpoint นั้นรองรับ ไม่ใช่ทุกตัวใน OpenAI API ทั่วไป
+    #
+    # W_codex_model_retired (2026-09-10): endpoint เลิกรับ "gpt-5.4-mini" กลางวันของ 09-09
+    # โดยไม่มีอะไรฝั่งเราเปลี่ยน — ทุก task ตายที่ step 0 ด้วย 400 "The 'gpt-5.4-mini' model
+    # is not supported when using Codex with a ChatGPT account." ตอนไล่หาสาเหตุยิงโพรบ 15
+    # ชื่อโมเดล (gpt-5.4-codex / gpt-5.1-codex / gpt-5-codex / codex-mini-latest / o4-mini /
+    # gpt-5.5-mini / gpt-5.5-codex ...) ได้ 400 ข้อความเดียวกันเป๊ะทุกตัว **ยกเว้น "gpt-5.5"
+    # ตัวเปล่าตัวเดียวที่ผ่าน** — จึงไม่ใช่เรื่องสิทธิ์ของบัญชี (บัญชี free ก็เรียกตัวนี้ได้)
+    # แต่เป็นทะเบียนชื่อโมเดลของ endpoint ที่เปลี่ยนไป
+    #
+    # ผลข้างเคียงที่ตามมาด้วย: gpt-5.5 ปฏิเสธ max_output_tokens (llm.py มี fallback
+    # _openai_accepts_max_output_tokens อยู่แล้ว จึงเสีย round-trip แค่ครั้งเดียวต่อ process)
+    # เวลาที่เจอ 400 แบบนี้อีก ให้ยิงโพรบทีละชื่อก่อนสรุปว่าเป็นเรื่องแพลน/สิทธิ์ — 400 ที่
+    # พูดถึง "ChatGPT account" ชวนให้เข้าใจผิดว่าเป็นเรื่องบัญชี ทั้งที่เป็นเรื่องชื่อโมเดล
+    openai_model: str = "gpt-5.5"
+
+    # W_openai_throttle_backoff (2026-09-10): บัญชี ChatGPT ที่ไม่ใช่แพลนจ่ายเงินยิง codex
+    # endpoint ได้เป็น "ชุด" แล้วต้องพัก — วัดจากรันจริง: ผ่าน 6-9 call ติดกัน แล้วโดนตัด
+    # ทุก call เป็นเวลาราว 1-2 นาที แล้วกลับมาใช้ได้เองโดยไม่ต้องทำอะไร (11:20:12 ตาย ->
+    # 11:20:36 ใช้ได้ ห่างกัน 24 วินาที) เดิมไม่มีการรอเลย call แรกที่โดนตัดจึงฆ่าทั้ง task
+    # ทันที — task ที่ยาวอย่าง long_flow (13 call ติดกัน) ไม่มีทางจบได้เลย
+    #
+    # ผูกกับ llm_step_timeout_seconds (180s): ผลรวมของการรอทุกรอบต้องน้อยกว่าค่านั้น ไม่งั้น
+    # orchestrator จะ timeout ทิ้งไปเองก่อนที่การรอจะได้ผล — 15+30+60 = 105s เหลือให้ตัว
+    # request จริงอีก 75s ถ้าจะเพิ่ม retry ต้องขยาย llm_step_timeout_seconds ด้วยเสมอ
+    openai_throttle_max_retries: int = 3
+    openai_throttle_base_wait_seconds: float = 15.0
+
+    # หน่วงระหว่าง task ของ eval suite (0 = ไม่หน่วง ตามพฤติกรรมเดิม) — backoff ด้านบน
+    # กู้ call ที่โดนตัดไปแล้ว ส่วนค่านี้ลดโอกาสโดนตัดตั้งแต่แรก สองอย่างนี้แก้คนละครึ่งของ
+    # ปัญหาเดียวกัน และ **ค่านี้อย่างเดียวไม่พอ**: task อย่าง long_flow ยิง 13 call ติดกัน
+    # ภายใน task เดียว การเว้นช่วง "ระหว่าง" task จึงช่วยมันไม่ได้เลย ต้องมี backoff ด้วย
+    eval_task_delay_seconds: float = 0.0
+
+    # W_eval: release gate (ดู core/release_gate.py) — รวมผล eval suite ทั้งหมด (SauceDemo/
+    # OrangeHRM/MiniWoB) เขียนเป็น JSON ต่อ run ไว้ที่ dir นี้ tag ด้วย git commit + model
+    # แล้วเทียบกับผลรันล่าสุดก่อนหน้า
+    release_gate_results_dir: str = "./data/eval_results"
+    # เปอร์เซ็นต์การ regress สูงสุดที่ยอมรับได้ต่อ metric ก่อนถือว่า "ไม่ผ่าน gate" (higher-
+    # is-better metric เช่น success_rate ลดลงเกินนี้ = fail, lower-is-better metric เช่น
+    # latency เพิ่มขึ้นเกินนี้ = fail) ค่า default กลางๆ ยอมรับความผันผวนปกติของ LLM
+    # (stochastic) ได้ระดับหนึ่งโดยไม่ false-positive บ่อยเกินไป ปรับได้ถ้าพบว่าเข้ม/หลวมไป
+    release_gate_max_regression_pct: float = 10.0
+
+    # W_gate_noise_floor: baseline ที่ใช้เทียบต้องเป็น median ของ N รันหลังสุด ไม่ใช่รัน
+    # เดียวก่อนหน้า — วัดจริงแล้วพบว่า gate รันซ้ำบน commit เดิมไม่มีอะไรเปลี่ยนเลย ยัง
+    # swing เกินเกณฑ์ 10% ด้วยตัวมันเอง (success_rate -14.3%, p95 +49.5%, avg_tokens
+    # กระจาย 124k-211k = 70%) การเทียบกับรันเดียวจึงเท่ากับจับ "ดวง" ไม่ใช่ regression
+    # 5 = พอให้ median ทนรันดวงดี/ดวงร้ายได้ 2 ตัว โดยไม่ต้องรอสะสมนานเกินจะใช้งานจริง
+    # W_gate_is_noisy (2026-09-09): รันเดียวตัดสิน commit ไม่ได้ — commit 3ddb18a รัน
+    # สองครั้งติดโดยไม่แตะโค้ดเลย ได้ 12/15 (ธง FAIL) แล้ว 15/15 (ผ่าน) gate จึงรันซ้ำ
+    # แล้วตัดสินด้วย median ของ success_rate (ดู core/release_gate.py)
+    release_gate_repeats: int = 3
+    release_gate_baseline_runs: int = 5
 
     chroma_persist_dir: str = "./data/chroma"
     chroma_collection_name: str = "manuals"
@@ -27,6 +98,37 @@ class Settings(BaseSettings):
     # (ดู api/task_manager.py::_log_token_usage()) แยกจาก long_term_memory เพราะอันนั้น
     # เก็บไว้ให้ agent recall เอง ไม่ใช่ไว้ให้ developer วิเคราะห์ cost
     token_usage_log_path: str = "./data/token_usage.jsonl"
+
+    # W_step_trace: token_usage.jsonl ด้านบนบันทึกแค่ "1 บรรทัดต่อ task" (steps เป็นตัวเลขเฉยๆ)
+    # — task ที่ล้มด้วย 23 step / 693 วินาที / 1M token คืนข้อมูลได้บรรทัดเดียวว่า success:false
+    # ตอบไม่ได้เลยว่าพังที่ step ไหน เพราะอะไร และเวลาหมดไปกับ LLM / snapshot / action อย่างละ
+    # เท่าไหร่ (ก่อนหน้านี้ทั้งระบบไม่มี instrumentation เวลาสักจุดเดียว)
+    #
+    # ไฟล์นี้เก็บ 1 บรรทัดต่อ "step" พร้อม failure taxonomy — เขียนครั้งเดียวตอน task จบ
+    # (ไม่ใช่ทุก step) เพื่อไม่ให้ disk I/O แทรกกลาง agent loop
+    step_trace_log_path: str = "./data/step_trace.jsonl"
+
+    # W_extract_row_cap (P4.5): read_page_data คืน "ทั้งตาราง" กลับเข้า messages แล้วค้างอยู่
+    # จนกว่า context compaction จะกวาดออก (_COMPACT_AFTER_STEPS=6) — วัดจาก step trace ของ
+    # release gate จริง: task "search_no_results" โต 11.5k -> 43.5k input token ภายใน 8 step
+    # โดยตัว snapshot แทบไม่โตเลย ตัวโตคือผลลัพธ์ตารางที่สะสมทับกันหลายรอบ
+    #
+    # ตัดจำนวนแถวได้อย่างปลอดภัยเพราะ W_deterministic_count นับจำนวนจริงด้วยโค้ดและแนบตัวเลข
+    # ไปกับผลลัพธ์อยู่แล้ว — โมเดลจึงยังตอบคำถามเชิงนับได้ถูกโดยไม่ต้องเห็นครบทุกแถว และข้อความ
+    # ตัดจะบอกตรงๆ ว่าถูกตัดไปกี่แถว ไม่ใช่เงียบๆ (ห้ามให้โมเดลเข้าใจว่านี่คือข้อมูลทั้งหมด)
+    read_page_data_max_rows: int = 60
+
+    # W_snapshot_cap (P3.3): get_snapshot() ต่อทุก element ที่เจอเข้า text_repr โดยไม่มีเพดาน
+    # เลย — หน้า e-commerce/ข่าวทั่วไปมี element ที่ตรง selector 400-1500 ตัว = 4k-15k token
+    # ต่อ step และมี snapshot ค้างใน context พร้อมกันราว 3 ชุด (_COMPACT_AFTER_STEPS=6)
+    #
+    # ไม่ตัดจาก "elements" ที่คืนให้โค้ด — guard หลายตัวใน orchestrator (หา nav element ที่ตรง
+    # goal, ตรวจแบนเนอร์คุกกี้, ตัดสิน prompt sections) ต้องเห็นหน้าเว็บครบถึงจะทำงานถูก
+    # ตัดเฉพาะ text_repr ที่ส่งให้ LLM เท่านั้น แล้วบอกตรงๆ ว่าเหลืออีกกี่ตัว
+    #
+    # เรียง in_viewport ขึ้นก่อนอยู่แล้ว (W50) การตัดท้ายจึงตัด element ที่ต้อง scroll ไปหา
+    # ก่อนเสมอ ไม่ใช่ตัดของที่อยู่ตรงหน้า
+    snapshot_max_elements: int = 150
 
     browser_headless: bool = True
 
@@ -40,6 +142,24 @@ class Settings(BaseSettings):
     # private/internal IP (cloud metadata, LAN ภายใน ฯลฯ) เสมอไม่ว่า config อื่นจะว่าไง —
     # เปิดตัวนี้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น (default ปิด ปลอดภัยสุด)
     allow_internal_navigation: bool = False
+
+    # W_openai_oauth: OAuth login/refresh config สำหรับ provider "openai" (ดู
+    # core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม) — client_id/endpoint เป็น
+    # public constant ตายตัวของ Codex CLI เอง ไม่ต้องตั้งผ่าน .env แต่ port/timeout/cadence
+    # ปรับได้เผื่อ 1455 ชนกับ process อื่นบนเครื่อง operator หรืออยาก tune cadence เอง
+    #
+    # port loopback callback server ชั่วคราว (มีอยู่แค่ระหว่าง login 1 ครั้ง) — ลอง port หลัก
+    # ก่อนเสมอ fallback ไปตัวถัดไปเฉพาะ bind ไม่สำเร็จจริงๆ (ดู openai_oauth.py::_bind_loopback_server)
+    openai_oauth_callback_port: int = 1455
+    openai_oauth_callback_port_fallback: int = 1457
+    # เวลาสูงสุดที่รอ human กด "Sign in with ChatGPT" แล้ว redirect กลับมาให้ loopback server
+    # ก่อนถือว่า login attempt นี้ timeout
+    openai_oauth_login_timeout_seconds: float = 300.0
+    # cadence การ refresh token — ตามที่ Codex CLI ใช้เอง (ดู openai_oauth.py::
+    # _refresh_if_needed): refresh ล่วงหน้าถ้าใกล้หมดอายุ (วินาทีก่อน exp) หรือถ้านานเกินไป
+    # ตั้งแต่ refresh ครั้งล่าสุด (วัน) แม้ยังไม่ใกล้หมดอายุเลยก็ตาม
+    openai_oauth_refresh_before_expiry_seconds: float = 300.0
+    openai_oauth_refresh_max_age_days: float = 8.0
 
     api_host: str = "127.0.0.1"
     api_port: int = 8000
@@ -67,6 +187,15 @@ class Settings(BaseSettings):
     # synchronous request-response เดียว (ไม่มี SSE progress ระหว่างรอ) ต้อง fail เร็ว
     # พอให้ user รู้ว่ามีปัญหาแล้วลองใหม่ได้ ไม่ใช่ปล่อยให้ composer ดูค้างตลอดไป
     plan_generation_timeout_seconds: float = 45.0
+
+    # W_steptimeout: next_action() ใน agent loop หลัก (orchestrator.py::run_task) เป็น await
+    # ตัวเดียวในระบบที่ไม่มีขอบเขตเวลาเลย ทั้งที่ generate_plan ข้างบนมี timeout ไปแล้ว —
+    # เส้นทาง OpenAI OAuth เป็น SSE stream ที่ไม่มี read timeout และไม่มี retry ถ้า stream
+    # ค้างกลางคัน task จะค้างตลอดไป กินสล็อตของ BrowserPool ไว้จนกว่า user จะกด Stop เอง
+    # (ทางเดียวที่กู้ได้ตอนนี้) — ตั้งสูงกว่า plan_generation มากเพราะ prompt ต่อ step ใหญ่
+    # กว่ามาก (page snapshot + memory + manual) และ timeout ที่นี่ไม่ได้แปลว่า task ตาย:
+    # run_task จับเป็น step ที่ล้มเหลวแล้วรายงานตามจริง (ดู W_loop_crash ใน orchestrator.py)
+    llm_step_timeout_seconds: float = 180.0
 
     # Real-user-browser mode (CDP connect, ดู core/user_browser.py): user เปิด Chrome
     # เองล่วงหน้าด้วย --remote-debugging-port ก่อนรัน agent ในโหมดนี้ — agent ไม่ launch
@@ -212,6 +341,24 @@ class Settings(BaseSettings):
     # ติดกัน กันยิง LLM API ถี่เกิน free-tier quota ต่อนาที (RPM) — ย้ายจาก module constant
     # เดิม (hardcode 3 เสมอ) มาเป็น setting เพื่อให้ปรับได้ตาม provider/tier ที่ใช้จริงโดย
     # ไม่ต้องแก้โค้ด (เช่น tier ที่จ่ายเงินแล้วมี RPM สูงกว่า free-tier มาก ปรับให้ต่ำลงได้)
+    # W41 ต่อ (A/B วัดจริง 2026-09-11, gemini-flash-lite, 3 รอบต่อฝั่ง, โค้ดชุดเดียวกัน):
+    # เคยตั้งสมมติฐานว่าเลขนี้คือเวลาที่เสียเปล่า เพราะ KPI บอกว่า pacing กิน 3,266 วินาที =
+    # 16% ของเวลาที่ trace ไว้ทั้งหมด และ 3 วินาทีต่อ call = 20 call/นาที ซึ่ง *เกิน* เพดาน
+    # จริงของ Gemini free tier (15 call/นาที — quota_value ในข้อความ 429 เอง) อยู่แล้ว
+    # แปลว่ามันกันสิ่งที่มันถูกใส่มากันไม่ได้ด้วยซ้ำ ยิ่งตอนนี้มี backoff ครบทั้งสอง provider
+    #
+    # วัดแล้วสมมติฐานผิด — ปิดไป 0 แล้วแย่ลงทุกด้าน:
+    #
+    #                     รันที่ใช้ได้   median   pacing     llm      task ที่ชน 300s
+    #   pacing = 3.0        3/3         1.000     99.5s    258.0s         0
+    #   pacing = 0          2/3         0.933      0.0s    453.2s         2
+    #
+    # ที่ประหยัด pacing ได้ 99.5 วินาที กลับไปโผล่เป็นเวลารอ backoff ในเฟส llm เพิ่ม 195
+    # วินาที (+76%) แถมเสียไปทั้งรอบหนึ่งรอบเพราะ 429 รัวจนทุก task ตาย และอีกสอง task
+    # (click-checkboxes, enter-text) ชนเพดาน wall-clock 300 วินาทีเพราะมัวรอ backoff
+    #
+    # บทเรียน: หน่วงล่วงหน้าถูกกว่าโดนตัดแล้วค่อยรอ เพราะ 429 หนึ่งครั้งทำให้ *ทุก* call
+    # ถัดไปในหน้าต่างนั้นโดนด้วย ไม่ใช่แค่ call ที่โดน — ห้ามลดค่านี้โดยไม่รัน A/B ซ้ำ
     step_pacing_delay_seconds: float = 3.0
 
     # W67: nav-fastpath (ดู core/fastpath_executor.py::execute_navigation,

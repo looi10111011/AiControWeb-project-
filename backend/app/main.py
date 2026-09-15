@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
     # browser/process resource ผูกอยู่เลย ไม่ต้องปิด/cleanup ตอน shutdown เหมือน
     # session_registry ด้านบน (แค่ text ในหน่วยความจำ)
     app.state.file_chat_memory = {}
+    # W_retry_value_has_no_home: session_id -> {"labels": [...]} ของช่องที่รอค่าใหม่จาก user
+    # หลัง task จบด้วย TASK_FAILED_USER_INPUT_ERROR (เว็บปฏิเสธค่าที่กรอกไป) ข้อความที่ส่งให้
+    # user บอกไว้เองว่า "ตอบค่าใหม่มา ระบบจะกรอกแทนที่ในช่องเดิมให้ทันที" — dict นี้คือสิ่งที่
+    # ทำให้คำสัญญานั้นเป็นจริง ไม่มี resource ผูกอยู่ ไม่ต้อง cleanup ตอน shutdown
+    app.state.pending_value_request = {}
     yield
     await app.state.session_registry.close_all()
     await app.state.browser_pool.shutdown()
@@ -86,6 +91,16 @@ async def config_check():
     return {
         "primary_llm_provider": settings.primary_llm_provider,
         "fallback_llm_provider": settings.fallback_llm_provider,
+        # Console UI แสดง model/provider ที่ task ถัดไปจะใช้จริงไว้ท้ายแถบข้าง — ส่งทั้ง
+        # provider ที่เป็นค่าตั้งต้นและตารางชื่อ model ของทุก provider ไปเลย เพราะผู้ใช้
+        # สลับ provider ได้เองใน Settings และหน้าเว็บต้องอัปเดตชื่อ model ตามโดยไม่ต้องถามซ้ำ
+        "llm_provider": settings.llm_provider,
+        "models": {
+            "anthropic": settings.anthropic_model,
+            "gemini": settings.gemini_model,
+            "groq": settings.groq_model,
+            "openai": settings.openai_model,
+        },
         "chroma_collection_name": settings.chroma_collection_name,
         "browser_headless": settings.browser_headless,
         "browser_pool_size": settings.browser_pool_size,

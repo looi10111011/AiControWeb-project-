@@ -1,0 +1,395 @@
+- task_id: RECOVERY-REFRESH-MID-EDIT-DISCARDS-UNSAVED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Open the edit form for EMP-0006, change a field but do not save, then refresh the page.
+      Confirm the change was NOT persisted.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/6/edit
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0006
+      field: department
+      value: Support
+- task_id: RECOVERY-BACK-BUTTON-AFTER-SAVE-NO-DUPLICATE
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Edit EMP-0007, save successfully, then use the browser Back button and forward again.
+      Confirm no duplicate record or duplicate save occurred.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/7/edit
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees/7
+- task_id: RECOVERY-DUPLICATE-LEAVE-SUBMISSION-BLOCKED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson", submit a leave request for 2026-05-04 to 2026-05-05, then attempt
+      to submit an overlapping request for the same dates. Confirm the second attempt is rejected with
+      an overlap error and only one request exists.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0008
+    leave_type: Annual
+    min_days: 4
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: state_diff
+    expected:
+      leave_requests:
+        created:
+        - {}
+- task_id: RECOVERY-INSUFFICIENT-BALANCE-BLOCKED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - sarah.chan
+  goal:
+    description: Log in as "sarah.chan" and attempt to submit a leave request far longer than your available
+      balance. Confirm it is rejected and no leave request is created.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: state_diff
+    expected:
+      leave_requests:
+        created: []
+- task_id: RECOVERY-CANCEL-PENDING-LEAVE
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - matthew.lopez
+  goal:
+    description: Log in as "matthew.lopez", submit a leave request, then cancel it before it is approved.
+      Confirm the status shows cancelled.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0014
+    leave_type: Annual
+    min_days: 2
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0014
+      leave_type: Annual
+      start_date: '2026-05-11'
+      expected_status: cancelled
+- task_id: RECOVERY-DOUBLE-APPROVE-NOOP
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: James Wilson has a pending leave request — approve it as his supervisor, then attempt
+      to approve the same request again. Confirm the second attempt is a no-op and does not error or change
+      the decision.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Annual
+      start_date: '2026-02-02'
+      expected_status: approved
+- task_id: RECOVERY-FAULT-INJECTED-APPROVAL-CONFLICT-RETRY
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: James Wilson has a pending leave request. Approve it — the first attempt may fail with
+      a conflict error; if so, reload and try again. Confirm it ends up approved.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Annual
+      start_date: '2026-02-02'
+      expected_status: approved
+- task_id: RECOVERY-UNAUTHORIZED-DIRECT-URL-BLOCKED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - joseph.taylor
+  goal:
+    description: Log in as "joseph.taylor" and attempt to navigate directly to the Admin Users page. Confirm
+      access is denied and no data is exposed.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: RECOVERY-UNAUTHORIZED-CROSS-EMPLOYEE-ACCESS-BLOCKED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - john.park
+  goal:
+    description: Log in as "john.park" and attempt to view another employee's profile by direct URL. Confirm
+      access is denied.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/1
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees/1
+- task_id: RECOVERY-NO-RESULT-FILTER-THEN-RESET
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees list to a department/status combination with zero results, confirm
+      the empty state, then reset the filters and find a specific employee (EMP-0021).
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0021
+      field: status
+      value: active
+- task_id: RECOVERY-STALE-EDIT-FORM-CONFLICT
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Open the edit form for EMP-0009. While it's open, the record is changed elsewhere. Submit
+      your (now stale) edit and confirm you get a conflict message rather than silently overwriting the
+      other change.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/9/edit
+  verification:
+    type: http_redirect
+    expected:
+      location: /pim/employees/9/edit
+- task_id: RECOVERY-INVALID-DOCUMENT-TYPE-REJECTED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Attempt to upload a .exe file to employee EMP-0010's Documents page. Confirm it is rejected
+      with a clear message and no document row is created.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/10
+  verification:
+    type: state_diff
+    expected:
+      documents:
+        created: []
+- task_id: RECOVERY-OVERSIZED-DOCUMENT-REJECTED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Attempt to upload a file larger than 2MB to employee EMP-0011's Documents page. Confirm
+      it is rejected and no document row is created.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/11
+  verification:
+    type: state_diff
+    expected:
+      documents:
+        created: []
+- task_id: RECOVERY-DUPLICATE-FILENAME-REJECTED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Upload a document to employee EMP-0012, then attempt to upload a different file with
+      the same filename. Confirm the second upload is rejected as a duplicate.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/12
+  verification:
+    type: http_redirect
+    expected:
+      location: /documents/employees/12
+- task_id: RECOVERY-LOCKED-APPROVED-TIMESHEET-NO-EDIT
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: John Park has an already-approved, locked timesheet. Confirm there is no way to edit
+      its entries through the UI.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets?view=team
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0021
+      week_start_date: '2025-12-29'
+      expected_status: approved
+- task_id: RECOVERY-REJECTED-TIMESHEET-RESUBMIT
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - ethan.white
+  goal:
+    description: Log in as "ethan.white", create and submit a timesheet, have it rejected, then edit and
+      resubmit it successfully.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets/new
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0025
+      week_start_date: '2026-03-16'
+      expected_status: submitted
+- task_id: RECOVERY-EMPTY-COMMENT-LEAVE-REQUEST-STILL-VALID
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - lily.lewis
+  goal:
+    description: Log in as "lily.lewis" and submit a valid leave request with an empty comment field.
+      Confirm it is still accepted.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0030
+    leave_type: Annual
+    min_days: 1
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0030
+      leave_type: Annual
+      start_date: '2026-05-18'
+      expected_status: pending
+- task_id: RECOVERY-END-DATE-BEFORE-START-DATE-REJECTED
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - lucas.young
+  goal:
+    description: Attempt to submit a leave request whose end date is before its start date. Confirm it
+      is rejected with a clear validation message.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests/new
+  verification:
+    type: state_diff
+    expected:
+      leave_requests:
+        created: []
+- task_id: RECOVERY-FAULT-INJECTED-TIMESHEET-APPROVAL-ERROR-RETRY
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - bob.martinez
+  goal:
+    description: Approving a submitted timesheet may fail with a server error on the first attempt. If
+      so, reload and try again. Confirm it ends up approved with no duplicate entries.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets?view=team
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0011
+      week_start_date: '2026-03-09'
+      expected_status: approved
+- task_id: RECOVERY-WRONG-DEPARTMENT-FILTER-THEN-CORRECT
+  revision: 1
+  level: L4
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees list by the wrong department first, notice EMP-0023 is not there,
+      correct the filter to Sales, and confirm the employee is now found.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0023
+      field: department
+      value: Sales

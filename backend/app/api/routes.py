@@ -36,6 +36,9 @@ from backend.app.api.schemas import (
     LearnCreatedResponse,
     LearnCredentialsRequest,
     LearnSiteRequest,
+    OpenAIAuthStatusResponse,
+    OpenAILoginStartResponse,
+    OpenAILoginStatusResponse,
     PoolStatusResponse,
     RelearnPageRequest,
     RelearnPageResponse,
@@ -48,7 +51,8 @@ from backend.app.api.schemas import (
 )
 from backend.app.api.task_manager import TaskManager
 from backend.app.config import settings
-from backend.app.core import llm, plan_memory, procedural_memory
+from backend.app.core import llm, openai_oauth, plan_memory, procedural_memory
+from backend.app.core.goal_intent import detect_goal_language
 from backend.app.core.orchestrator import Orchestrator
 from backend.app.core.perception import get_snapshot
 from backend.app.core.session_registry import SessionOwnershipError
@@ -224,6 +228,9 @@ async def _context_inspection_result(req, on_event, client, model: str, resolved
             learned_flow_text = build_learned_page_flow_text(matched_page)
     reply = await llm.context_inspection_reply(
         client, model, real_goal, resolved_provider, learned_flow_text=learned_flow_text,
+        # W_context_knows_the_goal: URL เป้าหมายเป็นข้อเท็จจริงที่ request พกมาอยู่แล้ว ไม่มี
+        # เหตุผลให้โมเดลต้องเดาหรือตอบว่า "Not specified"
+        target_url=req.url or "",
     )
     await on_event({"kind": "chat_reply", "message": reply})
     return _chat_shaped_result(reply)
@@ -320,6 +327,7 @@ async def _file_query_result(
         await on_event({"kind": "chat_reply", "message": reply})
         return _chat_shaped_result(reply)
 
+    _extract_started_at = time.monotonic()
     try:
         file_text = load_manual_bytes(content, req.attached_file_name)
     except Exception as e:
@@ -331,11 +339,27 @@ async def _file_query_result(
         await on_event({"kind": "chat_reply", "message": error_message})
         return _chat_shaped_result(error_message)
 
+    _extract_seconds = time.monotonic() - _extract_started_at
     if req.session_id:
-        file_chat_memory[req.session_id] = {"filename": req.attached_file_name, "text": file_text}
+        file_chat_memory[req.session_id] = {
+            "filename": req.attached_file_name, "text": file_text,
+            # W_file_followup_with_sticky_url: "เทิร์นล่าสุดของเซสชันนี้คือเทิร์นไฟล์" — ล้างเป็น
+            # False ทันทีที่เซสชันนี้ไปรันงานเบราว์เซอร์ (ดูจุดล้างใน _run_with_resolved_browser)
+            "is_latest_turn": True,
+        }
 
+    # W_file_answer_timing: user รายงานว่า "provider openai อ่านไฟล์นานมากทั้งที่ข้อมูลไม่เยอะ"
+    # (telemetry มีแค่ duration รวมของทั้งเทิร์น = 21.8 วินาที บอกไม่ได้ว่าหมดไปกับ *แกะไฟล์*
+    # หรือ *รอโมเดล*) — แยกสองช่วงให้เห็นใน console ก่อน แล้วค่อยแก้ตรงจุดที่ช้าจริง ไม่เดา
+    _answer_started_at = time.monotonic()
     reply = await llm.answer_file_query(
         client, model, req.goal, file_text, req.attached_file_name, resolved_provider,
+    )
+    print(
+        f"[file-query] {req.attached_file_name}: extract {_extract_seconds:.1f}s "
+        f"({len(file_text):,} chars) + llm {time.monotonic() - _answer_started_at:.1f}s "
+        f"({resolved_provider})",
+        flush=True,
     )
     await on_event({"kind": "chat_reply", "message": reply})
     return _chat_shaped_result(reply)
@@ -463,10 +487,24 @@ async def _run_with_resolved_browser(
         return await _general_chat_result(req, on_event, client, model, resolved_provider)
 
     remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
-    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+    # W_file_followup_with_sticky_url: เดิมบังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอค้าง
+    # ค่าไว้จากงานก่อนหน้าในเซสชันเดียวกัน คำถามต่อยอดจากไฟล์ ("สรุปเป็นตาราง") จึงหลุดไปเข้า
+    # agent loop ของเบราว์เซอร์แล้วตอบว่า "มีทั้งหมด 0 รายการ" — ยอมให้ผ่านได้ทั้งที่มี url ถ้า
+    # (ก) เทิร์นล่าสุดของเซสชันนี้เป็นเทิร์นไฟล์จริง และ (ข) ถ้อยคำอ้างถึงข้อมูลที่เพิ่งได้มา
+    # ไม่ใช่การกระทำบนหน้าเว็บ (ดู llm.is_file_followup_request)
+    if remembered_file and not llm.goal_mentions_web_action(req.goal) and (
+        not req.url
+        or (remembered_file.get("is_latest_turn") and llm.is_file_followup_request(req.goal))
+    ):
         resolved_provider = req.provider or settings.llm_provider
         client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
         return await _file_chat_memory_reply(req, on_event, client, model, resolved_provider, remembered_file)
+
+    # W_file_followup_with_sticky_url: ผ่านสี่ทางลัดมาถึงตรงนี้ = เทิร์นนี้จะใช้เบราว์เซอร์จริง
+    # ไฟล์ที่จำไว้จึงไม่ใช่ "สิ่งที่เพิ่งคุยกัน" อีกต่อไป คำถามต่อยอดหลังจากนี้ต้องแนบไฟล์ใหม่หรือ
+    # ถามแบบไม่มี url ถึงจะกลับไปเส้นทางไฟล์ได้ (กันไม่ให้คำสั่งงานเว็บถูกตอบจากไฟล์เก่า)
+    if remembered_file is not None:
+        remembered_file["is_latest_turn"] = False
 
     wants_visible_browser = req.headless is False
     # W14: โหลดคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติครั้งเดียวตรงนี้ (ถ้ามี) แล้วส่งต่อเข้า
@@ -606,13 +644,75 @@ async def _run_with_resolved_browser(
         )
 
 
+# W_retry_value_has_no_home (บั๊กจริงที่ user เจอบน Test Console 2026-09-04): task ที่จบด้วย
+# TASK_FAILED_USER_INPUT_ERROR ส่งข้อความบอก user ว่า "กรุณาตอบกลับมาด้วยค่าใหม่ที่ต้องการใช้แทน
+# ระบบจะกรอกค่านั้นแทนที่ในช่องเดิมแล้วดำเนินการต่อให้ทันที" และหน้าเว็บมีช่องให้กรอกตอบด้วย —
+# แต่ไม่มีโค้ดส่วนไหนรับค่านั้นไปทำอะไรเลย มันถูกส่งเป็น goal ใหม่ดิบๆ agent จึงตอบว่า
+# "I can't determine the intended task ... the user's goal is only 'Abcd1234'" ซึ่งถูกต้องตาม
+# ข้อมูลที่มันได้รับ — คำสัญญาในข้อความต่างหากที่ไม่มีของจริงรองรับ
+#
+# แปลง goal ที่ endpoint ก่อนใครทั้งหมด เพื่อให้ _run_with_resolved_browser() และ
+# _will_use_browser() (ซึ่งต้องตัดสินใจตรงกันเสมอ ดู docstring ของทั้งคู่) เห็น goal เดียวกัน
+# ตัดสินด้วย keyword ล้วน ไม่เรียก LLM ตามกฎเดิมของเส้นทางนี้
+_MAX_BARE_VALUE_CHARS = 64
+
+
+def _goal_is_a_bare_replacement_value(goal: str) -> bool:
+    """ข้อความที่ user ตอบกลับมาเป็น "ค่า" เฉยๆ ไม่ใช่คำสั่งใหม่
+
+    ต้องเป็น token เดียวไม่มีช่องว่างเลย: เกณฑ์ "ไม่เกิน 4 คำ" ที่ลองก่อนหน้าใช้ไม่ได้กับ
+    ภาษาไทย เพราะไทยไม่มีเว้นวรรคระหว่างคำ — goal จริงอย่าง "เปิดเว็ปแล้วเปลี่ยนรหัสผ่านเป็น
+    12345678" นับได้แค่ 2 คำ แล้วถูกเข้าใจผิดว่าเป็นค่าเปล่าทันที (บทเรียนเดียวกับ
+    W_thai_keyword_space) ค่าที่ user พิมพ์ตอบช่องนี้เป็นรหัสผ่าน/ตัวเลข/ชื่อสั้นๆ ซึ่งไม่มี
+    ช่องว่างอยู่แล้วโดยธรรมชาติ — เดาผิดทางนี้แค่ทำให้ไม่แปลง goal (พฤติกรรมเดิม) ไม่เสียหาย"""
+    text = (goal or "").strip()
+    if not text or len(text) > _MAX_BARE_VALUE_CHARS or len(text.split()) != 1:
+        return False
+    # token เดียวที่มีอักษรไทยปนอยู่มักเป็น "คำสั่ง" ไม่ใช่ "ค่า" — "ลบuserrole=ess" ผ่านเกณฑ์
+    # ข้างบนครบทุกข้อทั้งที่เป็นคำสั่งเต็มรูป ส่วนค่าที่พิมพ์ตอบช่องนี้ในโปรเจกต์นี้เป็นรหัสผ่าน/
+    # ตัวเลข/รหัสอ้างอิงซึ่งเป็น latin หรือตัวเลขล้วนเสมอ เดาผิดทางนี้แค่ไม่แปลง goal = พฤติกรรมเดิม
+    if detect_goal_language(text)["script"] not in ("latin", "other"):
+        return False
+    return not llm.goal_mentions_web_action(text)
+
+
+def _replacement_value_goal(value: str, labels: list) -> str:
+    """คำสั่งต้องระบุช่องแบบไม่กำกวม — รันสด 2026-09-04: คำสั่งเวอร์ชันแรกเขียนว่าให้กรอกช่อง
+    "Password" แล้วโมเดลไปกรอกช่อง "Current Password" แทน เพราะชื่อหนึ่งเป็น substring ของอีก
+    ชื่อหนึ่งพอดี ผลคือรหัสปัจจุบันถูกเขียนทับ ส่วนช่องที่ผิดจริงยังค้างค่าเดิมไว้เหมือนเดิม"""
+    fields = ", ".join(f'"{label}"' for label in labels)
+    return (
+        f'กรอกค่า "{value.strip()}" ลงในช่องที่มี label ตรงตัวว่า {fields} '
+        "ให้ตรงกันทุกช่อง (แทนที่ค่าเดิมที่ระบบปฏิเสธ) "
+        "ห้ามแก้ช่องอื่นเด็ดขาด โดยเฉพาะช่องรหัสผ่านปัจจุบัน (Current Password) "
+        "ซึ่งกรอกถูกอยู่แล้ว แล้วจึงบันทึกฟอร์ม"
+    )
+
+
+def _apply_pending_replacement_value(req, pending_value_request: dict) -> None:
+    """แปลง goal ที่เป็น "ค่าเปล่า" ให้เป็นคำสั่งที่ระบุช่องชัดเจน ถ้าเทิร์นก่อนหน้าขอค่าใหม่ไว้
+
+    ต้องเรียกจาก **ทุก** endpoint ที่รับ goal ของ user: หน้า Test Console ไม่ได้ยิง
+    POST /tasks เลยเมื่อมีแผน — ปุ่ม "ส่ง" ของช่องกรอกค่าใหม่เรียก requestPlan() ซึ่งไปที่
+    /api/generate_plan แล้วต่อด้วย /api/execute_plan (ดู index.html::submitCorrectionValue)
+    เวอร์ชันแรกต่อท่อไว้ที่ create_task ที่เดียว ค่าที่ user ตอบจึงยังหลุดไปเป็น goal ดิบๆ
+    เหมือนเดิมทุกประการเมื่อใช้ผ่านหน้าเว็บจริง (สคริปต์ทดสอบของผมยิง /tasks ตรงจึงไม่เจอ)
+    และ generate_plan ต้องแปลงด้วย ไม่ใช่แค่ execute_plan — ไม่งั้นแผนถูกร่างจากคำว่า
+    "Abcd1234" ล้วนๆ ตั้งแต่ต้น"""
+    labels = (pending_value_request.get(req.session_id) or {}).get("labels") or []
+    if labels and _goal_is_a_bare_replacement_value(req.goal):
+        req.goal = _replacement_value_goal(req.goal, labels)
+
+
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
 @limiter.limit("10/minute")
 async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedResponse:
     pool = request.app.state.browser_pool
     session_registry = request.app.state.session_registry
     file_chat_memory = request.app.state.file_chat_memory
+    pending_value_request: dict = request.app.state.pending_value_request
     task_manager: TaskManager = request.app.state.task_manager
+    _apply_pending_replacement_value(req, pending_value_request)
     orchestrator = Orchestrator()
     task_id = task_manager.new_task_id()
     ask_user_func = _make_ask_user_func(task_manager, task_id, req.auto_approve)
@@ -621,10 +721,18 @@ async def create_task(req: CreateTaskRequest, request: Request) -> TaskCreatedRe
         await task_manager.push_event(task_id, event)
 
     async def _run() -> dict:
-        return await _run_with_resolved_browser(
+        result = await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
             extra_run_task_kwargs={"confirm_plan": req.confirm_plan}, file_chat_memory=file_chat_memory,
         )
+        # W_retry_value_has_no_home: จำไว้ว่ารอค่าใหม่อยู่ (หรือเลิกรอ ถ้ารอบนี้ไม่ได้จบแบบนั้น)
+        if req.session_id:
+            labels = (result or {}).get("retry_value_field_labels") or []
+            if labels:
+                pending_value_request[req.session_id] = {"labels": labels}
+            else:
+                pending_value_request.pop(req.session_id, None)
+        return result
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
     record = task_manager.submit(
@@ -693,9 +801,19 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     if req.attached_file_content_base64:
         return GeneratePlanResponse(plan="", is_qa=True)
 
+    # W_retry_value_has_no_home: แปลงก่อนร่างแผน ไม่งั้นแผนถูกร่างจากค่าเปล่าๆ
+    _apply_pending_replacement_value(req, request.app.state.pending_value_request)
     file_chat_memory: dict = request.app.state.file_chat_memory
     remembered_file = file_chat_memory.get(req.session_id) if req.session_id else None
-    if remembered_file and not req.url and not llm.goal_mentions_web_action(req.goal):
+    # W_file_followup_with_sticky_url: เดิมบังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอค้าง
+    # ค่าไว้จากงานก่อนหน้าในเซสชันเดียวกัน คำถามต่อยอดจากไฟล์ ("สรุปเป็นตาราง") จึงหลุดไปเข้า
+    # agent loop ของเบราว์เซอร์แล้วตอบว่า "มีทั้งหมด 0 รายการ" — ยอมให้ผ่านได้ทั้งที่มี url ถ้า
+    # (ก) เทิร์นล่าสุดของเซสชันนี้เป็นเทิร์นไฟล์จริง และ (ข) ถ้อยคำอ้างถึงข้อมูลที่เพิ่งได้มา
+    # ไม่ใช่การกระทำบนหน้าเว็บ (ดู llm.is_file_followup_request)
+    if remembered_file and not llm.goal_mentions_web_action(req.goal) and (
+        not req.url
+        or (remembered_file.get("is_latest_turn") and llm.is_file_followup_request(req.goal))
+    ):
         return GeneratePlanResponse(plan="", is_qa=True)
 
     domain = extract_domain(req.url)
@@ -807,6 +925,8 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
     Orchestrator.run_fastpath() docstring — รองรับแค่ page=/browser=, ไม่รองรับ
     use_user_browser/visible-window เอง) — โหมดที่ไม่รองรับ fallback ไปที่ slow-path
     ปกติเงียบๆ (ไม่ error) เหมือนไม่มี fast-path feature นี้เลย"""
+    pending_value_request: dict = request.app.state.pending_value_request
+    _apply_pending_replacement_value(req, pending_value_request)
     is_fastpath = bool(
         settings.enable_procedural_memory
         and req.execution_mode == "fastpath"
@@ -850,10 +970,19 @@ async def execute_plan(req: ExecutePlanRequest, request: Request) -> TaskCreated
                     slot_values=req.slot_values or {}, max_steps=req.max_steps, provider=req.provider,
                     ask_user_func=ask_user_func, on_event=_on_event, browser=browser,
                 )
-        return await _run_with_resolved_browser(
+        result = await _run_with_resolved_browser(
             req, orchestrator, ask_user_func, _on_event, pool, session_registry,
             extra_run_task_kwargs={"approved_plan": req.plan}, file_chat_memory=file_chat_memory,
         )
+        # W_retry_value_has_no_home: จำไว้ว่ารอค่าใหม่อยู่ (หรือเลิกรอ ถ้ารอบนี้ไม่ได้จบแบบนั้น)
+        # — เส้นทางนี้คือเส้นทางที่หน้า Test Console ใช้จริงเมื่อมีแผน
+        if req.session_id:
+            labels = (result or {}).get("retry_value_field_labels") or []
+            if labels:
+                pending_value_request[req.session_id] = {"labels": labels}
+            else:
+                pending_value_request.pop(req.session_id, None)
+        return result
 
     resolved_headless = settings.browser_headless if req.headless is None else req.headless
     record = task_manager.submit(
@@ -1281,3 +1410,49 @@ async def site_credentials_status(domain: str) -> CredentialsStatusResponse:
 async def delete_site_credentials(domain: str) -> None:
     """ลบ credential ที่เก็บไว้ของโดเมนนี้ทิ้ง — ไม่ error ถ้าไม่มีอยู่แล้ว (idempotent)"""
     delete_credentials(normalize_domain(domain))
+
+
+# --- W_openai_oauth: "Sign in with ChatGPT" สำหรับ provider "openai" (ดู core/openai_oauth.py
+# หัวไฟล์สำหรับ risk disclosure เต็ม) — routes เหล่านี้อยู่หลัง verify_api_key เดียวกับ route
+# อื่นทั้งหมดในไฟล์นี้ (router-level dependency ด้านบน) ไม่มี auth layer แยกเพิ่ม เพราะระบบนี้
+# เป็น single-tenant (operator คนเดียว, credential เดียวต่อ deployment เหมือน API key เดิม
+# ไม่ใช่ per-user account) ---
+
+@router.post("/api/auth/openai/login/start", response_model=OpenAILoginStartResponse)
+async def start_openai_login() -> OpenAILoginStartResponse:
+    """เริ่ม OAuth flow — เปิด loopback listener ก่อนเสมอแล้วคืน authorize_url ให้ frontend
+    เปิดในแท็บ/หน้าต่างใหม่ให้ user login เอง token exchange เกิดขึ้น "หลังบ้าน" ใน
+    background task ที่ผูกกับ loopback callback (ดู core/openai_oauth.py::start_login_flow())
+    ไม่ใช่ response ของ endpoint นี้ — frontend ต้อง poll GET .../login/status ต่อจนกว่าจะ
+    "linked" หรือ "error" """
+    result = await openai_oauth.start_login_flow()
+    return OpenAILoginStartResponse(authorize_url=result["authorize_url"], login_id=result["login_id"])
+
+
+@router.get("/api/auth/openai/login/status", response_model=OpenAILoginStatusResponse)
+async def openai_login_status(login_id: str = Query(...)) -> OpenAILoginStatusResponse:
+    """poll สถานะของ login attempt ที่ระบุ (login_id จาก POST .../login/start) —
+    status: "pending"|"linked"|"error" — login_id ที่ไม่รู้จัก (หมดอายุ process restart ไป
+    แล้ว หรือพิมพ์ผิด) คืน 404 ตรงๆ ไม่ใช่ "pending" ค้าง เพื่อไม่ให้ frontend poll ทิ้งไว้
+    ไม่รู้จบโดยไม่มีทางรู้ว่าจริงๆ แล้วไม่มี attempt นี้อยู่เลย"""
+    status = openai_oauth.get_login_status(login_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"ไม่พบ login attempt {login_id!r} (อาจหมดอายุ/server restart ไปแล้ว)")
+    return OpenAILoginStatusResponse(**status)
+
+
+@router.get("/api/auth/openai/status", response_model=OpenAIAuthStatusResponse)
+async def openai_auth_status() -> OpenAIAuthStatusResponse:
+    """สถานะ link ปัจจุบัน (ไม่ผูกกับ login attempt ไหนเป็นพิเศษ) — ดึงจาก token store
+    ตรงๆ (email/plan_type ที่ decode ไว้ตอน save, ไม่ decrypt access/refresh token มาโชว์
+    เลย) ใช้ตอน frontend โหลดหน้าเพื่อรู้ว่าจะ enable "openai" ใน provider dropdown ได้ไหม"""
+    status = openai_oauth.get_link_status()
+    return OpenAIAuthStatusResponse(**status)
+
+
+@router.post("/api/auth/openai/logout", status_code=204)
+async def openai_logout() -> None:
+    """ลบ token ในเครื่อง + best-effort revoke ที่ OpenAI (ดู
+    core/openai_oauth.py::revoke_token()) — ไม่ throw ถ้า revoke ทาง network ล้มเหลว (ลบ
+    local เสมอไม่ว่า network จะสำเร็จไหม)"""
+    await openai_oauth.revoke_token()

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Review — Hermes HRM{% endblock %}
+{% block content %}
+<h1>{{ review.first_name }} {{ review.last_name }} — {{ review.cycle_name }}</h1>
+<p><span class="status-badge status-{{ 'active' if review.status == 'finalized' else '' }}">{{ review.status }}</span></p>
+
+<div class="panel">
+  <h2>Self Review</h2>
+  {% if review.self_rating %}
+  <p>Rating: {{ review.self_rating }} / 5</p>
+  <p>{{ review.self_comment }}</p>
+  {% elif can_self_review %}
+  <form method="post" action="/performance/reviews/{{ review.id }}/self">
+    <label for="self_rating">Rating (1-5)</label>
+    <input id="self_rating" name="self_rating" type="number" min="1" max="5" required>
+    <label for="self_comment">Comment</label>
+    <textarea id="self_comment" name="self_comment" rows="3"></textarea>
+    <button type="submit" class="btn btn-primary">Submit Self Review</button>
+  </form>
+  {% else %}
+  <p class="empty-state">Not submitted yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Manager Review</h2>
+  {% if review.manager_rating %}
+  <p>Rating: {{ review.manager_rating }} / 5</p>
+  <p>{{ review.manager_comment }}</p>
+  {% elif can_manager_review %}
+  <form method="post" action="/performance/reviews/{{ review.id }}/manager">
+    <label for="manager_rating">Rating (1-5)</label>
+    <input id="manager_rating" name="manager_rating" type="number" min="1" max="5" required>
+    <label for="manager_comment">Comment</label>
+    <textarea id="manager_comment" name="manager_comment" rows="3"></textarea>
+    <button type="submit" class="btn btn-primary">Submit &amp; Finalize</button>
+  </form>
+  {% else %}
+  <p class="empty-state">Awaiting self review or not in scope yet.</p>
+  {% endif %}
+</div>
+
+<p><a href="/performance/reviews">&larr; Back to Reviews</a></p>
+{% endblock %}

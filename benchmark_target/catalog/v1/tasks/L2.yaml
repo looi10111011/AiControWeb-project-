@@ -1,0 +1,607 @@
+- task_id: PIM-EDIT-VERIFY-01
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0008, open the profile, edit the "job_title" field to "QA Engineer",
+      save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0008
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0008
+      field: job_title
+      value: QA Engineer
+- task_id: PIM-EDIT-VERIFY-02
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0011, open the profile, edit the "job_title" field to "Senior
+      Software Engineer", save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0011
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0011
+      field: job_title
+      value: Senior Software Engineer
+- task_id: PIM-EDIT-VERIFY-03
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0014, open the profile, edit the "job_title" field to "Senior
+      Software Engineer", save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0014
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0014
+      field: job_title
+      value: Senior Software Engineer
+- task_id: PIM-EDIT-VERIFY-04
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0018, open the profile, edit the "job_title" field to "Senior
+      Software Engineer", save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0018
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0018
+      field: job_title
+      value: Senior Software Engineer
+- task_id: PIM-EDIT-VERIFY-05
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0021, open the profile, edit the "job_title" field to "Senior
+      Software Engineer", save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0021
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0021
+      field: job_title
+      value: Senior Software Engineer
+- task_id: PIM-EDIT-VERIFY-06
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Search for employee EMP-0025, open the profile, edit the "job_title" field to "Senior
+      Software Engineer", save, and verify the change persisted.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0025
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0025
+      field: job_title
+      value: Senior Software Engineer
+- task_id: PIM-CREATE-EMPLOYEE
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Create a new employee in the Engineering department and verify it appears in the Employees
+      list.
+  preconditions: []
+  allowed_changes:
+  - employee.create
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/new
+  verification:
+    type: state_diff
+    expected:
+      employees:
+        created:
+        - department: Engineering
+- task_id: PIM-DEACTIVATE-EMPLOYEE
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Deactivate employee EMP-0031 and confirm the status changes to Terminated.
+  preconditions:
+  - type: employee.status
+    employee_code: EMP-0031
+    status: active
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/31
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0031
+      field: status
+      value: terminated
+- task_id: PIM-REACTIVATE-EMPLOYEE
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Reactivate a terminated employee (EMP-0013) and confirm the status changes back to Active.
+  preconditions:
+  - type: employee.status
+    employee_code: EMP-0013
+    status: terminated
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/pim/employees/13
+  verification:
+    type: custom
+    verifier: employee.field_equals
+    args:
+      employee_code: EMP-0013
+      field: status
+      value: active
+- task_id: ADMIN-CREATE-USER-ACCOUNT
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Create a new ESS user account linked to employee EMP-0009, then verify it appears in
+      the Users list.
+  preconditions: []
+  allowed_changes:
+  - user.create
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users/new
+  verification:
+    type: state_diff
+    expected:
+      users:
+        created:
+        - employee_id: 9
+          role: ess
+- task_id: ADMIN-DISABLE-USER
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Disable the user account "bob.martinez" and confirm it shows as disabled.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: ADMIN-ENABLE-USER
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Given a disabled account, enable "daniel.garcia" and confirm it shows as enabled.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: ADMIN-CHANGE-USER-ROLE
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Change the role of user "sarah.chan" from ess to supervisor.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/admin/users
+  verification:
+    type: http_redirect
+    expected:
+      location: /admin/users
+- task_id: LEAVE-APPLY-01
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - james.wilson
+  goal:
+    description: Log in as "james.wilson" and apply for 2 days of Annual leave next month, then verify
+      the request shows as pending.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0008
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0008
+      leave_type: Annual
+      start_date: '2026-03-02'
+      expected_status: pending
+- task_id: LEAVE-APPLY-02
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - sarah.chan
+  goal:
+    description: Log in as "sarah.chan" and apply for 2 days of Annual leave next month, then verify the
+      request shows as pending.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0011
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0011
+      leave_type: Annual
+      start_date: '2026-03-02'
+      expected_status: pending
+- task_id: LEAVE-APPLY-03
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - matthew.lopez
+  goal:
+    description: Log in as "matthew.lopez" and apply for 2 days of Annual leave next month, then verify
+      the request shows as pending.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0014
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0014
+      leave_type: Annual
+      start_date: '2026-03-02'
+      expected_status: pending
+- task_id: LEAVE-APPLY-04
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - joseph.taylor
+  goal:
+    description: Log in as "joseph.taylor" and apply for 2 days of Annual leave next month, then verify
+      the request shows as pending.
+  preconditions:
+  - type: leave_balance.available
+    employee_code: EMP-0018
+    leave_type: Annual
+    min_days: 2
+  allowed_changes:
+  - leave_request.create
+  forbidden_changes: []
+  url: http://localhost:8100/login
+  verification:
+    type: custom
+    verifier: leave.request.status
+    args:
+      employee_code: EMP-0018
+      leave_type: Annual
+      start_date: '2026-03-02'
+      expected_status: pending
+- task_id: TIME-CREATE-SUBMIT-TIMESHEET
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - john.park
+  goal:
+    description: Log in as "john.park", create a timesheet for the week of 2026-03-02 with at least one
+      entry, submit it, and verify its status is submitted.
+  preconditions: []
+  allowed_changes:
+  - timesheet.create
+  - timesheet.status
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets/new
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0021
+      week_start_date: '2026-03-02'
+      expected_status: submitted
+- task_id: LEAVE-APPROVE-BY-SUPERVISOR-01
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: Log in as supervisor "alice.nguyen", find a pending leave request from a direct report,
+      and approve it.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: http_redirect
+    expected:
+      location: /leave/requests
+- task_id: LEAVE-APPROVE-BY-SUPERVISOR-02
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - bob.martinez
+  goal:
+    description: Log in as supervisor "bob.martinez", find a pending leave request from a direct report,
+      and approve it.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: http_redirect
+    expected:
+      location: /leave/requests
+- task_id: LEAVE-APPROVE-BY-SUPERVISOR-03
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - sarah.chen
+  goal:
+    description: Log in as supervisor "sarah.chen", find a pending leave request from a direct report,
+      and approve it.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/leave/requests
+  verification:
+    type: http_redirect
+    expected:
+      location: /leave/requests
+- task_id: TIME-APPROVE-BY-SUPERVISOR
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - alice.nguyen
+  goal:
+    description: James Wilson has a submitted timesheet awaiting approval — log in as his supervisor and
+      approve it.
+  preconditions:
+  - type: employee.exists
+    employee_code: EMP-0008
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/time/timesheets?view=team
+  verification:
+    type: custom
+    verifier: timesheet.status
+    args:
+      employee_code: EMP-0008
+      week_start_date: '2026-01-05'
+      expected_status: approved
+- task_id: PERF-CLOSE-REVIEW-CYCLE
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Close the "2026 H1 Review" performance review cycle.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/performance/cycles
+  verification:
+    type: http_redirect
+    expected:
+      location: /performance/cycles
+- task_id: RECRUITMENT-SHORTLIST-01
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Shortlist candidate Priya Natarajan for the Software Engineer vacancy.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/vacancies
+  verification:
+    type: state_diff
+    expected:
+      candidates:
+        updated:
+        - key: 1
+          changes:
+            status:
+              after: shortlisted
+- task_id: RECRUITMENT-SHORTLIST-02
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Shortlist candidate Helen Osei for the Account Manager vacancy.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/vacancies
+  verification:
+    type: state_diff
+    expected:
+      candidates:
+        updated:
+        - key: 5
+          changes:
+            status:
+              after: shortlisted
+- task_id: RECRUITMENT-SCHEDULE-INTERVIEW
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Schedule an interview for candidate Marcus Webb.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/recruitment/candidates/2
+  verification:
+    type: http_redirect
+    expected:
+      location: /recruitment/candidates/2
+- task_id: DOCUMENTS-UPLOAD-VALID
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Upload a valid .txt document to employee EMP-0025's Documents page and confirm it appears
+      in the list.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/documents/employees/25
+  verification:
+    type: custom
+    verifier: document.exists
+    args:
+      employee_code: EMP-0025
+      filename: notes.txt
+- task_id: REPORTS-EXPORT-EMPLOYEES-CSV
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Filter the Employees Report to the "HR" department and export it as CSV.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/reports/employees
+  verification:
+    type: download_artifact
+    expected:
+      filename_contains: employees_report
+      content_type: text/csv
+- task_id: REPORTS-EXPORT-LEAVE-CSV
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - admin
+  goal:
+    description: Export the Leave Report as CSV for January 2026.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/reports/leave
+  verification:
+    type: download_artifact
+    expected:
+      filename_contains: leave_report
+      content_type: text/csv
+- task_id: PERF-SELF-REVIEW-SUBMIT
+  revision: 1
+  level: L2
+  fixture: base
+  actors:
+  - lily.lewis
+  goal:
+    description: Submit your self-review for the open review cycle with a rating and comment.
+  preconditions: []
+  allowed_changes: []
+  forbidden_changes: []
+  url: http://localhost:8100/performance/reviews
+  verification:
+    type: http_redirect
+    expected:
+      location: /performance/reviews

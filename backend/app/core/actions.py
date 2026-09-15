@@ -42,8 +42,9 @@ text จริงจาก DOM มาก่อน (target.locator(selector).loca
 """
 
 import asyncio
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Optional, Union
 from playwright.async_api import Frame, Page, TimeoutError as PWTimeout
 
@@ -91,6 +92,15 @@ class ActionResult:
     # matching ข้อความ toast โดยตรงเปราะบางกว่า (ต้องคง format ให้ตรงกันข้าม 2 ไฟล์) จึงใช้
     # field ที่ type-checked แทน (pattern เดียวกับ locator_descriptor ด้านบน)
     toast_confirmed: bool = False
+    # W_dropdown_sets_filter_dirty: True เฉพาะตอน click นี้คือการ "เลือกตัวเลือกใน custom
+    # dropdown ที่เปิดอยู่" จริง (ตรวจจาก DOM ก่อน dispatch — ดู state_filter.
+    # classify_click_index_disturbance) — orchestrator ใช้ยกธง filter_dirty_since_search
+    # เหมือนที่ fill/select ยกอยู่แล้ว เพราะ W50 + check_select_target_is_native() บังคับให้
+    # โมเดลใช้ "click" กับ custom dropdown ทุกกรณี ธงจึงไม่เคยถูกยกเลยบนเว็บ SPA สมัยใหม่
+    # (= เว็บแทบทั้งหมด) ทำให้ guard "ห้ามคลิก row action ก่อนกด Search" ตายสนิทในเคสที่
+    # ต้องการมันที่สุด — ส่งสัญญาณผ่าน field ที่ type-checked แทน string matching ข้อความ
+    # ผลลัพธ์ (pattern เดียวกับ toast_confirmed/locator_descriptor ด้านบน)
+    dropdown_option_selected: bool = False
 
     def __str__(self):
         mark = "OK" if self.success else "FAIL"
@@ -115,6 +125,15 @@ def _normalize_option_text(text: str) -> str:
 # กลับเข้า loop หลักทันที ไม่รอค้างนาน โดยเฉพาะตอนรวมกับ _dispatch_with_retry ด้านล่างที่
 # ยิงซ้ำอยู่แล้ว (5s เดิม x 3 ครั้ง = รอได้ถึง 15s ต่อ 1 action เดียว นานเกินไป)
 _ELEMENT_ACTION_TIMEOUT_MS = 3000
+# W_check_evaluate_timeout: ชั้น fallback ของ check() (force click / JS click) ไม่ได้รอ
+# actionability เหมือนชั้นแรก — force=True และ el.click() ข้ามการรอนั้นไปเลย เวลาที่ตั้งไว้จึง
+# ครอบแค่ "หา element เจอไหม" ซึ่งชั้นแรกเพิ่งพิสูจน์ไปแล้วว่าเจอ (มันล้มเพราะ Playwright
+# ไม่ยอมรับว่า element นี้ checkable ไม่ใช่เพราะหาไม่เจอ) — 3 วินาทีต่อชั้นจึงเป็นการรอเปล่า
+# ที่คูณด้วย _ACTION_RETRIES อีกรอบ
+_ELEMENT_FALLBACK_TIMEOUT_MS = 1000
+# อ่านสถานะ DOM ล้วนๆ หลังคลิก — ค่าเดียวกับ state_filter._STATE_CHECK_TIMEOUT_MS ด้วยเหตุผล
+# เดียวกัน (เช็คก่อน/หลัง dispatch ทุก step ต้องเร็วที่สุด)
+_STATE_READ_TIMEOUT_MS = 500
 
 
 # ------------------------------------------------------------
@@ -123,8 +142,15 @@ _ELEMENT_ACTION_TIMEOUT_MS = 3000
 # retry เงียบๆ ระดับนี้ก่อน ไม่เสีย token เพราะไม่ต้องถาม LLM จนกว่าจะลองครบ —
 # ถ้ายัง fail อยู่หลัง retry ครบ ค่อยส่งกลับให้ LLM ตัดสินใจเหมือน W4 เดิม
 # ------------------------------------------------------------
-_ACTION_RETRIES = 3  # ครั้งแรก + retry อีก 2 ครั้ง
+# W_retry_never_paid_off: วัดจาก data/step_trace.jsonl ทั้งไฟล์ (422 แถว, 2026-09-03) —
+# action ที่สำเร็จในรอบ retry ที่ 2 หรือ 3 = 0 ครั้ง ส่วนที่เผาครบทุกรอบแล้วล้มเหลว = 29 ครั้ง
+# (click 15, fill 10, select 2, press_key 1, check 1) รอบที่สามจึงยังไม่เคยกู้อะไรได้เลยใน
+# ประวัติที่บันทึกไว้ แต่คูณเวลาหางของทุก action ที่ล้มเหลว — เหลือการลองซ้ำอีกหนึ่งรอบไว้
+# สำหรับหน้าเว็บที่ render ไม่ทันจริงๆ ซึ่งเป็นเหตุผลตั้งต้นของ retry
+_ACTION_RETRIES = 2  # ครั้งแรก + retry อีก 1 ครั้ง
 _ACTION_RETRY_DELAY_SEC = 0.5
+# W_menu_overlay_blocks_target: รอสั้นๆ ให้เมนูปิดจริงก่อนวัดซ้ำ (transition ของ UI library)
+_MENU_DISMISS_WAIT_MS = 200
 
 
 async def _dispatch_with_retry(action_func, *args) -> ActionResult:
@@ -137,12 +163,12 @@ async def _dispatch_with_retry(action_func, *args) -> ActionResult:
         if result.success:
             if attempt > 1:
                 result = ActionResult(
-                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                    True, result.action, f"{result.message} (attempt {attempt}/{_ACTION_RETRIES})"
                 )
             return result
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
-    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+    return ActionResult(False, result.action, f"{result.message} (after {_ACTION_RETRIES} attempts)")
 
 
 # ------------------------------------------------------------
@@ -156,9 +182,9 @@ async def click(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         target = await resolve_frame(page, selector)
         await target.click(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"click({index})", "คลิกสำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"click({index})", "click succeeded", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"click({index})", "หา element ไม่เจอ/คลิกไม่ได้ (timeout)")
+        return ActionResult(False, f"click({index})", "element not found / not clickable (timeout)")
     except Exception as e:
         return ActionResult(False, f"click({index})", f"error: {e}")
 
@@ -188,9 +214,9 @@ async def hover(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.hover(selector, timeout=timeout, force=True)
-        return ActionResult(True, f"hover({index})", "hover สำเร็จ")
+        return ActionResult(True, f"hover({index})", "hover succeeded")
     except PWTimeout:
-        return ActionResult(False, f"hover({index})", "หา element ไม่เจอ/hover ไม่ได้ (timeout)")
+        return ActionResult(False, f"hover({index})", "element not found / not hoverable (timeout)")
     except Exception as e:
         return ActionResult(False, f"hover({index})", f"error: {e}")
 
@@ -210,7 +236,7 @@ _SAVE_LABEL_RE = re.compile(r"\b(save|submit|confirm|update)\b|บันทึ�
 # เรียงจากเจาะจงที่สุด (OrangeHRM .oxd-toast) ไปกว้างสุด (ARIA live region/toast framework
 # ทั่วไป) — ตั้งใจไม่ผูกกับ OrangeHRM เพียงเว็บเดียว เพราะ role="status"/role="alert" และ
 # class ที่มีคำว่า toast/snackbar/notification เป็น pattern มาตรฐานที่ web framework ทั่วไปใช้
-# ร่วมกันจริง (Material/Bootstrap/Ant Design ฯลฯ) ต่างจาก _RECORD_COUNT_SELECTOR ใน
+# ร่วมกันจริง (Material/Bootstrap/Ant Design ฯลฯ) ต่างจาก _RECORD_COUNT_SELECTORS ใน
 # orchestrator.py ที่ข้อความ "Records Found" ไม่ใช่ pattern ที่เว็บอื่นใช้ร่วมกันเลย
 _SUCCESS_TOAST_SELECTOR = (
     '.oxd-toast--success, .oxd-toast-container, '
@@ -227,15 +253,119 @@ async def _detect_success_toast(page: Page) -> Optional[str]:
     ไหม — คืนข้อความที่เจอ (ตัดสั้นๆ ไม่เกิน 200 ตัวอักษร) หรือ None ถ้าไม่เจอ/เช็คไม่ได้
     (ไม่ throw ให้ click ที่เพิ่ง success พัง — หลักการเดียวกับ _detect_confirmation_modal
     ด้านล่าง) รอสั้นๆ (_TOAST_WAIT_TIMEOUT_MS) ให้ animation/network เข้ามาแสดงผลก่อนถ้ายังไม่
-    เจอทันที เพราะ toast มักปรากฏหลัง response กลับมาไม่กี่ร้อย ms ไม่ใช่ทันทีที่คลิก"""
+    เจอทันที เพราะ toast มักปรากฏหลัง response กลับมาไม่กี่ร้อย ms ไม่ใช่ทันทีที่คลิก
+
+    W_toast_container_is_empty (วัดกับหน้าจริง 2026-09-07): เดิมใช้ .first ซึ่งหยิบ element แรก
+    ที่ match ตาม DOM order — บน OrangeHRM นั่นคือ ".oxd-toast-container" ซึ่งเป็น *กล่องครอบ*
+    ที่มีอยู่ก่อนแล้วและยังว่างเปล่า โค้ดจึงอ่านข้อความได้ "" แล้วคืน None ทั้งที่ toast ขึ้นจริง
+    วัดได้ว่าโผล่ที่ 156 ms และอยู่ถึง 3500 ms คือทันเวลาที่รออยู่ (2500 ms) สบายๆ
+    ผลคือ action ที่บันทึกสำเร็จถูกรายงานว่า "No toast/success confirmation appeared" แล้ว agent
+    ก็เผา step ไล่หาคำยืนยันที่ระบบมองข้ามไปเอง (เห็นในงาน add_candidate/login_checkout/
+    rag_permission ของ release gate)
+    -> รอ element ตัวแรกที่ *มีข้อความจริง* ไม่ใช่ตัวแรกที่ match selector"""
     try:
-        locator = page.locator(_SUCCESS_TOAST_SELECTOR).first
-        await locator.wait_for(state="visible", timeout=_TOAST_WAIT_TIMEOUT_MS)
-        text = (await locator.inner_text(timeout=_ELEMENT_ACTION_TIMEOUT_MS)).strip()
+        handle = await page.wait_for_function(
+            """(sel) => {
+                for (const el of document.querySelectorAll(sel)) {
+                    if (!el.getClientRects().length) continue;
+                    const text = (el.innerText || '').trim();
+                    if (text) return text;
+                }
+                return null;
+            }""",
+            arg=_SUCCESS_TOAST_SELECTOR,
+            timeout=_TOAST_WAIT_TIMEOUT_MS,
+        )
+        text = (await handle.json_value() or "").strip()
         return text[:200] if text else None
     except Exception:
         return None
 
+
+# W_click_navigated (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26 ผ่าน step trace: agent
+# คลิก "Admin" สำเร็จจริง หน้าเปลี่ยนไปแล้ว แต่ log รายงาน [FAIL] "element not found /
+# not clickable (timeout)" ทำให้รวนทั้ง run): _dispatch_click_with_retry() วน 3 รอบโดยเขียนทับ
+# `result` ทุกรอบ ข้อความของรอบสุดท้ายจึงชนะเสมอ — พอ attempt 1 คลิกสำเร็จและ SPA router
+# เปลี่ยนหน้า node เดิมหลุดจาก DOM แล้ว attempt 2/3 ไปหา [data-ai-index="N"] ที่ *ไม่มีทาง*
+# มีอยู่บนหน้าใหม่ (perception.py ล้างและแปะ index ใหม่ทุก snapshot) จึง timeout แน่นอน 100%
+# แล้วรายงานว่า FAIL ทั้งที่คลิกได้ผลจริง (เสียเวลา retry เปล่าอีก ~10 วินาทีด้วย)
+#
+# เป็นบั๊กคลาสเดียวกับที่ crawler.py W34 (_explore_buttons) เจอและแก้ไปแล้ว: "error ถือว่าเป็น
+# error จริงก็ต่อเมื่อ URL ไม่เปลี่ยน" — ยก pattern นั้นมาใช้ แต่ *ห้าม* ใช้
+# crawler._normalize_url() ตัวนั้นซ้ำเด็ดขาด เพราะมันตัด fragment (#...) ทิ้งโดยตั้งใจ (หน้าที่
+# ของมันคือ dedup ตอน crawl: "URL ต่างกันแค่ #section ไม่ควรถือว่าเป็นคนละหน้า") ซึ่งเป็น
+# semantics *ตรงข้าม* กับที่ตรงนี้ต้องการ — SPA จำนวนมากใช้ hash router (#/admin/users) หรือ
+# เปลี่ยนแค่ query param ถ้าใช้ฟังก์ชันนั้นตรงๆ การ navigate แบบนั้นจะยังถูกมองว่า "URL ไม่
+# เปลี่ยน" แล้วเป็น false FAIL เหมือนเดิมทุกประการ จึงเทียบ URL เต็ม (รวม query + fragment)
+# normalize แค่ trailing slash เท่านั้น
+def _normalize_click_url(url: str) -> str:
+    """W_click_navigated: normalize เบาที่สุดเท่าที่จำเป็น — ตัดแค่ trailing slash ท้าย URL
+    (https://x/a/ กับ https://x/a คือหน้าเดียวกันจริง) คง query + fragment ไว้ครบเสมอ
+
+    รับค่าที่ไม่ใช่ str ได้ด้วย (คืน "" ไปเลย) — Page.url จริงเป็น str property เสมอ แต่ page
+    ที่ถูก mock ในเทสต์คืน mock object ให้แทน ซึ่งไม่ควรทำให้ click พังทั้งฟังก์ชัน และการที่
+    ทั้งก่อน/หลังคืน "" เท่ากันแปลว่า "ไม่ได้ navigate" ซึ่งเป็น default ที่ปลอดภัยอยู่แล้ว"""
+    text = url.strip() if isinstance(url, str) else ""
+    return text[:-1] if len(text) > 1 and text.endswith("/") else text
+
+
+# W_click_navigated: SPA router บางตัว transition ช้ากว่า attempt แรกของ click (พบใน W34 ว่า
+# navigate จริงมาดีเลย์ได้หลายวินาที) — เผื่อเวลา poll สั้นๆ อีกครั้งหลัง retry หมดโควตา ก่อน
+# สรุปว่าคลิกไม่สำเร็จจริง ตั้งสั้นกว่า W34 (5 วินาที) มากเพราะคนละ budget: crawler รันแบบ
+# offline ครั้งเดียวต่อเว็บ แต่ตรงนี้อยู่ใน agent loop ที่ user รออยู่จริง และ click ที่ล้มจริงๆ
+# (index หลุด/element หาย) ก็เจอบ่อยพอๆ กัน — 2 วินาทีพอสำหรับ router transition ที่ค้างอยู่
+_CLICK_NAV_POLL_ATTEMPTS = 10
+_CLICK_NAV_POLL_INTERVAL_SEC = 0.2
+
+
+async def _dom_signature(page: Page) -> Optional[int]:
+    """W_click_navigated: ความยาวของ document.body.innerHTML — สัญญาณสำรองสำหรับ SPA ที่
+    เปลี่ยนแค่ state ภายในโดยไม่แตะ URL เลย (วิธีเดียวกับที่ crawler.py::_wait_for_dom_stable
+    ใช้อยู่แล้ว) คืน None ถ้าอ่านไม่ได้ (หน้าปิดไปแล้ว/execution context ถูกทำลายกลาง
+    navigation) — ห้าม throw ออกไปทำให้ click พังเด็ดขาด"""
+    try:
+        value = await page.evaluate("document.body ? document.body.innerHTML.length : 0")
+        return int(value)
+    except Exception:
+        return None
+
+
+# W_rejected_submit_reports_success (release-gate 8c0f68a, task login_checkout): agent กด
+# Continue บนฟอร์ม checkout ที่ยังไม่ได้กรอก หน้าเว็บขึ้น "Error: First Name is required"
+# ชัดเจน แต่ผลที่ส่งกลับให้โมเดลคือ "[OK] click succeeded" เฉยๆ มันจึงกดซ้ำอีกสองครั้ง
+# แล้วโดนบังคับ go_back จนงบ step หมดก่อนจะกรอกฟอร์มเสร็จ
+#
+# ตัวตรวจ toast (_detect_success_toast ด้านบน) เป็นกระจกอีกบานของเรื่องเดียวกัน แต่ตอบได้
+# แค่ "สำเร็จไหม" ไม่เคยตอบ "ถูกปฏิเสธเพราะอะไร" — และมันยังถูก gate ด้วย _SAVE_LABEL_RE
+# ซึ่งไม่มีคำว่า Continue/Next อยู่เลย ปุ่มเดินหน้าของ wizard ทุกตัวจึงไม่เคยถูกตรวจอะไร
+#
+# รายงานเฉพาะข้อความที่ "เพิ่งโผล่หลังคลิก" เท่านั้น (เทียบ before/after) — หน้าที่มี
+# error ค้างอยู่ก่อนแล้วต้องไม่ถูกรายงานว่าคลิกนี้เป็นคนทำ
+_ERROR_MESSAGE_SELECTOR = (
+    '[role="alert"]:not(:empty), [aria-live="assertive"]:not(:empty), '
+    '[class*="error" i]:not(:empty), [class*="invalid" i]:not(:empty), '
+    '[class*="danger" i]:not(:empty)'
+)
+_MAX_ERROR_MESSAGE_CHARS = 160
+
+
+async def _visible_error_texts(page: Page) -> set:
+    """ข้อความ error ที่ผู้ใช้มองเห็นอยู่ตอนนี้ — ห้าม throw (กฎเดียวกับ state_filter)"""
+    try:
+        texts = await page.evaluate(
+            """(sel) => Array.from(document.querySelectorAll(sel))
+                 .filter((el) => el.offsetParent !== null)
+                 .map((el) => (el.innerText || "").trim())
+                 .filter((t) => t && t.length <= 160)""",
+            _ERROR_MESSAGE_SELECTOR,
+        )
+    except Exception:
+        return set()
+    # ค่าที่ไม่ใช่ list (mock ในเทสต์ / evaluate ที่คืนอย่างอื่น) = อ่านไม่ได้ ไม่ใช่ "ไม่มี
+    # error" — คืน set ว่างเหมือนกัน แต่ห้าม throw ออกไปให้ execute() พังเด็ดขาด
+    if not isinstance(texts, list):
+        return set()
+    return {t for t in texts if isinstance(t, str)}
 
 async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") -> ActionResult:
     """เหมือน _dispatch_with_retry() ทั่วไป (ครั้งแรก + retry อีก _ACTION_RETRIES-1 ครั้ง)
@@ -255,6 +385,12 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
     confirmation modal ("Are you Sure?") ที่อาจเพิ่งเปิดขึ้นมาจาก click นี้ ก่อนคืนผลลัพธ์
     กลับไปให้ LLM ตัดสินใจ action ถัดไป (ดู _detect_confirmation_modal()/
     resolve_confirmation_modal() ด้านล่าง สำหรับเหตุผลเต็ม)"""
+    # W_click_navigated: อ่านสถานะ "ก่อนคลิก" ไว้ก่อนเสมอ ทั้ง URL และ DOM signature — ใช้
+    # ตัดสินตอนท้ายว่า timeout ที่ได้เป็น failure จริงหรือแค่ผลข้างเคียงของ navigation ที่
+    # สำเร็จไปแล้ว (ดู docstring ของ _normalize_click_url ด้านบนสำหรับบั๊กจริงเต็มๆ)
+    url_before = _normalize_click_url(page.url)
+    dom_before = await _dom_signature(page)
+    errors_before = await _visible_error_texts(page)
     result: ActionResult = None
     for attempt in range(1, _ACTION_RETRIES + 1):
         if attempt > 1:
@@ -263,7 +399,7 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
         if result.success:
             if attempt > 1:
                 result = ActionResult(
-                    True, result.action, f"{result.message} (ลองครั้งที่ {attempt}/{_ACTION_RETRIES})"
+                    True, result.action, f"{result.message} (attempt {attempt}/{_ACTION_RETRIES})"
                 )
             if await _detect_confirmation_modal(page):
                 modal_note = await resolve_confirmation_modal(page)
@@ -272,26 +408,118 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
                         result.success, result.action, f"{result.message}{modal_note}",
                         locator_descriptor=result.locator_descriptor,
                     )
-            elif label and _SAVE_LABEL_RE.search(label):
-                # W63[7.1]: ไม่เช็ค toast ถ้าเพิ่งเจอ confirmation modal ไปแล้วด้านบน (คนละ
-                # flow กัน — modal คือปุ่ม Delete/Remove ที่ต้องยืนยันซ้ำ ไม่ใช่ปุ่ม Save) —
-                # จำกัดเฉพาะ label ที่ตรงคำ Save/Submit/Confirm กัน overhead การรอ toast บน
-                # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
-                toast_text = await _detect_success_toast(page)
-                toast_note = (
-                    f' [พบข้อความยืนยันสำเร็จ: "{toast_text}"]' if toast_text
-                    else " [ไม่พบ toast/ข้อความยืนยันสำเร็จภายในเวลาที่กำหนดหลังคลิก — "
-                         "ตรวจสอบ validation error หรือดูว่าหน้าเปลี่ยนกลับไปหน้ารายการเองแล้ว"
-                         "หรือยังก่อนถือว่าสำเร็จ]"
+            # W63[7.1]: ไม่เช็ค toast ถ้าเพิ่งเจอ confirmation modal ไปแล้วด้านบน (คนละ
+            # flow กัน — modal คือปุ่ม Delete/Remove ที่ต้องยืนยันซ้ำ ไม่ใช่ปุ่ม Save) —
+            # จำกัดเฉพาะ label ที่ตรงคำ Save/Submit/Confirm กัน overhead การรอ toast บน
+            # click ทั่วไปที่ไม่เกี่ยวข้องเลย (เช่น navigation link)
+            else:
+                toast_text = (
+                    await _detect_success_toast(page)
+                    if label and _SAVE_LABEL_RE.search(label) else ""
                 )
-                result = ActionResult(
-                    result.success, result.action, f"{result.message}{toast_note}",
-                    locator_descriptor=result.locator_descriptor, toast_confirmed=bool(toast_text),
+                stayed = _normalize_click_url(page.url) == url_before
+                new_errors = (
+                    await _visible_error_texts(page) - errors_before if stayed else set()
                 )
+                note = ""
+                if toast_text:
+                    note = f' [Success confirmation found: "{toast_text}"]'
+                elif new_errors:
+                    # W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธไม่พาไปไหน และ
+                    # ข้อความที่มันขึ้นคือคำตอบว่าทำไมคลิกนี้ไม่ได้ผล
+                    shown = "; ".join(sorted(new_errors))[:_MAX_ERROR_MESSAGE_CHARS]
+                    note = (
+                        f' [The page rejected this: "{shown}" — the click went through but '
+                        "nothing was submitted. Fix what the message asks for, then try again; "
+                        "clicking the same button again changes nothing.]"
+                    )
+                elif label and _SAVE_LABEL_RE.search(label):
+                    # W_no_toast_is_not_a_reason_to_repeat (release-gate bf637ce, MiniWoB
+                    # click-checkboxes): ติ๊กครบแล้วกด Submit ที่ step 4 ได้คะแนนเต็มไปแล้ว
+                    # แต่ข้อความเดิมบอกว่า "ไม่พบ toast — ลองตรวจว่ามี validation error ไหม"
+                    # โมเดลจึงกด Submit ซ้ำ โดนบังคับ go_back หน้าเป็นหน้าว่าง แล้วเริ่มใหม่
+                    # ทั้งชุดจนหมด 15 step (รอบก่อนหน้าที่โจทย์เดียวกันใช้ 4 step)
+                    # อาการเดียวกันเคยเห็นใน add_candidate ตอนกด Save ซ้ำ 4 ครั้ง
+                    #
+                    # ตอนนี้แยกสองกรณีออกจากกันได้แล้ว: ถ้ามี error โผล่ กิ่งด้านบนตอบไปแล้ว
+                    # ว่าถูกปฏิเสธเพราะอะไร มาถึงตรงนี้ = ไม่มีอะไรปฏิเสธเลย เว็บจำนวนมาก
+                    # ไม่ขึ้น toast ให้อยู่แล้ว การกดปุ่มเดิมซ้ำจึงไม่ทำให้หลักฐานโผล่มาได้
+                    note = (
+                        " [No confirmation message appeared, and nothing on the page rejected "
+                        "the click either — many sites simply show no toast. Pressing the same "
+                        "button again will not make one appear: look at the data itself (the "
+                        "list/table/page you changed) for evidence, or move on to the next step "
+                        "of the goal.]"
+                    )
+                if note:
+                    result = ActionResult(
+                        result.success, result.action, f"{result.message}{note}",
+                        locator_descriptor=result.locator_descriptor,
+                        toast_confirmed=bool(toast_text),
+                    )
             return result
+        # W_click_navigated: attempt นี้ล้มเหลว แต่ถ้า URL เปลี่ยนไปแล้ว = attempt ก่อนหน้า
+        # คลิกโดนจริงและพาไปหน้าใหม่แล้ว — retry ต่อไม่มีทางสำเร็จได้เลย (index ชุดเดิมไม่มี
+        # อยู่บนหน้าใหม่) ออกจากลูปทันที ประหยัดเวลารอ timeout ที่รู้ผลล่วงหน้าอยู่แล้ว
+        if _normalize_click_url(page.url) != url_before:
+            break
         if attempt < _ACTION_RETRIES:
             await asyncio.sleep(_ACTION_RETRY_DELAY_SEC)
-    return ActionResult(False, result.action, f"{result.message} (ลองแล้ว {_ACTION_RETRIES} ครั้ง)")
+
+    # W_click_navigated: หมดโควตา retry (หรือ break ออกมาเพราะ URL เปลี่ยนแล้ว) — เผื่อเวลา
+    # ให้ SPA router ที่ transition มาช้าอีกครั้งก่อนสรุปว่าล้มเหลวจริง (W34 พบว่า navigate
+    # จริงมาดีเลย์ได้หลายวินาทีหลัง retry ครบแล้ว) — poll เฉพาะตอนที่ URL ยังไม่เปลี่ยนเท่านั้น
+    # ไม่หน่วงเพิ่มเลยในเคสที่รู้ผลแล้ว
+    navigated = _normalize_click_url(page.url) != url_before
+    if not navigated:
+        for _ in range(_CLICK_NAV_POLL_ATTEMPTS):
+            await asyncio.sleep(_CLICK_NAV_POLL_INTERVAL_SEC)
+            if _normalize_click_url(page.url) != url_before:
+                navigated = True
+                break
+    if navigated:
+        # รายงานตามความจริงทั้งสองส่วน: Playwright บอกว่า timeout จริง *และ* หน้าเปลี่ยนไป
+        # จริง — ไม่กลบข้อความเดิมทิ้ง (หลักการเดียวกับ W_click_native_select/W_confident_zero
+        # ที่ผลลัพธ์ต้องสะท้อนสิ่งที่เกิดขึ้นจริง ไม่ใช่สิ่งที่โค้ดอยากให้เป็น)
+        return ActionResult(
+            True, result.action,
+            f"the click reported a timeout, but the page navigated from {url_before} to "
+            f"{_normalize_click_url(page.url)} — the click DID take effect. Read the new page's "
+            f"indexed elements before deciding your next action (original error: {result.message})",
+        )
+
+    # W_click_navigated: สัญญาณสำรองสำหรับ SPA ที่เปลี่ยนแค่ state ภายในโดย URL คงเดิม —
+    # *ไม่* พลิกเป็น success จากสัญญาณนี้เด็ดขาด เพราะ DOM อาจเปลี่ยนจาก toast/spinner/
+    # lazy-load ที่ไม่เกี่ยวกับคลิกนี้เลย — ยังคืน fail ตามเดิม แต่แนบหลักฐานไปด้วยให้โมเดล
+    # ตัดสินใจบนข้อมูลจริง แทนที่จะเข้าใจว่า "ไม่มีอะไรเกิดขึ้นเลย" แล้วคลิกซ้ำจนโดน loop guard
+    dom_after = await _dom_signature(page)
+    dom_note = ""
+    if dom_before is not None and dom_after is not None and dom_after != dom_before:
+        dom_note = (
+            " [The page did not navigate, but its DOM did change after this click "
+            f"({dom_before} -> {dom_after} characters) — this click may already have taken "
+            "effect (a panel, dropdown or dialog may have opened). Look at the page's current "
+            "indexed elements before repeating the same action]"
+        )
+    # W_modal_check_on_failure (P8/M4): จุดเช็ค modal ทั้งหมดอยู่ใต้ `if result.success:` —
+    # พอ modal บล็อกจนคลิกไม่สำเร็จ ระบบก็ไม่มีทางรู้ว่ามี modal อยู่ กลายเป็น dead-end ที่
+    # ป้อนตัวเอง: คลิกไม่ได้ -> ไม่เช็ค -> ไม่รู้ -> คลิกที่เดิมไม่ได้อีก
+    # เจตนาจำกัดไว้แค่ "บอกความจริง" ไม่กดปุ่มยืนยันให้เอง — การกดปุ่มใน dialog ที่ agent
+    # ไม่ได้เปิดเองคือการตัดสินใจทำลายข้อมูลโดยโค้ด ซึ่งเกินขอบเขตที่ตกลงกันไว้
+    # pattern เดียวกับ W_click_native_select/W_confident_zero: รายงานตามความจริงให้โมเดล
+    # ตัดสินใจบนข้อมูลจริง ดีกว่าปล่อยให้เข้าใจว่า "element หาไม่เจอ" แล้วไล่คลิกตัวอื่นต่อ
+    blocked_note = ""
+    if await _detect_confirmation_modal(page):
+        blocked_note = (
+            " [A dialog is open on top of the page and is blocking this element — nothing "
+            "behind it can be clicked. Act on the dialog first: choose one of its own buttons "
+            "(confirm or cancel) to close it, then continue.]"
+        )
+    return ActionResult(
+        False,
+        result.action,
+        f"{result.message} (after {_ACTION_RETRIES} attempts){dom_note}{blocked_note}",
+    )
 
 
 # W23 ("Confirmation Modal Handler" — บั๊กจริงที่ user รายงาน): agent คลิก "Delete Selected"/
@@ -309,7 +537,54 @@ async def _dispatch_click_with_retry(page: Page, index: int, label: str = "") ->
 # dispatch action เดิมอยู่แล้ว ก่อนจะมาถึง _dispatch_click_with_retry() นี้เลยด้วยซ้ำ) ปุ่ม
 # ยืนยันในโมดัลเป็นแค่ UX ของเว็บที่ถาม "ซ้ำ" สำหรับ action เดียวกันที่อนุมัติไปแล้ว ไม่ใช่การ
 # ตัดสินใจใหม่ที่ต้องขออนุมัติเพิ่ม
-_DIALOG_CONTAINER_SELECTOR = '.oxd-dialog-container, [role="dialog"], .orangehrm-modal-header'
+# W_dialog_generic (C3 จาก audit ของ P7/P8): ของเดิมมี 3 ตัวและ 2 ใน 3 เป็นของ OrangeHRM ล้วน
+# (.oxd-dialog-container, .orangehrm-modal-header) เหลือของมาตรฐานแค่ [role="dialog"] ตัวเดียว
+# — dialog ที่พบบ่อยที่สุดในโลกจริงจึงตรวจไม่เจอเลยสักตัว: <dialog> ของ HTML เอง, aria-modal,
+# Bootstrap, MUI, antd, Radix, SweetAlert ทั้งหมดนี้กระทบทุกอย่างที่ยืนอยู่บน "รู้ไหมว่ามี
+# dialog เปิดอยู่" ไม่ใช่แค่ auto-confirm
+#
+# เรียง generic ก่อน framework เสมอ (หลักการเดียวกับ _MODAL_CONFIRM_BUTTON_SELECTORS ที่เรียง
+# เจาะจง->กว้าง แต่คนละเจตนา: ตัวนั้นเลือก "ปุ่มไหน" จึงต้องเจาะจงก่อน ตัวนี้แค่ตอบว่า "มีไหม")
+_DIALOG_CONTAINER_SELECTORS = (
+    "dialog[open]",
+    '[role="dialog"]',
+    '[role="alertdialog"]',
+    '[aria-modal="true"]',
+    ".modal.show",           # Bootstrap
+    ".MuiDialog-root",       # MUI
+    ".ant-modal-wrap",       # Ant Design
+    ".swal2-container",      # SweetAlert2
+    ".oxd-dialog-container", # OrangeHRM
+    ".orangehrm-modal-header",
+)
+_DIALOG_CONTAINER_SELECTOR = ", ".join(_DIALOG_CONTAINER_SELECTORS)
+
+# W_modal_confirm_generic (P3.9): ชั้น fallback เดิมกว้างแค่ 'button:has-text("Confirm")'
+# เท่านั้น — dialog ที่เขียนว่า "Yes" / "OK" / "ตกลง" / "Löschen" / "Supprimer" จึงไม่ match
+# อะไรเลยสักตัว แล้ว resolve_confirmation_modal() คืน None ทำให้ agent ค้างอยู่หน้าโมดัล
+# ซึ่งเป็นบั๊กที่ W23 เขียนมาแก้พอดี แต่แก้ได้เฉพาะเว็บภาษาอังกฤษที่ใช้คำว่า Confirm
+#
+# คำยืนยันด้านล่างครอบภาษาชุดเดียวกับ permission/rules.py::RISKY_LABEL_KEYWORDS (ไทย/ญี่ปุ่น/
+# จีน/เยอรมัน/ฝรั่งเศส/สเปน/โปรตุเกส) — ตั้งใจ *ไม่* import มาใช้ซ้ำ เพราะชุดนั้นตอบคำถามคนละ
+# ข้อ ("action นี้เสี่ยงไหม" ซึ่งรวม pay/purchase ที่ไม่ใช่ปุ่มยืนยันในโมดัล) การผูกสองชุดเข้า
+# ด้วยกันจะทำให้แก้ชุดหนึ่งแล้วอีกชุดเปลี่ยนพฤติกรรมตามโดยไม่ตั้งใจ
+#
+# *** ลำดับสำคัญมาก *** — คำยืนยันกลางๆ (yes/ok/confirm) มาก่อนคำทำลายข้อมูล (delete/remove)
+# เสมอ เพราะ has-text() เป็น substring match: dialog ที่มีปุ่ม "Do not delete" จะ match คำว่า
+# delete ด้วย ถ้าเอาคำทำลายขึ้นก่อนมีโอกาสกดผิดปุ่ม ส่วนคำปฏิเสธ (cancel/ยกเลิก/no) ไม่อยู่ใน
+# ลิสต์นี้เลยโดยตั้งใจ
+_MODAL_CONFIRM_TEXTS = (
+    # อังกฤษ — ยืนยันกลางๆ ก่อน
+    "Yes, Delete", "Yes", "OK", "Confirm", "Proceed", "Continue",
+    # ไทย
+    "ตกลง", "ยืนยัน", "ใช่",
+    # ญี่ปุ่น / จีน
+    "はい", "確認", "确定", "确认", "是",
+    # เยอรมัน / ฝรั่งเศส / สเปน / โปรตุเกส
+    "Ja", "Bestätigen", "Oui", "Confirmer", "Sí", "Si", "Confirmar", "Sim",
+    # คำทำลายข้อมูล — ท้ายสุดเสมอ (ดูเหตุผลเรื่องลำดับด้านบน)
+    "Delete", "Remove", "ลบ", "削除", "删除", "Löschen", "Supprimer", "Eliminar", "Excluir",
+)
 
 # เรียงจากเจาะจงที่สุด (OrangeHRM "Yes, Delete" ปุ่มสีแดง) ไปหากว้างที่สุด (fallback ทั่วไป
 # สำหรับ dialog framework อื่นที่ไม่ใช่ OrangeHRM) — ลองทีละตัวจนกว่าจะเจอปุ่มที่ visible จริง
@@ -318,8 +593,29 @@ _MODAL_CONFIRM_BUTTON_SELECTORS = [
     ".oxd-button--label-danger",
     'button:has-text("Yes, Delete")',
     '[role="dialog"] button.oxd-button--secondary',
-    '[role="dialog"] button:has-text("Confirm")',
+    # W_modal_confirm_generic: ชั้น generic — จำกัดขอบเขตอยู่ใน dialog container เสมอ (ทั้ง
+    # [role=dialog] มาตรฐานและ container ของ framework ที่ไม่ได้ใส่ role ให้) กันไปโดนปุ่มชื่อ
+    # เดียวกันที่อยู่บนหน้าเว็บปกตินอกโมดัล
+    # รวม container x tag ของคำเดียวกันไว้ใน selector เดียว (comma-separated) — ไล่ทีละคำ
+    # ไม่ใช่ทีละ combination เพื่อคง "ลำดับความสำคัญของคำ" ไว้ครบโดยยิง locator แค่ 30 ครั้ง
+    # แทน 120 ครั้ง (ฟังก์ชันนี้ถูกเรียกทุกครั้งที่เจอโมดัล จะช้าไม่ได้)
+    *[
+        ", ".join(
+            f'{container} {tag}:has-text("{text}")'
+            # W_dialog_generic: ใช้ชุด container เดียวกับ _DIALOG_CONTAINER_SELECTORS
+            # ด้านบน ไม่ hardcode ซ้ำ — ไม่งั้นเพิ่ม framework ใหม่แล้วตรวจ "เจอ dialog" ได้
+            # แต่หาปุ่มยืนยันในนั้นไม่เจอ ซึ่งแย่กว่าไม่ตรวจเจอตั้งแต่แรก
+            for container in _DIALOG_CONTAINER_SELECTORS
+            for tag in ("button", '[role="button"]')
+        )
+        for text in _MODAL_CONFIRM_TEXTS
+    ],
 ]
+
+# W_modal_appear_race: เวลารอ dialog ที่กำลัง animate เข้ามา (ดู _detect_confirmation_modal)
+# 600ms พอสำหรับ transition ของ UI framework ทั่วไป (ส่วนใหญ่ 150-300ms) และถ้าสะสมทุก click
+# ของ task หนึ่งก็ยังน้อยกว่าการคลิกพลาดเพราะโดน modal บังแค่ครั้งเดียว
+_MODAL_APPEAR_TIMEOUT_MS = 600
 
 _MODAL_DETACH_TIMEOUT_MS = 5000
 
@@ -339,8 +635,30 @@ _MODAL_RELOAD_TIMEOUT_MS = 15000
 async def _detect_confirmation_modal(page: Page) -> bool:
     """W23: True ถ้ามี dialog/modal container ปรากฏอยู่จริงบนหน้าตอนนี้ (มองเห็นได้) — ไม่
     throw ออกไปพัง (เหมือนหลักการเดียวกับ orchestrator.py::_scan_validation_errors: เช็ค
-    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)"""
-    return await _is_modal_still_open(page)
+    ไม่ได้ ถือว่า "ไม่มีโมดัล" ปลอดภัยกว่าเสมอ ดีกว่าไปบล็อก/หน่วง click ที่สำเร็จอยู่แล้ว)
+
+    W_modal_appear_race (C2 จาก audit ของ P7/P8): ฟังก์ชันนี้ถูกเรียก *ทันที* หลัง click สำเร็จ
+    แต่ dialog ส่วนใหญ่ animate เข้ามา — ตอนเช็ค node ยังไม่อยู่ใน DOM จึงได้ count()==0 แล้ว
+    สรุปว่า "ไม่มีโมดัล" ทั้งที่อีกเสี้ยววินาทีมันจะโผล่ขึ้นมาบังทั้งหน้า
+    นี่คือสาเหตุที่ user เจอ agent ติด loop: modal เปิดค้าง -> ทุก click ถัดไป fail -> ไม่มี
+    ทางกลับมาถึงบรรทัดที่เรียกฟังก์ชันนี้อีกเลย (จุดเรียกเดียวอยู่ใต้ `if result.success:`)
+    = dead-end ที่ออกเองไม่ได้
+
+    จึงรอสั้นๆ ก่อนสรุปว่าไม่มี — เจตนา *ไม่* ใช้ _dom_signature() มากรองว่า "ควรรอไหม" ตามที่
+    เคยร่างไว้ เพราะมันคือความยาว body.innerHTML: modal ที่ markup อยู่ใน DOM อยู่แล้วและเปิด
+    ด้วยการสลับ class (display:none -> block, .modal.show, MUI keepMounted) ความยาวไม่เปลี่ยน
+    เลยสักตัวอักษร ตัวกรองนั้นจึงพลาด modal ทั้งตระกูล
+    ราคาที่จ่าย: click ที่ไม่เปิดอะไรเลยเสียเพิ่ม _MODAL_APPEAR_TIMEOUT_MS — ตั้งไว้สั้นพอที่
+    สะสมทั้ง task แล้วยังน้อยกว่า *การคลิกพลาดครั้งเดียว* ที่กินสูงสุด ~18 วินาที"""
+    if await _is_modal_still_open(page):
+        return True
+    try:
+        await page.locator(_DIALOG_CONTAINER_SELECTOR).first.wait_for(
+            state="visible", timeout=_MODAL_APPEAR_TIMEOUT_MS,
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _is_modal_still_open(page: Page) -> bool:
@@ -407,8 +725,8 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
                 _DIALOG_CONTAINER_SELECTOR, state="detached", timeout=_MODAL_DETACH_TIMEOUT_MS,
             )
             await wait_stable(page)
-            retry_note = "" if attempt == 1 else f" (ลองครั้งที่ {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
-            return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector}){retry_note}]"
+            retry_note = "" if attempt == 1 else f" (attempt {attempt}/{_MODAL_CONFIRM_CLICK_RETRIES})"
+            return f" [Confirmation modal detected — confirmed automatically ({clicked_selector}){retry_note}]"
         except Exception:
             # detach-wait timeout: อาจเป็นเพราะโมดัลปิดจริงแล้วแค่ไม่ detach ออกจาก DOM (บาง
             # framework ซ่อนด้วย CSS อย่างเดียว ไม่ลบ element) หรืออาจเป็นเพราะยังเปิดค้างอยู่
@@ -416,7 +734,7 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
             # timeout = ปิดสำเร็จเหมือนพฤติกรรมเดิม (W23) อีกต่อไป
             if not await _is_modal_still_open(page):
                 await wait_stable(page)
-                return f" [ตรวจพบ confirmation modal — กดยืนยันอัตโนมัติแล้ว ({clicked_selector})]"
+                return f" [Confirmation modal detected — confirmed automatically ({clicked_selector})]"
             if attempt < _MODAL_CONFIRM_CLICK_RETRIES:
                 await asyncio.sleep(_MODAL_CONFIRM_RETRY_DELAY_SEC)
 
@@ -430,10 +748,7 @@ async def resolve_confirmation_modal(page: Page) -> Optional[str]:
     except Exception:
         pass
     return (
-        f" [ปุ่มยืนยัน confirmation modal ไม่ตอบสนองหลังลองแล้ว {_MODAL_CONFIRM_CLICK_RETRIES} "
-        f"ครั้ง — ระบบ reload หน้าเว็บอัตโนมัติเพื่อ sync สถานะใหม่ (เหมือนกด F5) ต้องตรวจสอบ "
-        f"indexed elements ล่าสุดหลังจากนี้แล้ว navigate/กรองข้อมูลใหม่ตามที่ goal ต้องการก่อน"
-        f"ทำงานต่อ เพราะ reload ล้าง state เดิม (เช่นคำค้นหาที่กรองไว้) ทิ้งไปแล้ว]"
+        f" [The confirmation modal's confirm button was unresponsive after {_MODAL_CONFIRM_CLICK_RETRIES} attempts — the system reloaded the page automatically to resync state (as if pressing F5). Check the indexed elements of this freshly reloaded page, then navigate/re-apply the filter the goal needs before continuing, because the reload wiped the previous state (e.g. the search term you had filtered by)]"
     )
 
 
@@ -451,9 +766,9 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
         selector = _sel(index)
         target = await resolve_frame(page, selector)
         await target.press(selector, key, timeout=timeout)
-        return ActionResult(True, f"press_key({index}, {key})", f"กดปุ่ม '{key}' สำเร็จ")
+        return ActionResult(True, f"press_key({index}, {key})", f"pressed key '{key}' succeeded")
     except PWTimeout:
-        return ActionResult(False, f"press_key({index}, {key})", "หา element ไม่เจอ/กดปุ่มไม่ได้ (timeout)")
+        return ActionResult(False, f"press_key({index}, {key})", "element not found / key press failed (timeout)")
     except Exception as e:
         return ActionResult(False, f"press_key({index}, {key})", f"error: {e}")
 
@@ -466,6 +781,43 @@ async def press_key(page: Page, index: int, key: str, timeout: int = _ELEMENT_AC
 # การกดจริงของมนุษย์ trigger keyboard event ที่ widget พวกนี้ฟังอยู่จริง) แล้วค่อย .fill()
 # ข้อความใหม่ลงในช่องที่ว่างแล้ว (เร็วกว่า/เชื่อถือได้กว่าการพิมพ์ทีละตัวอักษร เพราะช่อง
 # ว่างเปล่าแล้วไม่มีอะไรให้ .fill() ต้องเคลียร์ซ้ำอีก)
+# W_fill_wrapper_resolves_to_inner_input: element ที่กรอกได้จริงตามนิยามของ Playwright เอง
+# (ข้อความ error ของมันบอกไว้ตรงๆ ว่ารับอะไรบ้าง) — เช็คกับตัว element ก่อน ไม่ใช่เดาจาก tag
+# ที่ perception รายงาน เพราะ index ชี้ไปที่ DOM node จริงเสมอ
+_IS_FILLABLE_JS = """(el) => {
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'select') return true;
+    if (tag === 'input') return (el.type || 'text').toLowerCase() !== 'hidden';
+    return !!el.isContentEditable;
+}"""
+
+# ช่องกรอกตัวแรกที่อยู่ *ข้างใน* ตัวห่อ — เรียง input ก่อน textarea/contenteditable ตามความถี่
+# ที่พบจริงบนฟอร์ม และตัด hidden ออกเพราะกรอกไม่ได้อยู่แล้ว
+_INNER_FILLABLE_SELECTOR = 'input:not([type="hidden"]), textarea, [contenteditable="true"]'
+
+
+async def _effective_fill_selector(
+    target: Union[Page, Frame], selector: str, timeout: int,
+) -> str:
+    """คืน selector ของ element ที่กรอกได้จริง — ตัวเดิมถ้ามันกรอกได้อยู่แล้ว
+
+    ถ้า element ที่ index ชี้ไปเป็นแค่กล่องครอบ (พบบ่อยบน SPA ที่ห่อ <input> ไว้ใน div ที่ถือ
+    label ของช่องนั้น) ให้เล็งช่องกรอกตัวแรกข้างในแทน — ถ้าไม่มีข้างในเลยก็คืนตัวเดิมไป ให้
+    Playwright เป็นคนบอก error ตามความจริง ไม่ใช่เงียบไปเฉยๆ (fail-safe เหมือนทุกตัวในไฟล์นี้)"""
+    try:
+        fillable = await target.locator(selector).evaluate(_IS_FILLABLE_JS, timeout=timeout)
+    except Exception:
+        return selector
+    if fillable:
+        return selector
+    inner = f"{selector} :is({_INNER_FILLABLE_SELECTOR})"
+    try:
+        found = await target.query_selector(inner)
+    except Exception:
+        return selector
+    return inner if found is not None else selector
+
+
 async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION_TIMEOUT_MS) -> ActionResult:
     """พิมพ์ข้อความลงช่อง input/textarea ตาม index — เคลียร์ข้อความเดิมด้วย
     focus -> select-all -> Backspace ก่อนเสมอ (ดู module comment ด้านบน)
@@ -493,12 +845,19 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
+        # W_fill_wrapper_resolves_to_inner_input: index อาจชี้ที่กล่องครอบ ไม่ใช่ช่องกรอก
+        selector = await _effective_fill_selector(target, selector, timeout)
         await target.click(selector, timeout=timeout)
         await target.press(selector, "ControlOrMeta+a", timeout=timeout)
         await target.press(selector, "Backspace", timeout=timeout)
         await target.fill(selector, text, timeout=timeout)
         try:
-            await target.locator(selector).evaluate("el => { el.blur(); document.body.click(); }")
+            # W_check_evaluate_timeout: จุดเดียวกันกับใน check() — Locator.evaluate() ที่ไม่ระบุ
+            # timeout รอได้ถึง 30 วินาที ทั้งที่นี่เป็นแค่ขั้นตอนเสริม best-effort หลัง fill สำเร็จ
+            # ไปแล้ว (element ที่หลุดจาก DOM หลัง fill คือเคสที่ทำให้รอเต็มเวลาโดยไม่ได้อะไรเลย)
+            await target.locator(selector).evaluate(
+                "el => { el.blur(); document.body.click(); }", timeout=_STATE_READ_TIMEOUT_MS,
+            )
             # popup ปิดจริง (ยืนยันจากการทดสอบ) แต่ไม่ synchronous — framework ใช้
             # transition/nextTick ก่อนถอด element ออกจาก DOM จริง (~100-300ms) ไม่รอตรงนี้
             # จะคืนผลลัพธ์ก่อน popup หายจริง ทำให้ get_snapshot() รอบถัดไป (ที่ orchestrator
@@ -507,9 +866,9 @@ async def fill(page: Page, index: int, text: str, timeout: int = _ELEMENT_ACTION
         except Exception:
             pass
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"fill({index})", f"กรอก '{text}' สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"fill({index})", f"filled '{text}' succeeded", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"fill({index})", "กรอกไม่ได้ (timeout)")
+        return ActionResult(False, f"fill({index})", "could not fill (timeout)")
     except Exception as e:
         return ActionResult(False, f"fill({index})", f"error: {e}")
 
@@ -534,7 +893,7 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
     บันทึกไว้/secret_key ที่ไม่รู้จัก) ให้ LLM fallback ไปถาม user เองตามกติกา W65[1] ปกติ
     แทนที่จะ throw หรือค้าง"""
     if secret_key not in _SUPPORTED_SECRET_KEYS:
-        return ActionResult(False, f"fill_secret({index})", f"ไม่รู้จัก secret_key '{secret_key}' — ต้องถาม user เอง")
+        return ActionResult(False, f"fill_secret({index})", f"unknown secret_key '{secret_key}' — you must ask the user yourself")
 
     # Lazy import กัน circular import (site_learning -> crawler.py -> orchestrator.py ->
     # fastpath_executor.py -> actions.py) — pattern เดียวกับ orchestrator.py::_maybe_auto_login()
@@ -543,20 +902,23 @@ async def fill_secret(page: Page, index: int, secret_key: str, timeout: int = _E
     domain = extract_domain(page.url)
     creds = site_storage.load_credentials(domain)  # sync call, pattern เดียวกับ _maybe_auto_login
     if not creds or not creds.get("password"):
-        return ActionResult(False, f"fill_secret({index})", "ไม่มี credential ที่บันทึกไว้สำหรับเว็บนี้ — ต้องถาม user เอง")
+        return ActionResult(False, f"fill_secret({index})", "no credential saved for this site — you must ask the user yourself")
 
     try:
         selector = _sel(index)
         target = await resolve_frame(page, selector)
+        # W_fill_wrapper_resolves_to_inner_input (บั๊กจริงหน้า Update Password ของ OrangeHRM:
+        # "Element is not an <input>, <textarea>, <select> or [contenteditable]")
+        selector = await _effective_fill_selector(target, selector, timeout)
         await target.click(selector, timeout=timeout)
         await target.press(selector, "ControlOrMeta+a", timeout=timeout)
         await target.press(selector, "Backspace", timeout=timeout)
         await target.fill(selector, creds["password"], timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
         # ***ห้าม echo ค่าจริงกลับใน message เด็ดขาด*** ต่างจาก fill() ปกติด้านบน
-        return ActionResult(True, f"fill_secret({index})", "กรอกรหัสผ่านที่บันทึกไว้สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"fill_secret({index})", "filled the saved password successfully", locator_descriptor=descriptor)
     except PWTimeout:
-        return ActionResult(False, f"fill_secret({index})", "กรอกไม่ได้ (timeout)")
+        return ActionResult(False, f"fill_secret({index})", "could not fill (timeout)")
     except Exception as e:
         return ActionResult(False, f"fill_secret({index})", f"error: {e}")
 
@@ -595,11 +957,11 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
             await target.select_option(selector, value=matched["value"], timeout=timeout)
             descriptor = await compute_locator_descriptor(target, selector)
             return ActionResult(
-                True, f"select({index})", f"เลือก '{_normalize_option_text(matched['text'])}' สำเร็จ",
+                True, f"select({index})", f"selected '{_normalize_option_text(matched['text'])}' succeeded",
                 locator_descriptor=descriptor,
             )
         except PWTimeout:
-            return ActionResult(False, f"select({index})", "เลือกไม่ได้ (timeout)")
+            return ActionResult(False, f"select({index})", "could not select (timeout)")
         except Exception as e:
             return ActionResult(False, f"select({index})", f"error: {e}")
 
@@ -608,14 +970,13 @@ async def select_option(page: Page, index: int, label: str, timeout: int = _ELEM
     try:
         await target.select_option(selector, value=label, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"select({index})", f"เลือก (by value) '{label}' สำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"select({index})", f"selected (by value) '{label}' succeeded", locator_descriptor=descriptor)
     except Exception:
         options_repr = ", ".join(repr(_normalize_option_text(o["text"])) for o in options)
-        options_repr = options_repr or "(ไม่พบ option ใดๆ ใน dropdown นี้)"
+        options_repr = options_repr or "(no options found in this dropdown)"
         return ActionResult(
             False, f"select({index})",
-            f"ไม่พบตัวเลือกที่ตรงกับ '{label}' แม้ normalize whitespace แล้ว — "
-            f"ตัวเลือกที่มีจริง: {options_repr}",
+            f"no option matching '{label}' even after normalising whitespace — options actually available: {options_repr}",
         )
 
 
@@ -650,7 +1011,10 @@ async def _is_effectively_checked(target: Union[Page, Frame], selector: str) -> 
                     result = cls.includes('checked') || cls.includes('--active') || cls.includes(' active');
                 }
                 return !!result;
-            }"""
+            }""",
+            # W_check_evaluate_timeout: ต้องระบุเสมอ — ไม่ระบุ = 30 วินาทีของ Playwright
+            # ต่อการเรียกหนึ่งครั้ง และ check() เรียกฟังก์ชันนี้ได้ถึง 2 ครั้งต่อความพยายาม
+            timeout=_STATE_READ_TIMEOUT_MS,
         )
     except Exception:
         return False
@@ -677,7 +1041,7 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
         target = await resolve_frame(page, selector)
         await target.check(selector, timeout=timeout)
         descriptor = await compute_locator_descriptor(target, selector)
-        return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ", locator_descriptor=descriptor)
+        return ActionResult(True, f"check({index})", "checked successfully", locator_descriptor=descriptor)
     except Exception:
         pass
 
@@ -686,10 +1050,10 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
     # ตรงๆ ไม่ว่า Playwright จะมองว่า element นี้ "checkable" หรือไม่
     try:
         target = await resolve_frame(page, selector)
-        await target.click(selector, timeout=timeout, force=True)
+        await target.click(selector, timeout=min(timeout, _ELEMENT_FALLBACK_TIMEOUT_MS), force=True)
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
-            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (force click)", locator_descriptor=descriptor)
+            return ActionResult(True, f"check({index})", "checked successfully (force click)", locator_descriptor=descriptor)
     except Exception:
         pass
 
@@ -699,42 +1063,110 @@ async def check(page: Page, index: int, timeout: int = _ELEMENT_ACTION_TIMEOUT_M
     # pseudo-element ล้วนๆ)
     try:
         target = await resolve_frame(page, selector)
-        await target.locator(selector).evaluate("el => el.click()")
+        # W_check_evaluate_timeout: ต้องส่ง timeout เองเสมอ — Locator.evaluate() ที่ไม่ระบุ
+        # ใช้ default 30 วินาทีของ Playwright ทำให้ action สุดท้ายของ task ค้างครึ่งนาที
+        # ทั้งที่งานจริงเสร็จไปแล้ว (รันจริง 2026-09-03: "Timeout 30000ms exceeded" ที่
+        # step สุดท้าย หลังลบข้อมูลครบตั้งแต่ step ก่อนหน้า) — บั๊กคลาสเดียวกับ
+        # W_descriptor_timeout ที่ compute_locator_descriptor() เคยโดนมาแล้ว
+        await target.locator(selector).evaluate(
+            "el => el.click()", timeout=min(timeout, _ELEMENT_FALLBACK_TIMEOUT_MS),
+        )
         if await _is_effectively_checked(target, selector):
             descriptor = await compute_locator_descriptor(target, selector)
-            return ActionResult(True, f"check({index})", "ติ๊กสำเร็จ (JS click)", locator_descriptor=descriptor)
-        return ActionResult(False, f"check({index})", "คลิกแล้วแต่ยืนยันสถานะ checked ไม่ได้")
+            return ActionResult(True, f"check({index})", "checked successfully (JS click)", locator_descriptor=descriptor)
+        return ActionResult(False, f"check({index})", "clicked, but the checked state could not be confirmed")
     except Exception as e:
         return ActionResult(False, f"check({index})", f"error: {e}")
 
 
 async def scroll(page: Page, direction: str = "down", amount: int = 600) -> ActionResult:
-    """เลื่อนหน้าจอ ('down'/'up') — ใช้ตอน element ที่ต้องการอยู่นอกจอ"""
+    """เลื่อนหน้าจอ ('down'/'up') — ใช้ตอน element ที่ต้องการอยู่นอกจอ
+
+    W_inner_scroll (ดูเหตุผลเต็มที่ state_filter.py::_FIND_SCROLLER_FN_JS): เดิมใช้
+    page.mouse.wheel() ซึ่งเลื่อน "อะไรก็ตามที่อยู่ใต้ตำแหน่งเมาส์ปัจจุบัน" — ตำแหน่งนั้นไม่มี
+    ใครคุมเลยในระบบนี้ (ไม่เคย move mouse ไปไหนโดยตั้งใจ) บน layout ที่ pane ข้างในเป็นตัว
+    scroll ผลจึงขึ้นกับความบังเอิญล้วนๆ
+
+    เลื่อน element ตัวเดียวกับที่ check_scroll_redundant() ใช้ตัดสินว่า "ถึงขอบหรือยัง" แทน
+    แล้วรายงานระยะที่เลื่อนได้จริง — ถ้าเลื่อนไม่ได้เลยต้องบอกตามตรง (success=False) ไม่ใช่
+    คืน [OK] ลอยๆ ให้โมเดลเข้าใจผิดว่าเลื่อนแล้ว (ธีมเดียวกับ W_click_native_select)
+
+    ถ้า evaluate ล้มเหลว (หน้าแปลก/CSP) ยัง fallback ไป mouse.wheel แบบเดิมทุกประการ"""
+    dy = amount if direction == "down" else -amount
     try:
-        dy = amount if direction == "down" else -amount
+        moved = await page.evaluate(state_filter.SCROLL_BY_JS, dy)
+        await page.wait_for_timeout(300)
+        delta = int(moved["after"]) - int(moved["before"])
+        if delta == 0:
+            return ActionResult(
+                False, f"scroll({direction})",
+                "nothing scrolled — the scrollable area is already at that end, or this page "
+                "does not scroll at all. Do not repeat this scroll; act on what is already "
+                "visible, or open the item you need directly.",
+            )
+        return ActionResult(True, f"scroll({direction})", f"scrolled {delta}px")
+    except Exception:
+        pass
+    try:
         await page.mouse.wheel(0, dy)
         await page.wait_for_timeout(300)
-        return ActionResult(True, f"scroll({direction})", f"เลื่อน {dy}px")
+        return ActionResult(True, f"scroll({direction})", f"scrolled {dy}px")
     except Exception as e:
         return ActionResult(False, f"scroll({direction})", f"error: {e}")
 
 
+# W_blank_navigation_destroys_the_task (release gate จับได้ 2026-09-07, งาน MiniWoB
+# "click-checkboxes"): หลังโดนบังคับ go_back หน้าเว็บกลายเป็นหน้าว่าง โมเดลจึงสั่ง goto ด้วย url
+# ว่าง ซึ่งเดิมพาไป about:blank แล้วรายงานว่า "navigated to" สำเร็จ — จากจุดนั้นทุก action ที่
+# เหลือล้มหมด (read_page_data: "no element matching 'body'") task กู้ตัวเองไม่ได้อีกเลย
+# ไปต่อไม่ได้แต่ยังเผา step จนหมดงบ
+#
+# ไม่มีกรณีไหนที่การไปหน้าว่างเป็นความตั้งใจของ goal — ปฏิเสธตรงๆ ดีกว่าปล่อยให้ทำลาย context
+# ของ task ทิ้ง (หลักเดียวกับ check_fill_is_empty_noop: ปฏิเสธ action ที่ไม่มีทางให้ผลที่ต้องการ)
+_BLANK_URLS = ("", "about:blank", "about:", "blank")
+
+
 async def goto(page: Page, url: str, timeout: int = 15000) -> ActionResult:
     """เปิด URL ใหม่"""
+    if (url or "").strip().lower() in _BLANK_URLS:
+        return ActionResult(
+            False, "goto",
+            "[Rejected] that is a blank page, not a destination — navigating there would throw "
+            "away the page this task is working on and every later action would fail. If you "
+            "need to start over, goto the task's original URL; otherwise read the indexed "
+            "elements on the current page and continue from there",
+        )
     try:
         await page.goto(url, timeout=timeout)
-        return ActionResult(True, "goto", f"ไปที่ {url}")
+        return ActionResult(True, "goto", f"navigated to {url}")
     except Exception as e:
         return ActionResult(False, "goto", f"error: {e}")
 
 
 async def go_back(page: Page) -> ActionResult:
-    """ย้อนกลับหน้าก่อนหน้า"""
+    """ย้อนกลับหน้าก่อนหน้า
+
+    W_blank_navigation_destroys_the_task: Playwright คืน None เฉยๆ (ไม่ throw) เมื่อไม่มี
+    ประวัติให้ย้อน เดิมจึงรายงาน "went back successfully" ทุกครั้งแม้ไม่ได้ไปไหนเลยหรือหลุดไป
+    หน้าว่าง — recovery ที่ล้มเหลวถูกนับเป็นสำเร็จ แล้ว loop ก็เดินต่อบนหน้าที่ใช้อะไรไม่ได้
+    เทียบ URL ก่อน/หลังแล้วรายงานตามความจริง"""
+    before = page.url
     try:
         await page.go_back()
-        return ActionResult(True, "go_back", "ย้อนกลับสำเร็จ")
     except Exception as e:
         return ActionResult(False, "go_back", f"error: {e}")
+    after = page.url
+    # เช็ค "ไม่ได้ขยับ" ก่อนเสมอ — หน้าที่สร้างด้วย set_content มี url เป็น about:blank อยู่แล้ว
+    # ทั้งที่เนื้อหาปกติดี ถ้าเช็คหน้าว่างก่อนจะรายงานผิดว่า "หน้าหายไปแล้ว"
+    if after == before:
+        return ActionResult(False, "go_back", "there was no previous page to go back to")
+    if (after or "").strip().lower() in _BLANK_URLS:
+        return ActionResult(
+            False, "go_back",
+            "going back left a blank page — the page this task was working on is gone. "
+            "Navigate to the task's URL again to carry on",
+        )
+    return ActionResult(True, "go_back", "went back successfully")
 
 
 async def switch_tab(page: Page, tab_index: int) -> ActionResult:
@@ -742,9 +1174,9 @@ async def switch_tab(page: Page, tab_index: int) -> ActionResult:
     try:
         pages = page.context.pages
         if tab_index >= len(pages):
-            return ActionResult(False, f"switch_tab({tab_index})", f"มีแค่ {len(pages)} tab")
+            return ActionResult(False, f"switch_tab({tab_index})", f"there are only {len(pages)} tab")
         await pages[tab_index].bring_to_front()
-        return ActionResult(True, f"switch_tab({tab_index})", "สลับ tab สำเร็จ")
+        return ActionResult(True, f"switch_tab({tab_index})", "switched tab successfully")
     except Exception as e:
         return ActionResult(False, f"switch_tab({tab_index})", f"error: {e}")
 
@@ -760,10 +1192,10 @@ async def wait_stable(page: Page, timeout: int = 4000) -> ActionResult:
     """รอให้หน้าเว็บนิ่ง — เรียกหลังทุก action ที่ทำให้หน้าเปลี่ยน ก่อน snapshot รอบใหม่"""
     try:
         await page.wait_for_load_state("networkidle", timeout=timeout)
-        return ActionResult(True, "wait_stable", "หน้านิ่งแล้ว")
+        return ActionResult(True, "wait_stable", "the page is stable")
     except PWTimeout:
         # ไม่ถือเป็น fail ร้ายแรง — บางหน้ามี network ยิงตลอด
-        return ActionResult(True, "wait_stable", "timeout แต่เดินต่อได้")
+        return ActionResult(True, "wait_stable", "timed out, but it is safe to continue")
     except Exception as e:
         return ActionResult(False, "wait_stable", f"error: {e}")
 
@@ -777,6 +1209,155 @@ async def wait_stable(page: Page, timeout: int = 4000) -> ActionResult:
 # ชั้นสำรองระดับโค้ดคู่กับกติกาเดียวกันใน llm.py::SYSTEM_PROMPT (defense-in-depth เหมือน
 # pattern อื่นในไฟล์นี้ เช่น RISKY_LABEL_KEYWORDS — ไม่พึ่ง LLM เลือกถูกเพียงอย่างเดียว)
 _COUNT_QUERY_KEYWORDS = ("กี่", "จำนวน", "นับ", "how many", "count", "number of")
+
+# W_deterministic_count (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26, ต่อจาก
+# W_confident_zero): หลังแก้ให้ read_page_data คืน "ข้อมูลจริง" แทน "0 ที่ฟังดูน่าเชื่อถือ"
+# แล้ว โมเดลอ่านตารางถูกต้องแต่ยัง "นับด้วยตา" ผิด — ตารางมี 7 แถวที่เป็น ESS แต่ตอบ 6
+# ไม่มี guard ตัวไหนในระบบจับได้เลย เพราะทุก guard ที่มีตรวจ "ทำ action สำเร็จไหม" ไม่ใช่
+# "ตัวเลขในคำตอบถูกไหม"
+#
+# การนับเป็นงาน deterministic 100% ไม่มีเหตุผลให้โมเดลทำเอง — เมื่อ query เป็นคำถามเชิงนับ
+# ให้โค้ดนับจากข้อมูลที่ดึงมาได้จริงแล้วแนบตัวเลขไปด้วย (pattern เดียวกับ guard อื่นในไฟล์นี้:
+# ไม่พึ่ง LLM compliance เพียงอย่างเดียว)
+#
+# ตั้งใจ conservative เรื่อง "นับเฉพาะที่ตรงเงื่อนไข": ดึงเงื่อนไขจาก query เฉพาะรูปแบบ
+# "key=value"/"key = value" ที่ชัดเจนเท่านั้น (ตรงกับที่ user พิมพ์จริง เช่น "userrole=ess",
+# "Role = ESS") ไม่พยายามเดาจากคำทั่วไปในประโยค เพราะคำอย่าง "user"/"role" โผล่ในทุกแถว
+# อยู่แล้ว จะได้ตัวเลขที่ไม่มีความหมายแล้วทำให้โมเดลสับสนหนักกว่าเดิม
+# W_column_aware_count: จับ *ทั้งสองฝั่ง* ของ "=" (เดิมทิ้งฝั่งซ้ายไปเลย เก็บแต่ค่า) — ฝั่ง
+# ซ้ายคือชื่อคอลัมน์ที่ user ตั้งใจกรอง ("userrole=ess" = คอลัมน์ User Role ไม่ใช่ "แถวไหนก็ได้
+# ที่มีคำว่า ess") ทิ้งไปแล้วนับผิดจริง: ตารางที่มี username "ess.irhrg0" ซึ่ง Role เป็น Admin
+# จะถูกนับเป็น ESS ด้วย ทั้งที่ไม่ใช่ — ดู _matching_entry_count() ด้านล่าง
+_KEY_VALUE_IN_QUERY_RE = re.compile(r"([\w฀-๿]+)\s*=\s*([\w.\-@]+)")
+_MARKDOWN_SEPARATOR_CELL_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def _extracted_entries(data: str) -> list[str]:
+    """แปลงผลลัพธ์ของ extract_table_data() กลับเป็น "รายการต่อ entry" เพื่อนับ
+
+    รองรับ 2 รูปแบบที่ extract_table_data() คืนได้จริง — markdown table (`| a | b |`) และ
+    JSON list (`["x", "y"]` ซึ่งอาจมีบรรทัด annotation นำหน้าตอน fuzzy match) — คืน [] ถ้า
+    parse ไม่ได้ ผู้เรียกจะข้ามการนับไปเฉยๆ (ไม่มีตัวเลขดีกว่าตัวเลขผิด)"""
+    table_lines = [ln.strip() for ln in data.splitlines() if ln.strip().startswith("|")]
+    if table_lines:
+        rows = []
+        for line in table_lines:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if cells and all(_MARKDOWN_SEPARATOR_CELL_RE.match(c) for c in cells if c):
+                continue  # บรรทัดคั่น header ของ markdown
+            rows.append(line)
+        return rows[1:] if len(rows) > 1 else []  # แถวแรกคือ header
+
+    start = data.find("[")
+    if start == -1:
+        return []
+    try:
+        parsed = json.loads(data[start:])
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+# W_count_answer_check: อ่านตัวเลขที่ _deterministic_count_note() ด้านล่างเพิ่งเขียนลงใน
+# ข้อความผลลัพธ์กลับออกมา — ตั้งใจวางไว้ *ติดกัน* กับฟังก์ชันที่สร้างข้อความนั้น เพราะทั้งสอง
+# ต้องเปลี่ยนพร้อมกันเสมอถ้ารูปแบบข้อความเปลี่ยน (กับดักเดียวกับที่ dom_locator.py/
+# site_learning/extractor.py เตือนไว้ว่า "แก้ทั้งคู่หรือไม่แก้เลย" — ที่นี่แก้ด้วยการวางชิดกัน
+# แทนที่จะให้ orchestrator ไปเดา format เอาเองอีกไฟล์หนึ่ง)
+_SYSTEM_COUNT_IN_RESULT_RE = re.compile(
+    r"\[counted by the system\] (\d+) of those \d+ entries contain '([^']+)'"
+)
+
+
+def system_counted_conditions(message: str) -> dict[str, int]:
+    """W_count_answer_check: คืน {ค่าเงื่อนไข: จำนวนที่โค้ดนับได้} จากข้อความผลลัพธ์ของ
+    read_page_data — {} ถ้าไม่มีบรรทัดที่โค้ดนับเองอยู่เลย (action อื่นทั้งหมด)"""
+    return {
+        value.strip().lower(): int(count)
+        for count, value in _SYSTEM_COUNT_IN_RESULT_RE.findall(message or "")
+    }
+
+
+def _extracted_table_cells(data: str) -> tuple[list[str], list[list[str]]]:
+    """W_column_aware_count: แยก markdown table ที่ extract_table_data() คืนมาเป็น
+    (เซลล์หัวตาราง, แถวข้อมูลแบบแยกเซลล์) — คืน ([], []) ถ้าไม่ใช่ตาราง (เช่น JSON list ของ
+    รายการสินค้า ซึ่งไม่มีคอลัมน์ให้เล็งอยู่แล้ว) ผู้เรียกจะ fallback ไปนับทั้งแถวแทน"""
+    table_lines = [ln.strip() for ln in data.splitlines() if ln.strip().startswith("|")]
+    parsed = []
+    for line in table_lines:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if cells and all(_MARKDOWN_SEPARATOR_CELL_RE.match(c) for c in cells if c):
+            continue
+        parsed.append(cells)
+    if len(parsed) < 2:
+        return [], []
+    return parsed[0], parsed[1:]
+
+
+def _normalize_column_name(text: str) -> str:
+    """W_column_aware_count: "User Role" / "user_role" / "userrole" ต้องเทียบกันติด — ตัด
+    อักขระที่ไม่ใช่ตัวอักษร/ตัวเลขทิ้งทั้งหมดแล้ว lowercase (user พิมพ์ชื่อคอลัมน์ในรูปแบบไหน
+    ก็ได้ ไม่มีทางบังคับให้ตรงกับหัวตารางเป๊ะๆ)"""
+    return re.sub(r"[^a-z0-9ก-๙]", "", (text or "").lower())
+
+
+def _matching_entry_count(
+    entries: list[str], header: list[str], rows: list[list[str]], key: str, value: str,
+) -> tuple[int, str]:
+    """W_column_aware_count: คืน (จำนวนแถวที่ตรงเงื่อนไข, คำอธิบายว่านับจากตรงไหน)
+
+    ถ้าหัวตารางมีคอลัมน์ที่ชื่อตรงกับฝั่งซ้ายของ "=" ให้เทียบเฉพาะเซลล์ในคอลัมน์นั้น — ไม่งั้น
+    fallback ไปเทียบทั้งแถวแบบเดิม (ตารางที่ไม่มีหัว/JSON list/ชื่อคอลัมน์ที่เดาไม่ตรง)
+
+    ตัวอย่างที่ fallback เดิมนับผิดจริง: แถว "| ess.irhrg0 | Admin | Enabled |" ถูกนับเป็น
+    userrole=ess ด้วย เพราะคำว่า ess อยู่ในคอลัมน์ Username ไม่ใช่ User Role"""
+    needle = value.lower()
+    target = _normalize_column_name(key)
+    if target and rows:
+        for column, name in enumerate(header):
+            if _normalize_column_name(name) != target:
+                continue
+            matching = sum(
+                1 for row in rows if column < len(row) and needle in row[column].lower()
+            )
+            return matching, f"in the '{name.strip()}' column"
+    return sum(1 for entry in entries if needle in entry.lower()), "anywhere in the row"
+
+
+def _deterministic_count_note(data: str, query: str) -> str:
+    """คืนบรรทัดสรุปจำนวนที่โค้ดนับเองจาก data — คืน "" ถ้านับไม่ได้ (ดู _extracted_entries)"""
+    entries = _extracted_entries(data)
+    if not entries:
+        return ""
+    total = len(entries)
+    notes = [
+        f"[counted by the system, not by you] the data below contains exactly {total} entries. "
+        "Use this number — do not recount the rows yourself."
+    ]
+    header, rows = _extracted_table_cells(data)
+    seen: set[str] = set()
+    for key, value in _KEY_VALUE_IN_QUERY_RE.findall(query):
+        needle = value.strip().lower()
+        if not needle or needle in seen:
+            continue
+        seen.add(needle)
+        matching, where = _matching_entry_count(entries, header, rows, key, value.strip())
+        if matching:
+            notes.append(
+                f"[counted by the system] {matching} of those {total} entries contain "
+                f"'{value.strip()}' {where}."
+            )
+        else:
+            # W_conditional_count: เดิมเงียบไปเลยตอน matching เป็น 0 ซึ่งทิ้งให้โมเดลเห็นแต่
+            # บรรทัด "exactly N entries" แล้วรายงาน N เป็นคำตอบของคำถามที่มีเงื่อนไข — ผิด
+            # คนละเรื่องกันเลย ต้องบอกตามจริงว่านับได้ 0 แต่ต้องพ่วงเงื่อนไขของ W_confident_zero
+            # ไว้ด้วยเสมอ (0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ว่าอ่านตารางถูกตัว)
+            notes.append(
+                f"[counted by the system] 0 of those {total} entries contain "
+                f"'{value.strip()}' {where}. If that contradicts what you can see on the page, the data "
+                "below is not the right table — read it again with a different target_hint "
+                "instead of reporting 0."
+            )
+    return "\n".join(notes) + "\n"
 
 
 async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResult:
@@ -796,17 +1377,109 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
     เปล่า — wait_stable() timeout แล้วเดินต่อได้เสมอ (ไม่ throw) ไม่ทำให้ query ที่หน้านิ่ง
     อยู่แล้วช้าลงมาก"""
     if not target_hint:
-        return ActionResult(False, "read_page_data", "ต้องระบุ target_hint (CSS selector)")
+        return ActionResult(False, "read_page_data", "target_hint (a CSS selector) is required")
 
     await wait_stable(page)
 
     is_count_query = any(kw in query.lower() for kw in _COUNT_QUERY_KEYWORDS)
     try:
         if is_count_query:
+            # W_conditional_count (ช่องที่ W_deterministic_count ยังปิดไม่ถึง — พิสูจน์ซ้ำได้
+            # 2026-08-26): W_deterministic_count แนบตัวเลขที่โค้ดนับให้เฉพาะ "เส้นทางสำรอง"
+            # (count_elements คืน 0 หรือ extract คืน [FAIL]) เท่านั้น ส่วนเส้นทางหลักของคำถาม
+            # เชิงนับ — count_elements คืนค่ามากกว่า 0 — คืน "found N entries matching
+            # '<selector>'" ดิบๆ โดยไม่รู้จักเงื่อนไขใน query เลยสักนิด
+            #
+            # ผลคือคำถาม "มี user ที่ userrole=ess กี่คน" + target_hint '[role="row"]' คืน
+            # "found 21 entries" (ทุกแถวรวมหัวตาราง) ทั้งที่คำตอบจริงคือ 4 — success=True
+            # ด้วย จึงไม่มีสัญญาณอะไรให้ใครจับได้เลย เป็น "ตอบผิดแบบมั่นใจ" บนเส้นทางที่ใช้
+            # บ่อยที่สุดของ lane นี้ (คำถามเชิงนับเกือบทั้งหมดเข้าทางนี้)
+            #
+            # เมื่อ query มีเงื่อนไขแบบ key=value ชัดเจน การนับ element ดิบๆ ตอบคำถามนั้นไม่ได้
+            # ตามนิยาม — ต้องอ่านแถวจริงแล้วนับเฉพาะที่ตรงเงื่อนไข (ตัวนับเดียวกับ
+            # _deterministic_count_note ไม่ได้เขียนตรรกะการนับขึ้นใหม่)
+            condition_values = [v.strip() for _, v in _KEY_VALUE_IN_QUERY_RE.findall(query) if v.strip()]
+            if condition_values:
+                rows = await extract_table_data(page, target_hint, "")
+                if not rows.startswith("[FAIL]"):
+                    note = _deterministic_count_note(rows, query)
+                    if note:
+                        return ActionResult(True, "read_page_data", f"{note}{rows}")
+
             count = await count_elements(page, target_hint)
-            return ActionResult(True, "read_page_data", f"พบ {count} รายการที่ตรงกับ '{target_hint}'")
+            if count > 0:
+                if condition_values:
+                    # อ่านแถวจริงไม่ได้ (ไม่มีตาราง/parse ไม่ออก) แต่ selector ยังนับได้ —
+                    # รายงานตามความจริงว่านี่คือ "จำนวน element ที่ตรง selector" ไม่ใช่
+                    # "จำนวนรายการที่ตรงเงื่อนไข" แทนที่จะปล่อยตัวเลขที่ตอบคนละคำถามออกไป
+                    # เฉยๆ (ธีมเดียวกับ W_click_native_select/W_confident_zero)
+                    condition_text = " + ".join(repr(v) for v in condition_values)
+                    return ActionResult(
+                        True, "read_page_data",
+                        f"the selector '{target_hint}' matches {count} elements, but that is the "
+                        f"raw element count — it is NOT the number of entries matching "
+                        f"{condition_text}, and the rows themselves could not be read to check. "
+                        f"Do NOT report {count} as the answer. Read the table with a different "
+                        "target_hint (for sites that build tables out of <div>, try "
+                        "role=row) so the matching rows can actually be counted.",
+                    )
+                return ActionResult(True, "read_page_data", f"found {count} entries matching '{target_hint}'")
+            # W_confident_zero (บั๊กจริง live-reproduce บน OrangeHRM 2026-08-26): count_elements()
+            # คืน 0 ทั้งกรณี "มีศูนย์รายการจริง" และกรณี "selector ไม่ตรงอะไรเลยบนหน้านี้" —
+            # เดิมทั้งสองกรณีคืน success=True พร้อมข้อความ "found 0 entries" ซึ่งอ่านเหมือน
+            # ข้อเท็จจริงที่ยืนยันแล้ว โมเดลจึงปิดงานด้วยคำตอบ "0 รายการ" อย่างมั่นใจ
+            #
+            # เหตุการณ์จริง: goal ถามจำนวน user ที่ Role=ESS บน OrangeHRM โมเดลเดา
+            # target_hint="table tbody tr" แต่ OrangeHRM ไม่มี <table> จริงเลย (เป็น ARIA grid
+            # ด้วย div[role=row]) -> count=0 -> ตอบว่า "เจอ 0 รายการ" ทั้งที่ความจริงมี 5 —
+            # ตอบผิดแบบมั่นใจ อันตรายกว่าตอบว่าทำไม่ได้มาก เพราะไม่มีสัญญาณให้ใครจับได้เลย
+            #
+            # แก้: 0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ — ลอง extract_table_data() ด้วย hint เดิมก่อน
+            # (ตัวนั้นมี fallback ครบ: querySelectorAll หลายตัว, ARIA grid, <table>/<ul> ทั้งหน้า)
+            # ถ้ามันอ่านข้อมูลได้จริง แปลว่า count=0 มาจาก selector ผิด ไม่ใช่ของจริง
+            fallback = await extract_table_data(page, target_hint, "")
+            if not fallback.startswith("[FAIL]"):
+                # W_deterministic_count: แนบตัวเลขที่โค้ดนับเองไปด้วยเสมอ — เดิมบอกให้โมเดล
+                # "นับเอาเองจากข้อมูลข้างล่าง" ซึ่งมันนับผิดจริง (7 แถว ESS ตอบ 6)
+                return ActionResult(
+                    True, "read_page_data",
+                    f"the selector '{target_hint}' matched 0 elements directly, so counting it "
+                    "would have been wrong. Here is the data actually found on this page "
+                    f"instead:\n{_deterministic_count_note(fallback, query)}{fallback}",
+                )
+            return ActionResult(
+                False, "read_page_data",
+                f"the selector '{target_hint}' matched 0 elements on this page, and no table or "
+                "list could be read from it either. This means the selector is wrong — it does "
+                "NOT mean the answer is zero. Do not report 0 as the answer. Pick a different "
+                "target_hint based on what you can see on the page (for sites that build tables "
+                "out of <div> instead of <table>, try '[role=\"row\"]').",
+            )
         data = await extract_table_data(page, target_hint, query)
-        return ActionResult(not data.startswith("[FAIL]"), "read_page_data", data)
+        if data.startswith("[FAIL]"):
+            # W_query_is_a_question (เจอจาก step trace ตัวใหม่: read_page_data ล้มติดกัน 3 step
+            # บน saucedemo ก่อนจะบังเอิญสำเร็จ): extract_table_data() ตีความ query ว่าเป็น
+            # "ค่าที่ต้องหาให้เจอในตาราง" (เช่นชื่อคน) แล้วคืน [FAIL] ถ้าหาไม่เจอ — แต่โมเดล
+            # ส่งคำถามภาษาธรรมชาติมาเป็นปกติ ("first product name", "how many rows...") ซึ่ง
+            # ไม่มีวันปรากฏเป็นข้อความในตารางอยู่แล้ว ผลคือ [FAIL] ทั้งที่ดึงข้อมูลมาได้ครบ
+            # แล้วจริงๆ แล้วทิ้งข้อมูลนั้นไปเปล่าๆ โมเดลก็เดา target_hint ใหม่วนไปเรื่อยๆ
+            #
+            # ลองอีกรอบแบบไม่ส่ง query (= ขอข้อมูลเฉยๆ) ถ้าได้ข้อมูลจริงก็คืนไปให้ตอบเอง
+            # พร้อมบอกตรงๆ ว่าไม่เจอข้อความนั้นแบบตรงตัว — รักษาเจตนาเดิมของ W46 (ห้ามแกล้ง
+            # ทำเป็นเจอ) ไว้ครบ แค่ไม่ทิ้งข้อมูลที่อ่านมาได้แล้ว
+            without_query = await extract_table_data(page, target_hint, "")
+            if without_query.startswith("[FAIL]"):
+                return ActionResult(False, "read_page_data", data)
+            return ActionResult(
+                True, "read_page_data",
+                f"no cell matched '{query}' verbatim, so treat that as a question to answer "
+                "from the data below rather than as a value that exists on the page. If the "
+                f"answer genuinely is not in here, say so.\n"
+                f"{_deterministic_count_note(without_query, query)}{without_query}",
+            )
+        # W_deterministic_count: goal ที่ถามจำนวนแต่ hint ตรงพอดี (count lane ไม่ทำงาน เพราะ
+        # query ไม่มีคำเชิงนับ) ยังต้องได้ตัวเลขที่นับด้วยโค้ดเหมือนกัน — แนบเฉพาะตอนนับได้จริง
+        return ActionResult(True, "read_page_data", f"{_deterministic_count_note(data, query)}{data}")
     except Exception as e:
         return ActionResult(False, "read_page_data", f"error: {e}")
 
@@ -821,7 +1494,7 @@ async def read_page_data(page: Page, query: str, target_hint: str) -> ActionResu
 # ทั่วไป เช่น timeout/index ผิด/BLOCKED) — ดึงเป็น constant แยกแทนที่จะ hardcode ข้อความ
 # ซ้ำในหลายที่ เพราะ memory.py::ShortTermMemory ต้องเช็คข้อความนี้เพื่อแยก "refusal"
 # ออกจาก failure อื่นๆ (ดู rejected_actions_summary())
-REJECTED_BY_USER_MESSAGE = "ผู้ใช้ปฏิเสธการทำ Action นี้ (Human-in-the-loop)"
+REJECTED_BY_USER_MESSAGE = "The user refused to perform this action (human-in-the-loop)"
 
 
 async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label: str = "") -> bool:
@@ -834,12 +1507,12 @@ async def _confirm_action(cmd: dict, ask_user_func: Optional[AskUserFunc], label
     if ask_user_func is not None:
         confirm_cmd = dict(cmd, element_label=label) if label else cmd
         return bool(await ask_user_func(confirm_cmd))
-    print(f"\n[HUMAN-IN-THE-LOOP] Agent ต้องการเรียกใช้คำสั่งที่มีความเสี่ยง: {cmd}", flush=True)
+    print(f"\n[HUMAN-IN-THE-LOOP] The agent wants to run a risky command: {cmd}", flush=True)
     # ใช้ asyncio.to_thread เพื่อให้รับ input() ได้โดยไม่บล็อก async event loop หลัก
-    choice = await asyncio.to_thread(input, "คุณต้องการอนุญาตให้ทำ Action นี้หรือไม่? (y/n): ")
+    choice = await asyncio.to_thread(input, "Do you want to allow this action? (y/n): ")
     approved = choice.strip().lower() in ("y", "yes")
     if approved:
-        print("[APPROVED] อนุญาตให้ดำเนินการต่อ...", flush=True)
+        print("[APPROVED] proceeding...", flush=True)
     return approved
 
 
@@ -861,7 +1534,7 @@ async def _check_permission(
         element_tag=element_tag, element_type=element_type,
     )
     if risk == ActionRisk.BLOCKED:
-        return "Action ถูกบล็อกโดยระบบรักษาความปลอดภัย (Blocklist)"
+        return "Action blocked by the security layer (blocklist)"
     if risk == ActionRisk.NEEDS_CONFIRMATION:
         approved = await _confirm_action(cmd, ask_user_func, label)
         if not approved:
@@ -898,7 +1571,10 @@ async def _maybe_chain_click(
     feature นี้เอง) ยอมรับว่าอาจไม่ specific เท่าที่ควรสำหรับ target ที่สอง แต่ปลอดภัยกว่า
     ไม่มี guidance เลย"""
     then_index = cmd.get("then_click_index")
-    if then_index is None or not primary.success:
+    # W_chain_partial_success: index ติดลบไม่มีทางเป็น element จริง — บาง provider ส่ง -1 มาเป็น
+    # sentinel แทน "ไม่มี chain" (ดู llm._normalize_openai_args) กรองที่นี่อีกชั้นให้ทุก provider
+    # ไม่ใช่แค่ตัวที่รู้จัก ไม่งั้นเสีย retry ของ _dispatch_click_with_retry() 3 รอบเปล่าๆ ทุกครั้ง
+    if then_index is None or (isinstance(then_index, int) and then_index < 0) or not primary.success:
         return primary
 
     synthetic_cmd = {"type": "click", "index": then_index}
@@ -909,20 +1585,87 @@ async def _maybe_chain_click(
         return ActionResult(
             primary.success,
             primary.action,
-            f"{primary.message} (ไม่ได้คลิกต่อที่ index {then_index}: {denial} — สั่ง click "
-            f"แยกเป็น step ถัดไปแทน)",
+            f"{primary.message} (did not go on to click index {then_index}: {denial} — issue that click as a separate next step instead)",
             locator_descriptor=primary.locator_descriptor, toast_confirmed=primary.toast_confirmed,
         )
 
     second = await _dispatch_click_with_retry(page, then_index, then_label)
+    if second.success:
+        return ActionResult(
+            True,
+            primary.action,
+            f"{primary.message} + then click({then_index}): {second.message}",
+            locator_descriptor=primary.locator_descriptor,
+            toast_confirmed=primary.toast_confirmed or second.toast_confirmed,
+        )
+    # W_chain_partial_success (บั๊กจริง live-reproduce บน OrangeHRM กับ provider openai):
+    # เดิมคืน primary.success and second.success — primary ที่ "สำเร็จจริงและเปลี่ยนหน้าไปแล้ว"
+    # ถูกรายงานรวมเป็น [FAIL] เพราะ chain ตัวที่สองพลาด โมเดลอ่านว่าล้มเหลวทั้งก้อนแล้ว "ลอง
+    # คลิก primary ซ้ำ" รอบแล้วรอบเล่า (เห็นจริง 10 step ติดกัน: click(3) สำเร็จทุกครั้ง แต่
+    # then_click_index ที่ค้างจาก snapshot ก่อนหน้าพังทุกครั้ง จน task หมด max_steps ทั้งที่
+    # ไปถึงหน้าเป้าหมายตั้งแต่ step แรก) — chain ตัวที่สองพลาดเป็นเรื่องปกติมากเพราะ primary
+    # มักทำให้หน้าเปลี่ยน แล้ว index ที่โมเดลจำมาจาก snapshot เดิมก็ค้างทันที
+    #
+    # ยึดหลักเดียวกับ branch permission-denial ด้านบนทุกประการ: ความคืบหน้าที่เกิดขึ้นจริงแล้ว
+    # ต้องไม่หายไป คืน primary.success ตามจริง แล้วบอกให้สั่งคลิกตัวที่สองแยกเป็น step ถัดไป
     return ActionResult(
-        primary.success and second.success,
+        primary.success,
         primary.action,
-        f"{primary.message} + then click({then_index}): {second.message}",
+        f"{primary.message} — but the chained click({then_index}) failed: {second.message}. "
+        "The first action DID succeed; the page has most likely changed, so that second index "
+        "is stale. Look at the new indexed elements and issue that click as a separate next "
+        "step (do not repeat the first action).",
         locator_descriptor=primary.locator_descriptor,
         toast_confirmed=primary.toast_confirmed or second.toast_confirmed,
     )
 
+
+async def _close_menu_covering(page: Page, index: int) -> bool:
+    """ปิดเมนูที่เปิดค้างอยู่และบังเป้าหมายไว้ คืน True ถ้าปิดได้จริง
+
+    W_menu_overlay_blocks_target (ทำซ้ำบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08): กด Tab
+    ท้ายช่อง Last Name ทำให้โฟกัสตกที่ dropdown Vacancy เมนูของมันเปิดคลุมช่อง Email ที่อยู่
+    ถัดลงไป fill ช่องนั้นจึงรอ actionability จนหมดเวลา **6.6 วินาที** แล้วล้ม ตามด้วย click ที่
+    ล้มแบบเดียวกัน แล้วโดนบังคับ go_back จน task พังทั้งงาน (release-gate 6a9f051)
+
+    ปิดให้เลยแทนที่จะปฏิเสธแล้วให้โมเดลไปคิดเอง เพราะเมนูนี้ไม่ได้เปิดจากเจตนาของโมเดล —
+    มันเปิดเพราะ Tab พาโฟกัสไปตกใส่ การปิดจึงคืนหน้าให้กลับไปเป็นอย่างที่โมเดลเห็นตอน
+    ตัดสินใจ ไม่ใช่การเดาใจ และไม่เสียเทิร์น LLM เพิ่มเลย
+
+    Escape ถูกยิงเฉพาะเมื่อรู้แล้วว่าเป็นเมนูบังอยู่จริง (ไม่ใช่ทุกครั้งที่ action ล้ม) จึงไม่ไป
+    ปิด dialog ที่โมเดลกำลังต้องการ — dialog ไม่เข้าเงื่อนไขของ menu_overlay_covers_target()"""
+    if not await state_filter.menu_overlay_covers_target(page, index):
+        return False
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(_MENU_DISMISS_WAIT_MS)
+    except Exception:
+        return False
+    return not await state_filter.menu_overlay_covers_target(page, index)
+
+async def _chained_button_blocked_by_checkbox_group(page, cmd: dict, then_type: str):
+    """เหตุผลที่ห้ามพ่วงปุ่มต่อท้าย action นี้ (None = พ่วงได้ตามปกติ)
+
+    W_chained_submit_after_check: ใช้ทั้งกับ type "check" และ "click" — gate รอบที่พิสูจน์
+    guard ตัวนี้เอง แสดงให้เห็นว่าโมเดลสลับมาใช้ click กับ checkbox ตัวเดิมได้ทันที
+    (click บน checkbox = toggle) แล้วพ่วง Submit ไปด้วย ซึ่งเป็น failure mode เดียวกันเป๊ะ
+    แค่คนละ action type — guard ที่ปิดแค่ทางเดียวจึงไม่ได้ปิดอะไรเลย"""
+    if cmd.get("then_click_index") is None:
+        return None
+    if not await state_filter.element_is_checkbox(page, cmd["index"]):
+        return None
+    group_size = await state_filter.checkbox_group_size(page, cmd["index"])
+    if group_size < 2:
+        return None
+    if (then_type or "").lower() == "checkbox" or await state_filter.element_is_checkbox(
+        page, cmd["then_click_index"]
+    ):
+        return None      # พ่วง checkbox ตัวอื่น = ติ๊กสองช่องรวด ไม่ใช่การส่งฟอร์มก่อนเวลา
+    return (
+        f"did not press the chained button: this is one of {group_size} checkboxes in the "
+        "same group. Tick exactly the boxes the instruction names — no others — then "
+        "press the button on its own turn."
+    )
 
 async def execute(
     page: Page, cmd: dict, ask_user_func: Optional[AskUserFunc] = None, label: str = "",
@@ -1000,17 +1743,108 @@ async def execute(
         if t == "click":
             redundant = await state_filter.check_click_redundant(page, cmd["index"])
             if redundant is not None:
-                return ActionResult(False, f"click({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {redundant}")
+            # W_click_native_select: คลิก <select> จริงคือ no-op ที่คืน [OK] (ดู docstring ของ
+            # check_click_target_is_native_select สำหรับ task ที่ตายเพราะเรื่องนี้จริง) —
+            # ต้องเช็คก่อน dispatch เพราะหลังคลิกไปแล้วแยกไม่ออกจากคลิกที่ได้ผลจริง
+            wrong_kind = await state_filter.check_click_target_is_native_select(page, cmd["index"])
+            if wrong_kind is not None:
+                return ActionResult(False, f"click({cmd['index']})", f"[Skipped] {wrong_kind}")
+            # W_menu_overlay_blocks_target: เหมือนฝั่ง fill — เป้าที่ถูกเมนูเปิดค้างบังไว้จะ
+            # ล้มด้วย timeout ทุกครั้ง ไม่ใช่เพราะ index ผิด
+            menu_closed = await _close_menu_covering(page, cmd["index"])
+            # W_chain_stale_index: ตัด then_click_index ทิ้งถ้าคลิกนี้ทำให้ index ชุดเดิมใช้
+            # ไม่ได้ — ทั้ง "เปิด" dropdown (ตัวเลือกเพิ่งเกิด ไม่มี index เดิม) และ "เลือก
+            # ตัวเลือก" (ตัวเลือกทั้งชุดหายไป index ที่เหลือเลื่อนหมด) ดู docstring ของ
+            # state_filter.check_click_invalidates_indexes สำหรับบั๊กจริงทั้งสองเคส ต้องเช็ค
+            # *ก่อน* dispatch เพราะหลังคลิกแล้วสถานะที่ใช้แยกสองเคสนี้ออกจากกันหายไปแล้ว
+            #
+            # W_dropdown_sets_filter_dirty: เรียกกับ *ทุก* click แล้ว (เดิมเฉพาะตอนมี
+            # then_click_index) เพราะ orchestrator ต้องรู้ด้วยว่าคลิกนี้เป็นการเลือกค่าใน
+            # dropdown หรือไม่ ไม่ใช่แค่ตอนจะ chain — ผลของ evaluate() ครั้งเดียวใช้ได้ทั้ง
+            # สองงาน (timeout สั้น 500ms + fail-safe คืน None อยู่แล้ว)
+            disturb_kind = await state_filter.classify_click_index_disturbance(page, cmd["index"])
+            stale_chain_note = (
+                state_filter.chain_hint_for_kind(disturb_kind)
+                if cmd.get("then_click_index") is not None else None
+            )
             result = await _dispatch_click_with_retry(page, cmd["index"], label)
+            if menu_closed:
+                result = replace(
+                    result,
+                    message=(f"{result.message} (an open dropdown menu was covering this "
+                             "element — it was closed first)"),
+                )
+            if result.success and disturb_kind == "option":
+                result = replace(result, dropdown_option_selected=True)
+            # W_menu_open_note_needs_no_chain: คลิกที่ไม่มี chain ก็ต้องรู้ว่า index เลื่อนแล้ว
+            if stale_chain_note is None and result.success:
+                shift_note = state_filter.index_shift_note_for_kind(disturb_kind)
+                if shift_note is not None:
+                    result = replace(result, message=f"{result.message} ({shift_note})")
+            if result.success:
+                blocked = await _chained_button_blocked_by_checkbox_group(page, cmd, then_type)
+                if blocked is not None:
+                    return replace(result, message=f"{result.message} ({blocked})")
+            if stale_chain_note is not None:
+                # คลิกหลักสำเร็จจริง (เปิด dropdown/เลือกตัวเลือกได้ตามต้องการ) — รายงานตาม
+                # ความจริง แล้วบอก
+                # เหตุผลที่ไม่ chain ต่อ pattern เดียวกับ W_chain_partial_success
+                return replace(
+                    result,
+                    message=f"{result.message} (did not go on to the chained click: {stale_chain_note})",
+                )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,
             )
         if t == "fill":
+            # W_empty_fill_noop: เช็คก่อน check_fill_redundant() เพราะเคส "ว่าง -> ว่าง"
+            # เข้าเงื่อนไข redundant ด้วย (current == text == "") แต่ต้องตอบเป็น failure
+            # ไม่ใช่ success — ดู docstring ของ check_fill_is_empty_noop()
+            # W_file_input_guard (P3.10): เช็คก่อนทุกอย่าง — fill ลง <input type=file> ไม่มี
+            # ทางสำเร็จ ต่อให้ข้อความว่าง/ซ้ำหรือไม่ก็ตาม (ดู state_filter สำหรับเหตุผลที่ไม่
+            # เพิ่ม action อัปโหลดไฟล์ให้ agent)
+            file_input = await state_filter.check_fill_target_is_file_input(page, cmd["index"])
+            if file_input is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {file_input}")
+            # W_fill_untypable_target: ตัวเปิด dropdown/ปุ่ม ไม่ใช่ช่องกรอก — Playwright ล้ม
+            # เร็วอยู่แล้ว (วัดได้ 0.7 วิ ไม่ใช่ timeout) แต่คืน error ดิบที่บอกว่าอะไรผิดโดย
+            # ไม่บอกว่าต้องทำอะไรต่อ — เปลี่ยนเป็นทางออกที่ทำได้จริง เหมือนที่
+            # W_click_native_select ทำไว้สำหรับกระจกอีกบาน
+            not_typable = await state_filter.check_fill_target_is_not_typable(page, cmd["index"])
+            if not_typable is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Skipped] {not_typable}")
+            # W_menu_overlay_blocks_target: เมนูที่ Tab เปิดค้างไว้บังช่องถัดไป (ดู
+            # _close_menu_covering) — ปิดก่อน ไม่งั้นรอ actionability จนหมดเวลา 6.6 วิแล้วล้ม
+            menu_closed = await _close_menu_covering(page, cmd["index"])
+            empty_noop = await state_filter.check_fill_is_empty_noop(page, cmd["index"], cmd["text"])
+            if empty_noop is not None:
+                return ActionResult(False, f"fill({cmd['index']})", f"[Rejected] {empty_noop}")
             redundant = await state_filter.check_fill_redundant(page, cmd["index"], cmd["text"])
             if redundant is not None:
-                return ActionResult(True, f"fill({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"fill({cmd['index']})", f"[Skipped] {redundant}")
+            # W_submit_before_confirm_password: ตัดเฉพาะส่วนที่พ่วงมาส่งฟอร์ม ถ้าฟอร์มยังมี
+            # ช่องรหัสผ่านอื่นว่างอยู่ — การกรอกยังทำตามปกติ ดูเหตุผลเต็มใน state_filter
+            early_submit = None
+            if cmd.get("key") == "Enter" or cmd.get("then_click_index") is not None:
+                early_submit = await state_filter.check_fill_submits_with_password_fields_left_empty(
+                    page, cmd["index"],
+                )
+            if early_submit is not None:
+                cmd = {k: v for k, v in cmd.items() if k not in ("key", "then_click_index")}
             result = await _dispatch_with_retry(fill, page, cmd["index"], cmd["text"])
+            if menu_closed:
+                result = replace(
+                    result,
+                    message=(f"{result.message} (an open dropdown menu was covering this "
+                             "field — it was closed first)"),
+                )
+            if early_submit is not None and result.success:
+                result = replace(
+                    result,
+                    message=f"{result.message} (did not submit the form: {early_submit})",
+                )
             # W_chain ("Compound Actions"): "key" (เดิมมีไว้ใช้กับ press_key เท่านั้น) ใช้
             # ร่วมกับ fill ได้ด้วย — กด key นี้ (ปกติ "Enter") ทันทีหลัง fill สำเร็จ รวม
             # "Focus + Type + Press Enter" เป็น 1 step เดียว (fill() เองก็ focus element
@@ -1036,6 +1870,32 @@ async def execute(
             # เห็นอยู่แล้ว" เป็น 1 คำสั่งได้ตรงๆ แทนที่จะเดาว่า Enter ใช้ได้ไหม — ทางเลือกที่
             # เชื่อถือได้กว่า key:"Enter" เสมอเมื่อเห็นปุ่ม submit จริงอยู่ในหน้า (ดู
             # SYSTEM_PROMPT ใน llm.py สำหรับลำดับความสำคัญที่แนะนำ agent)
+            # W_chained_submit_after_fill (บั๊กจริงจากรันสดสองเทิร์น 2026-09-04): เช็ค
+            # *หลัง* fill เท่านั้น — ก่อน fill ช่องยังถือค่าเก่าอยู่ทั้งคู่ซึ่ง "ตรงกัน" พอดี
+            # guard ที่เช็คก่อน dispatch จึงมองไม่เห็นปัญหาเลย เทิร์นที่สองกรอกทับเฉพาะช่อง
+            # Password ช่องเดียว ช่อง Confirm ยังค้างค่าจากเทิร์นแรก แล้ว chained click ก็กด
+            # Save ต่อทันที -> 'Passwords do not match'
+            # (guard ฝั่ง orchestrator คุมได้เฉพาะ action type "click" ที่โมเดลสั่งแยก —
+            # การส่งฟอร์มที่พ่วงมากับ fill ไม่เคยผ่านตรงนั้นเลย)
+            if result.success and cmd.get("then_click_index") is not None:
+                chained_problem = await state_filter.password_form_submit_problem(
+                    page, cmd["then_click_index"],
+                )
+                if chained_problem is not None:
+                    fields = ", ".join(str(i) for i in chained_problem.get("indexes") or [])
+                    reason = (
+                        f"password fields {fields} are still empty"
+                        if chained_problem.get("kind") == "empty"
+                        else f"the new-password fields {fields} do not hold the same value "
+                             "(the confirmation field may still hold a value typed earlier)"
+                    )
+                    return replace(
+                        result,
+                        message=(
+                            f"{result.message} (did not submit the form: {reason} — type the "
+                            "SAME new password into every one of them, then submit)"
+                        ),
+                    )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,
@@ -1048,16 +1908,83 @@ async def execute(
             # DOM ไม่นิ่งได้ตามปกติ)
             return await _dispatch_with_retry(fill_secret, page, cmd["index"], cmd.get("secret", ""))
         if t == "select":
+            # W_custom_dropdown: ปฏิเสธก่อน dispatch ถ้า target ไม่ใช่ <select> จริง (ดู
+            # state_filter.check_select_target_is_native) — success=False เพราะนี่คือ "ใช้
+            # action ผิดชนิด" ไม่ใช่ "ทำไปแล้ว" pattern เดียวกับ click-on-disabled ด้านบน
+            wrong_kind = await state_filter.check_select_target_is_native(page, cmd["index"])
+            if wrong_kind is not None:
+                return ActionResult(False, f"select({cmd['index']})", f"[Skipped] {wrong_kind}")
+            # W_select_reorders_the_page (release-gate 50eefd0, long_flow): เลือกค่าใน
+            # <select> ที่เป็นตัวเรียงลำดับ/ตัวกรอง ทำให้รายการทั้งหน้าสลับตำแหน่ง —
+            # index ที่พ่วงมากับคำสั่งเดียวกันจึงชี้ไปคนละ element กับที่โมเดลเห็นตอน
+            # ตัดสินใจ (รอบนั้น chained click ล้มด้วย timeout แล้วงานเดินผิดทางยาว)
+            #
+            # เทียบข้อความของเป้าที่พ่วงไว้ก่อน/หลัง select แทนการเดาว่า select ไหน
+            # เป็นตัวเรียงลำดับ — ถ้าข้อความเปลี่ยน แปลว่าหน้าจัดเรียงใหม่จริง
+            then_index = cmd.get("then_click_index")
+            then_text_before = (
+                await state_filter.element_text_at(page, then_index)
+                if then_index is not None else None
+            )
             result = await _dispatch_with_retry(select_option, page, cmd["index"], cmd["label"])
+            if result.success and then_index is not None:
+                then_text_after = await state_filter.element_text_at(page, then_index)
+                if then_text_before != then_text_after:
+                    return replace(
+                        result,
+                        message=(
+                            f"{result.message} (did not go on to the chained click: choosing "
+                            f"this value re-ordered the page, so index {then_index} is now "
+                            f'"{then_text_after or "gone"}" instead of '
+                            f'"{then_text_before or "unknown"}" — take a fresh look before '
+                            "clicking)"
+                        ),
+                    )
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,
             )
         if t == "check":
+            # W_check_fires_a_button: ต้องเช็คก่อน redundant — เป้าที่ไม่ใช่ checkbox เลย
+            # ตอบ "ติ๊กอยู่แล้วหรือยัง" ไม่ได้ตั้งแต่ต้น และ check() จะไปกดมันจริง
+            not_checkable = await state_filter.check_check_target_is_not_checkable(
+                page, cmd["index"])
+            if not_checkable is not None:
+                return ActionResult(
+                    False, f"check({cmd['index']})", f"[Skipped] {not_checkable}")
             redundant = await state_filter.check_checkbox_redundant(page, cmd["index"])
             if redundant is not None:
-                return ActionResult(True, f"check({cmd['index']})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"check({cmd['index']})", f"[Skipped] {redundant}")
             result = await _dispatch_with_retry(check, page, cmd["index"])
+            # W_chained_submit_after_check (บั๊กจริงจาก release-gate 2026-09-07, MiniWoB
+            # click-checkboxes): โจทย์บอกให้ติ๊ก 4 ช่องจาก 6 แล้วกด Submit — โมเดลพ่วง
+            # then_click_index ของปุ่ม Submit มากับการติ๊ก *ช่องแรก* ตั้งแต่ action แรก
+            # episode จึงจบทันทีตอนติ๊กไปได้ช่องเดียว ได้คะแนน 0 และ freeze ค่านั้นไว้ อีก
+            # 14 step ที่เหลือติ๊กถูกครบก็ไม่มีความหมายอีกแล้ว — งานพังตั้งแต่ action แรก
+            # โดยที่ทุก action รายงาน [OK] หมด
+            #
+            # ต้นทางคือกฎใน prompt เองที่สั่งให้พ่วงปุ่ม submit "ไม่ว่าจะเพิ่งกรอกช่องข้อความ
+            # หรือเพิ่งติ๊ก checkbox" (ดู _PROMPT_SEARCH_SUBMIT ใน llm.py) ซึ่งถูกสำหรับช่อง
+            # ค้นหาช่องเดียว แต่ผิดเสมอสำหรับกลุ่ม checkbox ที่ต้องติ๊กหลายช่องก่อนส่ง
+            # ประวัติของไฟล์นี้บอกซ้ำแล้วว่าการแก้ prompt อย่างเดียวไม่พอ จึงกันที่โค้ด
+            #
+            # ราคาที่จ่ายเมื่อเดาผิด: เสียหนึ่ง step (โมเดลกดปุ่มเองในเทิร์นถัดไป) — เทียบกับ
+            # การส่งฟอร์มก่อนเวลาซึ่งกู้คืนไม่ได้เลย ยอมจ่ายฝั่งที่ถูกกว่ามาก
+            #
+            # ไม่ตัด chain ที่พ่วง checkbox ตัวอื่น — นั่นคือการติ๊กสองช่องรวดซึ่งเป็นสิ่งที่
+            # ต้องการพอดี ไม่ใช่การส่งฟอร์มก่อนเวลา ตรวจจาก DOM จริงด้วย ไม่เชื่อแค่ then_type
+            # ที่ผู้เรียกส่งมา เพราะมันเป็น optional และ default เป็น "" (เจอตอนเขียนเทสต์)
+            #
+            # เวอร์ชันแรกตัด chain เฉพาะตอน "ยังมีช่องว่างเหลือ" แล้วไล่ชื่อช่องที่ยังไม่ถูก
+            # ติ๊กไปกับข้อความ — gate รอบถัดมาพิสูจน์ว่าผิดสองชั้น: โมเดลอ่านรายชื่อนั้นเป็น
+            # รายการที่ต้องทำแล้วติ๊กช่องที่โจทย์ไม่ได้ขอ (โจทย์ขอ 3 จาก 4 โมเดลติ๊กครบ 4 ได้
+            # คะแนนบางส่วน) และเงื่อนไข "ครบทุกช่องแล้วค่อยพ่วงได้" เองก็ผิด เพราะโจทย์ส่วนใหญ่
+            # ขอแค่บางช่อง ชั้นนี้ไม่รู้จัก goal จึงตัดสินไม่ได้ว่าติ๊กครบหรือยัง — กฎที่ถูกคือ
+            # "กลุ่มที่มีหลายช่อง ไม่พ่วงปุ่มเลย" ราคาคงที่หนึ่ง step และไม่ชี้นำอะไรผิดๆ
+            if result.success:
+                blocked = await _chained_button_blocked_by_checkbox_group(page, cmd, then_type)
+                if blocked is not None:
+                    return replace(result, message=f"{result.message} ({blocked})")
             return await _maybe_chain_click(
                 page, cmd, result, ask_user_func, manual_guidance, allowed_domains,
                 then_label, then_tag, then_type,
@@ -1066,7 +1993,7 @@ async def execute(
             direction = cmd.get("direction", "down")
             redundant = await state_filter.check_scroll_redundant(page, direction)
             if redundant is not None:
-                return ActionResult(True, f"scroll({direction})", f"[ข้าม] {redundant}")
+                return ActionResult(True, f"scroll({direction})", f"[Skipped] {redundant}")
             return await scroll(page, direction)
         if t == "goto":        return await goto(page, cmd["url"])
         if t == "go_back":     return await go_back(page)
@@ -1092,9 +2019,9 @@ async def execute(
                 result.success, f"{t}({cmd['index']})", result.message,
                 locator_descriptor=result.locator_descriptor, toast_confirmed=result.toast_confirmed,
             )
-        return ActionResult(False, f"unknown({t})", "ไม่รู้จัก action นี้")
+        return ActionResult(False, f"unknown({t})", "unknown action")
     except KeyError as e:
-        return ActionResult(False, f"{t}", f"ขาด parameter: {e}")
+        return ActionResult(False, f"{t}", f"missing parameter: {e}")
 
 
 # ------------------------------------------------------------

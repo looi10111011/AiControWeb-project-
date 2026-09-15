@@ -22,14 +22,13 @@ self._running ที่มีไว้กัน GC เฉยๆ ไม่ผู�
 """
 
 import asyncio
-import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Coroutine, Optional
 
 from backend.app.config import settings
+from backend.app.core.telemetry import write_step_trace, write_token_usage
 
 
 @dataclass
@@ -96,36 +95,43 @@ async def _broadcast(record: TaskRecord, event: dict) -> None:
 
 
 def _log_token_usage(record: TaskRecord) -> None:
-    """W49: เขียน 1 บรรทัด JSON ต่อ task ที่จบสำเร็จ (append-only, JSON Lines) — เรียกจาก
-    _run() ทันทีหลัง coro คืนค่า เป็น choke point เดียวที่ครอบคลุมทุก return path ของ
-    Orchestrator.run_task() (finish_task ปกติ, chat_reply, plan ถูกปฏิเสธ, หมด max_steps
-    — ทุกอันคืน dict ที่มี key "tokens" เหมือนกัน ดู orchestrator.py::_tokens_dict())
-    ไม่ครอบ error/cancelled เพราะสอง path นั้นไม่คืน dict เลย (exception/CancelledError)
-    ไม่มี token total ให้บันทึก — ยอมรับได้เพราะจุดประสงค์คือวัด baseline ต้นทุนของงานที่
-    ทำสำเร็จจริง ไม่ใช่ทุก request ที่ยิงเข้ามา
+    """W49: เขียน 1 บรรทัด JSON ต่อ task (append-only, JSON Lines) — เรียกจาก _run() ทันทีหลัง
+    coro คืนค่า เป็น choke point เดียวที่ครอบคลุมทุก return path ของ Orchestrator.run_task()
+    (finish_task ปกติ, chat_reply, plan ถูกปฏิเสธ, หมด max_steps — ทุกอันคืน dict ที่มี key
+    "tokens" เหมือนกัน ดู orchestrator.py::_tokens_dict())
 
-    เขียนแบบ sync ล้วนๆ (blocking file I/O) เพราะผู้เรียกต้อง await asyncio.to_thread()
-    เสมอ กันบล็อก event loop ตอน disk ช้า — ห้าม throw ออกจากฟังก์ชันนี้เด็ดขาด (ผู้เรียก
-    ห่อ try/except ไว้อีกชั้นเผื่อพลาด แต่ตั้งใจให้ปัญหาการ log ไม่มีทางทำ task ที่เสร็จไป
-    แล้วจริงๆ กลายเป็น status="error" ย้อนหลัง)"""
-    tokens = record.result.get("tokens") if record.result else None
-    if not tokens:
-        return
-    entry = {
-        "timestamp": time.time(),
-        "task_id": record.task_id,
-        "url": record.url,
-        "goal": record.goal,
-        "provider": record.provider,
-        "steps": record.result.get("steps"),
-        "success": record.result.get("success"),
-        "duration_seconds": round(time.time() - record.created_at, 2),
-        "tokens": tokens,
-    }
-    path = Path(settings.token_usage_log_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    W_step_trace: เรียกทุกเส้นทางแล้ว ไม่ใช่เฉพาะตอนสำเร็จ — เดิม task ที่ crash หรือถูก Stop
+    ไม่เคยถูกบันทึกเลย success rate ที่คำนวณจากไฟล์นี้จึงเป็น "เพดานบน" ไม่ใช่ค่าจริง
+
+    W_eval_trace: เนื้อในย้ายไปอยู่ core/telemetry.py แล้ว (ดูเหตุผลที่หัวไฟล์นั้น) — ฟังก์ชันนี้
+    เหลือหน้าที่เดียวคือแปลง TaskRecord เป็น argument ให้ writer ตัวกลาง พฤติกรรมและรูปแบบไฟล์
+    เหมือนเดิมทุกประการ (source="api" เป็น default อยู่แล้ว)
+
+    ห้าม throw ออกจากฟังก์ชันนี้เด็ดขาด — telemetry.write_token_usage() จับ Exception เองอยู่แล้ว
+    และผู้เรียกยังห่อ try/except ไว้อีกชั้น"""
+    write_token_usage(
+        task_id=record.task_id,
+        url=record.url,
+        goal=record.goal,
+        provider=record.provider,
+        result=record.result,
+        status=record.status,
+        error=record.error,
+        duration_seconds=time.time() - record.created_at,
+    )
+
+
+def _log_step_trace(record: TaskRecord) -> None:
+    """W_step_trace: เขียน 1 บรรทัดต่อ step ลง settings.step_trace_log_path — เขียนครั้งเดียว
+    ตอน task จบ ไม่ใช่ทุก step เพื่อไม่ให้ disk I/O แทรกกลาง agent loop
+
+    W_eval_trace: เนื้อในย้ายไป core/telemetry.py แล้ว เหลือแค่แปลง TaskRecord เป็น argument
+    (ดูเหตุผลที่หัวไฟล์นั้น) — ห้าม throw เหมือน _log_token_usage() ด้านบน"""
+    write_step_trace(
+        (record.result or {}).get("history"),
+        task_id=record.task_id,
+        provider=record.provider,
+    )
 
 
 class TaskManager:
@@ -176,10 +182,6 @@ class TaskManager:
         try:
             record.result = await coro
             record.status = "done"
-            try:
-                await asyncio.to_thread(_log_token_usage, record)
-            except Exception:
-                pass
         except asyncio.CancelledError:
             # W10[C]: มาจาก cancel() (ปุ่ม Stop บนหน้าเว็บ) — โดยปกติ convention ของ
             # CancelledError คือต้อง re-raise ต่อเสมอ แต่ตัว task นี้ (จาก submit()) เป็น
@@ -193,6 +195,19 @@ class TaskManager:
         except Exception as e:
             record.error = str(e)
             record.status = "error"
+        # W_step_trace: ย้าย logging ออกมานอก try ให้ครอบ *ทุก* เส้นทาง (done/cancelled/error)
+        # — เดิมเรียกเฉพาะตอนสำเร็จ ทำให้ task ที่ crash หรือถูก Stop ไม่เคยถูกบันทึกเลย
+        # success rate ที่คำนวณจากไฟล์นี้จึงเป็น "เพดานบน" ไม่ใช่ค่าจริง (สำคัญมากตอนใช้
+        # ไฟล์นี้ประเมินว่าการแก้แต่ละรอบได้ผลจริงไหม)
+        #
+        # ตอนนี้ path error ก็มี result dict ให้บันทึกแล้วจริงในกรณีส่วนใหญ่ เพราะ
+        # orchestrator.py::run_task จับ exception ในลูปแล้วคืน dict ปกติ (W_loop_crash) —
+        # ที่เหลือ (exception นอกลูป/cancelled) ยังไม่มี result แต่ก็ยังบันทึกสถานะไว้ได้
+        try:
+            await asyncio.to_thread(_log_token_usage, record)
+            await asyncio.to_thread(_log_step_trace, record)
+        except Exception:
+            pass
         # W10[B]: ยกเลิก pending approval ที่ยังค้างอยู่ (เช่น task ล้มเหลว/ถูก stop กลางคัน
         # ระหว่างรอ user ตอบ) กัน Future ค้างไม่มีใครมา resolve ไปตลอดกาล
         for info in record.pending.values():

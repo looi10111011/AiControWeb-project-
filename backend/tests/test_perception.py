@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import async_playwright
 
-from backend.app.core.perception import count_elements, extract_table_data, fuzzy_find, get_snapshot, resolve_frame
+from backend.app.core.perception import _cap_rows, count_elements, extract_table_data, fuzzy_find, get_snapshot, resolve_frame
 
 # เทสต์กลุ่มนี้เปิด chromium จริง (ไม่ mock) เพราะ get_snapshot() พึ่ง page.evaluate()
 # รัน JS จริงบน DOM จริง — mock DOM API ยากกว่าเปิด browser เปล่าตรงๆ
@@ -242,7 +242,7 @@ async def test_get_snapshot_finds_orangehrm_style_userdropdown_with_no_standard_
     labels = [e["label"] for e in elements]
     userdropdown_label = next((l for l in labels if "labubu user" in l), None)
     assert userdropdown_label is not None, f"userdropdown span never got indexed at all — labels: {labels}"
-    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in userdropdown_label
+    assert "[Profile/Account Menu]" in userdropdown_label
     # ปุ่ม "Help" ที่แท็กมาตรฐาน (<a>) ต้องยังติด index ปกติเหมือนเดิม แค่ไม่มี marker พิเศษ
     help_label = next((l for l in labels if "Help" in l), None)
     assert help_label is not None
@@ -296,7 +296,7 @@ async def test_get_snapshot_profile_menu_element_with_title_not_duplicated():
         await browser.close()
 
     assert len(elements) == 1
-    assert "[เมนูโปรไฟล์/บัญชีผู้ใช้ — User Profile Menu]" in elements[0]["label"]
+    assert "[Profile/Account Menu]" in elements[0]["label"]
 
 
 # <img title="..." style="cursor:pointer"> ที่ซ้อนอยู่ใน <a> ที่คลิกได้จริงอยู่แล้ว —
@@ -401,7 +401,7 @@ _HTML_WITH_OVERLAY = """
 
 @pytest.mark.asyncio
 async def test_get_snapshot_marks_element_obscured_by_overlay():
-    """element ที่ถูกบังจริง (covered-btn) ต้องมี marker '[ถูกบังอยู่]' ในป้าย —
+    """element ที่ถูกบังจริง (covered-btn) ต้องมี marker '[obscured]' ในป้าย —
     element ที่ไม่ถูกบัง (free-btn) ต้องไม่มี marker นี้ปนมาด้วย"""
     async with async_playwright() as p:
         browser = await p.chromium.launch()
@@ -415,8 +415,8 @@ async def test_get_snapshot_marks_element_obscured_by_overlay():
     covered = next(e for e in elements if "Covered Button" in e["label"])
     free = next(e for e in elements if "Free Button" in e["label"])
 
-    assert "[ถูกบังอยู่]" in covered["label"]
-    assert "[ถูกบังอยู่]" not in free["label"]
+    assert "[obscured]" in covered["label"]
+    assert "[obscured]" not in free["label"]
 
 
 # บั๊กที่เจอจริงระหว่างต่อ W10[D] (แสดงชื่อ element แทน index ใน Log panel): เดิม
@@ -1061,7 +1061,7 @@ async def test_extract_table_data_does_not_retry_without_query():
     เช่น Playwright/pytest-asyncio เอง ทำให้ assert_not_awaited() ไม่น่าเชื่อถือ)"""
     with patch(
         "backend.app.core.perception._extract_table_data_once",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#users'"),
+        AsyncMock(return_value="[FAIL] no element matching '#users'"),
     ) as mock_once:
         result = await extract_table_data(AsyncMock(), "#users")
 
@@ -1103,7 +1103,7 @@ async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_opacity_zero()
 
     assert len(elements) == 1
     assert elements[0]["tag"] == "button"
-    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+    assert elements[0]["label"] == "Flag [hidden — may need to hover the row first]"
 
 
 _HTML_HOVER_REVEAL_VISIBILITY_HIDDEN = """
@@ -1133,7 +1133,7 @@ async def test_get_snapshot_indexes_hover_reveal_button_hidden_by_visibility_hid
 
     assert len(elements) == 1
     assert elements[0]["tag"] == "button"
-    assert elements[0]["label"] == "Flag [ซ่อนอยู่ — อาจต้อง hover แถวก่อน]"
+    assert elements[0]["label"] == "Flag [hidden — may need to hover the row first]"
 
 
 _HTML_DISPLAY_NONE_BUTTON = """
@@ -1185,7 +1185,7 @@ async def test_get_snapshot_does_not_relax_filter_for_hidden_input():
 
 @pytest.mark.asyncio
 async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal_marker():
-    """overlay detection ("[ถูกบังอยู่]" จาก W9[A]) เป็นคนละเงื่อนไขกับ hover-reveal marker
+    """overlay detection ("[obscured]" จาก W9[A]) เป็นคนละเงื่อนไขกับ hover-reveal marker
     ใหม่นี้เลย — element ที่ visible ปกติแต่ถูกอีก element บังไว้ ต้องยังได้ marker เดิม
     ไม่ใช่ hover-reveal marker (ซึ่งไม่เข้าเงื่อนไขเพราะ opacity/visibility ปกติ)"""
     html = """
@@ -1204,7 +1204,7 @@ async def test_get_snapshot_overlay_detection_still_works_alongside_hover_reveal
         await browser.close()
 
     assert len(elements) == 1
-    assert elements[0]["label"] == "Covered Button [ถูกบังอยู่]"
+    assert elements[0]["label"] == "Covered Button [obscured]"
 
 
 # ---------------- W19 ("Scoped Search Context"): region tagging (main vs navigation) ----------------
@@ -1330,7 +1330,13 @@ async def test_get_snapshot_uses_wrapping_label_text_as_input_label():
 async def test_get_snapshot_select_with_option_selected_still_shows_current_value_over_label():
     """ยืนยันพฤติกรรมเดิมไม่เปลี่ยน: select ที่มีค่าปัจจุบันอยู่แล้วต้องโชว์ค่านั้น (ไม่ใช่
     associatedLabel) เพราะ "ค่าที่เลือกอยู่จริง" มีประโยชน์กว่าสำหรับ dropdown ที่ใช้บ่อย
-    (เช่น sort-order dropdown)"""
+    (เช่น sort-order dropdown)
+
+    W_field_label_for_plain_inputs: ตั้งแต่ C4 เป็นต้นไป native <select> ได้ชื่อ field นำหน้า
+    ด้วย — **ค่าที่เลือกอยู่ยังอยู่ครบเหมือนเดิม ไม่ถูกทับทิ้ง** ซึ่งคือเจตนาที่เทสต์นี้ปกป้อง
+    ตัว prefix เป็นการ *เพิ่ม* ข้อมูล ไม่ใช่แทนที่ (กฎเดียวกับ W_dropdown_field_label ที่ทำกับ
+    custom dropdown อยู่ก่อนแล้ว) — assertion เดิมที่คาดว่าไม่มี prefix เป็นจริงเพราะ native
+    <select> ถูกกันออกจากกฎนั้นไว้เฉยๆ ไม่ใช่เพราะตั้งใจให้ไม่มีชื่อ field"""
     html = """
     <html><body>
       <label>User Role
@@ -1347,7 +1353,7 @@ async def test_get_snapshot_select_with_option_selected_still_shows_current_valu
 
         await browser.close()
 
-    assert elements[0]["label"] == "Admin"
+    assert elements[0]["label"] == "User Role: Admin"
 
 
 @pytest.mark.asyncio
@@ -1389,8 +1395,8 @@ async def test_get_snapshot_marks_active_nav_link_with_aria_current():
 
     admin = next(e for e in elements if "Admin" in e["label"])
     reports = next(e for e in elements if "Reports" in e["label"])
-    assert "[active อยู่แล้ว]" in admin["label"]
-    assert "[active อยู่แล้ว]" not in reports["label"]
+    assert "[already active]" in admin["label"]
+    assert "[already active]" not in reports["label"]
 
 
 @pytest.mark.asyncio
@@ -1412,8 +1418,8 @@ async def test_get_snapshot_marks_active_tab_with_active_class():
 
     system_users = next(e for e in elements if "System Users" in e["label"])
     job_titles = next(e for e in elements if "Job Titles" in e["label"])
-    assert "[active อยู่แล้ว]" in system_users["label"]
-    assert "[active อยู่แล้ว]" not in job_titles["label"]
+    assert "[already active]" in system_users["label"]
+    assert "[already active]" not in job_titles["label"]
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1443,7 @@ async def test_get_snapshot_does_not_mark_active_class_outside_nav_or_tab_role()
 
         await browser.close()
 
-    assert "[active อยู่แล้ว]" not in elements[0]["label"]
+    assert "[already active]" not in elements[0]["label"]
 
 
 @pytest.mark.asyncio
@@ -1452,7 +1458,7 @@ async def test_get_snapshot_does_not_mark_inactive_nav_link():
 
         await browser.close()
 
-    assert "[active อยู่แล้ว]" not in elements[0]["label"]
+    assert "[already active]" not in elements[0]["label"]
 
 
 # --- Perception fix (radio buttons) — บั๊กจริงที่ user รายงาน: agent มองไม่เห็นตัวเลือก
@@ -1744,3 +1750,423 @@ async def test_get_snapshot_marks_disabled_and_required_together():
 
     assert "[disabled]" in elements[0]["label"]
     assert "[required]" in elements[0]["label"]
+
+
+# ---------------- W_dropdown_field_label / W_select_all_aria_grid (P0 F2 + F4) ----------------
+
+# DOM ย่อจาก OrangeHRM 5.x Admin > User Management จริง: dropdown สองตัวติดกันที่ trigger เป็น
+# <div class="oxd-select-text"> (ไม่ใช่ form field เลย) และตารางผลลัพธ์เป็น ARIA grid ล้วนๆ
+# ไม่มี <table> สักตัว — สองอย่างนี้คือรากของบั๊ก P0 ทั้งคู่
+_HTML_ORANGEHRM_LIKE_FILTERS = """
+<html><body><main>
+  <div class="oxd-input-group">
+    <div class="oxd-input-group__label-wrapper"><label class="oxd-label">User Role</label></div>
+    <div class="oxd-select-wrapper">
+      <div class="oxd-select-text" tabindex="0"><div class="oxd-select-text-input">-- Select --</div></div>
+    </div>
+  </div>
+  <div class="oxd-input-group">
+    <div class="oxd-input-group__label-wrapper"><label class="oxd-label">Status</label></div>
+    <div class="oxd-select-wrapper">
+      <div class="oxd-select-text" tabindex="0"><div class="oxd-select-text-input">-- Select --</div></div>
+    </div>
+  </div>
+</main></body></html>
+"""
+
+_HTML_ARIA_GRID_WITH_SELECT_ALL = """
+<html><body><main>
+  <div role="table">
+    <div role="rowgroup">
+      <div role="row">
+        <div role="columnheader"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="columnheader">Username</div>
+      </div>
+    </div>
+    <div role="rowgroup">
+      <div role="row">
+        <div role="cell"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="cell">alice</div>
+      </div>
+      <div role="row">
+        <div role="cell"><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></div>
+        <div role="cell">bob</div>
+      </div>
+    </div>
+  </div>
+</main></body></html>
+"""
+
+
+async def _labels_for(html: str) -> list[str]:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.set_content(html)
+        elements, _ = await get_snapshot(page)
+        await browser.close()
+    return [e["label"] for e in elements]
+
+
+@pytest.mark.asyncio
+async def test_custom_dropdown_triggers_are_labelled_with_their_field_name():
+    """W_dropdown_field_label: เดิม dropdown ทั้งสองตัวได้ label เป็น '-- Select --' เหมือนกัน
+    เป๊ะ โมเดลจึงต้องเดาจากลำดับ DOM ว่าอันไหนคือ User Role — รากของบั๊ก W_filter_safety ที่เคย
+    กรอง/ลบผิดกลุ่มมาแล้วจริง"""
+    labels = await _labels_for(_HTML_ORANGEHRM_LIKE_FILTERS)
+
+    assert "User Role: -- Select --" in labels
+    assert "Status: -- Select --" in labels
+    # ค่าที่เลือกอยู่ต้องยังอยู่ในป้าย ไม่ถูกชื่อ field ทับทิ้ง (โมเดลต้องรู้ว่ายังไม่ได้ตั้งค่า)
+    assert "-- Select --" not in labels
+
+
+@pytest.mark.asyncio
+async def test_select_all_checkbox_is_found_on_an_aria_grid_without_any_table_tag():
+    """W_select_all_aria_grid: กฎเดิมใช้ el.closest('th, thead') ซึ่งไม่มีทางตรงบน data grid ที่
+    ทำด้วย div[role=...] ล้วน — checkbox หัวตารางจึงถูกตั้งชื่อ 'Select row' เหมือนทุกแถว ทำให้
+    element ที่ W21 สั่งโมเดลให้ไปหา ไม่มีอยู่ใน snapshot เลยสักตัว"""
+    labels = await _labels_for(_HTML_ARIA_GRID_WITH_SELECT_ALL)
+
+    assert labels.count("Select All") == 1
+    assert labels.count("Select row") == 2
+
+
+# --- W_field_label_for_plain_inputs (C4): ชื่อ field ต้องอ่านได้จาก form มาตรฐานด้วย ---
+
+
+@pytest.mark.asyncio
+async def test_snapshot_prefixes_field_name_on_native_select_and_text_inputs():
+    """prefix ชื่อ field เคยเติมให้เฉพาะ custom dropdown trigger (role=combobox /
+    aria-haspopup / class select-text) — `<select>` มาตรฐานและ `<input type=text>` ไม่เข้า
+    เงื่อนไขสักข้อ label จึงเป็นแค่ค่าที่เลือก/พิมพ์อยู่ ไม่มีอะไรบอกว่าเป็นช่องอะไร
+
+    ผลที่ตามมาไม่ใช่แค่โมเดลอ่านยาก: W_filter_scope_guard อ่านชื่อ field จาก prefix นี้ มันจึง
+    เงียบสนิทบนเว็บที่ใช้ form มาตรฐาน (คืน "" -> fail-open ทุกครั้ง) โดยไม่ error ไม่ log อะไร
+    เลย ดูจากภายนอกเหมือน guard ทำงานปกติ ซึ่งอันตรายกว่า guard ที่พังดังๆ"""
+    html = (
+        "<label for='role'>User Role</label>"
+        "<select id='role'><option>-- Select --</option><option selected>ESS</option></select>"
+        "<label for='emp'>Employee Name</label><input id='emp' type='text' value='William'>"
+        "<div>Department</div><input type='text' placeholder='Type for hints...'>"
+        "<div>Username</div><input type='text' value='jsmith'>"
+        "<input type='checkbox' id='cb'><label for='cb'>Select row</label>"
+        "<button>Search</button>"
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            elements, _ = await get_snapshot(page)
+        finally:
+            await browser.close()
+
+    labels = [e["label"] for e in elements]
+    assert any(l.startswith("User Role: ") for l in labels)          # native <select>
+    assert any(l.startswith("Employee Name: ") for l in labels)      # input + <label for>
+    # W_empty_field_shows_no_value: ช่องที่ยัง *ว่าง* ต้องแสดงแค่ชื่อช่อง ไม่ใช่
+    # "Department: Type for hints..." ซึ่งอ่านยังไงก็เหมือนช่องนี้มีค่าแล้ว (placeholder เป็น
+    # คำใบ้ของ UI ไม่ใช่ค่าที่ถูกกรอกไว้) — ชื่อ field ยังอ่านได้ตามปกติผ่าน W104
+    assert "Department" in labels                                   # input ว่าง + พี่น้องข้างหน้า
+    # ชนิดที่มี label ทางของตัวเองอยู่แล้วต้องไม่โดนเติมซ้ำ
+    # ช่องที่ *มีค่าแล้ว* ยังต้องได้ prefix เหมือนเดิม — นั่นคือกรณีที่ prefix มีประโยชน์จริง
+    assert "Username: jsmith" in labels
+    assert "Select row" in labels
+    assert "Search" in labels
+
+
+# --- W_dialog_in_snapshot (P8/M2): dialog ที่เปิดค้างต้องมองเห็นได้จาก snapshot ---
+
+
+@pytest.mark.asyncio
+async def test_snapshot_marks_dialog_contents_and_lists_them_first():
+    """บั๊กจริง live run 2026-08-28: dialog "Are you Sure?" เปิดค้างอยู่ แต่ agent ไล่คลิก
+    ปุ่มที่อยู่ *หลัง* dialog จน timeout ซ้ำๆ โดยไม่เคยแตะปุ่มใน dialog เลย
+
+    dialog ไม่ใช่ทั้ง navigation และ main ของเดิมจึงได้ region='' ไม่มี marker อะไรเลย —
+    ปุ่มใน dialog ปนอยู่กลางลิสต์ร่วมกับของที่อยู่หลังมัน ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ
+    (ทั้งคู่ in_viewport ด้วย การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออก)"""
+    html = (
+        "<button id='behind'>Search</button><button id='behind2'>Select All</button>"
+        "<div role='dialog' style='position:fixed;inset:0;background:#fff;z-index:9'>"
+        "<button>No, Cancel</button><button>Yes, Delete</button></div>"
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            elements, _ = await get_snapshot(page)
+        finally:
+            await browser.close()
+
+    labels = [e["label"] for e in elements]
+    # ของใน dialog มาก่อนเสมอ — มันคือสิ่งเดียวที่กดได้จริงตอนนี้
+    assert labels[0].startswith("No, Cancel")
+    assert labels[1].startswith("Yes, Delete")
+    assert all("[in open dialog]" in l for l in labels[:2])
+    assert all(e["region"] == "dialog" for e in elements[:2])
+
+    # ของที่อยู่หลัง dialog ต้องยังอยู่ในลิสต์ (overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง)
+    # แต่ต้องติดป้ายบอกว่าถูกบังอยู่
+    behind = [l for l in labels if "[in open dialog]" not in l]
+    assert len(behind) == 2
+    assert all("[obscured]" in l for l in behind)
+
+
+@pytest.mark.asyncio
+async def test_plain_html_table_header_checkbox_still_reads_as_select_all():
+    """กันการ regress ของพฤติกรรมเดิม (<thead>/<th>) ตอนขยายเงื่อนไขไปรองรับ ARIA"""
+    labels = await _labels_for("""
+      <html><body><main><table>
+        <thead><tr><th><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></th><th>Name</th></tr></thead>
+        <tbody><tr><td><span class="oxd-checkbox-input" tabindex="0" style="display:inline-block;width:16px;height:16px"></span></td><td>alice</td></tr></tbody>
+      </table></main></body></html>
+    """)
+
+    assert labels.count("Select All") == 1
+    assert labels.count("Select row") == 1
+
+
+# ---------------- W_extract_row_cap (P4.5): ตัดขนาดผลลัพธ์ read_page_data ----------------
+
+def test_cap_rows_leaves_small_results_untouched():
+    rows = [["a"], ["b"]]
+    capped, note = _cap_rows(rows, len(rows))
+    assert capped == rows
+    assert note == ""
+
+
+def test_cap_rows_truncates_and_says_so_out_loud():
+    """ห้ามตัดแบบเงียบๆ — โมเดลต้องรู้ว่ายังมีแถวที่ไม่ได้เห็น ไม่งั้นมันจะสรุปจากข้อมูลบางส่วน
+    ราวกับเป็นข้อมูลทั้งหมด (failure mode เดียวกับ W_confident_zero)"""
+    from backend.app.config import settings
+
+    rows = [[str(i)] for i in range(settings.read_page_data_max_rows + 40)]
+    capped, note = _cap_rows(rows, len(rows))
+
+    assert len(capped) == settings.read_page_data_max_rows
+    assert str(len(rows)) in note
+    assert str(settings.read_page_data_max_rows) in note
+    assert "computed by the system from ALL" in note
+
+
+def test_cap_rows_can_be_disabled_with_a_non_positive_limit():
+    from unittest.mock import patch
+
+    rows = [[str(i)] for i in range(500)]
+    with patch("backend.app.core.perception.settings") as mock_settings:
+        mock_settings.read_page_data_max_rows = 0
+        capped, note = _cap_rows(rows, len(rows))
+
+    assert len(capped) == 500
+    assert note == ""
+
+
+# W_same_label_for_different_fields (release gate จับได้ 2026-09-07, งาน add_candidate ตกทุกรอบ
+# ตั้งแต่ต้น): ฟอร์ม Add Candidate ของ OrangeHRM มีช่อง First/Middle/Last Name อยู่ใต้ label กลุ่ม
+# เดียวว่า "Full Name" ทั้งสามช่องจึงมี label เหมือนกันเป๊ะ โมเดลกรอก First+Middle แล้วปล่อย
+# Last Name ว่าง ระบบขึ้น Required กด Save ไม่ผ่านทุกครั้ง (ยืนยันด้วย probe ที่ไม่ใช้ LLM)
+
+
+def test_fields_sharing_one_label_are_split_apart_by_their_placeholders():
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    elements = [
+        {"index": 20, "tag": "input", "label": "Full Name", "placeholder": "First Name"},
+        {"index": 21, "tag": "input", "label": "Full Name", "placeholder": "Middle Name"},
+        {"index": 22, "tag": "input", "label": "Full Name", "placeholder": "Last Name"},
+    ]
+    _disambiguate_shared_labels(elements)
+    assert [e["label"] for e in elements] == [
+        "Full Name: First Name", "Full Name: Middle Name", "Full Name: Last Name",
+    ]
+
+
+def test_a_unique_label_is_never_touched():
+    """W_empty_field_shows_no_value ห้ามเอา placeholder มาแสดงเป็นค่าของช่องว่าง — ช่องที่
+    label ไม่ซ้ำ (ซึ่งคือเกือบทั้งหมด) จึงต้องไม่ถูกแตะเลย"""
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    elements = [
+        {"index": 1, "tag": "input", "label": "Employee Name", "placeholder": "Type for hints..."},
+        {"index": 2, "tag": "input", "label": "Email", "placeholder": "you@example.com"},
+    ]
+    _disambiguate_shared_labels(elements)
+    assert [e["label"] for e in elements] == ["Employee Name", "Email"]
+
+
+def test_shared_labels_with_no_way_to_tell_them_apart_are_left_alone():
+    """เติมไปก็ยังกำกวมเหมือนเดิม — ปล่อยไว้ดีกว่าทำให้ label ยาวขึ้นโดยไม่ได้อะไร"""
+    from backend.app.core.perception import _disambiguate_shared_labels
+
+    no_hint = [
+        {"index": 1, "tag": "input", "label": "Amount", "placeholder": ""},
+        {"index": 2, "tag": "input", "label": "Amount", "placeholder": ""},
+    ]
+    _disambiguate_shared_labels(no_hint)
+    assert [e["label"] for e in no_hint] == ["Amount", "Amount"]
+
+    same_hint = [
+        {"index": 1, "tag": "input", "label": "Amount", "placeholder": "0.00"},
+        {"index": 2, "tag": "input", "label": "Amount", "placeholder": "0.00"},
+    ]
+    _disambiguate_shared_labels(same_hint)
+    assert [e["label"] for e in same_hint] == ["Amount", "Amount"]
+
+
+# --- W_extract_counts_stylesheets: <style>/<script> ต้องไม่ถูกนับเป็นข้อมูลของหน้า ---
+
+_HTML_WITH_STYLESHEET = """<!doctype html><html><head><style>.a{color:red}</style></head>
+<body>
+<style>:root { --oxd-primary: #ff7b1d; } .oxd-input { border: 1px solid #ccc; }</style>
+<script>window.__x = 1;</script>
+<div id="app"><span class="err">Required</span><p>Email</p></div>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_extracted_entries_never_include_stylesheets_or_scripts():
+    """บั๊กจริงจาก gate 2026-09-07 (add_candidate): agent ถามว่า "มี validation error ไหม"
+    บนหน้าที่ขึ้นคำว่า Required อยู่จริง แล้วได้ CSS ทั้งก้อนกลับไปพร้อมประโยค "counted by
+    the system ... exactly 4 entries" — มันจึงไม่เห็นสาเหตุแล้วกด Save ซ้ำจนหมด step
+
+    innerText ของ element ที่ไม่ถูก render จะ fallback เป็น textContent (คือ CSS ทั้งไฟล์)
+    ไม่ใช่ค่าว่างอย่างที่คาด — เป็นเหตุผลที่ต้องกรองด้วย tag ไม่ใช่หวังพึ่งการ render"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_HTML_WITH_STYLESHEET)
+
+            result = await extract_table_data(page, "body")
+
+            assert "--oxd-primary" not in result
+            assert "window.__x" not in result
+            assert "Required" in result      # เนื้อหาจริงต้องยังอยู่ครบ
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_counted_by_the_system_number_counts_only_real_entries():
+    """ตัวเลข "counted by the system, not by you" คือ guard ที่สั่งโมเดลห้ามนับเอง — ถ้ามัน
+    นับ stylesheet เข้าไปด้วย มันก็กลายเป็นตัวยืนยันข้อมูลผิดอย่างมั่นใจ ซึ่งแย่กว่าไม่มี guard
+    (วัดจริงบน OrangeHRM: ตอบว่า "exactly 4 entries" โดยที่ 3 ใน 4 เป็น CSS)"""
+    from backend.app.core.actions import read_page_data
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_HTML_WITH_STYLESHEET)
+
+            result = await read_page_data(page, "any validation error", "body")
+
+            assert "exactly 1 entries" in result.message
+            assert "--oxd-primary" not in result.message
+            assert "Required" in result.message
+        finally:
+            await browser.close()
+
+
+# --- W_sentence_is_not_a_field_label: ข้อความระดับหน้าไม่ใช่ชื่อของช่อง ---
+
+_PAGE_INSTRUCTION_HTML = """<!doctype html><html><body>
+<div id="wrap">
+  <div id="query">Focus into the textbox.</div>
+  <div id="area"><input type="text" id="tt"></div>
+</div></body></html>"""
+
+_REAL_FIELD_LABEL_HTML = """<!doctype html><html><body>
+<div class="group"><div class="lbl">Email</div><div><input type="text" id="em"></div></div>
+<div class="group"><div class="lbl">ชื่อผู้ใช้</div><div><input type="text" id="us"></div></div>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_a_page_instruction_never_becomes_a_field_label():
+    """release-gate 2026-09-08 (MiniWoB focus-text): input เปล่าที่ไม่มี label/aria/placeholder
+    ได้ชื่อเป็นโจทย์ของหน้า snapshot จึงมี element เดียวชื่อ "Focus into the textbox." ซึ่ง
+    อ่านเหมือนหัวข้อ ไม่ใช่ช่องกรอก — โมเดลคลิกมันซ้ำ 15 ครั้งจนหมด step"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_PAGE_INSTRUCTION_HTML)
+
+            elements, _ = await get_snapshot(page)
+
+            assert len(elements) == 1
+            assert "Focus into the textbox" not in elements[0]["label"]
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_short_sibling_labels_still_name_their_field():
+    """เกณฑ์ต้องแคบพอที่จะไม่ไปตัดชื่อช่องจริงทิ้ง — ฟอร์มจำนวนมาก (รวม OrangeHRM)
+    วางชื่อช่องไว้เป็นพี่น้องก่อนหน้าแบบนี้ ไม่ได้ใช้ <label for>"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_REAL_FIELD_LABEL_HTML)
+
+            labels = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert any("Email" in lb for lb in labels)
+            assert any("ชื่อผู้ใช้" in lb for lb in labels)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_the_focused_element_is_marked_in_the_snapshot():
+    """W_focus_is_invisible (release-gate 2026-09-08, MiniWoB focus-text): โจทย์คือ "โฟกัส"
+    ช่องข้อความ agent คลิกถูกตั้งแต่ครั้งแรกและ MiniWoB ให้คะแนนเต็ม แต่ snapshot ไม่เคยบอก
+    ว่า element ไหนกำลังโฟกัสอยู่ มันจึงไม่มีทางรู้ว่าสำเร็จ เลยคลิกซ้ำจนหมด 15 step"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content('<input id="a"><input id="b"><button>Go</button>')
+
+            before = [e["label"] for e in (await get_snapshot(page))[0]]
+            await page.focus("#b")
+            after = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert not any("[focused]" in lb for lb in before)
+            assert "b [focused]" in after
+            assert sum("[focused]" in lb for lb in after) == 1     # โฟกัสได้ทีละหนึ่งเสมอ
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_marker_does_not_hide_that_two_fields_share_a_label():
+    """W_marker_hides_a_shared_label (gate 3915868, add_candidate): ตัว disambiguate เทียบ
+    label แบบดิบ พอช่องหนึ่งได้ [focused] ต่อท้าย label ก็ "ไม่ซ้ำ" กันอีกต่อไป มันเลยเงียบ
+    ทั้งสามช่องกลับไปชื่อ "Full Name" เหมือนกันหมด — บั๊กเดิมที่ฟังก์ชันนี้เขียนมาแก้พอดี
+    ผลจริง: agent กรอกนามสกุลลงช่อง Middle Name แล้วงานล้มทั้ง task"""
+    html = ("<!doctype html><body><div><div>Full Name</div>"
+            '<div><input name="firstName" placeholder="First Name"></div>'
+            '<div><input name="middleName" placeholder="Middle Name"></div>'
+            "</div></body>")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(html)
+            before = [e["label"] for e in (await get_snapshot(page))[0]]
+            await page.focus("input[name=middleName]")
+            after = [e["label"] for e in (await get_snapshot(page))[0]]
+
+            assert before == ["Full Name: First Name", "Full Name: Middle Name"]
+            # ช่องที่โฟกัสยังต้องบอกได้ว่าเป็นช่องไหน และ marker ต้องอยู่ท้ายสุด
+            assert after == ["Full Name: First Name", "Full Name: Middle Name [focused]"]
+        finally:
+            await browser.close()

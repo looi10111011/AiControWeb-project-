@@ -1,0 +1,17 @@
+{
+  "git_commit": "64e069e",
+  "model": "gpt-5.4-mini",
+  "provider": "openai",
+  "timestamp": 1787798978.7958598,
+  "task_count": 15,
+  "aggregate": {
+    "success_rate": 0.8,
+    "p50_latency_seconds": 49.03200000000652,
+    "p95_latency_seconds": 158.23400000002584,
+    "avg_llm_calls": 5.733333333333333,
+    "avg_tokens": 173952.53333333333,
+    "approval_rate": 0.6666666666666666,
+    "fastpath_hit_rate": 0.0,
+    "recovery_rate": 0.0
+  }
+}

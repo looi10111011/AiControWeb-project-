@@ -1,0 +1,10 @@
+catalog_version: v1
+status: draft
+task_count: 117
+level_distribution:
+  L1: 29
+  L2: 30
+  L3: 28
+  L4: 20
+  L5: 10
+fixture: base

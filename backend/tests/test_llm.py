@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -144,7 +145,7 @@ def test_browser_action_schema_does_not_require_query_or_target_hint():
 def test_system_prompt_instructs_read_page_data_and_favors_counting():
     assert "read_page_data" in llm.SYSTEM_PROMPT
     assert "target_hint" in llm.SYSTEM_PROMPT
-    assert "favor การนับตรงๆ เสมอ" in llm.SYSTEM_PROMPT
+    assert "always favour a direct count" in llm.SYSTEM_PROMPT
 
 
 # --- W20 (Task12 follow-up, บั๊กจริงที่ user รายงาน): agent เผลอกรอกรหัสผ่านใหม่ซ้ำลงช่อง
@@ -153,8 +154,8 @@ def test_system_prompt_instructs_read_page_data_and_favors_counting():
 
 def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
     assert "Current Password ≠ New Password" in llm.SYSTEM_PROMPT
-    assert "ห้ามกรอกรหัสผ่านใหม่ลงช่อง\n    (ก) เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert 'ให้เรียก request_user_input (ดู W_resume ด้านล่าง' in llm.SYSTEM_PROMPT
+    assert "NEVER type the new password into field (a)" in llm.SYSTEM_PROMPT
+    assert 'call request_user_input (see W_resume below' in llm.SYSTEM_PROMPT
 
 
 # --- W65[1]/[3] ("Required-Field Validation" / "Vault Expansion") ---
@@ -163,8 +164,8 @@ def test_system_prompt_forbids_reusing_new_password_in_current_password_field():
 def test_system_prompt_requires_asking_for_missing_required_field_value():
     assert 'W65[1] ("Required-Field Validation")' in llm.SYSTEM_PROMPT
     assert '"[required]"' in llm.SYSTEM_PROMPT
-    assert "ให้เรียก request_user_input (ดู W_resume ด้านล่างสำหรับรายละเอียดเต็ม)" in llm.SYSTEM_PROMPT
-    assert "ห้ามใช้\n  finish_task(success=false) กับกรณีนี้เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "call request_user_input (see W_resume below for full details)" in llm.SYSTEM_PROMPT
+    assert "*** NEVER use finish_task(success=false) for this case ***" in llm.SYSTEM_PROMPT
 
 
 # --- W_resume ("Mid-Task Input Request") — บั๊กจริงที่ user รายงาน: agent ขอรหัสผ่านใหม่
@@ -175,7 +176,7 @@ def test_system_prompt_requires_asking_for_missing_required_field_value():
 def test_system_prompt_documents_request_user_input_tool():
     assert 'W_resume ("Mid-Task Input Request")' in llm.SYSTEM_PROMPT
     assert "request_user_input(prompt, sensitive)" in llm.SYSTEM_PROMPT
-    assert "sensitive: true เมื่อค่าที่ถามเป็นรหัสผ่าน/ข้อมูลลับ" in llm.SYSTEM_PROMPT
+    assert "Set sensitive: true when the value you're asking for is a password/secret" in llm.SYSTEM_PROMPT
 
 
 def test_request_user_input_tool_registered_for_all_three_providers():
@@ -200,8 +201,8 @@ def test_system_prompt_prefers_fill_secret_for_current_password_field():
 
 
 def test_plan_prompt_template_asks_for_missing_required_value():
-    assert "Required-Field Check ก่อนร่างแผน" in llm._PLAN_PROMPT_TEMPLATE
-    assert "*จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
+    assert "Required-Field Check" in llm._PLAN_PROMPT_TEMPLATE
+    assert "Required-Field Check before drafting the plan" in llm._PLAN_PROMPT_TEMPLATE
 
 
 # --- W65[4] ("Structured Page-Grouped Plan Output") ---
@@ -209,22 +210,22 @@ def test_plan_prompt_template_asks_for_missing_required_value():
 
 def test_plan_prompt_template_instructs_page_grouped_format():
     assert "Page-Grouped Plan Format" in llm._PLAN_PROMPT_TEMPLATE
-    assert 'หน้า Login: กรอก Username, กรอก Password, กด Login' in llm._PLAN_PROMPT_TEMPLATE
-    assert "Current Password *จำเป็น" in llm._PLAN_PROMPT_TEMPLATE
+    assert '1. Login page: fill in Username, fill in Password, click Login' in llm._PLAN_PROMPT_TEMPLATE
+    assert "Current Password" in llm._PLAN_PROMPT_TEMPLATE
 
 
 # --- ป้องกัน agent ยอมแพ้เร็วเกินไป: ต้องลองค้นหาก่อนสรุปว่า "ไม่พบ" ---
 
 
 def test_system_prompt_requires_trying_search_before_reporting_not_found():
-    assert "ก่อนเรียก finish_task พร้อมข้อความทำนอง" in llm.SYSTEM_PROMPT
-    assert "ต้องเรียก action ที่มีอยู่" in llm.SYSTEM_PROMPT
-    assert "อย่างน้อย 1 ครั้งก่อนเสมอ ถึงจะ finish_task ว่าไม่พบได้" in llm.SYSTEM_PROMPT
+    assert "before calling finish_task with a message along the lines of" in llm.SYSTEM_PROMPT
+    assert "you must invoke an available action" in llm.SYSTEM_PROMPT
+    assert "at least once before you may finish_task with \"not found\"" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
-    assert 'ห้ามตีความว่าเป็น' in llm.SYSTEM_PROMPT
-    assert "นับเป็นคำสั่งให้ค้นหาโดยปริยาย" in llm.SYSTEM_PROMPT
+    assert 'must NOT be read as' in llm.SYSTEM_PROMPT
+    assert "counts as an implicit instruction to search for it" in llm.SYSTEM_PROMPT
 
 
 # --- W19 ("Table Data Extractor & Presenter"): DOM order for multi-field rows, A-Z only
@@ -232,17 +233,17 @@ def test_system_prompt_treats_verbless_questions_as_implicit_search_command():
 
 
 def test_system_prompt_preserves_dom_order_for_multi_field_table_rows():
-    assert "ห้ามเรียงลำดับใหม่เด็ดขาด" in llm.SYSTEM_PROMPT
-    assert "รักษาลำดับแถวตามที่ปรากฏบนหน้าจอจริง" in llm.SYSTEM_PROMPT
+    assert "the OPPOSITE rule applies — NEVER re-sort" in llm.SYSTEM_PROMPT
+    assert "Always preserve the row order exactly as it appears on the real screen" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_still_sorts_single_field_lists_alphabetically():
-    assert "ลิสต์ธรรมดาที่มีแค่ field เดียว" in llm.SYSTEM_PROMPT
-    assert "เรียงลำดับตามตัวอักษร (A-Z) ก่อนตอบเสมอ" in llm.SYSTEM_PROMPT
+    assert "For a plain list with only one field per entry" in llm.SYSTEM_PROMPT
+    assert "always sort alphabetically (A-Z) before answering" in llm.SYSTEM_PROMPT
 
 
 def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
-    assert "ห้ามแยก field ของแถว/รายการเดียวกันออกจากกันเป็นคนละลิสต์เด็ดขาด" in llm.SYSTEM_PROMPT
+    assert "Never split fields of the same row/entry into separate lists" in llm.SYSTEM_PROMPT
 
 
 # --- W20 (Task11, "Response Formatter"): readable bullet/card list by default, raw markdown
@@ -252,14 +253,14 @@ def test_system_prompt_forbids_splitting_row_fields_into_separate_lists():
 def test_system_prompt_shows_card_list_format_example_not_raw_table():
     assert "* **Admin**" in llm.SYSTEM_PROMPT
     assert "• Employee: Surya king" in llm.SYSTEM_PROMPT
-    assert "รวม N รายการ" in llm.SYSTEM_PROMPT
-    assert 'user พิมพ์ขอ "ตาราง"/"table" ตรงๆ ในคำถามเท่านั้น' in llm.SYSTEM_PROMPT
+    assert "N entries total" in llm.SYSTEM_PROMPT
+    assert 'ONLY when the user literally typed "table" in their question' in llm.SYSTEM_PROMPT
 
 
 def test_finish_task_schema_message_description_reflects_dom_order_rule():
     message_desc = llm.FINISH_TASK_TOOL["input_schema"]["properties"]["message"]["description"]
-    assert "ตารางหลาย field ต่อแถวห้ามเรียงใหม่เด็ดขาด" in message_desc
-    assert "ห้ามแยก field ของแถวเดียวกันออกจากกัน" in message_desc
+    assert "NEVER re-sort a table with multiple fields per row" in message_desc
+    assert "never split the fields of one row apart" in message_desc
 
 
 # --- hover: ปุ่ม hover-to-reveal ที่ perception.py ติด label marker ให้แล้ว ---
@@ -271,7 +272,7 @@ def test_browser_action_schema_includes_hover_type():
 
 
 def test_system_prompt_instructs_hover_before_clicking_hidden_reveal_elements():
-    assert "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" in llm.SYSTEM_PROMPT
+    assert "[hidden — may need to hover the row first]" in llm.SYSTEM_PROMPT
     assert '"hover"' in llm.SYSTEM_PROMPT
 
 
@@ -296,8 +297,9 @@ async def test_next_action_sends_cache_control_on_system_and_tools():
     assert usage == llm.TokenUsage(input_tokens=20, output_tokens=8)
 
     _, kwargs = client.messages.create.call_args
-    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    # W_token_cut W7: ttl "1h" ยืดอายุ prefix cache จาก default 5m
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 @pytest.mark.asyncio
@@ -371,12 +373,45 @@ async def test_next_action_falls_back_to_finish_task_when_no_tool_use_block():
     client = MagicMock()
     client.messages.create = AsyncMock(return_value=response)
 
-    tool_name, tool_input, tool_use_id, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+    tool_name, tool_input, tool_use_id, messages, usage = await llm.next_action(client, "model", "goal", "page", [])
 
+    # W_notoolcall: ไม่ยอมแพ้ตั้งแต่ครั้งแรกอีกต่อไป — เตือนแล้วลองใหม่จนครบโควตาก่อน
+    assert client.messages.create.await_count == llm._NO_TOOL_CALL_RETRIES
     assert tool_name == "finish_task"
     assert tool_input["success"] is False
+    assert str(llm._NO_TOOL_CALL_RETRIES) in tool_input["message"]
     assert tool_use_id == ""
-    assert usage == llm.TokenUsage(input_tokens=5, output_tokens=3)
+    # usage ของทุกรอบต้องถูกรวม ไม่ใช่รายงานแค่รอบสุดท้าย
+    assert usage == llm.TokenUsage(
+        input_tokens=5 * llm._NO_TOOL_CALL_RETRIES, output_tokens=3 * llm._NO_TOOL_CALL_RETRIES,
+        # W_token_cut W1: เตือนครบโควตาแล้วยังไม่ได้ tool call = retry ไปเต็มจำนวน
+        notool_retries=llm._NO_TOOL_CALL_RETRIES - 1,
+    )
+    assert any(
+        m.get("content") == llm._NO_TOOL_CALL_NUDGE for m in messages if isinstance(m, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_action_retries_after_no_tool_call_then_accepts_second_attempt():
+    """W_notoolcall: การตอบเป็นข้อความธรรมดา 1 ครั้งต้องไม่ฆ่า task — รอบถัดไปที่เรียก tool
+    จริงต้องถูกใช้งานตามปกติ (นี่คือเหตุผลหลักที่ retry นี้มีอยู่)"""
+    text_block = MagicMock()
+    text_block.type = "text"
+    bad = _fake_anthropic_response([text_block], input_tokens=5, output_tokens=3)
+    good = _fake_anthropic_response(
+        [_fake_anthropic_tool_use_block("browser_action", {"type": "wait"})],
+        input_tokens=7, output_tokens=2,
+    )
+    client = MagicMock()
+    client.messages.create = AsyncMock(side_effect=[bad, good])
+
+    tool_name, tool_input, _, _, usage = await llm.next_action(client, "model", "goal", "page", [])
+
+    assert client.messages.create.await_count == 2
+    assert tool_name == "browser_action"
+    assert tool_input == {"type": "wait"}
+    assert usage == llm.TokenUsage(input_tokens=12, output_tokens=5, notool_retries=1)  # W_token_cut W1
 
 
 @pytest.mark.asyncio
@@ -392,7 +427,7 @@ async def test_next_action_passes_manual_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "chunk one" in user_content
-    assert "ข้อมูลอ้างอิงจากคู่มือที่เกี่ยวข้อง" in user_content
+    assert "Reference information from the relevant manual" in user_content
 
 
 @pytest.mark.asyncio
@@ -425,7 +460,7 @@ async def test_next_action_passes_memory_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "[FAIL] boom" in user_content
-    assert "Action ที่เคยลองแล้วล้มเหลว" in user_content
+    assert "Actions already tried that failed" in user_content
 
 
 @pytest.mark.asyncio
@@ -446,7 +481,7 @@ async def test_next_action_default_memory_context_omits_section():
 @pytest.mark.asyncio
 async def test_next_action_passes_plan_context_into_prompt():
     """W43: plan_context (แผนที่ user ยืนยันแล้ว) ต้องโผล่ในข้อความ user turn จริง เป็น
-    section แยก "แพลนปัจจุบัน" """
+    section แยก "Current plan confirmed by the user" """
     block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
     response = _fake_anthropic_response([block])
     client = MagicMock()
@@ -457,12 +492,12 @@ async def test_next_action_passes_plan_context_into_prompt():
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
     assert "1. ทำ X" in user_content
-    assert "แพลนปัจจุบัน" in user_content
+    assert "Current plan confirmed by the user" in user_content
 
 
 @pytest.mark.asyncio
 async def test_next_action_default_plan_context_omits_section():
-    """W43: ad-hoc task (ไม่ผ่าน Confirm plan เลย) ไม่ควรมี section "แพลนปัจจุบัน" โผล่มา
+    """W43: ad-hoc task (ไม่ผ่าน Confirm plan เลย) ไม่ควรมี section "Current plan confirmed by the user" โผล่มา
     ปนใน prompt เลย — backward compatible กับ task ที่ไม่มีแผน"""
     block = _fake_anthropic_tool_use_block("browser_action", {"type": "wait"})
     response = _fake_anthropic_response([block])
@@ -473,7 +508,7 @@ async def test_next_action_default_plan_context_omits_section():
 
     _, kwargs = client.messages.create.call_args
     user_content = _last_user_text(kwargs)
-    assert "แพลนปัจจุบัน" not in user_content
+    assert "Current plan confirmed by the user" not in user_content
 
 
 @pytest.mark.asyncio
@@ -561,7 +596,8 @@ async def test_next_action_groq_returns_parsed_tool_call():
     assert tool_input == {"type": "click", "index": 2}
     assert tool_use_id == "call_1"
     # ส่ง [] เข้าไป (เทิร์นแรก) -> ต้องแทรก system prompt ไว้หน้าสุด
-    assert messages[0] == {"role": "system", "content": llm.SYSTEM_PROMPT}
+    # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
+    assert messages[0] == {"role": "system", "content": llm._PROMPT_CORE}
     assert messages[-1] == dumped
     assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
 
@@ -602,7 +638,7 @@ async def test_next_action_groq_nudges_and_retries_when_no_tool_calls_then_succe
     # ต้องมีข้อความเตือนแทรกอยู่ในบทสนทนาก่อนลองรอบถัดไป
     assert any(m.get("content") == llm._NO_TOOL_CALL_NUDGE for m in messages)
     # usage ต้องรวมทั้ง 2 request (รอบที่ไม่เรียก tool + รอบที่เรียกสำเร็จ) ไม่ใช่แค่รอบสุดท้าย
-    assert usage == llm.TokenUsage(input_tokens=20, output_tokens=10)
+    assert usage == llm.TokenUsage(input_tokens=20, output_tokens=10, notool_retries=1)  # W_token_cut W1
 
 
 @pytest.mark.asyncio
@@ -618,7 +654,10 @@ async def test_next_action_groq_falls_back_to_finish_task_after_no_tool_call_ret
     assert tool_use_id == ""
     assert client.chat.completions.create.await_count == llm._GROQ_NO_TOOL_CALL_RETRIES
     # usage ต้องรวมทุกรอบที่ยิงจริง แม้จะไม่มีรอบไหนเรียก tool สำเร็จเลย
-    assert usage == llm.TokenUsage(input_tokens=10 * llm._GROQ_NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._GROQ_NO_TOOL_CALL_RETRIES)
+    assert usage == llm.TokenUsage(
+        input_tokens=10 * llm._GROQ_NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._GROQ_NO_TOOL_CALL_RETRIES,
+        notool_retries=llm._GROQ_NO_TOOL_CALL_RETRIES - 1,  # W_token_cut W1
+    )
 
 
 @pytest.mark.asyncio
@@ -753,7 +792,7 @@ async def test_next_action_gemini_returns_parsed_function_call():
     _, kwargs = client.GenerativeModel.call_args
     assert kwargs["tools"] == llm._GEMINI_TOOLS
     assert kwargs["tool_config"] == {"function_calling_config": {"mode": "ANY"}}
-    assert kwargs["system_instruction"] == llm.SYSTEM_PROMPT
+    assert kwargs["system_instruction"] == llm._PROMPT_CORE  # W_token_cut W2
     # messages ต้องมี user turn ใหม่ + model turn (response content) ต่อท้าย
     assert messages[-2]["role"] == "user"
     assert messages[-1] is response.candidates[0].content
@@ -787,10 +826,15 @@ async def test_next_action_gemini_falls_back_to_finish_task_when_no_function_cal
         client, "model", "goal", "page", []
     )
 
+    # W_notoolcall: เตือนแล้วลองใหม่จนครบโควตาก่อนยอมแพ้ (เหมือนทุก provider)
     assert tool_name == "finish_task"
     assert tool_input["success"] is False
+    assert str(llm._NO_TOOL_CALL_RETRIES) in tool_input["message"]
     assert tool_use_id == ""
-    assert usage == llm.TokenUsage(input_tokens=10, output_tokens=5)
+    assert usage == llm.TokenUsage(
+        input_tokens=10 * llm._NO_TOOL_CALL_RETRIES, output_tokens=5 * llm._NO_TOOL_CALL_RETRIES,
+        notool_retries=llm._NO_TOOL_CALL_RETRIES - 1,  # W_token_cut W1
+    )
 
 
 @pytest.mark.asyncio
@@ -964,9 +1008,9 @@ async def test_describe_screenshot_returns_empty_string_on_error_without_throwin
 # กลุ่ม backward-compat ด้านล่างต้องรู้ค่าที่แน่นอนถึงจะ assert exact-match ได้ ใช้ fixture
 # นี้ freeze ค่าไว้แทนการเรียกเวลาจริงทุกเทสต์ (เทสต์เฉพาะของ datetime injection เองอยู่ใน
 # ท้ายไฟล์ — ตรงนั้น mock datetime.now() ตรงๆ แทน)
-_FIXED_TIME_TEXT = "วันศุกร์ที่ 31 กรกฎาคม 2569 เวลา 14:32 น."
-_TIME_LINE = f"\n\nเวลาปัจจุบัน (Asia/Bangkok): {_FIXED_TIME_TEXT}"
-_EXPECTED_PREFIX = f"Goal: goal{_TIME_LINE}\n\nหน้าเว็บปัจจุบัน:\npage"
+_FIXED_TIME_TEXT = "Friday, 31 July 2026 at 14:32"
+_TIME_LINE = f"\n\nCurrent time (Asia/Bangkok): {_FIXED_TIME_TEXT}"
+_EXPECTED_PREFIX = f"Goal: goal{_TIME_LINE}\n\nCurrent page:\npage"
 
 
 @pytest.fixture(autouse=True)
@@ -999,7 +1043,7 @@ def test_build_user_turn_text_includes_memory_section_when_provided():
 
     assert result.startswith(_EXPECTED_PREFIX)
     assert "[FAIL] boom" in result
-    assert "Action ที่เคยลองแล้วล้มเหลว" in result
+    assert "Actions already tried that failed" in result
 
 
 def test_build_user_turn_text_includes_both_manual_and_memory_sections():
@@ -1036,7 +1080,7 @@ def test_build_user_turn_text_includes_current_url_before_page_text():
     result = llm._build_user_turn_text("goal", "page-text", current_url="https://example.com/cart")
 
     assert "https://example.com/cart" in result
-    assert result.index("https://example.com/cart") < result.index("หน้าเว็บปัจจุบัน:\npage-text")
+    assert result.index("https://example.com/cart") < result.index("Current page:\npage-text")
 
 
 def test_build_user_turn_text_omits_action_history_section_when_empty():
@@ -1052,10 +1096,10 @@ def test_build_user_turn_text_includes_action_history_section_when_provided():
 
     assert result.startswith(_EXPECTED_PREFIX)
     assert "step 3" in result
-    assert "Action ล่าสุดที่คุณเพิ่งทำไป" in result
+    assert "The most recent actions you just performed" in result
 
 
-# --- W43: plan_context ("แพลนปัจจุบัน") ---
+# --- W43: plan_context ("Current plan confirmed by the user") ---
 
 
 def test_build_user_turn_text_omits_plan_section_when_empty():
@@ -1069,10 +1113,164 @@ def test_build_user_turn_text_omits_plan_section_when_empty():
 def test_build_user_turn_text_includes_plan_section_when_provided():
     result = llm._build_user_turn_text("goal", "page", plan_context="1. ทำ X\n2. ทำ Y")
 
-    assert "แพลนปัจจุบัน" in result
+    assert "Current plan confirmed by the user" in result
     assert "1. ทำ X\n2. ทำ Y" in result
     # อยู่ก่อน "หน้าเว็บปัจจุบัน" (เป็นบริบทระดับ task เหมือน Goal ไม่ใช่ข้อมูลเฉพาะ step นี้)
-    assert result.index("แพลนปัจจุบัน") < result.index("หน้าเว็บปัจจุบัน")
+    assert result.index("Current plan confirmed by the user") < result.index("Current page")
+
+
+# --- W_token_cut W2: system prefix คงที่ + บล็อกที่ gate ย้ายไป user turn ---
+
+
+def test_gated_sections_text_empty_for_none_or_empty_set():
+    assert llm.gated_sections_text(None) == ""
+    assert llm.gated_sections_text(frozenset()) == ""
+
+
+def test_gated_sections_text_always_in_canonical_order():
+    a = llm.gated_sections_text(frozenset({"widget", "plan"}))
+    b = llm.gated_sections_text(frozenset({"plan", "widget"}))
+    assert a == b  # ลำดับที่ผู้เรียกส่งมาไม่มีผล — กัน prefix cache พลาดจากลำดับ
+    assert a.index(llm._PROMPT_PLAN) < a.index(llm._PROMPT_WIDGET)
+
+
+def test_build_user_turn_text_appends_gated_blocks_after_page_and_history():
+    result = llm._build_user_turn_text(
+        "goal", "page-text", action_history_context="- step 3: click -> [OK]",
+        prompt_sections=frozenset({"table"}),
+    )
+    assert llm._PROMPT_TABLE in result
+    # กฎที่ gate ต้องอยู่ท้ายสุด — หลัง page state และ history (ค่าที่เปลี่ยนทุกเทิร์น)
+    assert result.index("Current page:") < result.index(llm._PROMPT_TABLE)
+    assert result.index("step 3") < result.index(llm._PROMPT_TABLE)
+
+
+def test_build_user_turn_text_omits_gated_blocks_by_default():
+    """ผู้เรียกที่ไม่ส่ง prompt_sections (เทสต์เดิม/generate_plan) ต้องได้ prompt เดิมเป๊ะ"""
+    assert llm._build_user_turn_text("goal", "page") == _EXPECTED_PREFIX
+
+
+# --- W_prompt_audit: char breakdown ของ request ต่อ call ---
+
+
+def test_build_user_turn_text_parts_collect_without_changing_output():
+    parts = {}
+    a = llm._build_user_turn_text(
+        "goal", "PAGE_SNAPSHOT", plan_context="1. step", current_url="http://x/y",
+        action_history_context="- did click", _parts=parts,
+    )
+    b = llm._build_user_turn_text(
+        "goal", "PAGE_SNAPSHOT", plan_context="1. step", current_url="http://x/y",
+        action_history_context="- did click",
+    )
+    assert a == b  # _parts ต้องไม่แตะข้อความที่ประกอบออกมา
+    assert "PAGE_SNAPSHOT" in parts["snapshot"]
+    assert "1. step" in parts["plan"]
+    assert "did click" in parts["action_history"]
+    assert parts["scaffolding"].startswith("Goal: goal")
+    # ทุกชิ้นส่วนต่อกันแล้วต้องเท่าข้อความเต็ม
+    assert sum(len(v) for v in parts.values()) == len(a)
+
+
+def test_char_payload_audit_categorises_and_splits_history():
+    parts = {"snapshot": "s" * 100, "plan": "p" * 30, "scaffolding": "g" * 20,
+             "action_history": "h" * 40, "other": "o" * 5}
+    prior = [
+        {"role": "assistant", "content": "a" * 60},
+        {"role": "tool", "content": "r" * 25},                     # tool result
+        {"content": [{"type": "tool_result", "content": "x" * 15}]},  # anthropic tool result
+    ]
+    a = llm._char_payload_audit(prior_messages=prior, user_parts=parts,
+                                system_text="S" * 1000, tools_obj=[{"k": "v"}])
+    assert a["system_prompt"] == 1000
+    assert a["page_snapshot"] == 100
+    assert a["plan"] == 30
+    assert a["user_message"] == 20
+    assert a["action_history"] == 40
+    assert a["tool_result"] >= 25 + 15   # both tool-result messages counted (plain + anthropic-shape)
+    assert a["other"] == 5 + 60          # other parts + assistant history
+    assert a["tool_schema"] == len(__import__("json").dumps([{"k": "v"}]))
+
+
+def test_char_payload_audit_never_raises():
+    assert llm._char_payload_audit(prior_messages=None, user_parts=None,
+                                   system_text=None, tools_obj=object()) != {"crash": True}
+
+
+@pytest.mark.asyncio
+async def test_next_action_groq_system_prefix_is_constant_regardless_of_sections():
+    """W_token_cut W2: system message ต้องเป็น _PROMPT_CORE ตัวเดิมเป๊ะ ไม่ว่า sections
+    จะเป็นอะไร — prefix cache ของ provider จึงไม่ขาดกลาง task ตอนหน้าเว็บมีตารางโผล่"""
+    for sections in (None, frozenset(), frozenset({"table", "widget"}), llm.ALL_PROMPT_SECTIONS):
+        tc = _fake_tool_call("c", "browser_action", '{"type": "wait"}')
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(
+            return_value=_fake_response([tc], {"role": "assistant"})
+        )
+        _, _, _, messages, _ = await llm.next_action_groq(
+            client, "model", "goal", "page", [], prompt_sections=sections,
+        )
+        assert messages[0] == {"role": "system", "content": llm._PROMPT_CORE}
+
+
+# --- W_token_trim (P3/M3): site manual by stable id handle + summary bullet ---
+
+
+def test_site_manual_blocks_empty_when_there_is_no_manual():
+    assert llm.site_manual_blocks("", "orangehrmlive.com") == ("", "")
+    assert llm.site_manual_blocks("   \n  ", "orangehrmlive.com") == ("", "")
+
+
+def test_site_manual_blocks_full_and_ref_share_a_stable_id():
+    raw = "- Users page: filter by role, delete rows\n- Add User page: form with 4 fields"
+    full, ref = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    # id is a content hash scoped by domain — stable across calls, changes with the text
+    full2, ref2 = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    assert (full, ref) == (full2, ref2)
+    assert llm.site_manual_blocks(raw + " x", "orangehrmlive.com")[1] != ref
+    assert "SITE_MANUAL:orangehrmlive.com#" in ref
+
+
+def test_render_site_manual_full_carries_the_body_and_the_id():
+    raw = (
+        "- Users page: filter by role\n- Add User page: 4 fields\n"
+        "- Job Titles page: add/edit/delete\n- Reports page: build a custom report"
+    )
+    full, ref = llm.site_manual_blocks(raw, "orangehrmlive.com")
+
+    rendered_full = llm._build_user_turn_text("goal", "page", site_manual_context=full)
+    assert "automatically learned site manual [id=SITE_MANUAL:orangehrmlive.com#" in rendered_full
+    assert "- Reports page: build a custom report" in rendered_full
+    assert "\x00" not in rendered_full  # sentinel never leaks to the model
+
+    rendered_ref = llm._build_user_turn_text("goal", "page", site_manual_context=ref)
+    assert "unchanged" in rendered_ref
+    assert "- Reports page: build a custom report" not in rendered_ref  # full body not repeated
+    assert len(rendered_ref) < len(rendered_full)
+    assert "SITE_MANUAL:orangehrmlive.com#" in rendered_ref
+    assert "\x00" not in rendered_ref
+    # same id in both so the model can bind the reference to the earlier full text
+    full_id = rendered_full.split("[id=")[1].split("]")[0]
+    ref_id = rendered_ref.split("[id=")[1].split("]")[0]
+    assert full_id == ref_id
+
+
+def test_render_site_manual_keeps_pre_learned_marker_at_the_start_of_the_body():
+    """W21 strict mode checks that the manual text begins with [PRE_LEARNED_MANUAL] — the
+    id wrapper must not push that marker off the front of the body."""
+    raw = "[PRE_LEARNED_MANUAL]\nTarget Page: Admin — /admin\nRecorded buttons on this page:"
+    full, _ = llm.site_manual_blocks(raw, "orangehrmlive.com")
+    rendered = llm._build_user_turn_text("goal", "page", site_manual_context=full)
+    body = rendered.split("):\n", 1)[1]
+    assert body.startswith("[PRE_LEARNED_MANUAL]")
+
+
+def test_render_site_manual_plain_string_is_unchanged_from_the_old_header():
+    """any caller not using the id scheme (tests, generate_plan) gets the exact old text"""
+    result = llm._build_user_turn_text("goal", "page", site_manual_context="- just a plain chunk")
+    assert "Information from the automatically learned site manual (page structure/" in result
+    assert "- just a plain chunk" in result
+    assert "[id=" not in result
 
 
 # --- เวลาปัจจุบันของเซิร์ฟเวอร์ ฉีดเข้า context ทุก turn (LLM ไม่มีการรับรู้เวลาจริงในตัว
@@ -1096,10 +1294,9 @@ def test_current_bangkok_time_text_formats_thai_buddhist_date(monkeypatch):
 
     result = llm._current_bangkok_time_text()
 
-    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
-    expected_month = llm._THAI_MONTHS[fixed.month - 1]
-    # ปี พ.ศ. = ค.ศ. + 543 (2026 -> 2569) เวลา 24 ชม. ตรงกับที่ mock ไว้เป๊ะ (14:32)
-    assert result == f"{expected_weekday}ที่ 31 {expected_month} 2569 เวลา 14:32 น."
+    # W_prompt_en: Gregorian year in English now, not the Buddhist Era year the Thai
+    # format used (2026, not 2569) — 24h clock still matches the mock exactly (14:32)
+    assert result == "Friday, 31 July 2026 at 14:32"
 
 
 def test_build_user_turn_text_injects_current_bangkok_time_from_mocked_now(monkeypatch):
@@ -1112,8 +1309,7 @@ def test_build_user_turn_text_injects_current_bangkok_time_from_mocked_now(monke
 
     result = llm._build_user_turn_text("goal", "page")
 
-    expected_weekday = llm._THAI_WEEKDAYS[fixed.weekday()]
-    assert f"เวลาปัจจุบัน (Asia/Bangkok): {expected_weekday}ที่ 25 ธันวาคม 2569 เวลา 09:05 น." in result
+    assert "Current time (Asia/Bangkok): Friday, 25 December 2026 at 09:05" in result
 
 
 def test_build_user_turn_text_time_line_changes_across_calls_not_cached(monkeypatch):
@@ -1847,7 +2043,7 @@ async def test_answer_file_query_unknown_provider_returns_apology():
     result = await llm.answer_file_query(
         MagicMock(), "model", "goal", "text", "file.pdf", "unknown",
     )
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1859,7 +2055,7 @@ async def test_answer_file_query_swallows_provider_errors():
         client, "claude-x", "goal", "text", "file.pdf", "anthropic",
     )
 
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1876,8 +2072,11 @@ async def test_answer_file_query_truncates_long_file_text_and_notes_it():
     _, kwargs = client.messages.create.call_args
     sent_content = kwargs["messages"][0]["content"]
     # ตัดที่ _ANSWER_FILE_QUERY_MAX_CHARS ตัวอักษรของเนื้อหาไฟล์เท่านั้น (ไม่ใช่ทั้ง prompt)
-    assert sent_content.count("a") == llm._ANSWER_FILE_QUERY_MAX_CHARS
-    assert "ตัดแสดงแค่บางส่วน" in sent_content
+    # W_prompt_en: นับ "a" เฉพาะในส่วนเนื้อหาไฟล์ ไม่ใช่ทั้ง prompt — หลังแปล prompt เป็น
+    # อังกฤษ ตัว label รอบๆ ("File name:"/"Document content:") มี "a" ปนอยู่ด้วยแล้ว
+    file_section = sent_content.split("Document content:\n", 1)[1].split("\n\n[Note:", 1)[0]
+    assert file_section.count("a") == llm._ANSWER_FILE_QUERY_MAX_CHARS
+    assert "only part of it is shown above" in sent_content
 
 
 # --- pdf/xlsx (ต่อ): llm.answer_image_query() (Attached Image Query) ---
@@ -1952,7 +2151,7 @@ async def test_answer_image_query_unknown_provider_returns_apology():
     result = await llm.answer_image_query(
         MagicMock(), "model", "goal", _FAKE_PNG_BYTES, "file.png", "unknown",
     )
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 @pytest.mark.asyncio
@@ -1964,7 +2163,7 @@ async def test_answer_image_query_swallows_provider_errors():
         client, "claude-x", "goal", _FAKE_PNG_BYTES, "file.png", "anthropic",
     )
 
-    assert "ขออภัย" in result
+    assert "Sorry" in result
 
 
 # --- W19-4: llm.route_multi_turn_strategy() (Orchestrator & Planner Agent, multi-turn) ---
@@ -2057,6 +2256,80 @@ async def test_route_multi_turn_strategy_groq_parses_in_page_action_from_model()
     assert result["planned_action"]["tool"] == "click"
 
 
+# --- W_openai_multiturn: openai (ChatGPT OAuth / codex Responses API) branch of the
+# multi-turn stack — route_multi_turn_strategy() + extract_structured_items() both go
+# through llm._openai_forced_tool_call(), which reads function_call items off
+# "response.output_item.done" stream events ---
+
+
+class _FakeOpenAIStreamEvent:
+    def __init__(self, type, item=None, response=None):
+        self.type = type
+        self.item = item
+        self.response = response
+
+
+class _FakeOpenAIStream:
+    def __init__(self, events):
+        self._events = events
+
+    def __aiter__(self):
+        return self._aiter()
+
+    async def _aiter(self):
+        for event in self._events:
+            yield event
+
+
+def _fake_openai_function_call_item(name, args_obj):
+    item = MagicMock()
+    item.type = "function_call"
+    item.name = name
+    item.arguments = json.dumps(args_obj)
+    return item
+
+
+def _fake_openai_forced_tool_client(events, monkeypatch):
+    monkeypatch.setattr(llm, "_openai_oauth_headers", AsyncMock(return_value={}))
+    client = MagicMock()
+    client.responses.create = AsyncMock(return_value=_FakeOpenAIStream(events))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_openai_parses_decision_from_model(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent(
+            "response.output_item.done",
+            item=_fake_openai_function_call_item("route_strategy", _ROUTE_REPLY_FROM_MEMORY),
+        )],
+        monkeypatch,
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "gpt-5-codex", "ซื้อรองเท้า", "ราคาเท่าไหร่", "shopee.co.th",
+        "https://shopee.co.th/search?q=รองเท้า",
+        '[{"item_index": 1, "title": "Nike Pegasus 42", "price": "฿4,200"}]', "", "openai",
+    )
+
+    assert result == _ROUTE_REPLY_FROM_MEMORY
+    _, kwargs = client.responses.create.call_args
+    assert kwargs["tool_choice"] == {"type": "function", "name": "route_strategy"}
+
+
+@pytest.mark.asyncio
+async def test_route_multi_turn_strategy_openai_defaults_when_no_tool_call(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent("response.completed", response=MagicMock())], monkeypatch,
+    )
+
+    result = await llm.route_multi_turn_strategy(
+        client, "gpt-5-codex", "goal", "instruction", "example.com", "https://example.com", "", "", "openai",
+    )
+
+    assert result["chosen_strategy"] == "NEW_NAVIGATION"
+
+
 # --- W19-4: llm.extract_structured_items() (Structured Data Extractor) ---
 
 _EXTRACTED_ITEMS = [
@@ -2145,6 +2418,33 @@ async def test_extract_structured_items_returns_empty_list_when_items_field_is_n
     assert result == []
 
 
+@pytest.mark.asyncio
+async def test_extract_structured_items_openai_parses_items_from_model(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent(
+            "response.output_item.done",
+            item=_fake_openai_function_call_item("emit_structured_items", {"items": _EXTRACTED_ITEMS}),
+        )],
+        monkeypatch,
+    )
+
+    result = await llm.extract_structured_items(client, "gpt-5-codex", "some content", "", "openai")
+
+    assert len(result) == 2
+    assert result[0]["title"] == "Nike Men's Pegasus 42"
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_items_openai_returns_empty_on_response_failed(monkeypatch):
+    client = _fake_openai_forced_tool_client(
+        [_FakeOpenAIStreamEvent("response.failed", response=MagicMock(error="boom"))], monkeypatch,
+    )
+
+    result = await llm.extract_structured_items(client, "gpt-5-codex", "some content", "", "openai")
+
+    assert result == []
+
+
 # --- W19 ("Navigation Deduplication"): llm.generate_plan() includes current_url + dedup rule ---
 
 
@@ -2181,7 +2481,7 @@ async def test_generate_plan_shows_placeholder_when_current_url_not_provided():
 
     _, kwargs = client.messages.create.call_args
     prompt = kwargs["messages"][0]["content"]
-    assert "ไม่ทราบ — ยังไม่มีหน้าเว็บเปิดอยู่" in prompt
+    assert "unknown — no page is open yet" in prompt
 
 
 # --- W20 ("Context-Aware Implicit Execution", บั๊กจริงที่ user รายงาน): llm.generate_plan()
@@ -2203,16 +2503,16 @@ async def test_generate_plan_includes_previous_turn_context_when_provided():
     prompt = kwargs["messages"][0]["content"]
     assert "ขอเพลงเศร้าๆหน่อย" in prompt
     assert "โปรดส่งใครมารักฉันที" in prompt
-    assert "บทสนทนาก่อนหน้า" in prompt
+    assert "Earlier conversation in this session" in prompt
     assert "Context-Aware Implicit Execution" in prompt
     assert "Complete Execution on Content Platforms" in prompt
 
 
 @pytest.mark.asyncio
 async def test_generate_plan_omits_previous_turn_section_when_not_provided():
-    """เทิร์นแรกของ session (ไม่มีเทิร์นก่อนหน้าจริงๆ) — ต้องไม่มี "บทสนทนาก่อนหน้า" ตัวจริง
+    """เทิร์นแรกของ session (ไม่มีเทิร์นก่อนหน้าจริงๆ) — ต้องไม่มี "Earlier conversation in this session" ตัวจริง
     (ที่กรอกข้อมูล User/Assistant มาให้) แทรกอยู่ในพรอมต์เลย (คงพฤติกรรมเดิมทุกประการก่อนมี
-    feature นี้) — instruction ทั่วไปที่ *พูดถึง* คำว่า "บทสนทนาก่อนหน้า" (บอกว่าให้ไปดูตรงนั้น
+    feature นี้) — instruction ทั่วไปที่ *พูดถึง* คำว่า "Earlier conversation in this session" (บอกว่าให้ไปดูตรงนั้น
     ถ้ามี) ยังคงอยู่เสมอ ไม่ใช่สิ่งที่เทสต์นี้เช็ค เช็คเฉพาะ header ของ block ข้อมูลจริงที่ควร
     หายไปเมื่อไม่มีเทิร์นก่อนหน้า"""
     client = MagicMock()
@@ -2299,3 +2599,300 @@ async def test_normalize_extraction_query_groq_parses_result_from_model():
 
     assert result["normalized_target_scope"] == "div.oxd-table-body"
     assert result["data_fields"] == ["Username", "User Role", "Employee Name", "Status"]
+
+
+# --- W_context_knows_the_goal: /context ต้องไม่ตอบว่า "Not specified" กับสิ่งที่ระบบรู้อยู่แล้ว ---
+
+
+def _context_card(goal_line: str = "Not specified", target_line: str = "Not specified") -> str:
+    return (
+        "🎯 Agent Understanding\n\n"
+        f"Goal:\n{goal_line}\n\n"
+        f"Target System:\n{target_line}\n\n"
+        "Extracted Parameters:\n- Requested action: remove entries\n\n"
+        "💡 Plan\n\nStrategy:\nNot specified\n"
+    )
+
+
+def test_fill_known_context_fields_uses_the_goal_the_user_actually_typed():
+    """บั๊กจริง 2026-09-03: การ์ดตอบ "Goal: Not specified" ทั้งที่ user พิมพ์ goal มาเต็มประโยค
+    — goal คือข้อความที่โค้ดถืออยู่ในมือ ไม่ใช่สิ่งที่ต้องให้โมเดลเดา"""
+    goal = "เปิดเว็ป แล้วไปที่หน้าแอดมิน และลบ userrole=ess ออกให้หมด"
+
+    out = llm._fill_known_context_fields(_context_card(), goal, "https://demo.example-site.io/login")
+
+    assert f"Goal:\n{goal}" in out
+    assert "Target System:\nhttps://demo.example-site.io/login" in out
+
+
+def test_fill_known_context_fields_never_overwrites_what_the_model_answered():
+    """แทนที่เฉพาะบรรทัดที่โมเดลยอมแพ้ ("Not specified") — ถ้ามันตอบอะไรมาแล้วถือเป็นคำตอบของมัน"""
+    card = _context_card(goal_line="Delete every ESS user", target_line="OrangeHRM demo")
+
+    out = llm._fill_known_context_fields(card, "ลบ userrole=ess", "https://other.example-site.io/")
+
+    assert "Goal:\nDelete every ESS user" in out
+    assert "Target System:\nOrangeHRM demo" in out
+
+
+def test_fill_known_context_fields_leaves_the_judgement_fields_alone():
+    """Strategy / Expected Output คือสิ่งที่เรียกโมเดลมาทำ — โค้ดไม่มีคำตอบให้ จึงต้องไม่ไปแตะ"""
+    out = llm._fill_known_context_fields(_context_card(), "ลบ userrole=ess", "")
+
+    assert "Strategy:\nNot specified" in out
+
+
+def test_fill_known_context_fields_skips_target_system_when_no_url_was_given():
+    """task ที่ไม่มี URL (แชทล้วน) ต้องไม่ถูกเติมข้อมูลมั่ว — ปล่อย Not specified ตามความจริง"""
+    out = llm._fill_known_context_fields(_context_card(), "สวัสดี", "")
+
+    assert "Target System:\nNot specified" in out
+
+
+# --- W_file_followup_with_sticky_url: คำถามต่อยอดจากไฟล์ ต้องไม่หลุดไปเปิดเบราว์เซอร์ ---
+
+
+def test_file_followup_request_recognises_asks_about_the_data_just_returned():
+    """บั๊กจริง 2026-09-03: เทิร์น "อ่านไฟล์นี้หน่อย" ตอบจากไฟล์สำเร็จ แต่ "สรุปเป็นตาราง"
+    เทิร์นถัดมาเข้า agent loop ของเบราว์เซอร์แล้วตอบ "มีทั้งหมด 0 รายการ" (telemetry: steps=1,
+    llm_calls=4, 47 วินาที) เพราะเงื่อนไขเดิมบังคับว่า req.url ต้องว่าง ทั้งที่ช่อง URL บนหน้าจอ
+    ค้างค่าไว้จากงานก่อนหน้า"""
+    assert llm.is_file_followup_request("สรุปเป็นตาราง") is True
+    assert llm.is_file_followup_request("แยกเฉพาะชื่อกับอีเมล") is True
+    assert llm.is_file_followup_request("ดึงเบอร์โทรมาให้หน่อย") is True
+    assert llm.is_file_followup_request("summarize as a table") is True
+
+
+def test_file_followup_request_leaves_real_browser_work_alone():
+    """ทิศที่แพงกว่า: คำสั่งงานเว็บจริงต้องไม่ถูกตอบจากไฟล์เก่า — "ลบ userrole=ess ออกให้หมด"
+    ไม่มีคำที่อ้างถึงข้อมูลที่เพิ่งได้มา จึงต้องคืน False แล้วไปเข้าเส้นทางเบราว์เซอร์ตามเดิม"""
+    assert llm.is_file_followup_request("ลบ userrole=ess ออกให้หมด") is False
+    assert llm.is_file_followup_request("เปิดเว็บแล้วไปหน้าแอดมิน") is False
+    assert llm.is_file_followup_request("") is False
+
+
+# ---------------- W_openai_plain_text_cap ----------------
+# user รายงานว่า "provider openai อ่านไฟล์นานมากทั้งที่ข้อมูลไม่เยอะ" — branch openai เป็นที่
+# เดียวที่ไม่เคยส่งเพดาน output ทั้งที่ provider อื่นตั้ง max_tokens=1024 ไว้ทุกจุด
+
+
+def _openai_client_capture():
+    calls = []
+
+    class _Stream:
+        def __aiter__(self):
+            async def _gen():
+                yield SimpleNamespace(type="response.output_text.delta", delta="ok")
+                yield SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(usage=None, output_text=""),
+                )
+            return _gen()
+
+    async def _create(**kwargs):
+        calls.append(kwargs)
+        return _Stream()
+
+    client = MagicMock()
+    client.responses.create = _create
+    return client, calls
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_sends_the_same_cap_other_providers_use():
+    client, calls = _openai_client_capture()
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        text = await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+
+    assert text == "ok"
+    assert calls[0]["max_output_tokens"] == llm._OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS
+    assert calls[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_retries_without_the_cap_if_the_endpoint_rejects_it():
+    """endpoint chatgpt.com/backend-api/codex เคยปฏิเสธพารามิเตอร์มาแล้ว 2 ตัว (store=True,
+    prompt_cache_retention) — ถ้ามันไม่รับตัวนี้ด้วย ต้องยังตอบได้ ไม่ใช่พังทั้งเส้นทาง"""
+    client, calls = _openai_client_capture()
+    original_create = client.responses.create
+    llm._openai_accepts_max_output_tokens = True
+
+    async def _create(**kwargs):
+        if "max_output_tokens" in kwargs:
+            raise RuntimeError("Unsupported parameter: max_output_tokens")
+        return await original_create(**kwargs)
+
+    client.responses.create = _create
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        text = await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+        # ครั้งถัดไปต้องไม่เสีย round-trip กับพารามิเตอร์ที่รู้แล้วว่าไม่รองรับ
+        await llm._openai_plain_text_reply(client, "m", "sys", "again")
+
+    assert text == "ok"
+    assert llm._openai_accepts_max_output_tokens is False
+    assert all("max_output_tokens" not in c for c in calls)
+    llm._openai_accepts_max_output_tokens = True   # คืนสถานะให้เทสต์อื่น
+
+
+@pytest.mark.asyncio
+async def test_openai_plain_text_reply_does_not_swallow_unrelated_errors():
+    """error อื่นต้องเด้งออกไปตามเดิม ไม่ใช่ถูกตีความว่าเป็นเรื่องพารามิเตอร์แล้วยิงซ้ำเงียบๆ"""
+    client, _ = _openai_client_capture()
+    llm._openai_accepts_max_output_tokens = True
+
+    async def _create(**kwargs):
+        raise RuntimeError("401 authentication_error")
+
+    client.responses.create = _create
+
+    with patch("backend.app.core.llm._openai_oauth_headers", AsyncMock(return_value={})):
+        with pytest.raises(RuntimeError, match="401"):
+            await llm._openai_plain_text_reply(client, "m", "sys", "hello")
+    assert llm._openai_accepts_max_output_tokens is True
+
+
+
+# --- W_openai_throttle_backoff: 404 ที่แปลว่า "รอแป๊บ" ไม่ใช่ "ไม่มีโมเดลนี้" ---
+#
+# วัดจากรันจริง 2026-09-10 (บัญชี ChatGPT free): ยิงผ่าน 6-9 call ติดกัน แล้วทุก call ถัดไป
+# ได้ 404 "The model `gpt-5.5` does not exist or you do not have access to it." สำหรับโมเดล
+# ตัวเดิมที่เพิ่งสำเร็จ แล้วกลับมาใช้ได้เองในราวหนึ่งถึงสองนาทีโดยไม่ต้องแก้อะไร
+
+_THROTTLE_404 = (
+    "Error code: 404 - {'error': {'message': 'The model `gpt-5.5` does not exist or you "
+    "do not have access to it.', 'code': 'model_not_found'}}"
+)
+
+
+def test_a_404_for_a_model_that_just_worked_reads_as_throttling():
+    assert llm._looks_like_openai_throttle(Exception(_THROTTLE_404)) is True
+    assert llm._looks_like_openai_throttle(Exception("429 Too Many Requests")) is True
+    # error ชนิดอื่นต้องพังทันที ไม่ใช่รอ 105 วินาทีแล้วค่อยพัง
+    assert llm._looks_like_openai_throttle(Exception("Store must be set to false")) is False
+    assert llm._looks_like_openai_throttle(Exception("401 invalid_token")) is False
+
+
+@pytest.mark.asyncio
+async def test_a_throttled_call_waits_and_succeeds_instead_of_killing_the_task():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=[Exception(_THROTTLE_404), "stream-ok"])
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        result = await llm._openai_create_with_backoff(client, model="m")
+
+    assert result == "stream-ok"
+    assert client.responses.create.await_count == 2
+    sleep.assert_awaited_once()
+    # รอบแรกรอเท่ากับค่า base ไม่ใช่ยิงซ้ำทันที (cooldown จริงเป็นนาที)
+    assert sleep.await_args.args[0] == llm.settings.openai_throttle_base_wait_seconds
+
+
+@pytest.mark.asyncio
+async def test_the_wait_doubles_and_then_gives_up():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=Exception(_THROTTLE_404))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(Exception, match="model_not_found"):
+            await llm._openai_create_with_backoff(client, model="m")
+
+    base = llm.settings.openai_throttle_base_wait_seconds
+    assert [c.args[0] for c in sleep.await_args_list] == [base, base * 2, base * 4]
+    assert client.responses.create.await_count == llm.settings.openai_throttle_max_retries + 1
+    # ผลรวมการรอต้องอยู่ใต้ llm_step_timeout_seconds ไม่งั้น orchestrator ตัดทิ้งก่อนได้ผล
+    assert sum(c.args[0] for c in sleep.await_args_list) < llm.settings.llm_step_timeout_seconds
+
+
+@pytest.mark.asyncio
+async def test_an_error_that_is_not_throttling_fails_immediately():
+    client = MagicMock()
+    client.responses.create = AsyncMock(side_effect=Exception("Store must be set to false"))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(Exception, match="Store must be set"):
+            await llm._openai_create_with_backoff(client, model="m")
+
+    sleep.assert_not_awaited()
+    assert client.responses.create.await_count == 1
+
+
+
+# --- W_gemini_backoff_everywhere: 429 ที่ตกใส่จุดอื่นนอก agent loop ---
+#
+# ลูป retry ของ Gemini เคยมีอยู่จุดเดียวคือ next_action_gemini() ส่วนอีก 15 จุดที่ยิง
+# generate_content_async() (classify_intent, generate_plan, vision, chat/file/image ฯลฯ)
+# ไม่มีเลย เห็นในรัน release gate จริง 2026-09-10: classify_intent โดน 429 แล้วรอดมาได้
+# เพราะบังเอิญมี try/except ของตัวเองที่ fallback เป็น "action_task" ไม่ใช่เพราะมีใครรอ quota
+
+_GEMINI_429 = (
+    "429 You exceeded your current quota. [violations { "
+    "quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\" "
+    "quota_value: 15 }, retry_delay { seconds: 29 }]"
+)
+
+
+def test_gemini_waits_exactly_as_long_as_the_api_asked():
+    """Gemini บอกมาตรงๆ ว่าให้รอกี่วินาที — ต่างจากฝั่ง openai ที่ต้องเดาแบบเท่าตัว"""
+    delay = llm._gemini_backoff_seconds(ResourceExhausted(_GEMINI_429), 0)
+
+    assert delay == 30.0  # 29 ที่ API บอก +1 กันชนหน้าต่างเดิมพอดี
+
+
+def test_gemini_falls_back_to_doubling_when_the_error_says_nothing():
+    plain = ResourceExhausted("429 quota exceeded")
+
+    assert [llm._gemini_backoff_seconds(plain, i) for i in range(3)] == [20, 40, 60]
+    # ค่าประหลาดต้องถูก cap ไม่งั้นรอนานเกิน llm_step_timeout_seconds แล้วโดนตัดทิ้งฟรีๆ
+    assert llm._gemini_backoff_seconds(
+        ResourceExhausted("retry_delay { seconds: 9999 }"), 0) == 60
+
+
+@pytest.mark.asyncio
+async def test_a_429_outside_the_agent_loop_is_waited_out_not_fatal():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(
+        side_effect=[ResourceExhausted(_GEMINI_429), "response-ok"])
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        result = await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    assert result == "response-ok"
+    assert sleep.await_args.args[0] == 30.0
+    assert model.generate_content_async.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gemini_gives_up_after_the_configured_retries():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(side_effect=ResourceExhausted(_GEMINI_429))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()):
+        with pytest.raises(ResourceExhausted):
+            await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    assert model.generate_content_async.await_count == llm._GEMINI_RATE_LIMIT_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_an_error_that_is_not_a_quota_error_fails_immediately():
+    model = MagicMock()
+    model.generate_content_async = AsyncMock(side_effect=ValueError("bad request"))
+
+    with patch("backend.app.core.llm.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(ValueError):
+            await llm._gemini_generate_with_backoff(model, contents="hi")
+
+    sleep.assert_not_awaited()
+
+
+def test_every_gemini_call_goes_through_the_backoff_helper():
+    """เทสต์นี้คือหัวใจ ไม่ใช่ตัว helper — จุดที่ยิงตรงจะเงียบสนิทจนกว่าจะโดน 429 จริง
+    ตอนรันสด (บทเรียนเดียวกับทะเบียน marker ของ W108 และเลขเมนูของ run.py)"""
+    from pathlib import Path
+
+    source = Path(llm.__file__).read_text(encoding="utf-8")
+    direct = source.count("gemini_model.generate_content_async(")
+
+    assert direct == 1, "generate_content_async ต้องถูกเรียกตรงที่เดียวคือใน helper เท่านั้น"

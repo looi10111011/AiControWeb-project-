@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Add User — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Add User</h1>
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/admin/users/new">
+  <label for="username">Username</label>
+  <input id="username" name="username" required>
+
+  <label for="password">Password</label>
+  <input id="password" name="password" type="text" required>
+
+  <label for="role">Role</label>
+  <select id="role" name="role" required>
+    {% for r in roles %}
+    <option value="{{ r }}">{{ r }}</option>
+    {% endfor %}
+  </select>
+
+  <label for="employee_id">Linked Employee (optional)</label>
+  <select id="employee_id" name="employee_id">
+    <option value="">— None (system account) —</option>
+    {% for e in employees %}
+    <option value="{{ e.id }}">{{ e.first_name }} {{ e.last_name }} ({{ e.employee_code }})</option>
+    {% endfor %}
+  </select>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Create</button>
+    <a class="btn" href="/admin/users">Cancel</a>
+  </div>
+</form>
+{% endblock %}

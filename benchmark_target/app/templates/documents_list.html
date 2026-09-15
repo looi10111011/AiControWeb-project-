@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Documents — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Documents — {{ employee.first_name }} {{ employee.last_name }}</h1>
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+{% if documents|length == 0 %}
+<p class="empty-state">No documents uploaded.</p>
+{% else %}
+<table class="data-table">
+  <thead><tr><th>Filename</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
+  <tbody>
+    {% for d in documents %}
+    <tr>
+      <td>{{ d.filename }}</td>
+      <td>{{ (d.size_bytes / 1024) | round(1) }} KB</td>
+      <td>{{ d.uploaded_at }}</td>
+      <td>
+        <a href="/documents/{{ d.id }}/download">Download</a>
+        {% if can_manage %}
+        <form method="post" action="/documents/{{ d.id }}/delete" class="inline-form"
+              onsubmit="return confirm('Delete {{ d.filename }}?');">
+          <button type="submit" class="btn btn-small btn-danger">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if can_manage %}
+<div class="panel">
+  <h2>Upload Document</h2>
+  <p class="stat-label">Allowed types: {{ allowed_extensions }}. Max size: {{ max_size_mb }} MB.</p>
+  <form method="post" action="/documents/employees/{{ employee.id }}/upload" enctype="multipart/form-data">
+    <input type="file" name="file" required>
+    <button type="submit" class="btn btn-primary">Upload</button>
+  </form>
+</div>
+{% endif %}
+
+<p><a href="/pim/employees/{{ employee.id }}">&larr; Back to Employee</a></p>
+{% endblock %}

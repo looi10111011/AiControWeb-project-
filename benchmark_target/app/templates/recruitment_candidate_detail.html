@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ candidate.first_name }} {{ candidate.last_name }} — Hermes HRM{% endblock %}
+{% block content %}
+<h1>{{ candidate.first_name }} {{ candidate.last_name }} <span class="status-badge">{{ candidate.status }}</span></h1>
+<p>{{ candidate.email }} — applying for {{ candidate.vacancy_title }} ({{ candidate.vacancy_department }})</p>
+
+{% if candidate.status == 'hired' and hired_employee %}
+<div class="alert" style="background:#e3f6ec;color:#1e8e5a;">
+  Hired as <a href="/pim/employees/{{ hired_employee.id }}">{{ hired_employee.employee_code }}</a>.
+</div>
+{% endif %}
+
+{% if can_manage and candidate.status != 'hired' %}
+<div class="panel">
+  <h2>Actions</h2>
+  <div class="actions">
+    {% if candidate.status == 'applied' %}
+    <form method="post" action="/recruitment/candidates/{{ candidate.id }}/status" class="inline-form">
+      <input type="hidden" name="status" value="shortlisted">
+      <button type="submit" class="btn btn-primary">Shortlist</button>
+    </form>
+    {% endif %}
+    {% if candidate.status in ['applied', 'shortlisted'] %}
+    <form method="post" action="/recruitment/candidates/{{ candidate.id }}/status" class="inline-form">
+      <input type="hidden" name="status" value="rejected">
+      <button type="submit" class="btn btn-danger">Reject</button>
+    </form>
+    {% endif %}
+    {% if candidate.status in ['shortlisted', 'interview'] %}
+    <form method="post" action="/recruitment/candidates/{{ candidate.id }}/hire" class="inline-form"
+          onsubmit="return confirm('Hire {{ candidate.first_name }} {{ candidate.last_name }}? This creates a new employee record.');">
+      <button type="submit" class="btn btn-primary">Hire</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if candidate.status in ['shortlisted', 'interview'] %}
+  <h3>Schedule Interview</h3>
+  <form method="post" action="/recruitment/candidates/{{ candidate.id }}/interview">
+    <label for="scheduled_at">Date &amp; Time</label>
+    <input id="scheduled_at" name="scheduled_at" type="datetime-local" required>
+    <label for="interviewer_employee_id">Interviewer</label>
+    <select id="interviewer_employee_id" name="interviewer_employee_id">
+      <option value="">— None —</option>
+      {% for e in interviewers %}
+      <option value="{{ e.id }}">{{ e.first_name }} {{ e.last_name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn">Schedule</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if interviews %}
+<div class="panel">
+  <h2>Interviews</h2>
+  <ul>
+    {% for i in interviews %}
+    <li>{{ i.scheduled_at }} — {% if i.first_name %}{{ i.first_name }} {{ i.last_name }}{% else %}Unassigned{% endif %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<p><a href="/recruitment/vacancies/{{ candidate.vacancy_id }}">&larr; Back to Vacancy</a></p>
+{% endblock %}

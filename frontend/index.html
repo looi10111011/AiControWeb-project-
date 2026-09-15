@@ -21,24 +21,30 @@
     --critical:#ab3c2e;
     --critical-soft:#f6e2de;
     --idle:#8d8676;
+    --surface-3:#ffffff;
+    --brand:#2563eb; --brand-ink:#ffffff; --brand-soft:#e6efff;
     --shadow:0 1px 2px rgba(33,31,27,0.05), 0 4px 14px rgba(33,31,27,0.04);
   }
   :root[data-theme="dark"]{
-    --bg:#15171a; --surface:#1c1f23; --surface-2:#202327; --border:#2b2f35;
-    --ink:#eae7e0; --muted:#9a978e; --faint:#6d6a63;
-    --accent:#57b79c; --accent-ink:#0c1a16; --accent-soft:#1e3530;
-    --warning:#d9a24f; --warning-soft:#332714;
-    --critical:#e17b6a; --critical-soft:#3a1f1a; --idle:#75726a;
-    --shadow:0 1px 2px rgba(0,0,0,0.25), 0 6px 18px rgba(0,0,0,0.28);
+    --bg:#070c18; --surface:#0c1322; --surface-2:#080e1c; --surface-3:#111a2e;
+    --border:#1b2740;
+    --ink:#e8eefb; --muted:#8fa0c0; --faint:#5d6d8e;
+    --accent:#34d399; --accent-ink:#04231a; --accent-soft:#0f2c26;
+    --brand:#3b82f6; --brand-ink:#ffffff; --brand-soft:#13233f;
+    --warning:#f0b45c; --warning-soft:#33270f;
+    --critical:#f87171; --critical-soft:#3a1a1c; --idle:#5d6d8e;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --bg:#15171a; --surface:#1c1f23; --surface-2:#202327; --border:#2b2f35;
-      --ink:#eae7e0; --muted:#9a978e; --faint:#6d6a63;
-      --accent:#57b79c; --accent-ink:#0c1a16; --accent-soft:#1e3530;
-      --warning:#d9a24f; --warning-soft:#332714;
-      --critical:#e17b6a; --critical-soft:#3a1f1a; --idle:#75726a;
-      --shadow:0 1px 2px rgba(0,0,0,0.25), 0 6px 18px rgba(0,0,0,0.28);
+      --bg:#070c18; --surface:#0c1322; --surface-2:#080e1c; --surface-3:#111a2e;
+      --border:#1b2740;
+      --ink:#e8eefb; --muted:#8fa0c0; --faint:#5d6d8e;
+      --accent:#34d399; --accent-ink:#04231a; --accent-soft:#0f2c26;
+      --brand:#3b82f6; --brand-ink:#ffffff; --brand-soft:#13233f;
+      --warning:#f0b45c; --warning-soft:#33270f;
+      --critical:#f87171; --critical-soft:#3a1a1c; --idle:#5d6d8e;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
     }
   }
   *{box-sizing:border-box;}
@@ -53,13 +59,14 @@
   button, input, select, textarea{ font:inherit; color:inherit; }
   a{ color:inherit; text-decoration:none; }
 
-  .app{ height:100vh; display:grid; grid-template-rows:52px 1fr; min-height:600px; }
+  .app{ height:100vh; display:grid; grid-template-rows:56px 1fr; min-height:600px; }
 
   /* ---- Top bar ---- */
   .topbar{ display:flex; align-items:center; gap:14px; padding:0 18px; border-bottom:1px solid var(--border); background:var(--surface); flex-shrink:0; }
   .brand{ display:flex; align-items:center; gap:8px; font-weight:700; font-size:14px; }
-  .brand .mark{ width:18px;height:18px;border-radius:5px; background:var(--accent); display:inline-flex;align-items:center;justify-content:center; flex-shrink:0; }
-  .brand .mark svg{ width:11px;height:11px; }
+  .brand{ font-size:15px; letter-spacing:-.01em; }
+  .brand .mark{ width:26px;height:26px;border-radius:8px; background:linear-gradient(140deg,var(--brand),#22d3ee); display:inline-flex;align-items:center;justify-content:center; flex-shrink:0; box-shadow:0 4px 12px rgba(59,130,246,.35); }
+  .brand .mark svg{ width:14px;height:14px; }
   .topbar .session-name{ color:var(--muted); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .session-name b{ color:var(--ink); font-weight:600; }
   .status-pill{ display:inline-flex; align-items:center; gap:6px; padding:4px 10px 4px 8px; border-radius:999px; background:var(--surface-2); color:var(--idle); font-size:12px; font-weight:600; margin-left:auto; flex-shrink:0; }
@@ -77,30 +84,72 @@
   .health-dot.up{ background:var(--accent); }
   .theme-toggle{ display:flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
   .theme-toggle button{ border:none; background:var(--surface); color:var(--muted); font-size:11px; font-weight:600; padding:5px 9px; cursor:pointer; }
-  .theme-toggle button.active{ background:var(--accent); color:var(--accent-ink); }
-  .theme-toggle button:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+  .theme-toggle button.active{ background:var(--brand); color:var(--brand-ink); }
+  .theme-toggle button:focus-visible{ outline:2px solid var(--brand); outline-offset:-2px; }
 
   /* ---- Settings button + dropdown panel (topbar) ---- */
   .icon-btn{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--muted); cursor:pointer; flex-shrink:0; }
   .icon-btn svg{ width:15px; height:15px; }
-  .icon-btn:hover{ border-color:var(--accent); color:var(--accent); }
-  .icon-btn.active{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+  /* ปุ่มเฟือง = ปุ่มที่กดได้ ไม่ใช่สถานะ "สำเร็จ" — ใช้สี brand เหมือนปุ่มกดอื่นทั้งหน้า
+     (เขียวสงวนไว้ให้ badge done / ติ๊กในแผน / ไอคอน ok ใน log อย่างเดียว) */
+  .icon-btn:hover{ border-color:var(--brand); color:var(--brand); }
+  .icon-btn.active{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
   .settings-wrap{ position:relative; }
-  .settings-panel{ display:none; position:absolute; top:calc(100% + 8px); right:0; z-index:20; width:300px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); padding:14px; }
+  /* หน้าตั้งค่าแบ่งเป็นการ์ดตามหมวด แต่ละแถวบอกครบสามอย่าง: ทำอะไร (ชื่อ), ทำไม/ผลคืออะไร
+     (คำอธิบายบรรทัดล่าง), และตัวควบคุมทางขวา — เดิมคำอธิบายพวกนี้เป็นวงเล็บสีส้มต่อท้ายชื่อ
+     ยาวเป็นพรืด อ่านแล้วแยกไม่ออกว่าอันไหนคือคำเตือนจริง */
+  .settings-panel{ display:none; position:absolute; top:calc(100% + 8px); right:0; z-index:20; width:430px; max-width:calc(100vw - 32px); max-height:calc(100vh - 90px); overflow-y:auto; background:var(--bg); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); padding:12px; }
   .settings-panel.open{ display:block; }
-  .settings-section + .settings-section{ margin-top:14px; padding-top:14px; border-top:1px solid var(--border); }
-  .settings-label{ font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin-bottom:8px; }
-  .settings-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
-  .settings-row:last-child{ margin-bottom:0; }
-  .settings-row label{ font-size:12.5px; color:var(--muted); }
-  .settings-row select, .settings-row input[type=number]{ background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:7px; padding:6px 8px; font-size:12.5px; }
-  .settings-row select{ max-width:160px; }
-  .settings-row input[type=number]{ width:70px; }
-  .settings-panel .check-row{ margin-bottom:10px; align-items:flex-start; }
-  .settings-panel .check-row:last-child{ margin-bottom:0; }
-  .settings-panel .check-row input{ margin-top:2px; }
-  .settings-panel #tabReusePolicyRow{ flex-direction:column; align-items:flex-start; gap:6px; }
-  .settings-panel #tabReusePolicyRow select{ width:100%; max-width:none; }
+  .settings-card{ background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:6px; }
+  .settings-card + .settings-card{ margin-top:12px; }
+  /* หัวข้อหมวดเป็นปุ่มเปิด/ปิด — เปิดหน้าตั้งค่ามาเห็นแค่สองหัวข้อ กดถึงจะเห็นตัวเลือกข้างใน
+     เหตุผลที่ทำเป็น accordion ไม่ใช่แค่ย่อ: ตัวเลือกส่วนใหญ่ตั้งครั้งเดียวแล้วไม่แตะอีก การให้
+     ทุกอันกางค้างไว้ทำให้ของที่ปรับบ่อย (theme, provider) จมอยู่ในกองเดียวกับของที่แทบไม่แตะ */
+  .settings-card-head{ width:100%; display:flex; align-items:center; gap:11px; padding:13px 12px; border:none;
+    background:transparent; text-align:left; cursor:pointer; border-radius:10px; color:inherit; }
+  .settings-card-head:hover{ background:var(--surface-2); }
+  .settings-card-head:focus-visible{ outline:2px solid var(--brand); outline-offset:-2px; }
+  .settings-card-head > div{ flex:1; min-width:0; }
+  .settings-card-chevron{ flex:0 0 auto; color:var(--faint); display:flex; transition:transform .15s; }
+  .settings-card-chevron svg{ width:16px; height:16px; }
+  .settings-card.open .settings-card-chevron{ transform:rotate(180deg); }
+  .settings-card.open .settings-card-head{ border-bottom:1px solid var(--border); border-radius:10px 10px 0 0; }
+  .settings-card-body{ padding-top:8px; }
+  @media (prefers-reduced-motion: reduce){ .settings-card-chevron{ transition:none; } }
+  .settings-card-title{ font-size:14px; font-weight:700; color:var(--ink); }
+  .settings-card-sub{ font-size:11.5px; color:var(--faint); margin-top:1px; }
+  .settings-icon{ flex:0 0 auto; width:30px; height:30px; border-radius:9px; background:var(--surface-3); border:1px solid var(--border); color:var(--muted); display:flex; align-items:center; justify-content:center; }
+  .settings-icon svg{ width:15px; height:15px; }
+  .settings-card-head .settings-icon{ color:var(--brand); }
+  .settings-item{ display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:10px; background:var(--surface-2); margin:0 6px 6px; }
+  .settings-item-text{ flex:1 1 auto; min-width:130px; }
+  .settings-item-title{ font-size:12.5px; font-weight:600; color:var(--ink); }
+  .settings-item-desc{ font-size:11px; color:var(--faint); margin-top:2px; line-height:1.45; }
+  /* ตัวควบคุมชิดขวาและห่อบรรทัดได้ แต่ห้ามกินความกว้างจนคำอธิบายทางซ้ายเหลือคำละบรรทัด
+     (ปุ่ม "Sign in with ChatGPT" ยาวพอที่จะทำแบบนั้นได้จริง) */
+  .settings-item-control{ flex:0 1 auto; max-width:180px; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; }
+  .settings-item select, .settings-item input[type=number]{ background:var(--surface-3); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:7px 9px; font-size:12.5px; }
+  .settings-item select{ max-width:150px; }
+  .settings-item input[type=number]{ width:78px; }
+  /* แถว checkbox: ช่องติ๊กอยู่ซ้ายสุดของแถว และทั้งแถวคลิกได้ (เป็น <label>) */
+  /* ไอคอนเป็นตัวสวิตช์เอง: ติด = ไอคอนสว่างสีน้ำเงิน, ปิด = ไอคอนจางพร้อมขีดทับ — อ่านสถานะได้
+     จากที่เดียว ไม่ต้องกวาดตาไปมาระหว่างช่องติ๊กกับไอคอนที่บอกเรื่องเดียวกัน
+     ตัว <input> ยังอยู่ใน DOM ตำแหน่งเดิม (แค่มองไม่เห็น) เพราะโค้ดทั้งหน้าอ่านค่าจาก
+     #headless/#useUserBrowser/#autoApprove.checked ตรงๆ และยังต้องโฟกัสด้วยคีย์บอร์ดได้ */
+  .settings-item-check{ align-items:flex-start; cursor:pointer; }
+  .settings-item-check input[type=checkbox]{ position:absolute; width:1px; height:1px; opacity:0; margin:0; pointer-events:none; }
+  .settings-item-check .settings-icon{ margin-top:0; position:relative; transition:color .12s, border-color .12s, background-color .12s; }
+  .settings-item-check input:checked + .settings-icon{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
+  /* ขีดทับตอนปิด — เส้นทแยงพาดไอคอน แบบเดียวกับไอคอน "ตาขีดฆ่า" ที่คนคุ้นอยู่แล้ว */
+  .settings-item-check input:not(:checked) + .settings-icon::after{
+    content:""; position:absolute; left:4px; right:4px; top:50%; height:1.5px; border-radius:1px;
+    background:var(--faint); transform:rotate(-45deg); }
+  .settings-item-check:hover .settings-icon{ border-color:var(--brand); }
+  .settings-item-check input:focus-visible + .settings-icon{ outline:2px solid var(--brand); outline-offset:2px; }
+  .settings-linked{ font-size:11.5px; color:var(--ink); text-align:right; max-width:150px; overflow-wrap:anywhere; }
+  /* แถวนี้มี select อยู่ใต้คำอธิบาย (ไม่ใช่ชิดขวาเหมือนแถวอื่น) เพราะตัวเลือกยาวเกินกว่าจะ
+     อ่านรู้เรื่องในคอลัมน์แคบๆ ทางขวา */
+  .settings-panel #tabReusePolicyRow select{ width:100%; max-width:none; margin-top:7px; }
 
   /* ---- Main grid ---- */
   .main{ display:grid; grid-template-columns:240px minmax(0,1fr) 320px; min-height:0; }
@@ -114,8 +163,17 @@
   /* W_urllock: sized to comfortably fit a typical URL (not flex:1 growing to fill the whole
      header) so the pencil button sits right after it instead of stranded at the far right of
      a bar-length input — still allowed to shrink (not grow) on a narrow window. */
+  /* บล็อกหัวคอลัมน์แชต: ป้าย TARGET URL อยู่เหนือตัว URL เอง แทนที่จะเป็นป้าย "CHAT" ลอยๆ
+     ที่ไม่ได้บอกอะไรเลย — URL คือของชิ้นเดียวในแถบนี้ที่ต้องอ่านจริง */
+  .chat-header{ align-items:flex-start; gap:10px; padding-bottom:12px; border-bottom:1px solid var(--border); margin:0 6px; }
+  .url-block{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  .url-row{ display:flex; align-items:center; gap:6px; min-width:0; }
+  .chat-url-input[readonly]{ color:var(--brand); font-weight:600; }
+  .btn-copy-url{ flex-shrink:0; width:22px; height:22px; border-radius:6px; border:none; background:transparent; color:var(--faint); cursor:pointer; display:none; align-items:center; justify-content:center; }
+  .btn-copy-url svg{ width:13px; height:13px; }
+  .btn-copy-url:hover{ background:var(--surface-3); color:var(--brand); }
   .chat-url-input{ flex:0 1 380px; min-width:0; background:var(--surface-2); border:1px solid var(--border); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12.5px; }
-  .chat-url-input:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  .chat-url-input:focus{ outline:2px solid var(--brand); outline-offset:1px; }
   /* W20 (Task3 "Seamless URL Header"): once a turn exists for the conversation, the target
      URL is locked (readonly) — it was set the moment the task started, editing it afterward
      wouldn't retroactively change what already ran, and the pencil/check icons are the
@@ -127,21 +185,43 @@
   .chat-url-input[readonly]{ background:transparent; border:none; padding:0; border-radius:0; color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; cursor:default; }
   .chat-url-input[readonly]:focus{ outline:none; }
   .btn-edit-url{ flex-shrink:0; width:22px; height:22px; border-radius:6px; border:none; background:transparent; color:var(--faint); cursor:pointer; display:flex; align-items:center; justify-content:center; }
-  .btn-edit-url:hover{ background:var(--surface-2); color:var(--accent); }
+  .btn-edit-url:hover{ background:var(--surface-2); color:var(--brand); }
   .btn-edit-url svg{ width:13px; height:13px; }
-  .btn-save-url{ color:var(--accent); }
+  .btn-save-url{ color:var(--brand); }
   .col-body{ flex:1; min-height:0; overflow-y:auto; padding:0 8px 12px; }
 
   /* ---- History ---- */
   .history{ background:var(--surface-2); }
-  .new-session{ margin:0 8px 10px; display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 10px; border-radius:8px; border:1px dashed var(--faint); color:var(--muted); font-size:12.5px; font-weight:600; cursor:pointer; background:transparent; width:calc(100% - 16px); }
-  .new-session:hover{ border-color:var(--accent); color:var(--accent); }
-  .new-session.active{ border-style:solid; border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+  .new-session{ margin:0 8px 14px; display:flex; align-items:center; justify-content:center; gap:6px; padding:10px 12px; border-radius:10px; border:none; color:var(--brand-ink); font-size:13px; font-weight:600; cursor:pointer; background:var(--brand); width:calc(100% - 16px); box-shadow:0 6px 16px rgba(59,130,246,.28); }
+  .new-session:hover{ filter:brightness(1.08); }
+  .new-session.active{ outline:2px solid var(--brand); outline-offset:2px; }
+  /* ---- Sidebar footer: run context (model/provider) + ตัวเลขของ session ที่เลือกอยู่ ----
+     ค่าทุกตัวมาจากของที่ระบบรู้จริง — model/provider จาก /config/check, tokens/steps จาก
+     task ที่เลือกอยู่ ไม่มีตัวไหนเป็นค่าประดับ */
+  .side-foot{ flex-shrink:0; border-top:1px solid var(--border); padding:12px 14px 10px; display:flex; flex-direction:column; gap:10px; }
+  .side-foot-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px 8px; }
+  .side-foot-cell{ min-width:0; }
+  .side-foot-key{ font-size:9.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); }
+  .side-foot-val{ font-size:12.5px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .btn-collapse{ display:flex; align-items:center; gap:7px; border:none; background:transparent; color:var(--muted); font-size:12px; font-weight:600; padding:4px 2px; cursor:pointer; border-radius:7px; }
+  .btn-collapse:hover{ color:var(--ink); }
+  .btn-collapse svg{ width:13px; height:13px; transition:transform .15s; }
+  .main.sidebar-collapsed{ grid-template-columns:56px minmax(0,1fr) 320px; }
+  .main.sidebar-collapsed.right-rail-hidden{ grid-template-columns:56px minmax(0,1fr); }
+  .main.sidebar-collapsed .history .col-body, .main.sidebar-collapsed .side-foot-grid,
+  .main.sidebar-collapsed .history .col-header, .main.sidebar-collapsed .btn-collapse span{ display:none; }
+  .main.sidebar-collapsed .btn-collapse svg{ transform:rotate(180deg); }
+  .main.sidebar-collapsed .side-foot{ border-top:none; }
+
   .history-group{ padding:10px 8px 2px; font-size:10.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--faint); }
   .list-item-wrap{ position:relative; }
-  .list-item{ display:block; padding:9px 28px 9px 10px; border-radius:8px; cursor:pointer; margin-bottom:2px; border:none; background:none; width:100%; text-align:left; }
-  .list-item:hover{ background:var(--surface); }
-  .list-item.active{ background:var(--surface); box-shadow:0 0 0 1px var(--border); }
+  .list-item{ position:relative; display:block; padding:11px 28px 11px 12px; border-radius:10px; cursor:pointer; margin-bottom:4px; border:none; background:none; width:100%; text-align:left; }
+  .list-item:hover{ background:var(--surface-3); }
+  .list-item.active{ background:var(--surface-3); box-shadow:0 0 0 1px var(--border), 0 6px 18px rgba(0,0,0,.18); }
+  /* แถบสีด้านซ้ายของ session ที่เลือกอยู่ — ตัวชี้ว่า "อันนี้" โดยไม่ต้องพึ่งความต่างของพื้นหลัง
+     อย่างเดียว ซึ่งบางจอมืดแยกไม่ออก */
+  .list-item.active::before{ content:""; position:absolute; left:0; top:10px; bottom:10px; width:3px; border-radius:0 3px 3px 0; background:var(--brand); }
+  .list-item .meta .tokens{ color:var(--muted); }
   .list-item .title{ font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .list-item .meta{ display:flex; align-items:center; gap:6px; margin-top:3px; font-size:11.5px; color:var(--faint); }
   .kill-session-btn{ position:absolute; top:8px; right:6px; width:19px; height:19px; border:none; border-radius:5px; background:transparent; color:var(--faint); font-size:13px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity .12s; }
@@ -193,14 +273,38 @@
      — the direct child div is otherwise a plain block, shrink-to-fit via the flex item above
      it, so without this its children would each size/align independently instead of as one
      right-aligned column. */
-  .msg.user > div{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
-  .msg.user .avatar{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
-  .msg.agent .avatar{ background:var(--accent); color:var(--accent-ink); }
-  .bubble{ padding:10px 13px; border-radius:12px; font-size:13.5px; line-height:1.55; max-width:440px; white-space:pre-wrap; }
-  .msg.user .bubble{ background:var(--surface-2); border:1px solid var(--border); border-top-right-radius:3px; }
-  .msg.agent .bubble{ background:var(--accent-soft); border-top-left-radius:3px; }
+  /* max-width กันแถวปุ่มลัดที่มาแปะใต้ฟอง (กว้างกว่าตัวฟองเอง) ดันคอลัมน์จนล้นออกนอกจอ
+     ตอนหน้าต่างแคบ — มันห่อบรรทัดได้อยู่แล้ว ขาดแค่เพดานความกว้าง */
+  .msg.user > div{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; max-width:100%; }
+  .msg .avatar{ width:32px; height:32px; border-radius:10px; }
+  .msg.user .avatar{ background:var(--surface-3); color:var(--muted); border:1px solid var(--border); }
+  .msg.agent .avatar{ background:linear-gradient(140deg,var(--brand),#22d3ee); color:#fff; box-shadow:0 4px 12px rgba(59,130,246,.3); }
+  .bubble{ padding:12px 15px; border-radius:14px; font-size:13.5px; line-height:1.6; max-width:460px; white-space:pre-wrap; }
+  .msg.user .bubble{ background:var(--brand); color:var(--brand-ink); border:none; border-bottom-right-radius:4px; }
+  .msg.agent .bubble{ background:var(--surface-3); border:1px solid var(--border); border-bottom-left-radius:4px; }
   .msg.agent.error .bubble{ background:var(--critical-soft); color:var(--critical); }
   .stat-line{ display:flex; gap:12px; font-size:11.5px; color:var(--faint); margin-top:5px; }
+
+  /* ---- ฟองสถานะ "กำลังคิด/กำลังทำ" ----
+     ตัวอักษรวิ่งไล่สี + จุดสามจุดเด้งไล่กัน เพื่อบอกว่า "ยังไม่ค้าง ยังทำอยู่" — ฟองนี้เป็น
+     อย่างเดียวบนจอที่ผู้ใช้เห็นระหว่างรอ ถ้ามันนิ่งสนิทก็แยกไม่ออกว่าระบบแฮงก์หรือกำลังทำงาน
+     ข้อความ (html ก้อนเดิม) ไม่เปลี่ยนระหว่าง render ซ้ำ อนิเมชันจึงวิ่งต่อเนื่องไม่กระตุก
+     (ดู setHtmlIfChanged) */
+  .thinking{ display:inline-flex; align-items:center; gap:7px; }
+  .thinking-text{ background:linear-gradient(90deg, var(--muted) 20%, var(--ink) 50%, var(--muted) 80%);
+    background-size:220% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    animation:thinking-shimmer 1.9s linear infinite; }
+  .thinking-dots{ display:inline-flex; align-items:flex-end; gap:3px; }
+  .thinking-dots i{ width:4px; height:4px; border-radius:50%; background:var(--muted);
+    animation:thinking-dot 1.2s ease-in-out infinite; }
+  .thinking-dots i:nth-child(2){ animation-delay:.16s; }
+  .thinking-dots i:nth-child(3){ animation-delay:.32s; }
+  @keyframes thinking-shimmer{ from{ background-position:120% 0; } to{ background-position:-120% 0; } }
+  @keyframes thinking-dot{ 0%,60%,100%{ transform:translateY(0); opacity:.45; } 30%{ transform:translateY(-3px); opacity:1; } }
+  @media (prefers-reduced-motion: reduce){
+    .thinking-text{ animation:none; background:none; color:var(--muted); }
+    .thinking-dots i{ animation:none; opacity:.7; }
+  }
 
   /* ---- Human-in-the-loop approval cards ---- */
   .approval-bubble{ background:var(--warning-soft) !important; border:1px solid var(--warning); max-width:440px; }
@@ -217,22 +321,26 @@
   .correction-title{ font-weight:700; font-size:12px; color:var(--critical); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; }
   .correction-form{ display:flex; gap:8px; }
   .correction-input{ flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:7px 9px; font-size:12.5px; color:var(--ink); }
-  .correction-input:focus{ outline:none; border-color:var(--accent); }
-  .btn-correction-submit{ border:none; border-radius:6px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--accent); color:var(--accent-ink); white-space:nowrap; }
+  .correction-input:focus{ outline:none; border-color:var(--brand); }
+  .btn-correction-submit{ border:none; border-radius:6px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; background:var(--brand); color:var(--brand-ink); white-space:nowrap; }
   .btn-correction-submit:hover{ filter:brightness(1.08); }
   .btn-correction-submit:disabled{ opacity:.5; cursor:not-allowed; filter:none; }
   .btn-approve, .btn-deny{ flex:1; border:none; border-radius:7px; padding:7px 10px; font-size:12.5px; font-weight:700; cursor:pointer; }
-  .btn-approve{ background:var(--accent); color:var(--accent-ink); }
+  /* น้ำเงิน = "ปุ่มที่ให้กด" ตามธีมล่าสุด (ปุ่ม New session / ฟองข้อความผู้ใช้ / ปุ่มส่ง)
+     ส่วนเขียวสงวนไว้ให้ "สำเร็จแล้ว" อย่างเดียว (badge done, ติ๊กในแผน, ไอคอน ok ใน log) —
+     ก่อนหน้านี้ปุ่ม Approve เป็นเขียว ซึ่งอ่านได้ว่า "ผ่านแล้ว" ทั้งที่ยังไม่ได้กด */
+  .btn-approve{ background:var(--brand); color:var(--brand-ink); }
   .btn-deny{ background:var(--critical); color:#fff; }
   .btn-approve:hover, .btn-deny:hover{ filter:brightness(1.08); }
   .btn-edit{ flex:0 0 auto; border:1px solid var(--border); background:transparent; color:var(--muted); border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; }
-  .btn-edit:hover{ border-color:var(--accent); color:var(--accent); }
+  .btn-edit:hover{ border-color:var(--brand); color:var(--brand); }
 
   /* ---- Plan bubble (shown live in the chat as soon as it's drafted) ---- */
-  .plan-bubble{ background:var(--accent-soft) !important; border:1px solid var(--accent); max-width:460px; }
-  .plan-bubble-title{ font-weight:700; font-size:12px; color:var(--accent); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
+  .plan-bubble{ background:var(--brand-soft) !important; border:1px solid var(--brand); max-width:460px; }
+  .plan-bubble-title{ font-weight:700; font-size:12px; color:var(--brand); text-transform:uppercase; letter-spacing:.04em; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
   .plan-bubble-title .plan-badge{ font-size:10px; padding:1px 7px; border-radius:5px; font-weight:700; text-transform:none; letter-spacing:0; }
-  .plan-badge.ok{ background:var(--accent); color:var(--accent-ink); }
+  .plan-badge.ok{ background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent); }
+  .msg .avatar svg{ width:16px; height:16px; }
   .plan-badge.fail{ background:var(--critical-soft); color:var(--critical); }
   .plan-badge.running{ background:var(--surface-2); color:var(--muted); border:1px solid var(--border); }
   .plan-bubble-text{ font-size:13px; line-height:1.6; white-space:pre-wrap; color:var(--ink); margin-bottom:8px; }
@@ -244,12 +352,30 @@
      Tighter spacing than a chat bubble needs since this now lives in a narrow persistent
      rail column, not a wide one-off message. */
   .plan-checklist{ list-style:none; margin:0; padding:8px; display:flex; flex-direction:column; gap:4px; }
-  .plan-checklist-item{ display:flex; align-items:flex-start; gap:7px; font-size:12.5px; line-height:1.4; color:var(--ink); }
-  .plan-checklist-box{ flex:0 0 auto; width:15px; height:15px; margin-top:1px; border-radius:4px; border:1.5px solid var(--faint); display:flex; align-items:center; justify-content:center; font-size:10px; line-height:1; color:var(--accent-ink); transition:background-color .15s, border-color .15s; }
+  .plan-checklist-item{ position:relative; display:flex; align-items:flex-start; gap:7px; font-size:12.5px; line-height:1.4; color:var(--ink); }
+  /* เส้นต่อระหว่างวงกลม: ทำให้อ่านว่าเป็น "ลำดับขั้น" ไม่ใช่รายการติ๊กที่ทำสลับข้อกันได้ ซึ่งตรง
+     กับพฤติกรรมจริงของ agent (W_plan_step_cursor บังคับลำดับอยู่แล้ว) — ตำแหน่งอ้างจากกึ่งกลาง
+     ของวงกลม 18px ที่ margin-top:1px และยืดลงไปกินช่องว่าง gap:10px ระหว่างข้อ */
+  .plan-checklist-item:not(:last-child)::after{ content:""; position:absolute; left:8px; width:2px;
+    top:21px; bottom:-12px; background:var(--border); border-radius:1px; }
+  .plan-checklist-item.done:not(:last-child)::after{ background:var(--accent); opacity:.45; }
+  .plan-checklist{ gap:10px; padding:8px 10px; }
+  .plan-checklist-box{ flex:0 0 auto; width:18px; height:18px; margin-top:1px; border-radius:50%; border:1.5px solid var(--faint); display:flex; align-items:center; justify-content:center; font-size:11px; line-height:1; color:var(--accent-ink); transition:background-color .15s, border-color .15s; }
   .plan-checklist-item.done .plan-checklist-box{ background:var(--accent); border-color:var(--accent); }
-  .plan-checklist-item.done .plan-checklist-text{ color:var(--muted); text-decoration:line-through; text-decoration-color:var(--faint); }
+  /* ข้อที่เสร็จแล้วไม่ขีดฆ่า — วงกลมติ๊กเขียวบอกครบแล้ว ส่วนข้อความยังต้องอ่านออกเพราะมันคือ
+     บันทึกว่า agent ทำอะไรไปบ้าง ไม่ใช่ todo ที่ทิ้งได้ */
+  .plan-checklist-item.done .plan-checklist-text{ color:var(--muted); }
+  /* step ที่กำลังทำอยู่: วงกลมหมุน + ตัวอักษรเน้น — เดิมข้อที่ยังไม่เสร็จทุกข้อหน้าตาเหมือนกันหมด
+     จึงบอกไม่ได้ว่า agent อยู่ตรงไหนของแผน ซึ่งเป็นคำถามแรกที่คนดูอยากรู้ระหว่างงานกำลังรัน */
+  .plan-checklist-item.current .plan-checklist-text{ color:var(--ink); font-weight:600; }
+  .plan-checklist-item.current .plan-checklist-box{ border-color:var(--brand); border-right-color:transparent;
+    animation:plan-spin .8s linear infinite; }
+  @keyframes plan-spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){
+    .plan-checklist-item.current .plan-checklist-box{ animation:none; border-right-color:var(--brand); }
+  }
   .plan-edit-textarea{ width:100%; background:var(--surface); border:1px solid var(--border); color:var(--ink); border-radius:6px; padding:8px; font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; min-height:110px; margin-bottom:8px; }
-  .plan-edit-textarea:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  .plan-edit-textarea:focus{ outline:2px solid var(--brand); outline-offset:1px; }
 
   /* W14: Website Learning banner (crawl progress / done / error) — W23: no more
      "missing"/"known" static states here, that's just the header button now (see
@@ -275,10 +401,10 @@
   .manual-banner-cred-request{ margin-top:8px; padding-top:8px; border-top:1px solid var(--accent); }
   .manual-banner-cred-request-title{ font-weight:700; margin-bottom:6px; }
   .manual-banner-login-fields{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
-  .manual-banner-login-fields input{ flex:1 1 140px; min-width:0; padding:5px 8px; font-size:12px; border-radius:6px; border:1px solid var(--accent); background:var(--bg); color:var(--ink); }
+  .manual-banner-login-fields input{ flex:1 1 140px; min-width:0; padding:5px 8px; font-size:12px; border-radius:6px; border:1px solid var(--brand); background:var(--bg); color:var(--ink); }
   .manual-banner-cred-request-actions{ display:flex; gap:8px; }
   .manual-banner-skip-btn{ flex:0 0 auto; border:1px solid var(--border); border-radius:7px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; background:transparent; color:var(--muted); }
-  .manual-banner-skip-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  .manual-banner-skip-btn:hover{ border-color:var(--brand); color:var(--brand); }
 
   .composer{ position:relative; flex-shrink:0; border-top:1px solid var(--border); padding:12px 16px 16px; display:flex; flex-direction:column; gap:6px; }
 
@@ -309,6 +435,16 @@
   .check-row{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
   .check-row input{ width:auto; }
   .check-row .warn-hint{ color:var(--warning); font-size:10.5px; }
+  /* ปุ่ม Log panel ถูกจัดให้หน้าตาเท่ากับตัวควบคุมอื่นในแถวเดียวกัน (select/number) — ยังเป็น
+     ปุ่มสลับตัวเดิมอยู่ ไม่ได้ทำเป็น dropdown ปลอมที่กดแล้วไม่มีเมนูโผล่ */
+  .settings-item .log-toggle-btn{ background:var(--surface-3); border-color:var(--border); color:var(--ink); font-size:12.5px; padding:7px 12px; border-radius:8px; }
+  /* W_openai_oauth: unstyled <button> เดิมสืบทอด background/สีของ browser default (light gray
+     background + สี inherit จาก theme มืด = ตัวหนังสือกลืนกับพื้นหลังเกือบมองไม่เห็น — user
+     รายงานจริง) ใช้ accent/secondary pattern เดียวกับปุ่ม primary/secondary อื่นในแอปนี้ */
+  #btnOpenaiLogin, #btnOpenaiLogout{ border:none; border-radius:6px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+  #btnOpenaiLogin{ background:var(--brand); color:var(--brand-ink); }
+  #btnOpenaiLogout{ background:transparent; border:1px solid var(--critical); color:var(--critical); }
+  #btnOpenaiLogout:hover{ background:var(--critical-soft); }
   .composer-error{ font-size:12px; color:var(--critical); }
 
   /* ---- Pill-shaped composer bar (chat-input style: + attach / textarea / stop) ---- */
@@ -357,8 +493,8 @@
 
   /* ---- Log toggle (manual show/hide — see .right-rail-hidden on .main) ---- */
   .log-toggle-btn{ border:1px solid var(--border); background:var(--surface-2); color:var(--muted); font-size:11px; font-weight:600; padding:4px 10px; border-radius:7px; cursor:pointer; flex-shrink:0; }
-  .log-toggle-btn:hover{ border-color:var(--accent); color:var(--accent); }
-  .log-toggle-btn.active{ background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+  .log-toggle-btn:hover{ border-color:var(--brand); color:var(--brand); }
+  .log-toggle-btn.active{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
 
   /* ---- Right rail: Plan + Log — each .col is a flex item so when both are visible at
      once they split the rail's height 50/50 automatically (equal flex:1, no basis set);
@@ -369,15 +505,44 @@
   .right-rail .col:not(:last-child){ border-bottom:1px solid var(--border); }
   .log-placeholder{ color:var(--faint); font-size:12.5px; padding:8px 8px; }
 
-  .log-line{ display:flex; gap:8px; padding:4px 8px; font-size:11.5px; border-radius:6px; align-items:baseline; }
-  .log-line:hover{ background:var(--surface-2); }
-  .log-line .t{ color:var(--faint); flex-shrink:0; width:20px; text-align:right; }
-  .log-line .lvl{ flex-shrink:0; width:38px; font-weight:700; }
-  .log-line .lvl.info{ color:var(--muted); }
-  .log-line .lvl.ok{ color:var(--accent); }
-  .log-line .lvl.err{ color:var(--critical); }
-  .log-line .msg-text{ color:var(--ink); overflow-wrap:anywhere; }
-  .log-line .result-text{ color:var(--faint); overflow-wrap:anywhere; }
+  /* หนึ่ง step = หนึ่งแถว (เดิมเป็นสองแถวซ้อนที่ต้องอ่านคู่กันถึงจะเข้าใจ) — เลข step,
+     ไอคอนสถานะ, หัวเรื่องของ action, ผลลัพธ์ดิบ แล้วเวลาชิดขวา */
+  .log-row{ position:relative; display:flex; gap:9px; padding:7px 8px; border-radius:8px; }
+  /* เส้นเดียวกับในแผน — ค่าตำแหน่งมาจาก layout จริงของแถว: padding-left 8 + .log-num 16 +
+     gap 9 = ขอบซ้ายของไอคอน, ไอคอน 15px margin-top 2 -> กึ่งกลางที่ 40.5px และล่างสุดที่ 24px */
+  .log-row:not(:last-child)::after{ content:""; position:absolute; left:39.5px; width:2px;
+    top:26px; bottom:-2px; background:var(--border); border-radius:1px; }
+  .log-row:hover{ background:var(--surface-3); }
+  .log-num{ flex:0 0 auto; width:16px; text-align:right; color:var(--faint); font-size:11px; padding-top:2px; }
+  .log-ico{ flex:0 0 auto; width:15px; height:15px; margin-top:2px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; }
+  .log-ico.ok{ background:var(--accent); color:var(--accent-ink); }
+  .log-ico.err{ background:var(--critical); color:#fff; }
+  .log-ico.info{ background:var(--surface-3); color:var(--muted); border:1px solid var(--border); }
+  .log-main{ flex:1; min-width:0; }
+  .log-title{ font-size:12.5px; font-weight:600; color:var(--ink); overflow-wrap:anywhere; }
+  .log-sub{ font-size:11px; color:var(--faint); overflow-wrap:anywhere; margin-top:2px; }
+  .log-time{ flex:0 0 auto; font-size:10.5px; color:var(--faint); padding-top:2px; }
+  .log-foot{ flex-shrink:0; padding:10px 12px; border-top:1px solid var(--border); }
+  .btn-full-logs{ width:100%; display:flex; align-items:center; justify-content:center; gap:7px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:transparent; color:var(--muted); font-size:12.5px; font-weight:600; cursor:pointer; }
+  .btn-full-logs:hover{ border-color:var(--brand); color:var(--brand); }
+  .btn-full-logs svg{ width:13px; height:13px; }
+
+  /* ---- แถวปุ่มลัดใต้ช่องพิมพ์ ---- */
+  /* อยู่ใต้ฟองข้อความล่าสุดของผู้ใช้ ไม่ใช่แถบตรึงใต้ช่องพิมพ์ — ปุ่มพวกนี้ทำงานกับ "เทิร์นนี้"
+     (รันซ้ำ/สรุปผล/ดูภาพหน้าจอ/ดู log ของมัน) การวางไว้ติดกับข้อความที่มันอ้างถึงจึงบอกขอบเขต
+     ของตัวเองได้โดยไม่ต้องเขียนอธิบาย ตัว element เป็นตัวเดิมตัวเดียวที่ถูกย้ายที่ (ดู
+     placeQuickActions()) ไม่ได้ประกอบใหม่ทุกครั้งที่ render */
+  .quick-actions{ flex-shrink:0; display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; margin-top:8px;
+    opacity:0; transition:opacity .12s; }
+  /* โผล่ตอนเอาเมาส์ไปวางบนข้อความของตัวเอง — focus-within ไว้ให้คนที่ใช้ Tab ด้วย ไม่งั้นปุ่ม
+     จะโฟกัสได้แต่มองไม่เห็น ที่จองที่ว่างไว้ตลอด (opacity ไม่ใช่ display) เพราะถ้าให้มันแทรก
+     ตอน hover ข้อความทั้งสายจะกระโดดทุกครั้งที่เมาส์ผ่าน */
+  .msg.user:hover .quick-actions, .msg.user:focus-within .quick-actions{ opacity:1; }
+  @media (prefers-reduced-motion: reduce){ .quick-actions{ transition:none; } }
+  .quick-action-btn{ display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; padding:0; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--muted); cursor:pointer; }
+  .quick-action-btn:hover:not(:disabled){ border-color:var(--brand); color:var(--brand); }
+  .quick-action-btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .quick-action-btn svg{ width:13px; height:13px; }
 
   @media (max-width:920px){
     .main{ grid-template-columns:1fr; grid-template-rows:auto 1fr auto; }
@@ -406,47 +571,126 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </button>
         <div class="settings-panel" id="settingsPanel">
-          <div class="settings-section">
-            <div class="settings-label">Appearance</div>
-            <div class="settings-row">
-              <label>Theme</label>
-              <div class="theme-toggle" id="themeToggle">
-                <button data-theme="light">Light</button>
-                <button data-theme="dark">Dark</button>
+          <section class="settings-card">
+            <button class="settings-card-head" type="button" data-settings-card="appearance" aria-expanded="false">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.5-.7 1.5-1.5 0-.4-.2-.8-.4-1-.3-.3-.4-.6-.4-1 0-.8.7-1.5 1.5-1.5H16c3.3 0 6-2.7 6-6 0-4.4-4.5-8-10-8z"/></svg></span>
+              <div>
+                <div class="settings-card-title">Appearance</div>
+                <div class="settings-card-sub">Customize how Browser Agent looks and behaves</div>
+              </div>
+            <span class="settings-card-chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></button>
+            <div class="settings-card-body" hidden>
+            <div class="settings-item">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">Theme</div>
+                <div class="settings-item-desc">Change the color theme of the interface</div>
+              </div>
+              <div class="settings-item-control">
+                <div class="theme-toggle" id="themeToggle">
+                  <button data-theme="light">Light</button>
+                  <button data-theme="dark">Dark</button>
+                </div>
               </div>
             </div>
-            <div class="settings-row">
-              <label>Log panel</label>
-              <button class="log-toggle-btn" id="btnToggleLog">Show log</button>
+            <div class="settings-item">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">Log panel</div>
+                <div class="settings-item-desc">Choose how the log panel is displayed</div>
+              </div>
+              <div class="settings-item-control">
+                <button class="log-toggle-btn" id="btnToggleLog">Show log</button>
+              </div>
             </div>
-          </div>
-          <div class="settings-section">
-            <div class="settings-label">Run configuration</div>
-            <div class="settings-row">
-              <label for="provider">Provider</label>
-              <select id="provider">
-                <option value="">default</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="gemini">Gemini</option>
-                <option value="groq">Groq</option>
-              </select>
             </div>
-            <div class="settings-row">
-              <label for="maxSteps">Max steps</label>
-              <input type="number" id="maxSteps" value="30" min="1" max="200">
+          </section>
+
+          <section class="settings-card">
+            <button class="settings-card-head" type="button" data-settings-card="run" aria-expanded="false">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+              <div>
+                <div class="settings-card-title">Run Configuration</div>
+                <div class="settings-card-sub">Configure how the agent runs and connects</div>
+              </div>
+            <span class="settings-card-chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span></button>
+            <div class="settings-card-body" hidden>
+            <div class="settings-item">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>
+              <div class="settings-item-text">
+                <label class="settings-item-title" for="provider">Provider</label>
+                <div class="settings-item-desc">Select the default AI provider</div>
+              </div>
+              <div class="settings-item-control">
+                <select id="provider">
+                  <option value="">default</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="groq">Groq</option>
+                  <option value="openai" id="providerOpenaiOption" disabled>OpenAI (ChatGPT login required)</option>
+                </select>
+              </div>
             </div>
-            <label class="check-row"><input type="checkbox" id="headless" checked> Headless (hide the browser window) <span class="warn-hint">(watch progress in the Live view above instead — uncheck only if you need to interact with the real window yourself, e.g. to solve a CAPTCHA)</span></label>
-            <label class="check-row"><input type="checkbox" id="useUserBrowser"> Use my browser <span class="warn-hint">(opens a new tab in your own Chrome instead of a separate window — requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup)</span></label>
-            <label class="check-row" id="tabReusePolicyRow" style="display:none;">
-              Continuing in that tab:
-              <select id="tabReusePolicy">
-                <option value="ask">Ask each time (default, safest)</option>
-                <option value="always_reuse">Always continue in the same tab (no prompts)</option>
-                <option value="always_new_tab">Always open a new tab</option>
-              </select>
+            <div class="settings-item">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">OpenAI account</div>
+                <div class="settings-item-desc">Manage your OpenAI account connection</div>
+              </div>
+              <div class="settings-item-control">
+                <span id="openaiAuthStatus" class="settings-linked">Checking...</span>
+                <button type="button" id="btnOpenaiLogin" style="display:none;">Sign in with ChatGPT</button>
+                <button type="button" id="btnOpenaiLogout" style="display:none;">Sign out</button>
+              </div>
+            </div>
+            <div class="settings-item">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4v-4H4zM10 16h4v-4h-4zM16 12h4V8h-4z"/></svg></span>
+              <div class="settings-item-text">
+                <label class="settings-item-title" for="maxSteps">Max steps</label>
+                <div class="settings-item-desc">Maximum number of steps per session</div>
+              </div>
+              <div class="settings-item-control">
+                <input type="number" id="maxSteps" value="30" min="1" max="200">
+              </div>
+            </div>
+            <label class="settings-item settings-item-check">
+              <input type="checkbox" id="headless" checked>
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">Headless (hide the browser window)</div>
+                <div class="settings-item-desc">Watch progress in the Live view above instead &mdash; uncheck only if you need to interact with the real window yourself, e.g. to solve a CAPTCHA</div>
+              </div>
             </label>
-            <label class="check-row"><input type="checkbox" id="autoApprove"> Auto-approve permission prompts <span class="warn-hint">(lets the agent act without asking)</span></label>
-          </div>
+            <label class="settings-item settings-item-check">
+              <input type="checkbox" id="useUserBrowser">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M12 8h9.5M8.5 14L3.8 6.9M15.5 14l-4.7 8.1"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">Use my browser</div>
+                <div class="settings-item-desc">Opens a new tab in your own Chrome instead of a separate window &mdash; requires Chrome already running with --remote-debugging-port; see run.py "real-browser" docstring for setup</div>
+              </div>
+            </label>
+            <div class="settings-item" id="tabReusePolicyRow" style="display:none;">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M9 5v4"/></svg></span>
+              <div class="settings-item-text">
+                <label class="settings-item-title" for="tabReusePolicy">Continuing in that tab</label>
+                <div class="settings-item-desc">What to do when that Chrome tab is already on the target site</div>
+                <select id="tabReusePolicy">
+                  <option value="ask">Ask each time (default, safest)</option>
+                  <option value="always_reuse">Always continue in the same tab (no prompts)</option>
+                  <option value="always_new_tab">Always open a new tab</option>
+                </select>
+              </div>
+            </div>
+            <label class="settings-item settings-item-check">
+              <input type="checkbox" id="autoApprove">
+              <span class="settings-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></span>
+              <div class="settings-item-text">
+                <div class="settings-item-title">Auto-approve permission prompts</div>
+                <div class="settings-item-desc">Lets the agent act without asking</div>
+              </div>
+            </label>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -455,25 +699,46 @@
   <div class="main right-rail-hidden" id="mainGrid">
     <!-- HISTORY -->
     <div class="col history">
-      <div class="col-header"><span class="eyebrow">History</span></div>
+      <div class="col-header"><span class="eyebrow">Sessions</span></div>
       <div class="col-body">
         <button class="new-session" id="btnNewSession">+ New session</button>
         <div id="historyList"></div>
+      </div>
+      <!-- ท้ายแถบข้าง: บริบทของการรัน (model/provider จาก /config/check) + ตัวเลขของ session
+           ที่เลือกอยู่ (tokens/steps) — ทั้งสี่ค่ามาจากของจริงที่ระบบรู้อยู่แล้ว ไม่ใช่ค่าประดับ -->
+      <div class="side-foot">
+        <div class="side-foot-grid">
+          <div class="side-foot-cell"><div class="side-foot-key">Model</div><div class="side-foot-val" id="footModel">&mdash;</div></div>
+          <div class="side-foot-cell"><div class="side-foot-key">Provider</div><div class="side-foot-val" id="footProvider">&mdash;</div></div>
+          <div class="side-foot-cell"><div class="side-foot-key">Tokens (session)</div><div class="side-foot-val mono" id="footTokens">&mdash;</div></div>
+          <div class="side-foot-cell"><div class="side-foot-key">Steps</div><div class="side-foot-val mono" id="footSteps">&mdash;</div></div>
+        </div>
+        <button class="btn-collapse" id="btnCollapseSidebar" type="button" title="Collapse the sessions panel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          <span>Collapse</span>
+        </button>
       </div>
     </div>
 
     <!-- CHAT -->
     <div class="col chat">
       <div class="col-header chat-header">
-        <span class="eyebrow">Chat</span>
-        <input type="url" id="url" placeholder="Target URL — https://www.example.com (optional)" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
-        <datalist id="urlHistory"></datalist>
+        <div class="url-block">
+          <span class="eyebrow">Target URL</span>
+          <div class="url-row">
+            <input type="url" id="url" placeholder="https://www.example.com (optional)" list="urlHistory" autocomplete="off" class="chat-url-input" aria-label="Target URL" title="Target URL">
+            <datalist id="urlHistory"></datalist>
         <button type="button" id="btnEditUrl" class="btn-edit-url" title="Edit target URL" aria-label="Edit target URL" style="display:none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </button>
         <button type="button" id="btnSaveUrl" class="btn-edit-url btn-save-url" title="Confirm target URL" aria-label="Confirm target URL" style="display:none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </button>
+            <button type="button" id="btnCopyUrl" class="btn-copy-url" title="Copy the target URL" aria-label="Copy the target URL">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+        </div>
         <button type="button" id="btnLearnSite" class="manual-banner-learn-btn" data-learn-site="true" style="display:none;"></button>
       </div>
       <div class="live-view" id="liveView" style="display:none;">
@@ -513,6 +778,17 @@
         </div>
         <span class="composer-error" id="composerError"></span>
       </div>
+      <!-- ปุ่มลัดของเทิร์นนี้ อยู่ใต้ฟองข้อความล่าสุดของผู้ใช้ (ดู placeQuickActions()) —
+           ไอคอนล้วน ข้อความอธิบายอยู่ใน tooltip/aria-label เพราะมันเป็นของประกอบข้อความ
+           ไม่ใช่แถบเครื่องมือหลักของหน้า -->
+      <div class="quick-actions" id="quickActions">
+        <button class="quick-action-btn" id="btnCopyGoal" type="button" data-tooltip="Copy this command" aria-label="Copy this command">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="quick-action-btn" id="btnRerunGoal" type="button" data-tooltip="Re-run this goal" aria-label="Re-run this goal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        </button>
+      </div>
     </div>
 
     <!-- RIGHT RAIL: Plan (shows once a plan is approved) + Log (manual toggle) — split
@@ -524,7 +800,13 @@
       </div>
       <div class="col log" id="logPanel">
         <div class="col-header"><span class="eyebrow">Log</span><span class="mono" id="logCount" style="font-size:11px;color:var(--faint)"></span></div>
-        <div class="col-body mono" id="logBody"><div class="log-placeholder">Select or start a task to see its step log.</div></div>
+        <div class="col-body" id="logBody"><div class="log-placeholder">Select or start a task to see its step log.</div></div>
+        <div class="log-foot">
+          <button class="btn-full-logs" id="btnFullLogs" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            View full logs
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -577,6 +859,9 @@ async function apiStreamUrl(url) {
 let tasks = [];          // last known snapshot from GET /tasks
 let selectedConvId = null; // conversation currently shown in Chat/Log, or null = "new session"
 const liveSteps = {};        // task_id -> [{step, cmd, result, success}, ...] from SSE, real-time
+// W_user_input_draft: ค่าที่ผู้ใช้พิมพ์ตอบคำถามของ agent (task_id -> ข้อความ) — เก็บไว้เพราะ
+// การ์ดคำถามอยู่ใน #transcript ที่ถูก render ใหม่ได้ตลอดเวลา ลบทิ้งเมื่อส่งคำตอบไปแล้ว
+const userInputDrafts = {};
 // W49: task_id -> {input, output, cache_read, cache_creation} — cumulative token usage from
 // the latest "step" SSE event, so the sidebar can show a running total while status is still
 // "running" (task.result.tokens only exists once the task is fully done, see task_done below).
@@ -635,6 +920,10 @@ const liveChatReplies = {};  // task_id -> chat reply message for Q&A summarizat
 // removed from once added, even if the agent later revisits/retries an action related to
 // that step, so a checked box doesn't flicker back to unchecked mid-run.
 const completedPlanSteps = {};
+// W_plan_panel_lags_the_log: task_id -> plan_progress event ล่าสุดจาก SSE — พา current/
+// done_through/total มาให้ทุก action (จังหวะเดียวกับ event "step" ที่ทำให้ LOG ทัน)
+// เดิม PLAN ติ๊กครบพร้อมกันตอนจบ เพราะ event เก่ายิงเฉพาะตอนโมเดลรายงานเอง และส่งเลข 0 มา
+const planProgress = {};
 let logVisible = false;      // Log panel is collapsed until the user explicitly clicks "Show log"
 // W_urllock: true while the pencil-edit toggle is active for the *current* turn — while
 // true, renderTopbar() leaves the URL field alone (unlocked, not overwritten with
@@ -935,6 +1224,96 @@ async function refreshPool() {
 }
 
 // 🔥 แก้ไข: refreshTasks() — ใช้ deletedTaskIds Set ที่ sync กับ deletedConvs แล้ว
+// W_openai_oauth: "Sign in with ChatGPT" — status/login/logout ให้ provider "openai" (ดู
+// backend/app/core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม) — ค่า OPENAI_LOGIN_TIMEOUT_MS
+// ต้องสอดคล้องกับ settings.openai_oauth_login_timeout_seconds ฝั่ง backend (ไม่ผูก config
+// ข้ามฝั่งจริงๆ ได้ แค่ตั้งใกล้เคียงกัน กัน poll ค้างไม่รู้จบถ้า background task ฝั่ง
+// backend เงียบหายไปโดยไม่ update status)
+const OPENAI_LOGIN_TIMEOUT_MS = 300000;
+let openaiLoginPollTimer = null;
+
+function setOpenaiAuthUi(linked, label) {
+  $("openaiAuthStatus").textContent = label;
+  $("btnOpenaiLogin").style.display = linked ? "none" : "";
+  $("btnOpenaiLogout").style.display = linked ? "" : "none";
+  $("providerOpenaiOption").disabled = !linked;
+}
+
+async function refreshOpenaiAuthStatus() {
+  try {
+    const r = await apiFetch(API + "/api/auth/openai/status");
+    if (!r.ok) {
+      setOpenaiAuthUi(false, "Status unavailable");
+      return;
+    }
+    const s = await r.json();
+    if (s.linked) {
+      setOpenaiAuthUi(true, `Linked as ${s.email || "?"}${s.plan_type ? " (" + s.plan_type + ")" : ""}`);
+    } else {
+      setOpenaiAuthUi(false, "Not linked");
+    }
+  } catch (e) {
+    setOpenaiAuthUi(false, "Status unavailable");
+  }
+}
+
+function stopOpenaiLoginPoll() {
+  if (openaiLoginPollTimer) {
+    clearInterval(openaiLoginPollTimer);
+    openaiLoginPollTimer = null;
+  }
+}
+
+function pollOpenaiLoginStatus(loginId) {
+  stopOpenaiLoginPoll();
+  const deadline = Date.now() + OPENAI_LOGIN_TIMEOUT_MS;
+  openaiLoginPollTimer = setInterval(async () => {
+    if (Date.now() > deadline) {
+      stopOpenaiLoginPoll();
+      setOpenaiAuthUi(false, "Login timed out — try again");
+      return;
+    }
+    try {
+      const r = await apiFetch(API + `/api/auth/openai/login/status?login_id=${encodeURIComponent(loginId)}`);
+      if (!r.ok) return; // login_id ไม่รู้จัก (404) หรือ network สะดุดชั่วคราว — ลอง poll ต่อจนกว่าจะ timeout
+      const s = await r.json();
+      if (s.status === "pending") return;
+      stopOpenaiLoginPoll();
+      if (s.status === "linked") {
+        setOpenaiAuthUi(true, `Linked as ${s.email || "?"}${s.plan_type ? " (" + s.plan_type + ")" : ""}`);
+      } else {
+        setOpenaiAuthUi(false, `Login failed: ${s.error || "unknown error"}`);
+      }
+    } catch (e) {}
+  }, 2000);
+}
+
+async function startOpenaiLogin() {
+  setOpenaiAuthUi(false, "Opening ChatGPT sign-in...");
+  try {
+    const r = await apiFetch(API + "/api/auth/openai/login/start", { method: "POST" });
+    if (!r.ok) {
+      setOpenaiAuthUi(false, "Could not start login");
+      return;
+    }
+    const { authorize_url, login_id } = await r.json();
+    window.open(authorize_url, "_blank");
+    setOpenaiAuthUi(false, "Waiting for you to finish signing in...");
+    pollOpenaiLoginStatus(login_id);
+  } catch (e) {
+    setOpenaiAuthUi(false, "Could not start login");
+  }
+}
+
+async function logoutOpenai() {
+  stopOpenaiLoginPoll();
+  try {
+    await apiFetch(API + "/api/auth/openai/logout", { method: "POST" });
+  } catch (e) {}
+  if ($("provider").value === "openai") $("provider").value = "";
+  await refreshOpenaiAuthStatus();
+}
+
 async function refreshTasks() {
   try {
     const r = await apiFetch(API + "/tasks");
@@ -1004,6 +1383,10 @@ function closeStream(taskId) {
 // 🔥 แก้ไข: อัพเดท task status ทันทีเมื่อได้รับ task_done event
 function handleStreamEvent(taskId, event) {
   if (event.kind === "step") {
+    // เวลาที่ step นี้มาถึงหน้าจอ — backend ไม่ได้ส่ง timestamp ต่อ step มาด้วย (ดู
+    // memory.record() ใน orchestrator.py) ตัวนี้จึงมีเฉพาะ step ที่ดูสดเท่านั้น และ
+    // renderLogLine() ก็เว้นว่างเมื่อไม่มี แทนที่จะเดาเวลาให้
+    event._uiTs = Date.now();
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push(event);
     if (event.tokens) liveTokens[taskId] = event.tokens;
   } else if (event.kind === "screenshot") {
@@ -1019,6 +1402,14 @@ function handleStreamEvent(taskId, event) {
     (liveSteps[taskId] || (liveSteps[taskId] = [])).push({
       step: null, cmd: event.cmd, result: "Auto-approved (auto-approve enabled)", success: true,
     });
+  } else if (event.kind === "plan_progress") {
+    // W_plan_panel_lags_the_log: เก็บตัวล่าสุดไว้ชี้แถว "กำลังทำข้อนี้" แล้วเทข้อที่ผ่านไปแล้ว
+    // ลง Set เดิม — แหล่งความจริงเดียวสำหรับ "ติ๊กแล้ว" และเพราะ event นี้พา done_through มา
+    // ทุกครั้ง tab ที่เพิ่งเชื่อมสายกลางคันจึงกู้ติ๊กที่พลาดไปได้ครบในทีเดียว (ระบบไม่มี
+    // replay buffer ฝั่ง server — ดู routes.py::_stream_task_events)
+    planProgress[taskId] = event;
+    const doneSet = completedPlanSteps[taskId] || (completedPlanSteps[taskId] = new Set());
+    for (let i = 1; i <= (event.done_through || 0); i++) doneSet.add(i);
   } else if (event.kind === "plan_step_done") {
     // W43: never delete/unset once added (see completedPlanSteps declaration) — a
     // checked box should stay checked even if the agent revisits that part of the page.
@@ -1147,6 +1538,7 @@ async function killSession(convId) {
     delete liveSteps[taskId];
     delete pendingApprovals[taskId];
     delete runningPlans[taskId];
+    delete planProgress[taskId];
     delete liveChatReplies[taskId];
     delete liveScreens[taskId];
     if (liveConnections[taskId]) {
@@ -1702,7 +2094,7 @@ function renderHistory() {
         <button class="kill-session-btn" data-kill-conv="${convId}" title="Close this session">&times;</button>
       </div>`;
   }
-  list.innerHTML = html;
+  setHtmlIfChanged(list, html);
   list.querySelectorAll(".list-item").forEach((el) => {
     el.addEventListener("click", () => {
       if (pendingPlan && pendingPlan.sessionId !== el.dataset.convId) {
@@ -1741,7 +2133,7 @@ function renderHistory() {
 function statusMeta(task) {
   if (!task) {
     if (pendingPlan && pendingPlan.sessionId === selectedConvId) return { cls: "running", label: "Reviewing plan" };
-    if (planGenerating && planGenerating.sessionId === selectedConvId) return { cls: "running", label: "Generating plan" };
+    if (planGenerating && planGenerating.sessionId === selectedConvId) return { cls: "running", label: "Thinking" };
     return { cls: "idle", label: "Idle" };
   }
   if (pendingApprovals[task.task_id]) return { cls: "error", label: "Needs approval" };
@@ -1783,6 +2175,8 @@ function renderTopbar(convTasks) {
     stopBtn.style.display = "";
     stopBtn.dataset.task = latest.task_id;
     stopBtn.title = "Stop task";
+    stopBtn.style.background = "var(--critical)";
+    stopBtn.style.color = "#fff";
     stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
     stopBtn.onclick = () => {
       const taskId = stopBtn.dataset.task;
@@ -1795,8 +2189,8 @@ function renderTopbar(convTasks) {
     delete stopBtn.dataset.task;
     stopBtn.title = "Send command (Enter)";
     stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
-    stopBtn.style.background = "var(--accent)";
-    stopBtn.style.color = "var(--accent-ink)";
+    stopBtn.style.background = "var(--brand)";
+    stopBtn.style.color = "var(--brand-ink)";
     stopBtn.onclick = () => {
       if (!planRequestInFlight) requestPlan();
     };
@@ -1817,8 +2211,8 @@ function renderTopbar(convTasks) {
     delete stopBtn.dataset.task;
     stopBtn.title = "Send command (Enter)";
     stopBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
-    stopBtn.style.background = "var(--accent)";
-    stopBtn.style.color = "var(--accent-ink)";
+    stopBtn.style.background = "var(--brand)";
+    stopBtn.style.color = "var(--brand-ink)";
     stopBtn.onclick = () => {
       if (!planRequestInFlight) requestPlan();
     };
@@ -1834,6 +2228,9 @@ function renderTopbar(convTasks) {
   const urlInput = $("url");
   const editBtn = $("btnEditUrl");
   const saveBtn = $("btnSaveUrl");
+  // ปุ่มคัดลอกโผล่เฉพาะตอน URL ถูกล็อกแล้ว (มี URL จริงของ turn ที่รันไปแล้ว) — ตอนกำลังพิมพ์
+  // อยู่ยังไม่มีอะไรให้คัดลอกที่เป็นความจริง
+  $("btnCopyUrl").style.display = (!urlUnlocked && latest && (latest.url || pendingUrlOverride)) ? "flex" : "none";
   if (urlUnlocked) {
     urlInput.readOnly = false;
     urlInput.style.width = ""; // back to the normal flex-box edit width
@@ -1934,7 +2331,7 @@ function renderTaskTurn(task) {
               <div class="approval-title">Input needed</div>
               <div class="approval-cmd">${escapeHtml(pending.cmd.prompt || "")}</div>
               <div class="manual-banner-login-fields">
-                <input type="${inputType}" id="userInputAnswer-${task.task_id}" placeholder="Your answer" autocomplete="off" />
+                <input type="${inputType}" class="user-input-answer" id="userInputAnswer-${task.task_id}" placeholder="Your answer" autocomplete="off" value="${escapeHtml(userInputDrafts[task.task_id] || "")}" />
               </div>
               <div class="approval-actions">
                 <button class="btn-approve" data-task="${task.task_id}" data-request="${pending.request_id}" data-submit-user-input="true">Submit</button>
@@ -1965,7 +2362,7 @@ function renderTaskTurn(task) {
         <div class="msg agent">
           <div class="avatar">${agentIcon}</div>
           <div>
-            <div class="bubble">Working&hellip;</div>
+            ${thinkingBubble("Working")}
           </div>
         </div>`;
     }
@@ -2038,6 +2435,18 @@ function renderTaskTurn(task) {
 //     (reported live: "click in, type, immediately bounced out, can't type at all"). Skip
 //     re-rendering entirely while a .correction-input currently has focus, same reasoning
 //     as the textarea guard above.
+// เขียน innerHTML เฉพาะตอนเนื้อหาต่างจากเดิมจริงๆ — refreshTasks() ถูกโพลทุก 2.5 วินาที
+// (setInterval ท้ายไฟล์) แล้ว render ใหม่ทั้งก้อนทุกครั้งแม้ไม่มีอะไรเปลี่ยน การเขียนทับ
+// innerHTML ทำลาย text node เดิมทั้งหมด ข้อความที่ผู้ใช้กำลังคลุมดำอยู่จึงหลุด selection
+// ทุก 2.5 วินาที (ผู้ใช้รายงานว่า "คลุมดำแล้วมันรีเฟรชออกเอง" — ไม่ใช่หน้าเว็บรีโหลด แต่เป็น
+// DOM ก้อนนั้นถูกสร้างใหม่) เทียบสตริงก่อนเขียน ถูกกว่าการ parse HTML ใหม่ทั้งก้อนอยู่แล้ว
+function setHtmlIfChanged(el, html) {
+  if (el._lastHtml === html) return false;
+  el._lastHtml = html;
+  el.innerHTML = html;
+  return true;
+}
+
 function renderTranscript(convTasks) {
   const box = $("transcript");
   const pending = pendingPlan && pendingPlan.sessionId === selectedConvId ? pendingPlan : null;
@@ -2045,19 +2454,31 @@ function renderTranscript(convTasks) {
   if (pending && pending.editing && box.querySelector("#pendingPlanTextarea")) {
     return;
   }
-  if (document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("correction-input")) {
+  // W_user_input_draft (บั๊กจริงที่ user รายงาน 2026-09-03: agent ขอรหัสผ่าน/username แล้ว
+  // "ไม่เอาข้อความที่กรอกไปใช้") — ช่องตอบอยู่ใน #transcript ซึ่งถูก render ใหม่ทุกครั้งที่
+  // refreshTasks() โพล (ทุก 2.5 วินาที) ค่าที่ผู้ใช้กำลังพิมพ์จึงหายไปกลางคัน พอกด Submit
+  // จึงส่งค่าว่าง/ไม่ครบไปให้ backend แล้ว agent ก็ไม่มีอะไรไปกรอกจริงๆ
+  // .correction-input เคยเจอบั๊กเดียวกันนี้และได้ทางกันไว้แล้ว — ใช้กฎเดียวกัน ไม่สร้างกลไกใหม่
+  if (document.activeElement && document.activeElement.classList
+      && (document.activeElement.classList.contains("correction-input")
+          || document.activeElement.classList.contains("user-input-answer"))) {
     return;
   }
   if (!convTasks.length && !pending && !generating) {
-    box.innerHTML = '<div class="transcript-empty">Set a target URL and goal below, then click "Plan task" to draft a plan and start a new session.</div>';
+    setHtmlIfChanged(box, '<div class="transcript-empty">Set a target URL and goal below, then click "Plan task" to draft a plan and start a new session.</div>');
     return;
   }
   const wasNearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   let html = convTasks.map(renderTaskTurn).join("");
   if (generating) html += renderGeneratingPlanTurn(generating);
   if (pending) html += renderPendingPlanTurn(pending);
-  box.innerHTML = html;
-  if (wasNearBottom) box.scrollTop = box.scrollHeight;
+  if (setHtmlIfChanged(box, html) && wasNearBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ฟองเดียวกันทั้งตอนร่างแผนและตอนลงมือทำ — ต่างกันแค่คำ ไม่ต้องมีสองชุด
+function thinkingBubble(label) {
+  return `<div class="bubble"><span class="thinking"><span class="thinking-text">${label}</span>`
+    + `<span class="thinking-dots"><i></i><i></i><i></i></span></span></div>`;
 }
 
 // W_instant: optimistic bubble shown the instant the user submits a goal, before
@@ -2076,7 +2497,7 @@ function renderGeneratingPlanTurn(generating) {
     <div class="msg agent">
       <div class="avatar">${agentIcon}</div>
       <div>
-        <div class="bubble">Generating plan&hellip;</div>
+        ${thinkingBubble("Thinking")}
       </div>
     </div>`;
 }
@@ -2126,18 +2547,30 @@ function renderPendingPlanTurn(pending) {
     </div>`;
 }
 
+// One row per step instead of two stacked half-rows that only made sense read together:
+// step number, status dot, what the action was, the raw result under it, and the time it
+// happened on the right. The time is only there for steps this browser actually watched
+// arrive (see _uiTs in handleStreamEvent) — a task loaded back from history has no per-step
+// timestamp anywhere in the backend, and inventing one would make the log lie.
 function renderLogLine(h) {
   const lvl = h.cmd && h.cmd.type === "goto" ? "info" : (h.success ? "ok" : "err");
+  const glyph = lvl === "err" ? "\u2715" : (lvl === "ok" ? "\u2713" : "\u2022");
+  const time = h._uiTs ? new Date(h._uiTs).toLocaleTimeString() : "";
+  // แถวที่สำเร็จเหลือแค่ "ทำอะไร + กับปุ่มไหน" — บรรทัด "[OK] click(39) -> click succeeded"
+  // ที่ต่อท้ายทุกแถวคือการพูดซ้ำสิ่งที่ไอคอนเขียวบอกอยู่แล้ว และมันยาวจนอ่านไล่ลงมาไม่ไหว
+  // (user รายงาน 2026-09-03) ผลลัพธ์ดิบยังอยู่ครบใน tooltip และในปุ่ม "View full logs"
+  // แถวที่ล้มเหลวยังโชว์เหตุผลเต็มเหมือนเดิม เพราะนั่นคือข้อมูลเดียวที่ใช้หาสาเหตุได้
+  const detail = lvl === "err"
+    ? `<div class="log-sub mono">${escapeHtml(truncate(h.result, 160))}</div>` : "";
   return `
-    <div class="log-line">
-      <span class="t">${h.step ?? ""}</span>
-      <span class="lvl ${lvl}">${lvl}</span>
-      <span class="msg-text">${escapeHtml(describeCmd(h))}</span>
-    </div>
-    <div class="log-line" style="padding-top:0;">
-      <span class="t"></span>
-      <span class="lvl"></span>
-      <span class="result-text">${escapeHtml(truncate(h.result, 160))}</span>
+    <div class="log-row" title="${escapeHtml(truncate(h.result, 300))}">
+      <span class="log-num mono">${h.step ?? ""}</span>
+      <span class="log-ico ${lvl}">${glyph}</span>
+      <div class="log-main">
+        <div class="log-title">${escapeHtml(describeCmd(h))}</div>
+        ${detail}
+      </div>
+      <span class="log-time mono">${time}</span>
     </div>`;
 }
 
@@ -2165,8 +2598,9 @@ function renderLog(task) {
   }
   const liveSuffix = task.status === "running" ? " (live)" : "";
   count.textContent = `${steps.length} step${steps.length === 1 ? "" : "s"}${liveSuffix}`;
-  body.innerHTML = steps.map(renderLogLine).join("");
-  if (task.status === "running") body.scrollTop = body.scrollHeight;
+  if (setHtmlIfChanged(body, steps.map(renderLogLine).join("")) && task.status === "running") {
+    body.scrollTop = body.scrollHeight;
+  }
 }
 
 // W_planrail: the approved plan for the current turn, rendered in the right-rail Plan panel
@@ -2185,19 +2619,35 @@ function renderPlanPanel(latest) {
   // task's own success is the more reliable signal, so once it's done successfully every
   // step counts as done regardless of which individual "plan_step_done" events actually
   // arrived. Fixes checklists that finished the real task but were left with unticked rows.
+  // W_plan_panel_lags_the_log: ตอนนี้แถวก่อนหน้าถูกติ๊กสดจาก plan_progress ระหว่างทางแล้ว
+  // allDone จึงเหลือหน้าที่ครอบแค่ข้อสุดท้าย (cursor แสดงผลถูก cap ไม่ให้เกินข้อสุดท้าย
+  // โดยตั้งใจ) ไม่ใช่กวาดทั้งลิสต์เหมือนเดิม — เหตุผลเดิมด้านบนยังใช้ได้ทุกข้อ
   const allDone = !!(latest.result && latest.result.success);
+  const progress = planProgress[latest.task_id] || null;
   badgeSlot.innerHTML = latest.result
     ? `<span class="plan-badge ${latest.result.success ? "ok" : "fail"}">${latest.result.success ? "Done" : "Failed"}</span>`
-    : `<span class="plan-badge running">Running</span>`;
-  body.innerHTML = planSteps.length
+    : `<span class="plan-badge running">Running${
+        progress && progress.total ? ` ${progress.done_through}/${progress.total}` : ""
+      }</span>`;
+  // step ปัจจุบัน = ข้อแรกที่ยังไม่เสร็จ และแสดงเฉพาะตอน task ยังรันอยู่จริงเท่านั้น
+  // (task ที่จบแล้วไม่มี "กำลังทำ" — ถ้ายังหมุนอยู่จะอ่านว่าค้าง)
+  const running = !!latest && latest.status === "running";
+  // W_plan_panel_lags_the_log: แถวที่กำลังทำมาจาก plan_progress ตรงๆ ถ้ามี — fallback เป็น
+  // การไล่หา "ข้อแรกที่ยังไม่เสร็จ" แบบเดิมทุกประการสำหรับ task เก่า/หน้าที่เพิ่งเปิดขึ้นมา
+  const currentIndex = !running ? 0 : (progress
+    ? Math.min(progress.current, planSteps.length)
+    : (planSteps.findIndex((s) => !(allDone || doneSteps.has(s.index))) + 1));
+  setHtmlIfChanged(body, planSteps.length
     ? `<ul class="plan-checklist">${planSteps.map((step) => {
         const done = allDone || doneSteps.has(step.index);
-        return `<li class="plan-checklist-item${done ? " done" : ""}">
+        // step ที่กำลังทำ = ข้อแรกที่ยังไม่เสร็จ และเฉพาะตอน task ยังรันอยู่จริง (ดู running)
+        const current = !done && step.index === currentIndex;
+        return `<li class="plan-checklist-item${done ? " done" : ""}${current ? " current" : ""}">
               <span class="plan-checklist-box">${done ? "✓" : ""}</span>
               <span class="plan-checklist-text">${escapeHtml(step.text)}</span>
             </li>`;
       }).join("")}</ul>`
-    : `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`;
+    : `<div class="plan-bubble-text">${escapeHtml(planText)}</div>`);
   return true;
 }
 
@@ -2210,6 +2660,9 @@ function renderSelected() {
   renderLog(latest);
   const hasPlan = renderPlanPanel(latest);
   updateRightRailVisibility(hasPlan);
+  renderSideFoot(convTasks, latest);
+  updateQuickActions(convTasks, latest);
+  placeQuickActions();
 }
 
 // W_live: shows the latest screenshot for the selected conversation's current turn (falls
@@ -2306,6 +2759,35 @@ window.addEventListener("resize", fitLiveView);
 // panel only on the user's manual "Show log" toggle; the rail's own grid column is visible
 // whenever *either* one is. When both are visible, right-rail's flex:1 columns (see CSS)
 // split the height 50/50 with no extra math needed here.
+// ---------------- Sidebar footer (run context + selected-session numbers) ----------------
+
+// เติมจาก /config/check ตอนโหลดหน้า (ดู loadRunContext()) — provider ที่ผู้ใช้เลือกเองใน
+// Settings ชนะค่า default ของเซิร์ฟเวอร์ เพราะนั่นคือตัวที่ task ถัดไปจะใช้จริง
+let runContext = { provider: "", models: {} };
+
+function renderSideFoot(convTasks, latest) {
+  const chosen = $("provider").value || runContext.provider || "";
+  $("footProvider").textContent = chosen ? chosen : "\u2014";
+  $("footModel").textContent = (runContext.models && runContext.models[chosen]) || "\u2014";
+  const tokens = convTasks && convTasks.length ? formatTokens(sumConvTokens(convTasks)) : "";
+  $("footTokens").textContent = tokens || "\u2014";
+  const steps = latest
+    ? ((latest.result && latest.result.history && latest.result.history.length)
+       || (liveSteps[latest.task_id] || []).length)
+    : 0;
+  $("footSteps").textContent = steps ? String(steps) : "\u2014";
+}
+
+async function loadRunContext() {
+  try {
+    const res = await apiFetch(`${API}/config/check`);
+    if (!res.ok) return;
+    const cfg = await res.json();
+    runContext = { provider: cfg.llm_provider || "", models: cfg.models || {} };
+    renderSideFoot(null, null);
+  } catch (e) { /* หน้ายังใช้ได้ครบทุกอย่างถ้าอ่านค่าไม่ได้ — แค่โชว์ขีดแทน */ }
+}
+
 function updateRightRailVisibility(hasPlan) {
   $("planPanel").style.display = hasPlan ? "" : "none";
   $("logPanel").style.display = logVisible ? "" : "none";
@@ -2365,10 +2847,118 @@ $("btnNewSession").addEventListener("click", async () => {
     } catch (e) {}
   }
 });
+// หมวดที่เปิดค้างไว้ล่าสุด — จำไว้เพื่อไม่ให้ต้องกดเปิดหมวดเดิมซ้ำทุกครั้งที่เปิดหน้าตั้งค่า
+// (ค่าว่าง = ปิดทั้งคู่ ซึ่งเป็นสถานะเริ่มต้น)
+const SETTINGS_OPEN_CARD_KEY = "agentConsoleSettingsCard";
+
+function setSettingsCardOpen(head, open) {
+  const card = head.closest(".settings-card");
+  card.classList.toggle("open", open);
+  head.setAttribute("aria-expanded", open ? "true" : "false");
+  card.querySelector(".settings-card-body").hidden = !open;
+}
+
+document.querySelectorAll(".settings-card-head").forEach((head) => {
+  head.addEventListener("click", () => {
+    const open = head.getAttribute("aria-expanded") !== "true";
+    // ทีละหมวด — พาเนลนี้สูงเกินหน้าจอถ้ากางพร้อมกันทั้งคู่ (เคยเห็นตอนทดสอบ)
+    document.querySelectorAll(".settings-card-head").forEach((other) => setSettingsCardOpen(other, false));
+    setSettingsCardOpen(head, open);
+    try {
+      localStorage.setItem(SETTINGS_OPEN_CARD_KEY, open ? head.dataset.settingsCard : "");
+    } catch (e) {}
+  });
+});
+try {
+  const remembered = localStorage.getItem(SETTINGS_OPEN_CARD_KEY);
+  const head = remembered && document.querySelector(`.settings-card-head[data-settings-card="${remembered}"]`);
+  if (head) setSettingsCardOpen(head, true);
+} catch (e) {}
+
+loadRunContext();
 $("btnToggleLog").addEventListener("click", () => {
   logVisible = !logVisible;
   renderSelected();
 });
+
+// ---------------- Quick actions / sidebar collapse / copy URL ----------------
+
+// ปุ่มลัดทุกตัวผูกกับกลไกที่หน้านี้มีอยู่แล้ว และตัวที่สร้างข้อความจะ *เติมลงช่องพิมพ์*
+// ไม่ยิงเอง — งานนี้ใช้เงินและแตะเว็บจริง การส่งแทนผู้ใช้เพราะกดปุ่มเดียวไม่ใช่พฤติกรรมที่ดี
+// element ตัวเดิมถูกย้ายเข้าไปแปะใต้ฟองข้อความล่าสุดของผู้ใช้ทุกครั้งที่ transcript ถูก render
+// ใหม่ — จำ reference ไว้ตั้งแต่ตอนโหลด เพราะ renderTranscript() เขียนทับด้วย innerHTML ซึ่ง
+// ถอด node ออกจาก document ทั้งหมด (getElementById หลังจากนั้นจะได้ null) การถือ reference ไว้
+// ทำให้ event listener ที่ผูกไว้ครั้งเดียวยังอยู่ครบ ไม่ต้องผูกใหม่ทุก render
+const quickActionsEl = $("quickActions");
+
+function placeQuickActions() {
+  const bubbles = $("transcript").querySelectorAll(".msg.user > div");
+  if (!bubbles.length) {
+    quickActionsEl.style.display = "none";
+    return;
+  }
+  quickActionsEl.style.display = "";
+  const target = bubbles[bubbles.length - 1];
+  if (quickActionsEl.parentElement !== target) target.appendChild(quickActionsEl);
+}
+
+function updateQuickActions(convTasks, latest) {
+  const hasTurn = !!(convTasks && convTasks.length);
+  const running = !!(latest && latest.status === "running");
+  // ต้องหาปุ่มจากใน quickActionsEl ไม่ใช่ getElementById: แถวนี้ถูกย้ายไปแปะใต้ฟองข้อความ
+  // ซึ่งอยู่ใน #transcript ที่ถูกเขียนทับด้วย innerHTML ทุกครั้งที่ render — ระหว่างนั้น node
+  // หลุดจาก document ชั่วคราว getElementById จึงคืน null แล้ว throw (เจอจริงตอนทดสอบ)
+  quickActionsEl.querySelector("#btnRerunGoal").disabled = !hasTurn || running;
+  quickActionsEl.querySelector("#btnCopyGoal").disabled = !hasTurn;
+  $("btnFullLogs").disabled = !hasTurn;   // อยู่ในแถบ log ไม่ได้ถูกย้าย
+}
+
+function fillComposer(text) {
+  const goal = $("goal");
+  goal.value = text;
+  goal.focus();
+  goal.dispatchEvent(new Event("input"));
+}
+
+$("btnRerunGoal").addEventListener("click", () => {
+  const convTasks = selectedConvId ? tasksInConversation(selectedConvId) : [];
+  if (convTasks.length) fillComposer(convTasks[0].goal);
+});
+// คัดลอกคำสั่งของเทิร์นล่าสุด (ข้อความที่ผู้ใช้พิมพ์เอง ไม่ใช่ข้อความในฟองที่ผ่าน escape/ตัดท้าย)
+$("btnCopyGoal").addEventListener("click", async () => {
+  const convTasks = selectedConvId ? tasksInConversation(selectedConvId) : [];
+  if (!convTasks.length) return;
+  try { await navigator.clipboard.writeText(convTasks[convTasks.length - 1].goal || ""); } catch (e) {}
+});
+// "full logs" = ทุก step ของ task ที่เลือกอยู่แบบไม่ตัดข้อความ (แถบด้านขวาตัดที่ 160 ตัวอักษร
+// เพื่อให้อ่านไล่ลงมาได้) — เปิดเป็นแท็บใหม่จากข้อมูลที่อยู่ในหน้านี้แล้ว ไม่ต้องยิง API ซ้ำ
+$("btnFullLogs").addEventListener("click", () => {
+  const convTasks = selectedConvId ? tasksInConversation(selectedConvId) : [];
+  const latest = convTasks.length ? convTasks[convTasks.length - 1] : null;
+  if (!latest) return;
+  const steps = (latest.result && latest.result.history) || liveSteps[latest.task_id] || [];
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.write(
+    `<title>Step log \u2014 ${escapeHtml(truncate(latest.goal, 60))}</title>` +
+    `<pre style="font:12px/1.6 ui-monospace,Consolas,monospace;padding:20px;white-space:pre-wrap">` +
+    escapeHtml(steps.map((h) => `#${h.step ?? "-"} ${describeCmd(h)}\n    ${h.result}`).join("\n")) +
+    `</pre>`);
+  win.document.close();
+});
+$("btnCollapseSidebar").addEventListener("click", () => {
+  $("mainGrid").classList.toggle("sidebar-collapsed");
+});
+$("btnCopyUrl").addEventListener("click", async () => {
+  const value = $("url").value.trim();
+  if (!value) return;
+  try { await navigator.clipboard.writeText(value); } catch (e) { return; }
+  const btn = $("btnCopyUrl");
+  btn.classList.add("copied");
+  setTimeout(() => btn.classList.remove("copied"), 900);
+});
+$("provider").addEventListener("change", () => renderSideFoot(
+  selectedConvId ? tasksInConversation(selectedConvId) : null, null));
 $("btnEditUrl").addEventListener("click", () => {
   urlUnlocked = true;
   renderSelected();
@@ -2439,6 +3029,10 @@ document.addEventListener("keydown", (e) => {
     approvePlan();
   }
 });
+
+$("btnOpenaiLogin").addEventListener("click", startOpenaiLogin);
+$("btnOpenaiLogout").addEventListener("click", logoutOpenai);
+refreshOpenaiAuthStatus();
 
 // ---------------- Attach-file menu (composer "+") ----------------
 // pdf/xlsx: reads the picked file client-side (FileReader -> base64), stores it in
@@ -2762,12 +3356,17 @@ document.addEventListener("click", (e) => {
   }
   const submitInputBtn = e.target.closest("[data-submit-user-input]");
   if (submitInputBtn) {
-    const field = document.getElementById(`userInputAnswer-${submitInputBtn.dataset.task}`);
-    respondUserInput(submitInputBtn.dataset.task, submitInputBtn.dataset.request, field ? field.value : "");
+    const taskId = submitInputBtn.dataset.task;
+    const field = document.getElementById(`userInputAnswer-${taskId}`);
+    // W_user_input_draft: ค่าที่ช่องอาจถูก render ใหม่ทับไปแล้ว — draft คือแหล่งที่เชื่อได้
+    const answer = (field && field.value) || userInputDrafts[taskId] || "";
+    delete userInputDrafts[taskId];
+    respondUserInput(taskId, submitInputBtn.dataset.request, answer);
     return;
   }
   const declineInputBtn = e.target.closest("[data-decline-user-input]");
   if (declineInputBtn) {
+    delete userInputDrafts[declineInputBtn.dataset.task];
     respondUserInput(declineInputBtn.dataset.task, declineInputBtn.dataset.request, null);
     return;
   }
@@ -2796,6 +3395,12 @@ document.addEventListener("input", (e) => {
   // typed, not stale text.
   if (e.target.id === "pendingPlanTextarea" && pendingPlan) {
     pendingPlan.planDraft = e.target.value;
+  }
+  // W_user_input_draft: เหตุผลเดียวกันเป๊ะกับ pendingPlanTextarea ด้านบน — ค่าที่ผู้ใช้พิมพ์
+  // ตอบคำถามของ agent (รหัสผ่านใหม่/username) ต้องรอดจากการ re-render ระหว่างโพล
+  if (e.target.classList && e.target.classList.contains("user-input-answer")) {
+    const taskId = e.target.id.replace("userInputAnswer-", "");
+    userInputDrafts[taskId] = e.target.value;
   }
 });
 $("url").addEventListener("input", scheduleManualStatusCheck);

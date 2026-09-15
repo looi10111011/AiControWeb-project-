@@ -1247,7 +1247,16 @@ async def crawl_site(
             # manual_errors ด้วยว่า manual ส่วนนี้อาจไม่สมบูรณ์ เพราะสำรวจต่อได้ในสถานะยังไม่
             # login เท่านั้น (ไม่ใช่เงียบแล้วสำรวจต่อเหมือนไม่มีอะไรเกิดขึ้น)
             if login_attempted and find_login_fields(page_info) != (None, None):
-                await _record_page(page_info, [], explore_buttons=False)
+                # check_page_template=False: หน้า login ที่โผล่ซ้ำกลางทางมีโครงสร้างเหมือน
+                # หน้า login รอบแรกเป๊ะ (ช่อง username/password + ปุ่ม submit) — W33 จึงมองว่า
+                # เป็น template ที่บันทึกไปแล้วแล้วข้ามไปเงียบๆ ผลคือ manual มีแต่บรรทัด error
+                # ว่า "เจอ dead-end" โดยไม่มีหน้านั้นอยู่จริง ซึ่งขัดกับเจตนาที่เขียนไว้ข้างบน
+                # เองว่าให้บันทึกไว้ dedup ของ W33 มีไว้กัน feed ที่มีสิบรายการหน้าตาเหมือนกัน
+                # ไม่ใช่กันจุดที่ crawl เดินต่อไม่ได้ (พารามิเตอร์นี้มีไว้สำหรับผู้เรียกที่มี
+                # เหตุผลของตัวเองแบบนี้อยู่แล้ว — _explore_buttons() ใช้ด้วยเหตุผลคนละอย่าง)
+                await _record_page(
+                    page_info, [], check_page_template=False, explore_buttons=False,
+                )
                 reason = "เจอฟอร์ม login ซ้ำระหว่าง crawl หลัง login ไปแล้วก่อนหน้านี้ — ไม่ login ซ้ำ ถือเป็น dead-end (manual ส่วนนี้อาจไม่สมบูรณ์เพราะสำรวจได้ในสถานะยังไม่ login)"
                 manual_errors.append({"url": page.url, "phase": "login", "error": reason})
                 if on_progress:

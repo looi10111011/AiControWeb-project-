@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Performance Reviews — Hermes HRM{% endblock %}
+{% block content %}
+<h1>Performance Reviews</h1>
+
+{% if can_view_team %}
+<div class="filter-bar">
+  <a class="btn {% if view == 'mine' %}btn-primary{% endif %}" href="/performance/reviews?view=mine">Mine</a>
+  <a class="btn {% if view == 'team' %}btn-primary{% endif %}" href="/performance/reviews?view=team">Team</a>
+</div>
+{% endif %}
+
+{% if reviews|length == 0 %}
+<p class="empty-state">No reviews.</p>
+{% else %}
+<table class="data-table">
+  <thead><tr><th>Employee</th><th>Cycle</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for r in reviews %}
+    <tr>
+      <td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.cycle_name }}</td>
+      <td><span class="status-badge status-{{ 'active' if r.status == 'finalized' else '' }}">{{ r.status }}</span></td>
+      <td><a href="/performance/reviews/{{ r.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

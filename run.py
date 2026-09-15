@@ -255,7 +255,7 @@ def run_query():
 
 
 
-_DEFAULT_AGENT_GOAL = "Log in, add first product, change item to second product , and proceed to checkout"
+_DEFAULT_AGENT_GOAL = ("Log in, add 'Sauce Labs Backpack' to the cart, then swap it for 'Sauce Labs Bike Light' (remove the backpack, add the bike light), and proceed to checkout")
 
 # ป้องกัน infinite spawn: process ลูกที่ถูกเปิดในหน้าต่าง console ใหม่จะมี env
 # ตัวนี้ติดมาด้วย เลยรู้ตัวว่าเป็นลูกแล้ว ไม่ต้องเปิดหน้าต่างใหม่ซ้อนอีกที
@@ -1358,6 +1358,202 @@ def run_orangehrm_evaluation():
     asyncio.run(_run())
 
 
+def _print_flakiness(rows, *, title="อัตราการผ่านราย task"):
+    """ตารางเดียวกันทั้ง gate และ flakiness — เรียงจากผ่านน้อยไปมาก ตัวที่ต้องดูจึงอยู่บนสุด"""
+    if not rows:
+        return
+    print(f"\n=== {title} ===", flush=True)
+    for row in rows:
+        mark = "FLAKY" if row["verdict"] == "flaky" else row["verdict"]
+        skipped = row.get("skipped_infra") or 0
+        note = f"  (ตัดออก {skipped} รอบ: provider/โควตา)" if skipped else ""
+        print(
+            f"  [{mark:<11}] {row['name']:<20} {row['passed']}/{row['runs']}"
+            f"  ({row['pass_rate'] * 100:.0f}%){note}",
+            flush=True,
+        )
+
+
+def run_release_gate_cmd():
+    """W_eval + W_gate_is_noisy: รวมผล 3 eval suite (SauceDemo/OrangeHRM/MiniWoB) เป็น release
+    gate — รันซ้ำ settings.release_gate_repeats รอบบนโค้ดชุดเดียวกัน แล้วตัดสินด้วย **median**
+    ของ success_rate เทียบ baseline ไม่ใช่ผลรันเดียว
+
+    หลักฐานที่ทำให้ต้องเปลี่ยน: commit 3ddb18a รันสองครั้งติดโดยไม่แตะโค้ดเลย ได้ 12/15
+    (ธง FAIL) แล้ว 15/15 (ผ่าน) — ดู core/release_gate.py::task_flakiness
+
+    metric ประสิทธิภาพ (step/token/latency/llm_calls/approval) รายงานอย่างเดียว ไม่ตัดสิน
+    pass/fail อีกต่อไป — task ที่สำเร็จใน 9 step กับ 22 step คือ task ที่สำเร็จเหมือนกัน"""
+    print("=== W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.release_gate import run_release_gate_repeated
+
+    repeats = settings.release_gate_repeats
+    print(f"Provider: {settings.llm_provider}", flush=True)
+    print(f"รัน {repeats} รอบบนโค้ดชุดเดียวกัน แล้วตัดสินด้วย median", flush=True)
+    print(f"ผลลัพธ์จะถูกเก็บไว้ที่: {settings.release_gate_results_dir}\n", flush=True)
+
+    async def _run():
+        outcome = await run_release_gate_repeated(repeats=repeats)
+        stats = outcome["success_rate"]
+        last = outcome["summaries"][-1]
+
+        if outcome.get("invalid_runs"):
+            print(
+                f"\n!! {outcome['invalid_runs']} รอบใช้วัดอะไรไม่ได้ (ทุก task จบที่ 0 step "
+                "— provider/เน็ตล่ม ไม่ใช่ regression) — ไม่ถูกนับใน median",
+                flush=True,
+            )
+        if not outcome.get("measured", True):
+            print("!! ไม่มีรอบไหนใช้ได้เลย — gate ตอบไม่ได้ว่า commit นี้ดีไหม (ไม่ถือว่าตก)", flush=True)
+        print("=== Summary ===", flush=True)
+        print(f"  git_commit : {last['git_commit']}", flush=True)
+        print(f"  model      : {last['model']}", flush=True)
+        print(f"  task_count : {last['task_count']}", flush=True)
+        print(
+            f"  [GATE] success_rate  min={stats['min']:.3f} "
+            f"median={stats['median']:.3f} max={stats['max']:.3f} ({stats['runs']} รัน)",
+            flush=True,
+        )
+        baseline_rate = outcome["baseline_success_rate"]
+        if baseline_rate is None:
+            print("  (ไม่มีผลรันก่อนหน้าให้เทียบ — รอบนี้กลายเป็น baseline ของรอบถัดไป)", flush=True)
+        else:
+            sign = "+" if outcome["median_change_pct"] >= 0 else ""
+            print(
+                f"         เทียบ baseline {baseline_rate:.3f} "
+                f"({sign}{outcome['median_change_pct']:.1f}%) "
+                # W_gate_model_baseline: บอกให้ชัดว่า baseline มาจากโมเดลเดียวกัน —
+                # ตัวเลขนี้เคยเทียบข้ามโมเดลเงียบๆ มาก่อน คนอ่านจึงต้องเห็นเองว่าไม่ใช่แล้ว
+                f"[{last['model']}]",
+                flush=True,
+            )
+
+        print(f"\n=== metric ประกอบ (ไม่ตัดสิน pass/fail) — รอบสุดท้าย ===", flush=True)
+        for metric, value in last["aggregate"].items():
+            if metric == "success_rate":
+                continue
+            print(f"  [info] {metric:<24}: {value:.3f}", flush=True)
+
+        _print_flakiness(
+            [r for r in outcome["flakiness"] if r["verdict"] != "stable-pass"],
+            title=f"task ที่ผลไม่คงที่ใน {repeats} รอบนี้ (ที่ผ่านครบทุกรอบไม่แสดง)",
+        )
+
+        if outcome["task_diffs"]:
+            print(f"\n=== ต่างจาก baseline ราย task ===", flush=True)
+            for diff in outcome["task_diffs"]:
+                moves = ", ".join(
+                    f"{field} {was}->{now}"
+                    for field, (was, now) in diff["counters"].items()
+                )
+                flip = (
+                    f"success {diff['success_before']} -> {diff['success_after']}"
+                    if diff["success_before"] != diff["success_after"] else ""
+                )
+                gap = "  " if flip and moves else ""
+                print(f"  {diff['name']:<20} {flip}{gap}{moves}", flush=True)
+
+        print(
+            f"\nกฎการสอบสวน: regression ต้องล้มอย่างน้อย 2 ใน 3 รอบบน commit เดียวกัน "
+            "ก่อนเริ่ม debug — ตัวที่ขึ้น FLAKY ด้านบนคือ noise ห้ามใช้ตัดสิน commit",
+            flush=True,
+        )
+        if outcome["passed"]:
+            print(f"\n=== ผ่าน release gate (median) ===", flush=True)
+        else:
+            print(f"\n=== ไม่ผ่าน release gate — median ของ success_rate ตกเกินเกณฑ์ ===", flush=True)
+        return outcome["passed"]
+
+    passed = asyncio.run(_run())
+    if not passed:
+        sys.exit(1)
+
+
+def run_flakiness_cmd(runs: str = "", delay: str = ""):
+    """W_gate_is_noisy: รัน suite เดิมซ้ำหลายรอบบน commit เดียวกัน แล้วรายงานอัตราการผ่าน
+    ราย task — ไม่ตัดสิน pass/fail และไม่ exit 1 เพราะคำถามของคำสั่งนี้คือ "task ไหนเชื่อได้"
+    ไม่ใช่ "commit นี้ดีไหม"
+
+    task ที่ผ่าน 20-80% ของรอบ = FLAKY: ผลของมันเป็นการโยนเหรียญ ห้ามเอาไปใช้ตัดสิน commit
+    และห้ามเสียเวลา debug จนกว่าจะล้มซ้ำได้อย่างน้อย 2 ใน 3 รอบ"""
+    print("=== W_gate_is_noisy: วัดความไม่คงที่ของ benchmark (commit เดียว รันหลายรอบ) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.release_gate import (
+        run_release_gate_repeated, save_flakiness_report,
+    )
+
+    try:
+        repeats = max(2, int(runs)) if runs else 5
+    except ValueError:
+        repeats = 5
+    # อาร์กิวเมนต์ที่สอง = วินาทีที่เว้นระหว่าง task (`run.py flakiness 5 30`) — บัญชี LLM ที่มี
+    # เพดานต่ำโดนตัดตั้งแต่ task ที่ 3 ถ้ายิงรวด ดู config.py::eval_task_delay_seconds
+    if delay:
+        try:
+            settings.eval_task_delay_seconds = max(0.0, float(delay))
+        except ValueError:
+            pass
+    pace = (
+        f" | เว้น {settings.eval_task_delay_seconds:.0f}s ระหว่าง task"
+        if settings.eval_task_delay_seconds > 0 else ""
+    )
+    print(f"Provider: {settings.llm_provider} | รัน {repeats} รอบ (ยิง LLM จริงทุกรอบ){pace}\n", flush=True)
+
+    async def _run():
+        outcome = await run_release_gate_repeated(repeats=repeats)
+        stats = outcome["success_rate"]
+        rows = outcome["flakiness"]
+        if outcome.get("invalid_runs"):
+            print(
+                f"\n!! {outcome['invalid_runs']} จาก {repeats} รอบใช้วัดอะไรไม่ได้ "
+                "(ทุก task จบที่ 0 step — provider/เน็ตล่ม) ตัดออกจากรายงานแล้ว",
+                flush=True,
+            )
+        if not rows:
+            print("ไม่มีข้อมูลพอจะสรุปความไม่คงที่ — แก้ provider ให้รันได้ก่อนแล้วรันใหม่", flush=True)
+            return
+
+        print(
+            f"\nsuccess_rate: min={stats['min']:.3f} median={stats['median']:.3f} "
+            f"max={stats['max']:.3f} ({stats['runs']} รัน)",
+            flush=True,
+        )
+        _print_flakiness(rows)
+        flaky = [r["name"] for r in rows if r["verdict"] == "flaky"]
+        shown = ", ".join(flaky) if flaky else "(ไม่มี)"
+        print(f"\nFLAKY {len(flaky)} task: {shown}", flush=True)
+        report = {
+            "git_commit": outcome["summaries"][-1]["git_commit"],
+            "model": outcome["summaries"][-1]["model"],
+            "runs": repeats,
+            "success_rate": stats,
+            "tasks": rows,
+        }
+        path = save_flakiness_report(report)
+        print(f"บันทึกรายงานไว้ที่: {path}", flush=True)
+
+    asyncio.run(_run())
+
+
+def run_kpi_cmd():
+    """W_production_kpi: สรุป data/token_usage.jsonl + data/step_trace.jsonl ของ *งานจริง*
+
+    ต่างจาก release-gate (ข้อ 22) ที่ตอบว่า "benchmark ดีขึ้นไหม" — อันนี้ตอบว่า "งานจริงของ
+    user ดีขึ้นไหม" ซึ่งก่อนหน้านี้ไม่มีอะไรตอบได้เลยทั้งที่ข้อมูลถูกเก็บครบมาตั้งแต่ W78/W83
+
+    อ่านอย่างเดียวล้วนๆ ไม่เปิด browser ไม่เรียก LLM ไม่แก้ไฟล์ไหน — รันได้ตลอดเวลาแม้ระหว่างที่
+    มี task อื่นทำงานอยู่"""
+    from backend.app.core.kpi import build_kpi_report, format_kpi_report
+
+    window = 7
+    for arg in sys.argv[2:]:
+        if arg.isdigit():
+            window = int(arg)
+    print(format_kpi_report(build_kpi_report(window_days=window)), flush=True)
+    return True
+
+
 ACTIONS = {
     "1": ("รัน API server", run_server),
     "2": ("รัน tests (pytest)", run_tests),
@@ -1380,9 +1576,13 @@ ACTIONS = {
     "19": ("W12[B]: Evaluation แนว WebVoyager (success rate / step / token ต่อ task)", run_evaluation_harness),
     "20": ("MiniWoB++ Evaluation (Farama benchmark tasks)", run_miniwob_evaluation),
     "21": ("OrangeHRM Evaluation (public demo, ชั่วคราวระหว่างรอ Docker)", run_orangehrm_evaluation),
+    "22": ("W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน, เทียบ baseline)", run_release_gate_cmd),
+    "24": ("W_gate_is_noisy: วัดความไม่คงที่ของ benchmark (รันซ้ำหลายรอบบน commit เดียว)", run_flakiness_cmd),
+    "23": ("W_production_kpi: สรุป telemetry ของงานจริง (อ่านอย่างเดียว ไม่รัน browser/LLM)", run_kpi_cmd),
 }
 
 ALIASES = {
+    "kpi": "23",
     "server": "1",
     "test": "2",
     "tests": "2",
@@ -1417,6 +1617,10 @@ ALIASES = {
     "miniwob": "20",
     "miniwob++": "20",
     "orangehrm": "21",
+    "release-gate": "22",
+    "flakiness": "24",
+    "flaky": "24",
+    "gate": "22",
 }
 
 
@@ -1444,7 +1648,12 @@ def main():
         sys.exit(1)
 
     _, func = action
-    func()
+    # 2026-09-10: เดิมเรียก func() เปล่าๆ เสมอ — `run.py flakiness 3` จึงรัน 5 รอบเงียบๆ
+    # เพราะพารามิเตอร์ของ run_flakiness_cmd(runs, delay) ไม่เคยได้รับค่าเลย (คำสั่งที่
+    # "ใช้ได้" อย่าง kpi อ่าน sys.argv เองในตัวฟังก์ชัน จึงไม่มีใครสังเกตว่าท่อนี้ตัน)
+    # ส่งเท่าที่ signature รับได้ ไม่งั้น TypeError เมื่อพิมพ์อาร์กิวเมนต์เกิน
+    accepted = func.__code__.co_argcount
+    func(*sys.argv[2:2 + accepted])
 
 
 if __name__ == "__main__":

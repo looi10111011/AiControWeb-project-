@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Employees Report — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Employees Report ({{ rows|length }})</h1>
+  <a class="btn btn-primary"
+     href="/reports/employees?department={{ department }}&status={{ status }}&format=csv">Export CSV</a>
+</div>
+
+<form method="get" action="/reports/employees" class="filter-bar">
+  <select name="department">
+    <option value="">All departments</option>
+    {% for d in departments %}
+    <option value="{{ d }}" {% if d == department %}selected{% endif %}>{{ d }}</option>
+    {% endfor %}
+  </select>
+  <select name="status">
+    <option value="">All statuses</option>
+    <option value="active" {% if status == 'active' %}selected{% endif %}>Active</option>
+    <option value="terminated" {% if status == 'terminated' %}selected{% endif %}>Terminated</option>
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<table class="data-table">
+  <thead><tr><th>Code</th><th>Name</th><th>Department</th><th>Job Title</th><th>Status</th><th>Hire Date</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.employee_code }}</td><td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.department }}</td><td>{{ r.job_title }}</td>
+      <td><span class="status-badge status-{{ r.status }}">{{ r.status }}</span></td>
+      <td>{{ r.hire_date }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

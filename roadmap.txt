@@ -57,7 +57,7 @@
               (backend/app/rag/ingestion.py: load_manual รองรับ 3 นามสกุล,
               collection.upsert() กัน id ชนตอน ingest ซ้ำ
               มี unit test ครบใน backend/tests/test_ingestion.py
-              + integration script backend/tests/test_rag.py วัด precision@k จริง
+              + integration script backend/tests/manual_rag_precision_check.py วัด precision@k จริง
               — ผ่าน 100% กับ manual_test.txt)
               *** เปลี่ยนจาก Gemini API embedding มาใช้ local embedding
               (all-MiniLM-L6-v2 ผ่าน ChromaDB DefaultEmbeddingFunction) แล้ว —
@@ -3855,6 +3855,1888 @@
            (inject event ปลอม เห็น prompt render ถูกต้อง คลิก Submit/Cancel ยิง POST
            /tasks/{id}/respond ด้วย body ที่ถูกต้องจริง) รันเต็มชุดทุกไฟล์ที่เกี่ยวข้อง:
            ผ่านหมด เหลือ fail เดิมเท่าเดิมจาก Anthropic API key เท่านั้น ไม่มี regression ใหม่
+
+  [x] W77  ("Live triage: ทำไม provider openai ล้ม 5/5") — จุดเริ่ม: data/token_usage.jsonl
+           บอกว่ารันจริงด้วย provider "openai" สำเร็จแค่ 33% (5/15) เทียบกับ gemini 100% (9/9)
+           และวันที่ 2026-08-25 ล้มทั้ง 5 ครั้ง รวมงาน bulk บน OrangeHRM ที่ล้มซ้ำ 3 รอบที่
+           22-23 step / 425-693 วินาที / 467k-717k token ต่อรอบ
+
+           วิธีหาสาเหตุ: reproduce ด้วย LLM call เดียวโดยไม่มี agent loop เข้ามาเกี่ยวเลย
+           (สำคัญมาก — ตัดตัวแปรเรื่องลูป/guard/หน่วยความจำออกหมดตั้งแต่แรก) แล้วเทียบ 3 ทาง
+           บน snapshot เดียวกันเป๊ะ: openai+prompt เต็ม / openai+prompt สั้น 607 ตัวอักษร /
+           gemini+prompt เต็ม
+
+           สาเหตุจริง (W_fill_secret_schema_gate): gpt-5.4-mini บน endpoint
+           chatgpt.com/backend-api/codex "กรอกทุก property ในสคีมาทุกครั้ง" ไม่ว่า action
+           ชนิดนั้นใช้ property นั้นหรือไม่ (พฤติกรรมเดียวกับที่ llm.py::_normalize_openai_args
+           เคยบันทึกไว้เรื่อง then_click_index=0 ติดมา 18/22 action) — พอ property "secret"
+           มี enum ค่าเดียว ("current_password") มันจึงส่งมาทุกครั้งแล้วลากให้ type=
+           "fill_secret" ตามไปด้วย วัดผลจริงบน saucedemo หน้า inventory:
+             goal "click the Login button"      -> fill_secret(index=1)  ผิด
+             goal "login as standard_user ..."  -> fill_secret(index=1)  ผิด
+             goal "sort by Price (low to high)" -> fill_secret(index=2)  ผิด
+           ทั้งสามเคสถูกต้องทันที (click(2) / fill(0,"standard_user") / select(2,"Price (low
+           to high)")) เมื่อตัด fill_secret ออกจาก enum + ตัด property "secret" ทิ้ง โดยไม่แตะ
+           prompt สักตัวอักษร — ไม่เกี่ยวกับขนาด prompt เลย (prompt สั้นได้ผลเหมือนเดิมเป๊ะ)
+           และ gemini ตอบถูกตั้งแต่แรกด้วยสคีมาเดียวกัน
+
+           แก้ที่ต้นเหตุ: เสนอ fill_secret ให้โมเดลเฉพาะตอนใช้ได้จริง (หน้าเปลี่ยนรหัสผ่าน —
+           เงื่อนไขเดียวกับ guard ที่ปฏิเสธ action นี้อยู่แล้ว) คำนวณครั้งเดียวก่อนเรียก LLM
+           แล้ว guard ใช้ค่าเดิมซ้ำ (schema กับ guard พูดตรงกันเสมอ + ไม่ยิง DOM check ซ้ำ)
+
+           บั๊กที่เจอเพิ่มระหว่างยืนยันผล (คนละตัว ร้ายแรงกว่า เพราะ "ตอบผิดแบบมั่นใจ"):
+           - W_click_native_select: คลิก <select> จริงคือ no-op ที่ Playwright คืน [OK] —
+             โมเดลเห็น [OK] แล้ววนคลิกซ้ำจนโดน loop-detection ฆ่า task ที่ 3 step
+           - W_hint_matches_many: perception.py::_EXTRACT_TABLE_JS ใช้ document.querySelector
+             (เอกพจน์) ดูแค่ element แรก — hint ".inventory_item_name" ที่มีจริง 6 ตัวจึงคืน
+             ["Twitter","Facebook","LinkedIn"] (ลิงก์ footer จาก fallback) เว็บที่ข้อมูลเป็น
+             รายการซ้ำๆ (สินค้า/ผลค้นหา/การ์ด) อ่านไม่ได้เลยทั้งหมด
+           - W_confident_zero: count_elements() คืน 0 ทั้งกรณี "มีศูนย์จริง" และ "selector ผิด"
+             แล้วรายงาน success=True "found 0 entries" — agent ตอบ "เจอ 0 รายการ" ทั้งที่
+             ความจริงมี 5 (ยืนยันด้วยสคริปต์ไม่ใช้ LLM อ่าน DOM ตรงๆ)
+
+           งานเสถียรภาพลูปที่ทำพร้อมกัน (เจอจากการอ่านโค้ด ไม่ใช่จาก log):
+           - W_loop_crash: run_task() มี try/finally แต่ไม่มี except เลยสักตัว exception จาก
+             get_snapshot/next_action/execute/wait_stable จึงทิ้ง history/token/
+             long_term_memory.record_task ทั้งหมด
+           - W_steptimeout: next_action() เป็น await ตัวเดียวในระบบที่ไม่มีขอบเขตเวลา
+           - W_notoolcall: Anthropic/Gemini/OpenAI ยอมแพ้ทันทีถ้าไม่ได้ tool call (Groq มี
+             retry อยู่แล้ว) แถม tool_use_id="" ทำให้ guard กัน premature-finish ถูกข้ามหมด
+           - W_int_args / json.loads ไม่มี try / ชื่อ tool ไม่ถูก validate
+           - W_guard_quota_reset: ตัวนับ premature_* ไม่เคย reset = guard ตายถาวรกลาง task
+           - W_readonly_goal_evidence: goal แบบถามอย่างเดียวไม่มีวันมี mutating action สำเร็จ
+             guard ACC-3 จึงปฏิเสธ finish_task ที่ถูกต้องทุกครั้งจนหมดโควตา
+
+           ผลวัดจริงหลังแก้ (provider openai เหมือนเดิมทุกอย่าง):
+             saucedemo "sort by price + บอกชื่อสินค้าตัวแรก"
+               ก่อน: ล้ม 3 step / 118k token (loop-detected)
+               หลัง: สำเร็จ 1 step / 24k token ตอบ "Sauce Labs Onesie" ถูกต้อง
+             OrangeHRM "ไปหน้า Admin + กรอง Role=ESS + บอกจำนวน"
+               ก่อน: ล้ม 22-23 step / 660-693 วินาที / 717k token
+               หลัง: จบ 2-5 step / 77-88k token
+           หมายเหตุตามความจริง: รอบหลังโมเดลยังนับผิด (ตาราง 7 แถวที่เป็น ESS ตอบ 6) — เป็น
+           ความผิดพลาดของโมเดลเอง ไม่ใช่บั๊กโค้ด และยังไม่มี guard ตัวไหนจับได้ ค้างไว้เป็น
+           งานถัดไป
+
+  [x] W78  ("Step trace + ให้โค้ดนับแทนโมเดล") — ต่อจาก W77 ตามลำดับความสำคัญที่ตกลงกับ user
+           (ความถูกต้องของคำตอบ > วัดผลได้ > รองรับเว็บหลากหลาย > ลดต้นทุน)
+
+           (1) W_deterministic_count — หลัง W_confident_zero แก้เคส "selector ผิดแล้วตอบ 0"
+           ไปแล้ว ยังเหลือเคส "อ่านข้อมูลถูกแต่นับผิด": live run จริงตารางมี 7 แถวที่เป็น ESS
+           แต่ agent ตอบ 6 และไม่มี guard ตัวไหนในระบบจับได้เลย เพราะทุก guard ที่มีตรวจ "ทำ
+           action สำเร็จไหม" ไม่ใช่ "ตัวเลขในคำตอบถูกไหม" — การนับเป็นงาน deterministic 100%
+           ไม่มีเหตุผลให้โมเดลทำเอง ให้โค้ดนับจากข้อมูลที่ดึงมาได้จริงแล้วแนบตัวเลขไปด้วย
+           (นับ entry ทั้งหมด + นับเฉพาะที่ตรงเงื่อนไขรูปแบบ "key=value" ที่ user พิมพ์มาจริง
+           เช่น "userrole=ess" — ตั้งใจไม่เดาเงื่อนไขจากคำทั่วไปในประโยค เพราะคำอย่าง
+           "user"/"role" โผล่ทุกแถวอยู่แล้ว จะได้ตัวเลขไร้ความหมาย)
+           ยืนยันสด: "4 of those 17 entries contain 'ESS'" -> โมเดลตอบ 4 ตรงตามที่โค้ดนับ
+
+           (2) W_step_trace — token_usage.jsonl เดิมบันทึกแค่ 1 บรรทัดต่อ task (steps เป็น
+           ตัวเลขเฉยๆ) task ที่ล้มด้วย 23 step/693 วินาที/1M token จึงคืนข้อมูลได้บรรทัดเดียว
+           ว่า success:false — ตอบไม่ได้เลยว่าพังที่ step ไหน เพราะอะไร และเวลาหมดไปกับอะไร
+           (ทั้งระบบไม่มี instrumentation เวลาสักจุดเดียวมาก่อน) เพิ่ม data/step_trace.jsonl
+           1 บรรทัดต่อ step: action type/index/label/ผล/failure_class/เวลาแยก 3 ส่วน
+           (snapshot/llm/action) เขียนครั้งเดียวตอน task จบ ไม่แทรก disk I/O กลางลูป
+           + ย้าย _log_token_usage ออกมานอก try ให้ครอบทุกเส้นทาง (done/cancelled/error) —
+           เดิมเรียกเฉพาะตอนสำเร็จ task ที่ crash/ถูก Stop จึงไม่เคยถูกบันทึกเลย success rate
+           ที่คำนวณจากไฟล์นี้เป็น "เพดานบน" ไม่ใช่ค่าจริง
+
+           (3) ของที่ trace หาเจอทันทีในการรันครั้งแรก (หาไม่เจอด้วยการอ่านโค้ด):
+           - W_descriptor_timeout: dom_locator.py::compute_locator_descriptor() เรียก
+             Locator.evaluate() โดยไม่ตั้ง timeout เลย จึงใช้ default ของ Playwright คือ 30
+             วินาที และ API ตัวนี้ auto-wait ให้ element โผล่ก่อนเสมอ — พอ action ที่ "ได้ผล"
+             จริงทำให้หน้า re-render (เปลี่ยนการเรียง/กด Search ฯลฯ) attribute data-ai-index
+             หายไปพร้อม DOM node เดิม จึงรอครบ 30 วินาทีทุกครั้งแล้วได้ descriptor เป็น {}
+             อยู่ดี วัดได้: step select บน saucedemo ใช้เวลา action 30.047 วินาที จากทั้ง task
+             ~52 วินาที -> ตั้ง timeout 1 วินาที เหลือ 1.047 วินาที
+           - W_query_is_a_question: extract_table_data() ตีความ query ว่าเป็น "ค่าที่ต้องหา
+             ให้เจอในตาราง" แล้วคืน [FAIL] ถ้าหาไม่เจอ แต่โมเดลส่งคำถามภาษาธรรมชาติมาเป็นปกติ
+             ("first product name") ซึ่งไม่มีวันปรากฏเป็นข้อความในตาราง ผลคือ [FAIL] ทั้งที่
+             ดึงข้อมูลมาได้ครบแล้ว แล้วทิ้งข้อมูลนั้นไปเปล่าๆ (trace เห็น read_page_data ล้ม
+             ติดกัน 3 step ก่อนบังเอิญสำเร็จ) -> ลองใหม่แบบไม่ส่ง query แล้วคืนข้อมูลพร้อมบอก
+             ตรงๆ ว่าไม่เจอข้อความนั้นแบบตรงตัว (รักษาเจตนา W46 ห้ามแกล้งทำเป็นเจอไว้ครบ)
+
+           ผลรวมวัดจาก step trace บน saucedemo task เดียวกัน:
+             ก่อน: 5 step, action รวม ~36 วินาที (select อย่างเดียว 30.0), LLM 16.5 วินาที
+             หลัง: 2 step, action รวม ~1.0 วินาที, LLM 8.1 วินาที
+
+  [x] W79  ("รองรับเว็บหลากหลายขึ้น รอบแรก" — เริ่มปิด W9[B] ที่ค้างมาตั้งแต่เฟส 3)
+           เลือก 2 ข้อที่ "พังทั้งกลุ่มเว็บ" ไม่ใช่ "พังเฉพาะกรณี" ทำก่อน
+
+           (1) W_risky_multilingual [ช่องความปลอดภัย] — RISKY_LABEL_KEYWORDS เป็นภาษาอังกฤษ
+           ล้วน ขณะที่ SAFE_ACTION_LABEL_KEYWORDS เป็นสองภาษามาตั้งแต่แรก ความไม่สมมาตรนี้แปลว่า
+           ปุ่ม "ลบ"/"削除"/"Löschen"/"Supprimer" ไม่ถูกยกระดับความเสี่ยงเลย — ชั้น
+           defense-in-depth ที่ตั้งใจไว้ว่า "ไม่พึ่ง LLM เลือก action type ให้ถูกอย่างเดียว"
+           จึงป้องกันได้เฉพาะเว็บภาษาอังกฤษ ส่วนเว็บภาษาอื่น human-in-the-loop ไม่ทำงานกับ
+           action ทำลายข้อมูลเลย นอกจากโมเดลจะบังเอิญเลือก type delete/purchase/pay ให้เอง
+           เพิ่ม ไทย/ญี่ปุ่น/จีน/เยอรมัน/ฝรั่งเศส/สเปน/โปรตุเกส — ยอมรับ false positive จาก
+           การ match แบบ substring ในภาษาที่ไม่เว้นวรรค เพราะผลของ false positive คือ "ถามเกิน
+           1 ครั้ง" ส่วน false negative คือ "ลบข้อมูลจริงโดยไม่มีใครเห็น"
+           ยืนยัน: ปุ่มค้นหา/ถัดไป/ดูรายละเอียด ยังเป็น SAFE เหมือนเดิมครบ (2 เคส false-positive
+           ที่ W_search เคยแก้ไว้ไม่ถูกกระทบ) — test_perm + test_permission_rules ผ่าน 91/91
+
+           (2) W_inner_scroll [พังทั้งกลุ่มเว็บ] — ทั้งการเช็ค "ถึงขอบหรือยัง"
+           (state_filter.py) และ action scroll เอง (actions.py) มองแค่ window/document เท่านั้น
+           แต่ layout แบบ app-shell (body สูงเท่าจอ แล้ว pane ข้างในเป็น overflow:auto) คือ
+           รูปแบบมาตรฐานของ dashboard/mail/chat/data grid แทบทุกตัว บน layout นั้น
+           window.scrollY เป็น 0 เสมอและ document.scrollHeight เท่ากับ innerHeight พอดี
+           => atBottom เป็น true ตลอดเวลา ทุกคำสั่ง scroll จึงถูก short-circuit เป็น
+           "[Skipped] Already scrolled to the bottom" โดยไม่แตะ browser เลยสักครั้ง —
+           agent ไปดูเนื้อหาใต้ fold ไม่ได้เลยบนเว็บกลุ่มนี้
+           นอกจากนี้ scroll() เดิมใช้ page.mouse.wheel() ซึ่งเลื่อน "อะไรก็ตามที่อยู่ใต้เมาส์"
+           ทั้งที่ระบบนี้ไม่เคยย้ายเมาส์ไปไหนโดยตั้งใจเลย ผลจึงขึ้นกับความบังเอิญ
+           แก้: หา "ตัวที่ scroll จริง" (หน้าเลื่อนได้ก็ใช้หน้า ไม่งั้นหา element ที่เลื่อนได้และ
+           กินพื้นที่จอมากที่สุด) แล้วใช้ตัวเดียวกันทั้งฝั่งเช็คและฝั่งเลื่อน — แชร์ JS ก้อนเดียว
+           กันตั้งใจ ถ้าแยกกันจะกลับไปเป็นบั๊กเดิมในรูปแบบใหม่ทันที + รายงานระยะที่เลื่อนได้จริง
+           ถ้าเลื่อนไม่ได้เลยคืน success=False (ธีมเดียวกับ W_click_native_select: "สำเร็จแต่
+           ไม่มีผล" อันตรายกว่า "ล้มเหลวชัดเจน")
+           ยืนยันด้วย chromium จริง 3 layout: app-shell เลื่อน pane ได้ 600px (เดิมเลื่อนไม่ได้
+           เลย), หน้าปกติเลื่อน window 600px เหมือนเดิม, หน้าที่เลื่อนไม่ได้จริงรายงานตามตรง
+
+
+  [x] W80  ("ลบ userrole=ess ออกให้หมด" — บั๊กจริงที่ user รายงาน 2026-08-26)
+           user รัน task จริงด้วย provider openai แล้วรายงาน 2 อาการ: (1) agent คลิก "Admin"
+           สำเร็จจริงแต่ log ขึ้น error ทำให้รวนทั้ง run (2) workflow ไม่ตรงกับที่ควรเป็น
+           data/step_trace.jsonl ที่เพิ่งเพิ่มไปใน W78 จับ 3 run ของวันนั้นไว้ครบและเป็นหลักฐาน
+           หลักของการวินิจฉัยรอบนี้ — เห็นสิ่งที่ log บนหน้าจอไม่แสดง:
+             14:07 ไม่จบ    Admin -> dropdown -> ESS -> Edit -> Cancel -> Edit -> fill ชื่อคน
+                            ลงฟอร์ม 2 ครั้ง
+             14:08 success  Admin -> dropdown -> ESS -> Delete -> Yes, Delete -> คลิกลิงก์
+                            footer "OrangeHRM, Inc" -> hover -> finish_task(true)
+             14:11 cancelled user กด Stop เอง (บรรทัดนี้โผล่ใน log ได้เพราะ W_step_trace เท่านั้น)
+           ไม่มี run ไหนกด "Search" เลยสักครั้ง และ run 14:08 claim สำเร็จทั้งที่ลบไปแค่ 1 แถว
+           จาก 7 แถวที่เป็น ESS = false completion เต็มรูปแบบ (ลบข้อมูลจริงไป 1 รายการบนเดโม
+           สาธารณะ)
+
+           prompt ไม่ใช่ปัญหา — W21/W50/W63[3.1]/W64[7.1] เขียนไว้ถูกต้องครบแล้ว W64[7.1] ถึงกับ
+           บอกโมเดลว่า "The system automatically rejects such an action at code level" แต่ guard
+           ตัวนั้นตายอยู่จริง ทั้ง 5 สาเหตุอยู่ในโค้ดล้วนๆ
+           ระดับการบังคับที่ตกลงกับ user: บังคับ "ลำดับ" แต่ไม่บังคับ "วิธี"
+
+           (1) W_click_navigated — click() จับ PWTimeout แล้ว _dispatch_click_with_retry วน 3 รอบ
+           โดยเขียนทับ result ทุกรอบ ข้อความของรอบสุดท้ายจึงชนะเสมอ พอ attempt 1 คลิกสำเร็จและ
+           Vue router เปลี่ยนหน้า node เดิมหลุดจาก DOM แล้ว attempt 2/3 ไปหา data-ai-index เดิมที่
+           ไม่มีทางมีอยู่บนหน้าใหม่ (perception ล้างและแปะ index ใหม่ทุก snapshot) จึง timeout
+           แน่นอน 100% แล้วรายงาน FAIL ทั้งที่คลิกได้ผลจริง เสียเวลา retry เปล่าอีก ~10 วินาที
+           ยก pattern ของ crawler.py W34 มาใช้ ("error เป็น error จริงต่อเมื่อ URL ไม่เปลี่ยน")
+           แต่ห้ามใช้ crawler._normalize_url() ตัวนั้นซ้ำเด็ดขาด เพราะมันตัด fragment ทิ้งโดย
+           ตั้งใจ (หน้าที่ของมันคือ dedup ตอน crawl) ซึ่งเป็น semantics ตรงข้ามกับที่ต้องการ —
+           SPA จำนวนมากใช้ hash router (#/admin/users) ถ้าใช้ตัวนั้นจะเป็น false FAIL เหมือนเดิม
+           เทียบ URL เต็มรวม query+fragment normalize แค่ trailing slash + ออกจากลูป retry ทันที
+           ที่ URL เปลี่ยน (ประหยัด ~10 วินาทีต่อการคลิกที่ navigate) + สัญญาณสำรองสำหรับ SPA ที่
+           ไม่แตะ URL เลย (DOM signature) ซึ่ง *ไม่* พลิกเป็น success แต่แนบหลักฐานไปให้โมเดล
+           ตัดสินใจ (ธีมเดียวกับ W_click_native_select/W_confident_zero: รายงานตามความจริง)
+           พร้อมแก้ memory poisoning ที่ขยายผลบั๊กนี้ — orchestrator บันทึกแค่ str(result) ลง
+           ShortTermMemory ทิ้งโน้ต W30 "หน้าเปลี่ยนไปเอง" ที่คำนวณไว้แล้ว failed_actions_summary()
+           จึงยัด "[FAIL] click(3)" เปล่าๆ เข้า prompt ทุก step ที่เหลือของ task
+
+           (2) W_dropdown_field_label — trigger ของ OrangeHRM เป็น div.oxd-select-text ไม่ใช่ form
+           field getAssociatedLabelText() จึงไม่ถูกเรียก (ผูกไว้กับ input/select/textarea/
+           [role=combobox]) และ label chain เอา trimmedText มาก่อน ทั้ง User Role และ Status
+           กลายเป็น '-- Select --' เหมือนกันเป๊ะ ไม่มี region marker ช่วยด้วย (อยู่ใน main ทั้งคู่)
+           โมเดลจึงต้องเดาจากลำดับ DOM ล้วนๆ — นี่คือรากของบั๊ก W_filter_safety เดิมที่เคยลบผิด
+           กลุ่มจริงมาแล้ว ขยาย getPrecedingSiblingLabelText() (มีอยู่แล้ว ผูกไว้กับ switch/toggle
+           เท่านั้น) ให้ dropdown trigger ใช้ด้วย โดยนำหน้าค่าที่เลือกอยู่ ไม่ทับทิ้ง
+
+           (3) W_dropdown_sets_filter_dirty — filter_dirty_since_search ตั้งเป็น True เฉพาะ
+           type in ("fill","select") แต่ W50 + check_select_target_is_native บังคับให้โมเดลใช้
+           click กับ custom dropdown ธงจึงไม่เคยถูกยก แถม else ยัง reset เป็น False ด้วยการคลิก
+           ตัวเลือกนั้นเอง ผลคือ guard "ห้ามคลิก row action ก่อนกด Search" ตายสนิทบนเว็บที่ใช้
+           custom dropdown = เว็บ SPA สมัยใหม่แทบทั้งหมด ซึ่งเป็นกรณีที่ต้องการ guard นี้ที่สุด
+           (trace ยืนยัน: click 'ESS' -> click 'Edit' ผ่านฉลุย ไม่เคยถูก nudge)
+           แยก classify_click_index_disturbance() ออกจาก check_click_invalidates_indexes()
+           (แยก 'option' กับ 'trigger' ได้อยู่แล้ว แค่ถูกเรียกเฉพาะตอนมี then_click_index) เรียก
+           กับทุก click แล้วส่งผลกลับผ่าน ActionResult.dropdown_option_selected — pattern เดียวกับ
+           toast_confirmed ที่ทำเรื่องนี้อยู่แล้ว (field ที่ type-checked แทน match ข้อความ)
+           เหตุผลที่แบ่ง layer แบบนี้: action layer เป็นชั้นเดียวที่รู้ว่า "สิ่งที่เพิ่งคลิกคือ
+           trigger หรือ option" (ต้องอ่าน DOM ก่อน dispatch เพราะหลังคลิกสถานะนั้นหายไปแล้ว)
+           ส่วน orchestrator เป็นชั้นเดียวที่รู้ว่า "goal นี้กำลังกรองอะไร และกด Search ไปหรือยัง"
+
+           (4) W_select_all_aria_grid — กฎ label ของ checkbox ตัดสินด้วย el.closest('th, thead')
+           แต่ OrangeHRM 5.x ไม่ใช้ <table> เลย ใช้ div[role="table"]/[role="row"]/
+           [role="columnheader"] — ข้อเท็จจริงนี้โปรเจกต์รู้อยู่แล้วและเขียนไว้ใน _EXTRACT_TABLE_JS
+           ในไฟล์เดียวกัน แต่กฎ label ไม่ได้ใช้ความรู้นั้น ผลคือ checkbox หัวตารางถูกตั้งชื่อ
+           'Select row' เหมือนทุกแถว -> element ที่ W21 สั่งโมเดลให้ไปหาไม่มีอยู่ใน snapshot เลย
+           agent จึงตกไปเส้นทางลบทีละแถว หรือไล่ติ๊ก 'Select row' มั่วจนโดน
+           _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS (comment ตรงนั้นอ้าง goal ของ user คนนี้ตรงตัว)
+           ขยายเงื่อนไข header ให้รองรับ ARIA (+ แถวที่มี [role=columnheader] อยู่ข้างใน)
+           (การ "ติ๊ก" ทำได้อยู่แล้ว — check() มี fallback force-click/JS-click พร้อม verify
+           สถานะจริงหลังคลิกสำหรับ custom checkbox ที่ไม่ใช่ <input> จริง ไม่ต้องแก้เพิ่ม)
+
+           (5) W_delete_all_intent — bulk marker ("ทุก"/"ทั้งหมด"/"ให้หมด") ถูกใช้โดย
+           _is_edit_all_intent_goal เท่านั้น ซึ่งต้องมี verb แก้ไขด้วย goal นี้จึงไม่เข้าเงื่อนไข
+           ไหนเลย = ไม่มีอะไรในระบบรู้ว่านี่คืองาน "ลบทั้งหมด" ("ให้หมด" ใน goal มีผลเป็นศูนย์)
+           และ _scan_remaining_target_records() อ่าน "(N) Records Found" ของตารางที่แสดงอยู่ พอ
+           ไม่เคยกด Search ตัวเลขนั้นคือตารางที่ยังไม่กรอง จึงไม่มีความหมาย — ส่วน run 14:08
+           finish_task บนหน้าที่ไม่มีตารางแล้ว (เผลอคลิกลิงก์ footer ก่อนจบ) guard เดิมคืน None =
+           "เช็คไม่ได้" แล้วปล่อยผ่านเงียบๆ
+           เพิ่ม 3 ชั้น: (ก) _is_delete_all_intent_goal = deletion intent + bulk marker (ใช้ค่าคงที่
+           เดิมทั้งคู่) (ข) safety gate ก่อน click ทำลายข้อมูลครั้งแรกของ goal แบบมีเงื่อนไข —
+           อ่านแถวที่แสดงอยู่จริงจาก DOM (generic ทั้ง <table> และ ARIA grid ไม่มี .oxd-* เลย)
+           แล้วเทียบกับค่า key=value ที่ user เขียนใน goal เอง (ใช้ _KEY_VALUE_IN_QUERY_RE ตัวเดียว
+           กับ W_deterministic_count ไม่เขียน regex ใหม่ซ้อน + ตัด URL ในgoal ทิ้งก่อนกัน query
+           string กลายเป็นเงื่อนไขปลอม) ถ้าตารางยังไม่กรองให้บล็อกพร้อม nudge (ค) ไม่รับ
+           finish_task(success=true) ถ้ายังไม่เคยกด Search หลังเปลี่ยน filter หรือพิสูจน์ไม่ได้เลย
+           บนหน้าปัจจุบัน — ทุกชั้นมีโควตา escape valve เหมือน guard อื่นในไฟล์นี้
+           ไม่ทำ: ไม่บังคับว่าต้องใช้ Select All แทนการลบทีละแถว (เว็บที่ไม่มี Select All ต้องยัง
+           ทำงานได้) ตามที่ตกลงกับ user
+
+           ยืนยันกับ DOM จริงของ opensource-demo.orangehrmlive.com (อ่านอย่างเดียว ไม่ลบ/ไม่แก้
+           ข้อมูล และไม่เรียก LLM เลย):
+             F1  click 'Admin' -> success=True, url -> /admin/viewSystemUsers
+             F2  'User Role: -- Select --' + 'Status: -- Select --'  (เดิมซ้ำกันเป๊ะทั้งคู่)
+             F4  Select All = 1, Select row = 20  (เดิมเป็น 'Select row' ทั้ง 21 ตัว)
+             F5  อ่านแถวจาก ARIA grid จริงได้ 20 แถว ตรงเงื่อนไข 'ess' = 4/20
+                 => safety gate จะบล็อกการลบบนตารางที่ยังไม่กรองได้จริง
+           unit test ใหม่ 12 เคส (actions 6 / perception 3 / orchestrator 5 — รวมเคสกระจกบานตรง
+           ข้ามของทุก guard) และเคสที่ล้มอยู่เดิมไม่เพิ่มจาก baseline 12 เคส
+           ยังไม่ได้รัน live end-to-end ด้วย goal เดิมของ user เพราะ task นั้นลบข้อมูลจริงบนเดโม
+           สาธารณะที่คนอื่นใช้ร่วมกัน — รอ user สั่ง
+
+
+  [x] W81  ("ยืนยันการนับด้วยโค้ด รอบสอง" — ปิดช่องที่ W78's W_deterministic_count ยังไม่ถึง)
+           ตั้งใจตรวจก่อนว่าของเดิมครอบคลุมแค่ไหน ก่อนจะเขียนอะไรเพิ่ม — พบว่า
+           W_deterministic_count แนบตัวเลขที่โค้ดนับให้เฉพาะ "เส้นทางสำรอง" เท่านั้น
+           (count_elements คืน 0 หรือ extract คืน [FAIL]) และเทสต์เดิมทั้ง 5 เคสก็ patch
+           count_elements ให้คืน 0 ทุกเคส = เส้นทางหลักไม่เคยถูกทดสอบเลยสักครั้ง
+
+           (1) W_conditional_count — เส้นทางหลักของคำถามเชิงนับ (count_elements คืนค่ามากกว่า 0)
+           คืน "found N entries matching '<selector>'" ดิบๆ โดยไม่รู้จักเงื่อนไขใน query เลย
+           พิสูจน์ซ้ำได้: query "มี user ที่ userrole=ess กี่คน" + target_hint '[role="row"]'
+           คืน "found 21 entries" พร้อม success=True ทั้งที่คำตอบจริงคือ 4 — ไม่มีสัญญาณอะไรให้
+           ใครจับได้เลยว่าตอบผิด และนี่คือเส้นทางที่คำถามเชิงนับเกือบทั้งหมดวิ่งผ่าน
+           แก้: query ที่มีเงื่อนไข key=value ชัดเจน ต้องอ่านแถวจริงแล้วนับเฉพาะที่ตรงเงื่อนไข
+           (ใช้ _deterministic_count_note ตัวเดิม ไม่เขียนตรรกะการนับใหม่) ถ้าอ่านแถวไม่ได้จริงๆ
+           ให้รายงานตามความจริงว่า "นี่คือจำนวน element ที่ตรง selector ไม่ใช่จำนวนรายการที่ตรง
+           เงื่อนไข ห้ามรายงานเป็นคำตอบ" — คำถามเชิงนับที่ไม่มีเงื่อนไขยังนับด้วย selector ตรงๆ
+           เหมือนเดิม (ถูกและถูกต้องอยู่แล้ว) และเพิ่มการรายงานตอน matching เป็น 0 ด้วย
+           (เดิมเงียบไปเลย เหลือแต่บรรทัด "exactly N entries" ให้โมเดลรายงาน N เป็นคำตอบ
+           ของคำถามที่มีเงื่อนไข ซึ่งตอบคนละคำถามกัน) โดยพ่วงเงื่อนไขของ W_confident_zero ไว้ครบ
+
+           (2) W_column_aware_count — "userrole=ess" หมายถึงคอลัมน์ User Role ไม่ใช่ "แถวไหนก็ได้
+           ที่มีคำว่า ess" แต่ regex เดิมทิ้งฝั่งซ้ายของ "=" ไปทั้งหมด เก็บแต่ค่า แล้วเทียบ
+           substring กับทั้งแถว — ตารางที่มี username "ess.irhrg0" ซึ่ง Role เป็น Admin จะถูก
+           นับเป็น ESS ด้วย (fixture ในเทสต์ของโปรเจกต์เองก็มีชื่อแบบนี้อยู่แล้ว และ OrangeHRM
+           จริงก็มี "ess_disabled_..."/"ess_enabled_...") ตอบ 2 ทั้งที่ความจริงคือ 1
+           แก้: จับทั้ง key และ value แล้วเล็งคอลัมน์ที่หัวตารางชื่อตรงกับ key (normalize
+           ช่องว่าง/ตัวพิมพ์/ขีด: "userrole" = "user_role" = "User Role") fallback ไปเทียบทั้ง
+           แถวเหมือนเดิมถ้าไม่มีคอลัมน์นั้น/ไม่ใช่ตาราง (JSON list) + บอกในข้อความด้วยว่านับ
+           จากคอลัมน์ไหน ให้ตรวจสอบย้อนหลังได้จาก step trace
+
+           (3) W_column_aware_count (ต่อ, เจอจากการวัดกับ DOM จริง ไม่ใช่จากการอ่านโค้ด) —
+           hint '[role="row"]' (hint ที่โมเดลเดามาบ่อยที่สุดสำหรับ data grid) กวาดเอา *แถวหัว
+           ตาราง* มาเป็นรายการที่ 1 ด้วยเสมอ ตารางที่มีข้อมูลจริง 26 แถวจึงถูกรายงานเป็น 27
+           — off-by-one ที่ดูน่าเชื่อถือมาก จับได้ยากกว่าตัวเลขที่ผิดเยอะๆ
+           แก้ที่ต้นทางใน _EXTRACT_TABLE_JS: กรองแถวที่มี th/[role=columnheader] อยู่ข้างใน
+           (หรืออยู่ใน thead) ออกจาก list branch — แยกออกได้แน่นอนตามมาตรฐาน HTML/ARIA ไม่ต้อง
+           เดาจากเนื้อหา + fail-safe คืนชุดเดิมถ้ากรองแล้วไม่เหลืออะไรเลย
+
+           (4) W_count_answer_check — ครึ่งหลังที่ยังไม่มีใครทำเลย: โค้ดนับให้แล้วและแนบตัวเลข
+           ไปกับผลลัพธ์ก็จริง แต่ "การแนบตัวเลข" เป็นแค่คำแนะนำใน prompt ที่โมเดลเพิกเฉยได้ —
+           บั๊กที่ user เจอสด ("ตารางมี 7 แถวที่เป็น ESS แต่ agent ตอบ 6") เกิด *หลัง* ข้อมูล
+           ถูกอ่านมาถูกต้องแล้วทั้งหมด และไม่มี guard ตัวไหนจับได้เลยเพราะทุก guard ที่มีตรวจ
+           "ทำ action สำเร็จไหม" ไม่ใช่ "ตัวเลขในคำตอบถูกไหม"
+           แก้: เก็บตัวเลขที่โค้ดนับไว้ระหว่าง task (อ่านกลับจากข้อความที่ตัวเองเขียน — ตัวเขียน
+           กับตัวอ่านวางไว้ติดกันในไฟล์เดียวกันโดยตั้งใจ กันปัญหา "สอง format ที่ต้องแก้พร้อมกัน"
+           แบบ dom_locator/extractor) แล้วก่อนยอมรับคำตอบ ตรวจว่าตัวเลขนั้นโผล่ในคำตอบไหม
+           ยิงเฉพาะตอนเงื่อนไขครบ 3 ข้อพร้อมกัน (goal เป็นคำถามเชิงนับ + ค่าเงื่อนไขปรากฏใน goal
+           + ตัวเลขที่นับได้ไม่โผล่ในคำตอบเลยสักตัว) จงใจไม่ตีความประโยคภาษาธรรมชาติเลย
+           *** จุดสำคัญ: guard ต้องอยู่ทั้ง 2 ลูป *** — classify_intent() ส่งคำถามเชิงนับเข้า
+           qa_summary mini-loop ไม่ใช่ main loop ซึ่งเป็นคนละเส้นทางกันคนละที่ (เขียนไว้ที่ main
+           loop ที่เดียวตอนแรก แล้วเทสต์จับได้ว่า guard ไม่เคยทำงานเลยกับ goal จริงของ user)
+           ใช้ helper ตัวเดียวกันทั้งสองที่ ไม่ก็อปตรรกะไปวางสองรอบ
+
+           ยืนยันกับ DOM จริงของ opensource-demo.orangehrmlive.com (อ่านอย่างเดียว ไม่แก้ข้อมูล
+           และไม่เรียก LLM เลย) เทียบกับ ground truth ที่นับจาก DOM ตรงๆ ทีละคอลัมน์:
+             ground truth  28 แถว, Role==ESS = 5
+             hint '[role="row"]'    -> 28 entries / 5 ESS   (ก่อนแก้: "found 27 entries")
+             hint 'table tbody tr'  -> 28 entries / 5 ESS in the 'User Role' column
+             hint '.oxd-table-card' -> 28 entries / 5 ESS
+           หมายเหตุตามความจริง: ข้อมูลบนเดโมเปลี่ยนระหว่างการรัน 2 รอบห่างกันไม่กี่นาที
+           (26 แถว/4 ESS -> 28 แถว/5 ESS) ยืนยันว่าต้องเก็บ ground truth ใหม่ทุกครั้งที่วัด
+           unit test ใหม่ 12 เคส (actions 8 / orchestrator 4 — ครอบทั้ง qa mini-loop และ main
+           loop รวมเคสกระจกบานตรงข้ามของทุก guard) เคสที่ล้มอยู่เดิมไม่เพิ่มจาก baseline 12 เคส
+
+           P1.2 (count_elements ไม่มี fallback) ปิดโดยไม่ต้องแก้ตามที่ประเมินไว้เดิม — ผู้เรียก
+           เดียวคือ read_page_data ซึ่งมี fallback chain ครบแล้ว และหลัง W_conditional_count
+           เส้นทางที่มีเงื่อนไขไม่ได้พึ่ง count_elements เป็นคำตอบอีกต่อไปแล้ว
+
+  [x] W82  ("กู้ release gate + baseline ครั้งแรกของโปรเจกต์" — ปิด P2.4)
+           release_gate.py ถูกเขียนไว้แล้วใน commit 47ecea7 (W88-W91) แต่ commit นั้นถูก reset
+           ทิ้งโดยตั้งใจตอนเริ่ม W25 (reflog: "wip: snapshot before W25 reset") กลายเป็น dangling
+           commit ที่ไม่อยู่บน branch ไหนเลย — ตรวจแล้วยังไม่ถูก git gc เก็บ จึงกู้กลับมาได้
+           user ยืนยันให้กู้ครบชุดแล้วรัน baseline ทันที (2026-08-27)
+
+           *** ห้าม git checkout ทับ config.py/evaluation.py/run.py เด็ดขาด *** — diff ของ
+           config.py ใน commit นั้นคือ +292 บรรทัดที่รวม setting ของ W88-W91 ตัวอื่นด้วย เขียนทับ
+           แล้วจะลบ llm_step_timeout_seconds/step_trace_log_path/openai_oauth_* ที่เพิ่งเพิ่มใน
+           W77-W78 หายหมด กู้ตรงได้เฉพาะ 2 ไฟล์ที่ไม่มีอยู่ใน tree เลย (release_gate.py 217
+           บรรทัด + test_release_gate.py 334) ที่เหลือ port มือทีละชิ้น:
+             - config.py     +2 setting (release_gate_results_dir, release_gate_max_regression_pct)
+             - evaluation.py +5 field บน TaskEvalResult (latency_seconds/llm_calls/approval_count/
+                             fastpath/recoveries) +5 property บน EvaluationReport (p50/p95 latency,
+                             avg_llm_calls, approval_rate, fastpath_hit_rate, recovery_rate)
+                             + _make_counting_auto_approve()
+             - run.py        run_release_gate_cmd() + เมนู "22" + alias "release-gate"/"gate"
+
+           miniwob_eval.py ต้อง port ตามด้วย (ไม่ได้อยู่ในแผนตอนแรก เจอตอนรันเทสต์จริง):
+           release_gate.py reuse EvaluationReport แบบ duck-typed กับ MiniWobResult ด้วย
+           (docstring หัวไฟล์อธิบายเจตนาไว้ว่าตั้งใจไม่เขียน aggregator ใหม่) ชื่อ field จึงต้อง
+           ตรงกันเป๊ะทั้งสองฝั่ง — ตอนแรกไม่ได้ port จึงได้ AttributeError: 'MiniWobResult' object
+           has no attribute 'latency_seconds' จาก build_summary() ทันที เทสต์จับได้ 1 เคส
+
+           baseline ครั้งแรกของโปรเจกต์ (data/eval_results/ ไม่เคยมีมาก่อนเลย) 15 task รวม 3 suite
+           SauceDemo 4 + MiniWoB 8 + OrangeHRM 3, provider openai/gpt-5.4-mini:
+             success_rate 0.933 · p50 50.3s · p95 105.9s · avg_llm_calls 5.8
+             avg_tokens 161,309 · approval_rate 0.933
+           แล้วรันซ้ำรอบสองเพื่อพิสูจน์ว่า "เทียบ baseline ได้จริง" ไม่ใช่แค่เขียนไฟล์ได้ — ได้
+           ตารางเทียบครบ 8 metric และ exit code 1 ตามสเปค
+
+           *** ข้อค้นพบสำคัญจากการรันซ้ำ: เกณฑ์ 10% เข้มเกินไปสำหรับ suite ขนาด 15 task ***
+           รอบสองรันด้วย "โค้ดชุดเดียวกันเป๊ะ commit เดียวกันเป๊ะ" แต่ได้ success_rate 0.800
+           (-14.3%) กับ p95 +49.5% แล้วไม่ผ่าน gate — ความต่างทั้งหมดมาจากความสุ่มของ LLM ล้วนๆ
+           ไม่ใช่ regression ของโค้ด บน suite 15 task นั้น task เดียว = 6.7% สองงาน = 13.3% จึง
+           ทะลุเกณฑ์ 10% ได้จากงานที่พลาดไปแค่ 2 งาน และ p95 บน n=15 คือค่าของ task ที่ช้าที่สุด
+           แทบจะตัวเดียว ผันผวนโดยธรรมชาติ
+           ยังไม่แก้ค่าเกณฑ์ในรอบนี้ (ต้องมีข้อมูลหลายรอบก่อนถึงจะรู้ว่าความผันผวนปกติอยู่ที่เท่าไร
+           จริง) บันทึกไว้ก่อนเพื่อไม่ให้รอบหน้าตีความ FAIL ว่าเป็น regression ของโค้ดโดยอัตโนมัติ
+
+           ข้อจำกัดที่พบเพิ่ม 2 ข้อ (ยังไม่แก้ในรอบนี้):
+           (1) JSON ที่บันทึกเก็บแต่ aggregate ไม่มีรายละเอียดต่อ task — รู้ว่า 14/15 ผ่าน แต่ไม่รู้
+               ว่า task ไหนตก ต้องไปไล่ดูเอาเอง
+           (2) step trace ไม่ทำงานบนเส้นทาง eval เลย — _log_step_trace() ถูกเรียกจาก
+               api/task_manager.py::_run() เท่านั้น ส่วน evaluation.py/miniwob_eval.py เรียก
+               Orchestrator.run_task() ตรงๆ ไม่ผ่าน TaskManager จึงไม่มี trace สักบรรทัด
+               (ยืนยันแล้ว: trace rows จาก baseline run = 0) — release gate จึงให้แต่ตัวเลขรวม
+               โดยไม่มีข้อมูลว่า "ทำไมถึงตก" ซึ่งเป็นปัญหาเดียวกับที่ W78's W_step_trace ตั้งใจปิด
+               แต่เส้นทาง eval เลี่ยงไป
+
+           เทสต์: test_release_gate + test_evaluation + test_miniwob_eval + test_orangehrm_eval
+           ผ่าน 51/51 · เคสที่ล้มอยู่เดิมไม่เพิ่มจาก baseline
+
+  [x] W83  ("step trace ต้องทำงานบนเส้นทาง eval ด้วย" — ปิดช่องที่ W82 เจอตอนรัน baseline)
+           อาการ: release gate รัน 15 task แล้วรายงานได้แค่ "14/15 ผ่าน" โดยไม่มีข้อมูลเลยว่า
+           task ไหนตกและตกที่ step ไหน — ยืนยันด้วยการนับจริง: trace rows ที่เกิดจาก gate run
+           = 0 บรรทัด
+
+           สาเหตุ: _log_step_trace()/_log_token_usage() ถูกเรียกจาก TaskManager._run() ที่เดียว
+           (api/task_manager.py) ส่วน core/evaluation.py กับ core/miniwob_eval.py เรียก
+           Orchestrator.run_task() ตรงๆ ไม่ผ่าน TaskManager เลย จึงข้าม telemetry ทั้งชุด —
+           เป็นปัญหาเดียวกับที่ W78's W_step_trace ตั้งใจปิด แต่เส้นทาง eval เลี่ยงไป ทำให้
+           benchmark ที่แพงที่สุดของโปรเจกต์ (15 task, ~13 นาที, ~2.4M token ต่อรอบ) กลายเป็น
+           แหล่งข้อมูลที่อธิบายตัวเองไม่ได้เลย
+
+           งานทั้งหมดเป็น plumbing — history ที่ run_task() คืนมามี timing/failure_class/label/
+           tokens ครบอยู่แล้วตั้งแต่ W78 และตัว writer ก็ใช้แค่ history + task_id + provider
+           ไม่ได้พึ่ง TaskRecord จริงๆ เลยสักฟิลด์
+
+           (1) W_eval_trace — สร้าง core/telemetry.py ย้ายเนื้อในของ writer ทั้งสองตัวลงมา
+           แล้วให้ api/task_manager.py เหลือแค่ wrapper ที่แปลง TaskRecord เป็น argument
+           *** ย้าย "ลง" มาที่ core/ ไม่ใช่ให้ eval import "ขึ้น" ไปหา api/ *** — core/ เป็น
+           layer ล่างกว่า api/ การ import ย้อนทางเป็น layer inversion และจะลาก TaskRecord
+           (dataclass ที่ผูกกับ SSE/approval/asyncio.Task ของฝั่ง HTTP ทั้งก้อน) เข้ามาใน
+           benchmark โดยไม่จำเป็น — ถือโอกาสตัด import json/pathlib.Path ที่ไม่มีใครใช้แล้ว
+           ออกจาก task_manager.py ด้วย (clean-as-you-go ในไฟล์ที่แตะอยู่แล้ว)
+
+           (2) run_id ร้อยจาก gate ลงไปถึงทุก task — ตอนแรกคิดจะดึงจากชื่อไฟล์ JSON ที่ save
+           แต่ทำไม่ได้: save_summary() เกิด *หลัง* suite ทั้งหมดรันจบแล้ว และ timestamp ในชื่อ
+           ไฟล์มาจาก build_summary() ตอนนั้น — trace ถูกเขียนไปก่อนหน้านั้นหมดแล้ว ผูกย้อนหลัง
+           ไม่ได้ จึงต้องสร้าง run_id ตั้งแต่บรรทัดแรกของ run_release_gate() แล้วส่งเป็น param
+           ลงทั้ง 3 suite + ใส่ลงใน summary JSON ด้วย ทุกบรรทัด trace/token ของ gate run
+           เดียวกันจึงถือ id เดียวกันและ join กลับได้
+           suite ที่รันเดี่ยวๆ (run.py eval/miniwob/orangehrm) สร้าง run_id เองต่อการเรียก
+           1 ครั้ง — trace จึง group ได้เสมอไม่ว่าจะเรียกจากทางไหน ไม่ใช่มีเฉพาะตอนผ่าน gate
+           orangehrm_eval.py แค่ส่งต่อเฉยๆ เพราะ reuse run_evaluation() ทั้งก้อนอยู่แล้ว
+
+           (3) eval เขียน token_usage.jsonl ด้วย พร้อม field ใหม่ "source" ("eval"/"api")
+           จำเป็นเพราะ P4 (งานลด token/latency) วัดผลจากไฟล์นี้ ถ้าแถว benchmark ปนเข้าไปโดย
+           แยกไม่ออก ตัวเลข "ต้นทุนต่อ step ของงานจริง" จะเพี้ยนทันที (ไฟล์นี้ปนแถว fixture
+           จาก unit test อยู่แล้วด้วย — มี field นี้แล้วกรองได้ทั้งสองแบบ) เพิ่มอย่างเดียว
+           ไม่แตะ field เดิม เพราะสคริปต์วิเคราะห์และ W78 พึ่ง status/error อยู่
+
+           (4) เส้นทาง exception — run_task() ที่ throw จริงไม่มี history ให้เขียน trace แต่
+           ยังบันทึกแถว token_usage ด้วย status="error" ตาม pattern เดียวกับฝั่ง API หลัง W78
+           (ไม่งั้น task ที่พังหายไปจากไฟล์ทั้งหมด แล้ว success rate ที่คำนวณได้เป็นเพดานบน)
+           ครอบทั้ง 3 ทาง: exception ปกติ, asyncio.TimeoutError ของ miniwob wall-clock guard,
+           และเส้นทางที่เขียน log ไม่ได้เลย (writer จับ Exception เองทั้งคู่ — ผล eval ที่วัดได้
+           จริงต้องไม่หายเพราะปัญหาการเก็บ log)
+
+           เทสต์ใหม่ 14 เคส (backend/tests/test_telemetry.py) ครอบ writer ตัวกลาง + การต่อสาย
+           เข้า run_evaluation รวมเคสกระจกบานตรงข้าม (ไม่มี run_id ต้องไม่มี field นั้นโผล่,
+           history ว่างต้องไม่เขียนอะไร, entry ที่ไม่ใช่ dict ต้องไม่ทำให้ throw, log path ที่
+           เขียนไม่ได้ต้องไม่ทำให้ผล eval หาย) — test_miniwob_eval เดิม 2 เคสต้องแก้ fake
+           ให้รับ **kwargs ตาม signature ใหม่ ผ่านรวม 89/89
+
+           ยืนยัน end-to-end ด้วย release gate จริง 1 รอบ: summary JSON มี run_id=gate-1787799924685
+           และ step_trace.jsonl มี 106 บรรทัดที่ run_id ตรงกัน ครบทั้ง 15 task (ก่อนหน้านี้ 0)
+           token_usage.jsonl ได้ 15 แถวใหม่ source="eval" ครบ — ตอนนี้ gate run อธิบายตัวเองได้:
+             failure class ที่เจอ: timeout 3 · element_not_found 4 · wrong_action_type 1 · other 1
+             task ที่มี step ล้ม: long_flow (5/24), rag_integration (2/14), choose-list (2/8)
+             input token 5 อันดับแรก: long_flow 433k · search_no_results 428k · rag_integration
+             386k · click-checkboxes 219k · add_candidate 120k (รวมทั้งรอบ 2,057,927)
+           รอบนี้ gate ตกที่ avg_tokens +21.4% กับ p95 +27.2% (success_rate กลับ *ดีขึ้น* +8.3%)
+           ด้วยโค้ดชุดเดิมเป๊ะอีกครั้ง — ตอกย้ำข้อสังเกตใน W82 ว่าเกณฑ์ 10% เข้มเกินไปสำหรับ
+           suite 15 task แต่ต่างจาก W82 ตรงที่คราวนี้ "ชี้ตัวได้" ว่า 3 task กินไปเกือบ 2 ใน 3
+           ของ token ทั้งรอบ ซึ่งเป็น input โดยตรงของงาน P4 (ลดต้นทุนต่อ step)
+
+  [x] W84  ("ลดต้นทุนต่อ step ตามที่ trace ชี้" — P4.1 + P4.5)
+           *** ลำดับงานเปลี่ยนจากแผนเดิมเพราะข้อมูลจริงขัดกับสมมติฐาน *** แผนวางไว้ว่าจะทำ
+           P3.3 (cap snapshot) ก่อน โดยเดาว่า token บานเพราะหน้าเว็บใหญ่ — แต่ step trace จาก
+           W83 บอกตรงข้าม: step แรกของ *ทุก* task เริ่มที่ ~11.4k input token ทั้งที่หน้า
+           saucedemo/MiniWoB มี element ไม่กี่ตัว แปลว่าเกือบทั้งหมดคือ SYSTEM_PROMPT ไม่ใช่
+           เนื้อหาหน้าเว็บ — cap snapshot จึงช่วยอะไรแทบไม่ได้เลยกับ workload ที่วัดอยู่
+           (ยังจำเป็นกับเว็บใหญ่จริง แต่ไม่ใช่ตัวฉุดที่พิสูจน์ได้ตอนนี้ เลื่อนไปทีหลัง)
+
+           (1) W_prompt_sections (P4.1) — แยก SYSTEM_PROMPT (44,487 ตัวอักษร ~11k token,
+           86 ข้อ) เป็น core + 4 บล็อกที่ฉีดตามบริบท: plan / table / widget / password
+           core อย่างเดียว 25,144 ตัวอักษร = ลดลง 43% เมื่อบริบทไม่ต้องใช้บล็อกไหนเลย
+
+           *** เกณฑ์ว่าอะไร gate ได้ ***: เฉพาะบล็อกที่มี "สัญญาณ deterministic ที่โค้ดคำนวณ
+           อยู่แล้ว" เท่านั้น — plan ใช้ plan_text ตรงๆ, password ใช้ allow_fill_secret ที่
+           W_fill_secret_schema_gate คำนวณไว้ก่อนเรียก LLM อยู่แล้ว, table ใช้ goal intent
+           predicate ที่มีอยู่แล้ว 4 ตัว (_is_deletion_intent_goal/_is_edit_all_intent_goal/
+           _goal_targets_existing_records_only/_goal_asks_for_a_count) หรือ label ของ element
+           ในตาราง, widget ใช้ tag "select" จริงหรือ trigger ของ custom dropdown
+           ห้าม gate ด้วย heuristic ใหม่ที่เดาเอา เพราะ gate ผิด = โมเดลไม่เห็นกฎที่ต้องใช้
+           ซึ่งเป็น failure mode ที่แย่กว่าการเปลือง token มาก
+
+           สองข้อที่ตัดสินใจแล้วและมีเหตุผลชัด ห้ามเปลี่ยนโดยไม่อ่านก่อน:
+             - บล็อกที่ gate ถูก "ย้ายไปต่อท้าย" ไม่ได้อยู่ตำแหน่งเดิมใน prompt — ตั้งใจ
+               เพื่อให้ core เป็น prefix คงที่ ถ้าแทรกสลับตำแหน่งเดิม การตัดบล็อกกลางออกจะทำให้
+               ทุกอย่างหลังจากนั้นเลื่อน = prefix cache ของ provider พลาดทั้งหมด (มีเทสต์
+               test_core_is_a_stable_prefix_of_every_variant กันไว้) ยืนยันแล้วว่าไม่มีบรรทัด
+               ไหนหายด้วยการเทียบ multiset ของบรรทัด + ความยาวรวม (44,487 เท่าเดิมเป๊ะ)
+             - sections "สะสมอย่างเดียว ไม่ถอดออก" ระหว่าง task — prompt ที่กระพริบไปมาทำให้
+               cache พลาดทุกครั้งที่สลับ และกฎที่โมเดลเคยเห็นแล้วหายไปกลางทางเป็นพฤติกรรมที่
+               ไล่บั๊กยากมาก (เช่น เปิด dropdown ที่ step 3 แล้วกฎ W50 หายตอน step 4)
+
+           ผู้เรียกที่ไม่ส่ง sections มา (เทสต์เดิม/โค้ดเก่า) ได้ prompt เต็มเหมือนเดิมทุกประการ
+
+           (2) W_extract_row_cap (P4.5) — read_page_data คืน "ทั้งตาราง" กลับเข้า messages
+           แล้วค้างจนกว่า context compaction จะกวาดออก (_COMPACT_AFTER_STEPS=6) — trace ชี้ตัว
+           ได้ว่า task "search_no_results" โตจาก 11.5k เป็น 43.5k input token ภายใน 8 step
+           โดย snapshot แทบไม่โตเลย ตัวโตคือผลลัพธ์ตารางที่สะสมทับกันหลายรอบ
+           แก้: จำกัดที่ settings.read_page_data_max_rows (60) พร้อมข้อความบอกตรงๆ ว่าตัดไป
+           กี่แถวจากทั้งหมดกี่แถว — ตัดได้โดยไม่เสียความถูกต้องเพราะ W_deterministic_count
+           นับจำนวนจริงด้วยโค้ดจากข้อมูล *ชุดเต็ม* แล้วแนบตัวเลขไปกับผลลัพธ์อยู่แล้ว
+           *** ห้ามตัดแบบเงียบๆ *** — เป็น failure mode เดียวกับ W_confident_zero คือโมเดลสรุป
+           จากข้อมูลบางส่วนราวกับเป็นข้อมูลทั้งหมด
+
+           (3) P4.2 (prompt caching ให้ Groq/Gemini/OpenAI) — ตรวจแล้ว *ไม่ทำ* เพราะสมมติฐาน
+           ในแผนไม่ตรงกับข้อมูลจริง: log แสดง cache_read ~10.1k ทุก step บนเส้นทาง openai อยู่
+           แล้ว (OpenAI ทำ prefix caching ให้อัตโนมัติ) ส่วน Groq ไม่มี prompt cache API และ
+           Gemini ไม่ใช่ default provider — headroom แทบเป็นศูนย์ บันทึกไว้กันคนหลังมาทำซ้ำ
+           (4) P4.3 (แผนถูกส่งซ้ำ 2 รอบ) — ประเมินแล้วได้ราว 125 token/step แต่ต้องแตะ W10[F]
+           ซึ่งเป็นการแก้บั๊กจริง เสี่ยงเกินผลตอบแทน ยังไม่ทำ
+
+           วัดผลจริงด้วย release gate เต็ม 15 task เทียบ baseline รอบก่อนหน้า:
+             avg_tokens        211,226 -> 124,001   (-41.3%)
+             success_rate        0.867 -> 0.867     (เท่าเดิมเป๊ะ)
+             avg_llm_calls       6.067 -> 5.600     (-7.7%)
+             p50 latency         44.9s -> 44.0s     (-2.0%)
+             p95 latency        201.3s -> 197.9s    (-1.7%)
+           ยืนยันกลไกจาก step trace: input token ของ step แรก (ซึ่งแทบไม่มี history เลย จึง
+           สะท้อนขนาด prompt ตรงๆ) median 11,350 -> 7,047 = -38% ตรงกับสัดส่วนที่ prompt ลดลง
+           ไม่ใช่ผลข้างเคียงจากอย่างอื่น
+
+           *** metric ที่แย่ลงและยังอธิบายไม่ครบ: approval_rate 0.667 -> 1.333 (+100%) ***
+           ตรวจจาก trace แล้วพบว่า *ไม่มี* action ชนิดเสี่ยง (submit/delete/purchase/pay) เลย
+           สักครั้งทั้งสองรอบ — approval ทั้งหมดมาจาก label-keyword escalation บน click ธรรมดา
+           (permission/rules.py) ซึ่งขึ้นกับว่าโมเดลไปกดปุ่มไหน = สุ่มตามเส้นทางที่มันเลือก
+           และรอบใหม่มี request_user_input โผล่ 4 ครั้ง (รอบก่อนไม่มีใน top-6)
+           อธิบายให้ครบกว่านี้ไม่ได้เพราะ JSON ของ gate เก็บแต่ aggregate ไม่มี approval_count
+           รายตัว — ตรงกับข้อจำกัดข้อ (1) ที่บันทึกไว้แล้วใน W82 ยังไม่สรุปว่าเป็น regression
+           จากการ gate prompt จริงหรือไม่ ต้องมีข้อมูลหลายรอบ + per-task result ก่อน
+
+           (5) W_gate_per_task — ปิดข้อจำกัดข้อ (1) ของ W82 ทันทีที่มันขวางการวิเคราะห์จริง:
+           summary JSON เก็บ "results" รายตัวแล้ว (name/success/steps/total_tokens/latency/
+           llm_calls/approval_count/fastpath/recoveries/error) อ่านผ่าน getattr แบบ duck-typed
+           เหมือนที่ EvaluationReport ทำกับ TaskEvalResult/MiniWobResult อยู่แล้ว จึงรองรับทั้ง
+           สอง dataclass ที่มี field เสริมไม่ตรงกัน (name vs task) โดยไม่ต้องแยก branch
+
+           เทสต์ใหม่ 26 เคส (test_prompt_sections.py 21 + test_perception.py 3 +
+           test_release_gate.py 2) ครอบทั้ง
+           ตัวประกอบ prompt และตัวตัดสินว่าจะฉีดบล็อกไหน รวมเคสกระจกบานตรงข้ามครบ
+           ระหว่างทางพบว่าเทสต์เดิม 4 เคสต้องแก้: 3 เคส compaction (fake ของ next_action ยังไม่
+           รับ kwarg ใหม่) และ 1 เคส history assertion ที่ค้างมาตั้งแต่ W78 (ไม่ได้อัปเดตให้มี
+           failure_class/timing ที่ W_step_trace เพิ่มเข้าไป) — หลังแก้ orchestrator+llm+
+           เทสต์ใหม่ผ่าน 411 เหลือล้ม 6 เคสเดิมเท่าเดิม ไม่มี regression
+
+  [x] W85  ("รองรับเว็บหลากหลายขึ้น รอบสอง" — P3.3/3.4/3.5/3.6/3.8/3.10, ต่อจาก W79)
+           ตรวจก่อนเริ่มพบว่า P3.7 (consent banner ใน iframe) ทำไปแล้วใน W_consent_banner_iframe
+           จึงข้าม — ที่เหลือยังไม่มีในโค้ดเลยจริงตามที่แผนระบุ
+
+           (1) W_shadow_dom (P3.4) — ทั้งโปรเจกต์ไม่มีคำว่า shadowRoot อยู่เลยสักบรรทัด
+           document.querySelectorAll() ไม่ทะลุ shadow root แปลว่าเว็บที่สร้างด้วย web component
+           (Salesforce Lightning, Vaadin, YouTube/Polymer, design system องค์กรจำนวนมาก)
+           "มองไม่เห็นทั้งหน้า" ไม่ใช่เห็นไม่ครบ
+           แก้: deepQueryAll() เดินเข้า open shadow root แบบ recursive (จำกัดความลึก 8 ชั้น กัน
+           component ที่ซ้อนลึกผิดปกติ/วนกลับทำให้ค้าง + try/catch ต่อ tree ตามหลักการเดียวกับ
+           get_snapshot ที่ข้าม frame ที่พังไปเงียบๆ) แล้วเปลี่ยนทุก collection pass ใน
+           _COLLECT_JS มาใช้ (7 จุด รวมจุดล้าง data-ai-index ค้างด้วย — ถ้าลืมจุดนั้น attribute
+           เก่าใน shadow tree จะค้างข้ามรอบ)
+           closed shadow root เข้าถึงไม่ได้จาก JS โดยการออกแบบของเบราว์เซอร์ ไม่มีทางแก้ฝั่งเรา
+           *** ไม่ต้องแก้ actions.py เลยสักบรรทัด *** — Playwright CSS selector ทะลุ open shadow
+           root ให้เองอยู่แล้ว data-ai-index ที่แปะบน element ใน shadow tree จึง click/fill ได้
+           ตามปกติ (ยืนยันด้วย chromium จริงแล้ว ไม่ใช่เดาจากเอกสาร)
+
+           (2) W_contenteditable + role ที่ขาด (P3.5) — rich-text editor ทุกตัวในโลกจริง
+           (Gmail compose, Notion, Slack, Quill/CKEditor/TinyMCE) ไม่ใช่ <textarea> แต่เป็น
+           div[contenteditable] ซึ่งไม่มีใน selector เดิมเลย = ไม่มี index ให้สั่งตั้งแต่แรก
+           เพิ่ม contenteditable ทั้ง 3 รูปแบบ (""/true/plaintext-only) + role ที่ขาด
+           (radio/slider/spinbutton/searchbox/textbox/treeitem/listbox/switch)
+
+           (3) W_widget_semantic_label — เจอตอนทดสอบ ไม่ได้อยู่ในแผน: element กลุ่มใหม่ข้างบน
+           ได้ label จาก innerText ซึ่งคือ "เนื้อหาข้างใน" ไม่ใช่ "ชื่อช่อง" — ช่อง compose ได้
+           label เป็นข้อความที่พิมพ์ค้างไว้ ส่วน slider ได้เป็นค่าตัวเลข โมเดลแยกไม่ออกว่า
+           element นั้นคืออะไร แก้โดยเติมชื่อจาก aria-label/title นำหน้า (pattern เดียวกับ
+           W_dropdown_field_label เป๊ะ — คงค่าข้างในไว้ ไม่ทับทิ้ง)
+           ยืนยันกับ chromium จริง: 'type here' -> 'Compose message: type here',
+           'vol' -> 'Volume: vol', shadow button ซ้อน 2 ชั้นถูกพบและคลิกผ่าน data-ai-index ได้
+           ส่วน closed root ไม่โผล่มาตามที่ควรเป็น
+
+           (4) W_tab_rebind (P3.6) — actions.switch_tab() เรียก bring_to_front() แล้ว return
+           เฉยๆ ตัวแปร page ที่ลูปถืออยู่ไม่เคยเปลี่ยน ทุก get_snapshot()/execute() หลังจากนั้น
+           จึงยิงไปแท็บเดิม = agent "จ้องแท็บเก่า" ดึง snapshot เดิมซ้ำๆ ไปเรื่อยๆ
+           เคสที่เจ็บกว่าคือแท็บที่เปิดเองจาก target="_blank" — โมเดลไม่เคยสั่ง switch_tab เลย
+           จึงไม่มีทางแก้เองได้
+           แก้ที่ลูปหลักไม่ใช่ใน actions.py: action ไม่ได้เป็นเจ้าของตัวแปร page ของลูป และการ
+           ให้ ActionResult พก Page object กลับมาจะทำให้ dataclass ที่ถูก str()/บันทึกลง history
+           ต้องแบก object ที่ serialize ไม่ได้ไปด้วยโดยไม่จำเป็น
+           รายละเอียดที่ต้องทำคู่กัน: ผูก dialog handler ให้แท็บใหม่ด้วย (ไม่งั้น alert() บน
+           แท็บนั้นค้างไม่มีใครปิด แล้วทุก action หลังจากนั้น timeout เงียบๆ) และ rebind *ก่อน*
+           อย่างอื่นจะอ่านหน้าเว็บต่อ (W30 url-changed check / wait_stable / snapshot ถัดไป)
+           ยืนยันกับ chromium จริง 5 เคส: ตามแท็บใหม่, ไม่มีแท็บใหม่ก็ไม่เปลี่ยน, switch_tab
+           ตรงตัว, tab_index เกินขอบเขตไม่พัง, context ถูกปิดไปแล้วไม่ throw
+
+           (5) W_snapshot_cap (P3.3) — ทำทีหลังตามที่ W84 สรุปไว้ว่าไม่ใช่ตัวฉุดของ workload ที่
+           วัดอยู่ (หน้า benchmark เล็กมาก) แต่ยังจำเป็นกับเว็บใหญ่จริง: หน้า e-commerce/ข่าว
+           ทั่วไปมี element ตรง selector 400-1500 ตัว = 4k-15k token ต่อ step
+           *** ตัดเฉพาะ text_repr ที่ส่งให้ LLM ไม่ตัด elements ที่คืนให้โค้ด *** — guard หลาย
+           ตัวใน orchestrator (หา nav element ที่ตรง goal, ตรวจแบนเนอร์คุกกี้, ตัดสิน prompt
+           sections) ต้องเห็นหน้าเว็บครบถึงจะทำงานถูก
+           เรียง in_viewport ขึ้นก่อนอยู่แล้ว (W50) ตัวที่ถูกตัดจึงเป็นตัวที่ต้อง scroll ไปหาเสมอ
+           ไม่ใช่ของที่อยู่ตรงหน้า และต่อท้ายด้วยบรรทัดบอกว่าเหลืออีกกี่ตัว (ห้ามตัดเงียบๆ —
+           failure mode เดียวกับ W_confident_zero คือโมเดลสรุปว่า "ไม่มีปุ่มนี้บนหน้านี้")
+
+           (6) W_captcha_detect (P3.8) — ก่อนหน้านี้ไม่มีการตรวจจับ CAPTCHA เลยสักบรรทัด เจอ
+           reCAPTCHA/Turnstile/Cloudflare interstitial เมื่อไหร่ snapshot จะแทบว่างเปล่า (widget
+           อยู่ใน iframe ของ provider ที่อ่านข้ามไม่ได้) แล้ว agent ไล่คลิกสิ่งที่เหลือจนหมด
+           step budget แล้วรายงานเหตุผลผิด เช่น "ไม่พบปุ่มที่ต้องการ" ทั้งที่ติดกำแพงบอท
+           นโยบายชัดเจน: *ไม่* พยายามแก้เอง — แจ้ง user ผ่าน request_user_input ที่มีอยู่แล้ว
+           (กลไกเดียวกับ W_resume) ถามครั้งเดียวต่อ task แล้ว perceive ใหม่ ถ้ายังติดก็ปล่อยให้
+           ลูปเดินต่อ ไม่ฆ่า task ทิ้ง — เช็คหลังปิดแบนเนอร์คุกกี้แล้วเสมอ เพราะแบนเนอร์บางเจ้า
+           บังหน้าไว้จน snapshot ดูว่างเปล่าคล้าย bot wall
+
+           (7) W_file_input_guard (P3.10) — <input type="file"> ถูก index ไปแล้ว (ตรง selector
+           "input" เฉยๆ) โมเดลจึงสั่ง fill ใส่ แล้ว Playwright throw เสีย retry ครบ 3 รอบทุกครั้ง
+           โดยข้อความ error ไม่ได้บอกเลยว่าต้องใช้วิธีอื่น
+           *** ตั้งใจไม่เพิ่ม action อัปโหลดไฟล์ *** — action แบบนั้นแปลว่า agent เลือกไฟล์ใน
+           เครื่องผู้ใช้เองได้จาก path ที่โมเดลแต่งขึ้นมา เป็นการเปิดช่องอ่านไฟล์ในเครื่องโดย
+           ไม่มีใครยืนยัน เป็นการตัดสินใจเชิงความปลอดภัยที่ต้องให้เจ้าของโปรเจกต์เลือกเอง ไม่ใช่
+           ผลพลอยได้ของการแก้บั๊ก — guard นี้แค่บอกความจริงว่าทำไม่ได้ แล้วชี้ทางที่ปลอดภัย
+           (ขอไฟล์จาก user ผ่าน request_user_input)
+           ด้วยเหตุผลเดียวกัน drag & drop และ download ยังไม่ทำ (ไม่มีหลักฐานจากการรันจริงว่า
+           จำเป็น และ download แตะระบบไฟล์เหมือนกัน)
+
+  [x] W86  ("เลือก Admin แทน ESS + อ้างว่าสำเร็จทั้งที่ไม่ได้ลบ" — บั๊กจริงที่ user รายงานหลัง
+           commit 3efb2c1, 2026-08-27)
+           อาการที่ user เห็น: goal ขอลบ userrole=ess แต่ agent กรอง Role=Admin (41 records)
+           แล้วจบงานโดยไม่ลบอะไรเลย — UI ขึ้น Done และแผนติ๊กครบทั้ง 5 ข้อ
+           มี 2 บั๊กซ้อนกัน ตัวแรกเป็น regression ที่ผมทำเองใน W85 รอบก่อนหน้านี้เอง
+
+           (1) W_listbox_container — *** regression จาก W85 โดยตรง *** W85 ข้อ (2) เพิ่ม
+           '[role=listbox]' เข้า selector list พร้อม role อื่น แต่ listbox เป็น *container* ของ
+           รายการตัวเลือก ไม่ใช่ปุ่ม — OrangeHRM render dropdown เป็น <div role="listbox"> ที่ห่อ
+           <div role="option"> สามตัว พอ container ได้ index เอง label ของมันคือ innerText ของทุก
+           option ต่อกัน = "-- Select -- Admin ESS" ซึ่ง *มีคำว่า ESS ที่ goal ต้องการอยู่ด้วย*
+           โมเดลจึงคลิกมัน แล้วคลิกไปโดน option แรก (Admin)
+           '[role=option]' มีอยู่ในลิสต์ตั้งแต่เดิมและถูกต้องอยู่แล้ว — option แต่ละตัวได้ index
+           ของตัวเองอยู่แล้ว container จึงไม่ได้เพิ่มความสามารถอะไรเลย มีแต่สร้างเป้าปลอมที่ label
+           ล่อให้คลิกผิด
+           แก้ 2 ชั้น: (ก) เอา '[role=listbox]' ออก พร้อมคอมเมนต์ห้ามใส่กลับ (role อื่นที่ W85
+           เพิ่มมาเป็น leaf ทั้งหมด คลิก/กรอกได้จริง เก็บไว้) (ข) กันเคสทั่วไปด้วย — ลูปเก็บ nodes
+           หลักไม่มี guard `cand.querySelector(selectors)` แบบที่ pass เสริมทุกตัวมี (checkbox/
+           radio/switch/icon wrapper) container ของ dropdown จึงได้ index ได้ถ้าบังเอิญมี
+           [tabindex]/[onclick] ติดมา *ซึ่งเป็นช่องที่มีมาก่อนจะเพิ่ม role=listbox ด้วยซ้ำ* →
+           ข้าม element ที่มี [role="option"] เป็นลูกตั้งแต่ 2 ตัวขึ้นไป (รายการตัวเลือกที่มีให้
+           เลือกมากกว่าหนึ่งตัวไม่มีทางเป็นเป้าคลิกเอง ส่วนตัว option เองมี 0 option ข้างในจึงไม่โดน)
+           ยืนยันกับ chromium จริง (mock DOM พิสูจน์อะไรไม่ได้เพราะ _COLLECT_JS เป็น JS ทั้งก้อน):
+           option ทั้ง 4 ตัวยังได้ index ของตัวเอง, ไม่มี element ไหน label รวมหลาย option, และ
+           trigger ยังได้ 'User Role: -- Select --' ตาม W_dropdown_field_label เหมือนเดิม
+
+           (2) W_goal_scope_false_success — บั๊กที่อันตรายกว่าและไม่เกี่ยวกับข้อแรก: Goal Boundary
+           Gate ตั้ง success=True ตรงๆ แล้ว break โดย *ไม่ผ่าน finish_task เลย* guard กัน
+           false-completion ทั้งชุดของ W_delete_all_intent (ซึ่ง implement แล้วและทำงานถูก) จึงไม่
+           มีโอกาสได้ตรวจสักตัว — agent ที่กรองผิดคอลัมน์และไม่ได้ลบอะไรเลยจึงรายงานว่าสำเร็จ
+           ธงที่ทำให้ gate ทำงานคือ plan_fully_completed ซึ่งมาจาก completed_plan_step ที่ *โมเดล
+           ใส่มาเอง* — comment เดิมตรงนั้นบอกว่าปลอดภัยเพราะผูกกับ result.success แต่ในรันนี้
+           action ที่ "สำเร็จ" คือ read_page_data ซึ่งเป็นการอ่านล้วนๆ ไม่ได้พิสูจน์อะไรเกี่ยวกับ
+           การลบเลยสักนิด
+           แก้ 2 ชั้นที่อิสระจากกัน (ชั้นเดียวไม่พอ — ชั้นแรกกันการอ้างผลผิด ชั้นสองกันไม่ให้ไป
+           ถึงจุดนั้นตั้งแต่ต้น):
+             - ก่อนตั้ง success=True: ถ้า goal ระบุเงื่อนไข key=value ไว้ชัด (delete_all_condition_
+               values ที่คำนวณไว้แล้ว) ให้เรียก _scan_remaining_target_records — หลักฐานชุดเดียว
+               กับที่ guard ของ finish_task ใช้อยู่แล้ว ไม่สร้างกลไกใหม่ — ถ้ายังเหลือแถวตรงเงื่อนไข
+               ให้ success=False พร้อมข้อความตามความจริง fail-safe: อ่านไม่ได้/ไม่ใช่หน้าตาราง
+               คืน None = ไม่มีหลักฐานขัดแย้ง คงพฤติกรรมเดิมทุกประการ
+             - plan_fully_completed ไม่ติดจาก action แบบอ่านอย่างเดียวอีกต่อไป (ใช้
+               _GOAL_SCOPE_ALLOWED_ACTION_TYPES ชุดเดียวกับที่ gate เองใช้ ไม่สร้างชุดใหม่ซ้อน)
+
+  [x] W87  ("ถอด hardcode OrangeHRM ออกจากทางเดินกลาง" — P3.9)
+           `.oxd-*` ฝังอยู่ 11 จุด ส่วนใหญ่เป็น fallback chain (เฉพาะ -> generic) ซึ่งรับได้และ
+           ไม่แตะ — แก้เฉพาะ 2 จุดที่ตรวจแล้วว่า *พังจริงบนเว็บอื่น* ไม่ใช่แค่ดูไม่สวย
+
+           (1) W_modal_confirm_generic — _MODAL_CONFIRM_BUTTON_SELECTORS มีชั้น generic กว้าง
+           แค่ 'button:has-text("Confirm")' ตัวเดียว dialog ที่เขียนว่า "Yes"/"OK"/"ตกลง"/
+           "Löschen"/"Supprimer" จึงไม่ match อะไรเลยสักตัว แล้ว resolve_confirmation_modal()
+           คืน None ทำให้ agent ค้างอยู่หน้าโมดัล — ซึ่งเป็นบั๊กที่ W23 เขียนมาแก้พอดี แต่แก้ได้
+           เฉพาะเว็บภาษาอังกฤษที่บังเอิญใช้คำว่า Confirm
+           เพิ่มชุดคำยืนยันข้ามภาษา (ชุดภาษาเดียวกับ W_risky_multilingual: ไทย/ญี่ปุ่น/จีน/
+           เยอรมัน/ฝรั่งเศส/สเปน/โปรตุเกส)
+           *** ตั้งใจไม่ import RISKY_LABEL_KEYWORDS มาใช้ซ้ำ *** — ชุดนั้นตอบคำถามคนละข้อ
+           ("action นี้เสี่ยงไหม" ซึ่งรวม pay/purchase ที่ไม่ใช่ปุ่มยืนยันในโมดัล) ถ้าผูกสองชุด
+           เข้าด้วยกัน การแก้ชุดหนึ่งจะไปเปลี่ยนพฤติกรรมอีกชุดโดยไม่ตั้งใจ
+           *** ลำดับคำสำคัญมาก *** — has-text() เป็น substring match: dialog ที่มีปุ่ม "Do not
+           delete" จะ match คำว่า delete ด้วย จึงต้องเอาคำยืนยันกลางๆ (yes/ok/confirm/ตกลง)
+           ขึ้นก่อนคำทำลายข้อมูล (delete/remove/ลบ) เสมอ และไม่มีคำปฏิเสธ (cancel/ยกเลิก/no)
+           อยู่ในลิสต์เลย
+           ยุบ container x tag ของคำเดียวกันไว้ใน selector เดียว (comma-separated) เพราะ
+           ฟังก์ชันนี้ถูกเรียกทุกครั้งที่เจอโมดัล — ไล่ทีละคำ 35 ครั้งแทนทีละ combination 128 ครั้ง
+           โดยยังคงลำดับความสำคัญของคำไว้ครบ
+           ยืนยันกับ chromium จริง 8 เคส รวม OrangeHRM เดิม (ไม่พัง), ปุ่มที่เป็น div[role=button]
+           ไม่ใช่ <button>, และเคสปุ่มลวง "Do not delete" + "Yes" ที่ต้องเลือก "Yes"
+
+           (2) W_record_count_generic — _RECORD_COUNT_SELECTOR/_RECORD_COUNT_RE ผูกกับข้อความ
+           "(N) Records Found" ของ OrangeHRM อย่างเดียว guard กัน false-completion ตัวเรือธง
+           (ยืนยันว่าลบ/แก้ครบจริง) จึงทำงานได้กับเว็บเดียวในโลก ที่เหลือคืน None เงียบๆ =
+           ไม่มี guard เลย (มี fallback นับแถวแบบ generic อยู่แล้วจาก W_delete_all_intent แต่
+           ใช้เฉพาะเส้นทาง finish_task ไม่ครอบ goal-scope gate ที่เพิ่งแก้ใน W86)
+           เพิ่มชั้น generic: selector ครอบข้อความสรุปผลลัพธ์ที่เว็บทั่วไปใช้ + pattern ตัวเลข
+           4 แบบ (OrangeHRM / "N results|items|records|entries" / ไทย "N รายการ" / "of N")
+           พร้อมชุดข้อความที่แปลว่า 0 ("no results"/"ไม่พบข้อมูล" ฯลฯ) ซึ่งต้องเช็คก่อนเสมอ
+           *** "of N" ต้องอยู่ท้ายสุด *** เพราะกว้างที่สุด — "page 2 of 5" ก็ match ได้ ถ้าเอา
+           ขึ้นก่อน ประโยคที่มีทั้งเลขหน้าและยอดรวม ("Showing page 2 of 5 - 42 results") จะได้
+           เลขหน้าแทนยอดรวม (เจอตอนเทสต์ ไม่ได้เจอตอนออกแบบ — ครั้งแรกที่เขียนวางผิดลำดับ)
+           ตั้งใจไม่รับ "ตัวเลขลอยๆ" ที่ไม่มีคำบอกบริบทกำกับ เพราะหน้าเว็บมีตัวเลขเต็มไปหมด
+           (ราคา/วันที่/เลขหน้า) การเดาผิดที่นี่แปลว่า guard ไปบล็อก finish_task ที่ถูกต้อง —
+           fail-safe เดิมคงไว้ทุกประการ: อ่านไม่ได้/ไม่เจอ = None = ไม่บล็อกอะไร
+
+           ยังไม่ทำ: การแยก "site profile" เป็นตารางแยกไฟล์ตามที่แผนเสนอไว้ตอนแรก — ตรวจแล้ว
+           พบว่าจุดที่เหลือทั้งหมดเป็น fallback chain ที่ทำงานถูกอยู่แล้วบนเว็บอื่น การสร้าง
+           โครงสร้างใหม่มารองรับจึงเป็นการเพิ่ม indirection โดยไม่มีบั๊กจริงรองรับ
+
+  [x] W88  ("วัดช่องว่าง 51% ก่อนแก้ + เอกสารที่โกหก" — P4.6 (บางส่วน) + P5.4)
+           (1) W_timing_gap — แผนระบุ P4.6 ว่า wait_stable เสีย 4 วินาทีเปล่าทุก page-changing
+           step บนเว็บที่มี analytics/websocket แต่ก่อนจะแก้ลองวัดจาก step trace จริงก่อนตาม
+           บทเรียนของ W84 (ที่สมมติฐานเรื่อง snapshot ผิดไปเลย)
+           ผลวัด: ไม่มี action สักตัวใน 153 page-changing action ที่ค้างใกล้เพดาน 4 วินาที
+           (median 1.06s) — แต่ตัวเลขนี้ *ตอบคำถามไม่ได้* เพราะ timing.action ครอบแค่ execute()
+           ส่วน wait_stable ถูกเรียกแยกทีหลังในลูป จึงไม่เคยถูกวัดเลย
+           วัดทางอ้อมแทน: เทียบ duration ของ task กับผลรวม snapshot+llm+action ที่ trace จับได้
+           -> 29 task รวม 1,833 วินาที วัดได้จริงแค่ 907 วินาที **ช่องว่างที่ไม่มีใครวัดเลย 51%
+           (927 วินาที) เฉลี่ย 5.5 วินาทีต่อ step** ซึ่ง pacing delay ที่ตั้งใจไว้กิน 3.0 วินาที
+           ตัดสินใจ *ไม่แก้ wait_stable ในรอบนี้* — เดาไม่ได้ว่าช่องว่างเป็นของใคร การแก้ให้
+           return เร็วขึ้นโดยไม่รู้ว่ามันคือต้นเหตุจริงไหม เสี่ยงทำให้ action ยิงก่อนหน้าเรนเดอร์
+           เสร็จ ซึ่งเป็น failure mode ที่แพงกว่าเวลาที่ประหยัดได้มาก
+           แก้ที่การวัดแทน: เพิ่ม timing.pacing (การรอที่ตั้งใจ ต้องเห็นได้ ไม่ใช่หายไปในช่องว่าง)
+           และ timing.wait (wait_stable จริงๆ) — ตัวหลังต้องเติมย้อนเข้า record ที่บันทึกไปแล้ว
+           เพราะ wait_stable เกิดหลังจุดที่ memory.record() ถูกเรียก และย้ายจุดบันทึกไปทีหลัง
+           ไม่ได้ (guard หลายตัวด้านล่างอ่าน memory ของ step นั้น) — ทำได้เพราะ
+           ShortTermMemory.record() เก็บ dict object ตัวเดียวกัน ไม่ได้ copy
+           gate run ครั้งหน้าจะบอกเองว่า 51% นั้นเป็นของใคร แล้วค่อยตัดสินใจบนข้อมูลจริง
+
+           (2) P5.4 — CLAUDE.md อธิบายของที่ไม่มีอยู่จริงในโค้ดหลายจุด ซึ่งอันตรายกว่าเอกสารที่
+           ล้าสมัยเฉยๆ เพราะ session ใหม่จะเชื่อแล้วออกแบบผิดตั้งแต่ต้น:
+             - หัวข้อ "Model-tier routing" ทั้งหัวข้อ (lite/standard/advanced + _llm_backend(tier=))
+               ไม่มีอยู่จริงเลยสักบรรทัด — config.py มี model เดียวต่อ provider เขียนใหม่เป็น
+               "LLM provider selection" ตามความจริง พร้อมอธิบาย W_prompt_sections และกฎว่า core
+               ต้องเป็น prefix เสมอ
+             - รายการ feature flag ผิด 6 จาก 11 ตัว (enable_vision_fallback,
+               enable_llm_tier_escalation, enable_gemini_context_caching,
+               use_multilingual_embeddings, enable_nav_template_tracking,
+               row_group_collapsing_enabled ไม่มีใน config.py) — แก้เป็นรายการจริงครบถ้วน
+               พร้อมระบุตรงๆ ว่าตัวไหนเคยถูกอ้างแต่ไม่มีจริง กันคนหลังไปตามหา
+             - จำนวนเทสต์ ~1590 -> ~1440 (นับจริง 1,437)
+             - ไม่เคยพูดถึง telemetry เลยทั้งที่เป็นเครื่องมือหลักในการตอบว่า "ทำไม run ถึงล้ม"
+               เพิ่มหัวข้อใหม่อธิบายทั้งสองไฟล์ ความหมายของ source/failure_class/timing/run_id
+               และย้ำหลักการที่พิสูจน์ตัวเองมาแล้วหลายรอบว่า "วัดก่อนแก้" (token บานเพราะ prompt
+               ไม่ใช่ขนาดหน้า, wait_stable ไม่ใช่ตัวการที่แผนเดา)
+
+  [x] W90  ("เทสต์ 11 เคสที่ล้มค้างมานาน — สองสาเหตุ หนึ่งในนั้นเป็นบั๊กจริง" — P5.2 + P5.3)
+           baseline ที่แผนตั้งไว้ว่า "ห้ามเกิน 11 เคส" (orchestrator 6 + api 5) — รอบนี้ปิดครบทั้ง 11
+           เหลือ 0 ทั้งสองไฟล์ ด้วยสาเหตุเพียง 2 อัน ไม่ใช่ 11 บั๊กแยกกัน
+
+           (1) W_screenshot_never_throws — 4 เคสของ test_orchestrator ที่ W89 ปล่อยค้างไว้
+           โดยบันทึกตรงๆ ว่า "น่าจะเป็นสาเหตุเดียว ไม่ใช่สี่สาเหตุ" — ถูกต้อง
+           วิธีหา: ตัดความต่างทีละข้อระหว่าง repro ที่ผ่านกับเทสต์จริงที่ล้ม (tool_use_id ว่าง
+           พิสูจน์แล้วว่าไม่เกี่ยว, completed_plan_step ก็ไม่) จนเหลือตัวเดียวคือ on_event
+           สาเหตุ: _emit_screenshot() มี docstring สัญญาตัวโตๆ ว่า "ไม่ throw เด็ดขาด" แต่ try
+           ครอบแค่ page.screenshot() เท่านั้น — base64.b64encode() กับ _emit() อยู่นอก try ทั้งคู่
+           บนของจริงนี่คือบั๊กเต็มตัว: live view เป็นของประดับ แต่กลับฆ่า task ทั้งตัวได้
+           เวลา page กำลังปิด/หน่วยความจำไม่พอ/subscriber ฝั่ง SSE พัง — และ W77 (W_loop_crash)
+           ทำให้อาการเปลี่ยนจาก "throw ออกมา" เป็น "success=False เงียบๆ" ซึ่งหายากขึ้นอีก
+           แก้: ขยาย try ให้ครอบ encode+emit ตามที่ docstring สัญญาไว้ตั้งแต่แรก
+           + เทสต์ใหม่ล็อกสัญญานั้นไว้ (screenshot พัง -> task ต้องยัง success และ event อื่นต้องส่งต่อ)
+           ผล: test_orchestrator 224 ผ่าน 0 ล้ม (จาก 6 ล้ม)
+
+           (2) เทสต์ api 5 เคส — เก่ากว่าฟีเจอร์ SEC-4 (session_owner_token) ไม่ใช่โค้ดพัง
+           ทั้งห้าเคสใช้ session_id ซ้ำสองเทิร์นโดยไม่แนบ owner_token เทิร์นสองจึงโดน
+           SessionOwnershipError เสมอ — ซึ่งเป็นพฤติกรรมที่ถูกต้องของ SEC-4 เอง (มีเทสต์ชุด
+           อื่นยืนยันอยู่แล้วว่า token ผิดต้องโดน 403) — แก้ที่เทสต์ ไม่ใช่ที่โค้ด
+           ผล: test_api 92 ผ่าน 0 ล้ม (จาก 5 ล้ม)
+
+           (3) P5.2 — 3 ไฟล์ที่ชน timeout 400s: ไม่ได้ค้าง แต่ช้าจริง — แต่ละเคส
+           เปิด Chromium จริง เฉลี่ย 29-41 วินาที/เคส (site_learning_crawler + extractor รวม 111 เคส
+           = 2,096 วินาที หรือ 35 นาที) — ไม่มีอะไรต้องแก้ แต่ต้องรู้ว่าห้ามคาดหวังว่าจะ
+           รันเต็มชุดจบใน timeout เดียวกับไฟล์อื่น
+
+           พบของแถมระหว่างทาง (ยังไม่ได้แก้ บันทึกไว้ตามความจริง):
+           test_crawl_site_treats_mid_crawl_login_page_as_dead_end ล้มที่
+           test_site_learning_crawler.py:409 (crawl ไม่เคยแวะ session-expired.html)
+           ยืนยันแล้วว่าเป็นของเดิม ไม่ใช่ regression ของรอบนี้ — สร้าง worktree ที่ 64e069e
+           (ก่อน commit แรกของเซสชันนี้) แล้วรันเคสเดียวกัน ล้มที่บรรทัดเดียวกันเป๊ะ
+           เหตุที่ไม่มีใครเห็น: ไฟล์นี้ไม่เคยถูกรันในชุดเต็มเพราะชน timeout มาตลอด (ข้อ 3)
+
+  [x] W92  ("guard กัน false completion ทั้งชุดไม่เคยทำงานเลย" — P7 ขั้นที่ 1, W_undefined_quota)
+           user รัน goal จริงอีกรอบแล้วรายงานว่า agent "กดมั่วไปหมด ไม่เดินตาม planner เลย" —
+           ตามหาสาเหตุแล้วเจอของที่ใหญ่กว่าที่รายงานมา: `_MAX_DELETE_ALL_UNVERIFIED_RETRIES`
+           ถูก *ใช้* 2 ที่ (orchestrator.py:3833, :3840) แต่ไม่เคยถูก *ประกาศ* ที่ไหนเลย
+           ทั้งสองที่อยู่ในจุดตรวจ finish_task ที่ W80 สร้างมาเพื่อจับ "อ้างว่าลบครบทั้งที่
+           ตารางไม่เคยถูกกรอง" โดยเฉพาะ — guard จึงโยน NameError ตรงจังหวะที่ควรทำงานพอดี
+           แล้ว W_loop_crash (W77) รับไว้เงียบๆ แปลงเป็น success=False ทั้ง task
+           => **guard ตระกูล W80 ไม่เคยได้ทำงานจริงสักครั้งนับตั้งแต่เขียนมา** และเคสที่ user
+           เจอวันนี้ก็คือเคสที่มันถูกสร้างมาเพื่อจับ
+           เทสต์เขียวมาตลอดเพราะ assert แค่ `result["success"] is False` ซึ่งเป็นจริงทั้งตอน
+           guard ทำงานถูกและตอน task ตายคาที่ — แก้เทสต์ให้ assert *ข้อความ nudge ตัวจริง*
+           ที่ถูกส่งกลับไปให้โมเดล และ assert ว่าไม่มีคำว่า "unexpected error" ในผลลัพธ์
+           บทเรียนที่ใช้ซ้ำได้: เทสต์ของ guard ห้าม assert แค่ผลลัพธ์สุดท้าย เพราะ guard ที่
+           ทำงานถูกกับ guard ที่ crash ให้ผลลัพธ์เหมือนกันเป๊ะเมื่อมี W_loop_crash คั่นอยู่
+
+  [x] W93  ("ความคืบหน้าของแผนต้องเป็นของโค้ด ไม่ใช่ตัวเลขที่โมเดลอ้าง" — P7 ขั้นที่ 2,
+           W_plan_step_cursor)
+           หลักฐานจาก live run: `read_page_data ... completed_plan_step=5` มาตั้งแต่ step 13
+           ทั้งที่ยังไม่ได้ลบอะไรเลย แล้ว plan panel ติ๊กครบทั้ง 5 ข้อ + Goal Boundary Gate
+           หยุด task พร้อมอ้างว่าสำเร็จ
+           สาเหตุ: แผนถูกส่งให้โมเดล *ทั้งก้อนดิบๆ ทุก step* (llm.py:340) โดยไม่มีอะไรบอกลำดับ
+           และ `completed_plan_step` เป็น self-report 100% — ไม่มี cursor/ตัวนับฝั่งโค้ดเลย
+           สักตัว (`_total_plan_steps` แค่นับบรรทัด) โมเดลจึงรายงานข้อสุดท้ายมาเป็นค่าแรกได้
+           แล้ว `plan_fully_completed` ติดทันที
+           แก้ (บังคับ "ลำดับ" ไม่บังคับ "วิธี" ตามที่ user เลือกไว้ตั้งแต่ P0):
+             - `plan_cursor` ฝั่งโค้ด เดินหน้าได้ **ทีละ 1 ข้อ** เสมอ ต่อให้โมเดลส่ง 5 มาตอน
+               อยู่ข้อ 1 (การรายงาน = หลักฐานว่า *หนึ่ง* step จบ ไม่ใช่ว่าทุกข้อจนถึงเลขนั้นจบ)
+               และไม่ถอยหลัง
+             - ขยับเฉพาะเมื่อ result.success และ action ไม่ใช่อ่านอย่างเดียว — ใช้
+               `_GOAL_SCOPE_ALLOWED_ACTION_TYPES` ชุดเดิมที่ W86 ใช้ ไม่สร้างชุดใหม่ซ้อน
+             - `plan_fully_completed` ผูกกับ cursor ไม่ใช่ตัวเลขดิบจากโมเดล — ปิดช่องโหว่ตรงๆ
+             - เลขที่ยิงออก SSE เป็น cursor จริง Test Console จึงติ๊กช้าลงแต่ตรงกับงานที่ทำจริง
+               (payload รูปแบบเดิม frontend ไม่ต้องแก้อะไรเลย)
+             - `_focused_plan_context()` แทนแผนดิบ: `[done]` / `>>> CURRENT STEP (n/N)` /
+               `[not yet]` — ไม่ตัดข้อที่ยังไม่ถึงทิ้ง เพราะโมเดลต้องเห็นปลายทางถึงจะเลือกวิธี
+               ของข้อปัจจุบันได้ถูก + เพิ่มย่อหน้าใน `_PROMPT_PLAN` อธิบายว่าเครื่องหมายพวกนี้
+               มาจากการนับของระบบ ไม่ใช่จากสิ่งที่โมเดลพูดไว้เอง จึงต้องเชื่อมันแม้จะคิดว่า
+               ตัวเองไปไกลกว่านั้นแล้ว
+           ผลพลอยได้: เลิกส่งแผนซ้ำเต็มก้อนทุก step (ตรงกับ P4.3 ที่ค้างอยู่)
+
+  [x] W94  ("ตั้ง filter ได้เฉพาะช่องที่ goal ระบุ" — P7 ขั้นที่ 3, W_filter_scope_guard)
+           หลักฐานจาก live run: goal บอกแค่ userrole=ess แต่ agent ไปตั้ง Status=Enabled
+           แล้วพิมพ์ลงช่อง Employee Name ด้วย ทั้งที่ user ไม่ได้สั่งสักช่อง
+           ไม่ใช่แค่เสียเวลา: Status=Enabled กรอง ESS ที่ถูก disable ออกจากตารางไปด้วย
+           "ลบให้หมด" จึงลบไม่ครบโดยที่ทุกฝ่ายเข้าใจว่าครบ = false completion แบบเดียวกับที่
+           W80 ตั้งใจปิด — เดิมมีแต่ prompt (W63[2.2] สั่งไว้ตรงตัวแล้ว) ไม่มี guard ระดับโค้ดเลย
+
+           ทำได้ deterministic เพราะของที่ต้องใช้มีครบอยู่แล้ว ไม่ต้องสร้างใหม่:
+             - perception ใส่ชื่อ field เป็น prefix ให้ dropdown trigger อยู่แล้วตั้งแต่ P0/F2
+               ("User Role: -- Select --", "Status: Enabled") จึงรู้ได้ว่า action นี้แตะช่องอะไร
+               โดยไม่ต้องถาม LLM
+             - `_KEY_VALUE_IN_QUERY_RE` จับทั้งสองฝั่งของ "=" อยู่แล้วตั้งแต่ W_column_aware_count
+               — เพิ่มแค่ `_goal_condition_fields()` ที่อ่านฝั่งซ้าย คู่กับ
+               `_goal_condition_values()` ที่อ่านฝั่งขวา ไม่เขียน regex ใหม่ซ้อน
+
+           **บทเรียนสำคัญของรอบนี้: goal ที่ user พิมพ์จริงไม่สะอาดเหมือนตัวอย่างในเทสต์**
+           ของจริงคือ "แล้บลบuserole=ess" — ไม่เว้นวรรคก่อน key เลย regex จึงจับได้เป็น
+           "แล้บลบuserole" และ user สะกด userole ตัว r เดียว ส่วนหน้าเว็บเขียน "User Role"
+           ถ้าเทียบชื่อ field แบบตรงตัว guard จะไม่ match แล้วไป **บล็อกการกดที่ถูกต้อง**
+           ซึ่งแย่กว่าไม่มี guard เลย — จับได้ตอน smoke-test ด้วย goal จริงของ user ก่อนเขียนเทสต์
+           `_field_names_match()` จึงเทียบ 3 ชั้นจากเข้มไปหลวม: ตรงตัว -> ครอบกันอยู่ ->
+           ตัดอักษรที่ไม่ใช่ ASCII แล้วเทียบ -> difflib ratio >= 0.8 และ fail-open เสมอเมื่อ
+           label ไม่ได้บอกชื่อ field มา (ตัดสินไม่ได้ = ปล่อยผ่าน ไม่ใช่เดาแล้วบล็อก)
+
+           ใช้โควตา 2 ครั้งเหมือน guard อื่น ไม่บล็อกตาย — บางเว็บบังคับให้ต้องเลือกค่าบางช่อง
+           ก่อนจึงจะกด Search ได้จริง บล็อกตายจะทำให้เว็บกลุ่มนั้นใช้ไม่ได้เลย
+           และเปิด guard เฉพาะเมื่อ goal ระบุ field=value ไว้ชัดเจนเท่านั้น (หลักการเดียวกับ
+           `_goal_condition_values`: ไม่เดาเงื่อนไขเองจากภาษาธรรมชาติ)
+
+           **ยังไม่ครอบคลุม (บันทึกตามความจริง):** ช่อง input ข้อความธรรมดาไม่ได้ prefix ชื่อ
+           field จาก perception (label chain ตกไปใช้ placeholder — ของจริงคือ "Type for
+           hints...") guard จึงจับได้แต่ dropdown filter ยังจับการพิมพ์ลง Employee Name ไม่ได้
+           การขยาย prefix ให้ input ธรรมดาต้องแตะ label chain ที่กระทบทุกเว็บ จึงไม่ทำรวมในรอบนี้
+
+  [x] W95  ("แผนผิดชนิดงาน + ตัวอย่างใน prompt รั่ว + เดินออกนอกงาน" — P7 ขั้นที่ 4)
+
+           (1) W_plan_keeps_goal_verb — **สาเหตุที่ user เข้าใจผิดว่า agent ไม่เดินตามแผน**
+           plan panel ข้อ 3 ของ run นั้นเขียนว่า "เปิดรายการผู้ใช้ที่พบแต่ละรายการเพื่อแก้ไข
+           และเปลี่ยน Role ออกจาก ESS" ทั้งที่ goal สั่ง "ลบ" — step 14-18 ที่ user เห็นว่า
+           "กดมั่ว" (Edit -> Cancel -> Edit -> เปลี่ยน User Role) จึงเป็นการ *เดินตามแผนเป๊ะ*
+           ปัญหาอยู่ที่แผนผิดชนิดงานมาตั้งแต่ต้น ไม่ใช่ที่ลูป
+           เดิมไม่มีโค้ดตรวจเลยว่าแผนยังทำสิ่งเดียวกับที่ goal สั่งอยู่ไหม (`_goal_is_deletion_only`
+           ดูแต่ goal ไม่เคยดู plan_text) และ `_PLAN_PROMPT_TEMPLATE` ก็ไม่มีกฎเรื่องรักษา verb
+           แก้: `_plan_drops_goal_operation()` เกณฑ์แคบและ deterministic — goal มีคำกลุ่มลบ
+           แต่ทั้งแผนไม่มีคำกลุ่มลบเลยสักคำ (ใช้ `_DELETION_INTENT_KEYWORDS` ชุดเดิม ไม่สร้าง
+           ชุดคำใหม่) จงใจ *ไม่* ตัดสินจากการที่แผนมีคำแก้ไขปนอยู่ เพราะแผนลบที่ถูกต้องมี
+           ขั้นตอนตั้ง filter ที่ใช้คำว่า "เลือก/set" ได้ตามปกติ
+           scope ไว้ที่ deletion อย่างเดียว: "ลบ" มีทางเลือกที่ดูสมเหตุสมผลแต่ผิด (แก้ค่าแทน)
+           และผลลัพธ์ต่างกันถาวร ส่วนงานอ่าน/ค้นหาไม่มี failure mode แบบนี้
+           พฤติกรรมตามที่ user เลือก: ร่างใหม่ 1 ครั้งพร้อมบอกตรงๆ ว่าผิดตรงไหน ถ้ายังไม่ตรง
+           **หยุดถามก่อนเริ่มลงมือ** (steps=0 ไม่เข้าลูปเลย) — guard วางที่จุดที่ plan_text นิ่ง
+           แล้วทั้งเส้นทาง approved_plan (user กดยืนยัน/แก้ข้อความเองมา) และ confirm_plan ในลูป
+
+           (2) W_prompt_example_leak — `"Status=Enabled"` เป็น **ตัวอย่างใน prompt เอง** 2 ที่
+           (`_PROMPT_CORE` W21 และ `_PLAN_PROMPT_TEMPLATE`) แล้ว gpt-5.4-mini ลอกมาตั้งค่าจริง
+           บนหน้าเว็บ ทั้งที่ goal ไม่เคยพูดถึง Status เลย
+           บทเรียน: **ตัวอย่างใน prompt ที่ตรงกับ field จริงบนเว็บเป้าหมายเป็นของอันตราย
+           ไม่ใช่ของช่วยอธิบาย** — เปลี่ยนตัวอย่างตัวที่สองเป็น `Department=Sales` ทั้งสองที่
+           (แก้แค่ค่าในตัวอย่าง ไม่แตะเหตุผล W21/W63 ที่เขียนไว้) + เพิ่มกฎบอกตรงๆ ว่า
+           field=value ที่เขียนไว้เป็นแค่ "รูปทรง" ของเงื่อนไข ห้ามลอกไปใช้บนหน้าจริง
+           มีเทสต์ assert ว่า `"Status=Enabled"` ต้องไม่กลับมาอยู่ใน prompt อีก
+
+           (3) W_prefer_row_delete — การกด "Edit" ถูกตั้งใจปล่อยผ่านมาตลอด (บางเว็บใช้หน้า Edit
+           เป็นทางผ่านไปหาปุ่มลบ) คงเหตุผลนั้นไว้ทุกประการ เพิ่มแค่เงื่อนไข: ถ้า *หน้าเดียวกันนี้*
+           มีปุ่มลบให้กดอยู่แล้ว การเข้าหน้า Edit ก็ไม่ใช่ทางผ่านที่จำเป็น มันคือการเดินผิดทาง
+           — ไม่มีปุ่มลบในหน้า = ปล่อยผ่านเหมือนเดิม (มีเทสต์คุมทั้งสองทาง)
+           + เมนูโปรไฟล์/บัญชี: perception ติดป้าย `[Profile/Account Menu]` ให้อยู่แล้ว แต่ของเดิม
+           ใช้ป้ายนี้ที่เดียวคือตอนระบบเลือก element ให้เองใน forced recovery ไม่เคยกันคลิกที่
+           *โมเดลเลือกเอง* เลย — ปฏิเสธเมื่อ goal ไม่ได้พูดถึงบัญชี/โปรไฟล์/logout/รหัสผ่าน
+           ทั้งสองตัวใช้โควตา 2 ครั้งเหมือน guard อื่น ไม่บล็อกตาย
+
+  [x] W96  ("live verification ของ P7 — ตัวนับ step ต้องไม่ชนะการวัด" — W_plan_cursor_not_proof)
+           user อนุมัติให้รันสดจริง (2026-08-28) เก็บ ground truth ด้วยสคริปต์ไม่ใช้ LLM
+           ทั้งก่อนและหลังทุกครั้ง
+
+           **รอบที่ 1 — ทางเดินถูกหมดแล้ว แต่ยังอ้างสำเร็จโดยไม่ได้ลบอะไรเลย**
+           ground truth ก่อนรัน: 13 records / ESS 9 คน (Disabled 4 + Enabled 5)
+           step trace: Admin -> User Role dropdown -> ESS -> **Search** -> Select All
+           => ไม่แตะ Status, ไม่แตะ Employee Name, ไม่คลิก profile menu, ไม่เข้าหน้า Edit
+              เลยสักครั้ง — P7 ทั้ง 4 ขั้นทำงานตามที่ออกแบบไว้ครบ และ guard "ห้ามคลิก row
+              action ก่อนกด Search" ก็จับได้จริง (`[row-action ก่อน search 1/2] label='Delete'`)
+           แต่ผลจบคือ success=True ทั้งที่ ground truth หลังรันยังเป็น ESS 9 คนเท่าเดิม
+
+           สาเหตุ 2 ชั้นซ้อนกัน ทั้งคู่เป็นของที่ผมเพิ่งทำเองใน W93:
+             (A) `plan_cursor` เป็น "ตัวนับ action ที่สำเร็จ" ไม่ใช่ "หลักฐานว่างานเสร็จ" —
+                 Select All บังเอิญเป็น action ที่ 5 พอดี cursor จึงผ่านจำนวนข้อของแผน แล้ว
+                 goal-scope gate ก็ไป **บล็อกปุ่ม Delete ที่ตามมา** และปิด task ด้วย success
+                 => W93 แก้ "โมเดลอ้างเลขข้อสุดท้ายทันที" ไปแล้ว แต่ยังเหลือ "นับครบจำนวนข้อ
+                    = จบ" ซึ่งผิดด้วยเหตุผลเดียวกันเป๊ะ แค่ย้ายที่มาของตัวเลข
+             (B) safety net ของ W86 ที่ควรจับไว้ อ่านหน้านั้นไม่ออก — หลังกด Select All
+                 OrangeHRM เปลี่ยนข้อความจาก "(9) Records Found" เป็น "(9) Records Selected"
+                 ซึ่งไม่ตรง `_RECORD_COUNT_PATTERNS` เลย คืน None = "ไม่มีหลักฐานขัดแย้ง"
+                 แล้วปล่อย success ผ่าน
+
+           แก้:
+             (A) goal ลบแบบมีเงื่อนไข **มีวิธีวัดตรงๆ อยู่แล้ว** (เหลือกี่แถวที่ตรงเงื่อนไข)
+                 การวัดต้องชนะตัวนับเสมอ — ข้าม shortcut ของแผนไปใช้เส้นทางที่อ่านหลักฐานจริง
+                 goal อื่นที่ไม่มีวิธีวัดตรงๆ ยังใช้ธงของแผนเหมือนเดิม
+             (B) อ่านข้อความนับไม่ออก -> ตกลงมานับแถวจากตารางตรงๆ ด้วย
+                 `_count_rows_matching_condition` (helper เดิมที่ guard ของ finish_task ใช้อยู่)
+                 ซึ่งเป็นหลักฐานที่แข็งกว่าข้อความสรุปอยู่แล้ว ไม่เขียนตัวนับใหม่
+
+           **รอบที่ 2 — ผ่านจริง วัดได้**
+           ground truth ก่อนรัน: 16 records / ESS 10 คน
+           step trace: Admin -> dropdown -> ESS -> Select All -> Search -> Delete ->
+             Yes, Delete -> Select All -> Delete Selected -> Yes, Delete -> ตรวจซ้ำ (12 steps)
+           guard ที่ทำงานให้เห็นระหว่างทาง: `[ลบทั้งหมดยังพิสูจน์ไม่ได้ 1/2]` (guard ของ W92
+             ที่เพิ่งกลับมามีชีวิต) · `[finish_task(true) ยังลบไม่ครบ 1/2]` พร้อมหลักฐาน
+             "(11) Records Found" · `[finish_task(false) ไม่ยอมรับ 1/2]` ดันให้ทำต่อจนจบ
+           **ground truth หลังรัน: 6 records / ESS 0 คน** = ลบไป 10 ตรงกับจำนวน ESS พอดี
+           ไม่มี Admin คนไหนหายไป และสิ่งที่ agent รายงานตรงกับที่วัดได้จริง
+
+           บทเรียนที่ใช้ซ้ำได้: **ตัวนับความคืบหน้าไม่ใช่หลักฐานความสำเร็จ** ไม่ว่าตัวเลขจะมา
+           จากโมเดลหรือจากโค้ดก็ตาม ถ้างานนั้นมีวิธีวัดผลลัพธ์ตรงๆ ให้วัด แล้วให้การวัดชนะเสมอ
+
+  [x] W97  ("ตัววัดเองก็ยังวัดผิดอยู่" — C1 จาก audit ของ P7/P8, W_column_aware_rows)
+           user สั่งให้ audit แผน P7/P8 ก่อนลงมือ — ข้อที่ร้ายที่สุดกลับไม่ใช่ P8 แต่เป็นของ
+           ที่มีอยู่ก่อนแล้ว และ W96 เพิ่งผูกผู้เรียกเพิ่มเข้าไปเมื่อวาน
+
+           `_count_rows_matching_condition()` เทียบแบบ substring กับ innerText ทั้งแถว:
+           `all(v.lower() in row.lower() for v in values)` — ค่า "ess" จึง match ชื่อคน
+           "Jessica", username "ess.irhrg0", สถานะ "Assessed" ได้หมด
+           helper นี้ตัดสิน 2 เรื่องที่กู้คืนไม่ได้ และผิดได้ทั้งสองทิศ:
+             - guard กันลบจากตารางที่ยังไม่ได้กรอง (`matching < total` -> บล็อก) นับเกินจริง
+               -> **ปล่อยให้ลบจากตารางที่ยังไม่ได้กรอง** ซึ่งเป็นความเสียหายที่เคยเกิดจริงมาแล้ว
+             - W96 fallback (`row_match[0] > 0` = ยังเหลืองาน) -> แถว Admin ที่ชื่อมี ess
+               จะทำให้ **task ที่ทำเสร็จแล้วจบไม่ได้**
+
+           ที่เจ็บที่สุด: comment ของ `_KEY_VALUE_IN_QUERY_RE` (W_column_aware_count) **เตือนเคสนี้
+           ไว้ตรงตัวแล้ว** (ยกตัวอย่าง username "ess.irhrg0" ที่ Role เป็น Admin) และ regex ก็เก็บ
+           ชื่อคอลัมน์ไว้ให้แล้วตั้งแต่ตอนนั้น — แต่ helper นี้ไม่เคยใช้ความรู้นั้นเลย
+           คอมเมนต์ที่เขียนไว้ว่า "แยกคอลัมน์ไม่ได้ จึงเล็งคอลัมน์ไม่ได้" ก็เป็นจริงเฉพาะตอนเขียน
+
+           แก้:
+             - `_VISIBLE_TABLE_ROWS_JS` คืน **เซลล์แยกคอลัมน์ + ชื่อหัวตาราง** แทน innerText ก้อนเดียว
+               (ตาราง div ล้วนที่ไม่มี td/[role=cell] เลย ถอยไปใช้ทั้งแถวเป็นเซลล์เดียว
+               = พฤติกรรมเท่าเดิมเป๊ะ ไม่ใช่คืนแถวว่าง)
+             - `_row_matches_condition()` เล็งคอลัมน์จากชื่อ field ที่ user เขียน — ใช้ตัวเทียบชื่อ
+               ตัวเดียวกับ W_filter_scope_guard (`_field_names_match`) ที่ทนการพิมพ์ผิด/คำไทยติดหน้า
+               อยู่แล้ว ไม่สร้างกฎการเทียบชุดที่สอง — เล็งไม่เจอ = fail-open ถอยไปเทียบทั้งแถวตามเดิม
+             - `_cell_matches_value()` ยอมรับแค่ "ตรงทั้งเซลล์" หรือ "เป็นคำเต็มคำที่คั่นด้วยช่องว่าง"
+               จงใจไม่ใช้ `\b` ของ regex เพราะมันถือ "." เป็นตัวคั่นด้วย -> "ess.irhrg0" จะยังตรงอยู่ดี
+             - `_goal_condition_pairs()` เป็นแหล่งความจริงเดียวของทั้ง fields/values (เดิมวน regex เอง
+               คนละรอบ แปลว่ากฎตัด URL/กันค่าซ้ำต้องแก้สองที่พร้อมกันตลอด)
+
+  [x] W98  ("modal เปิดค้างแล้ว agent ตาย" — C2+C3 จาก audit, W_dialog_generic + W_modal_appear_race)
+           user รัน goal เดิมผ่าน Test Console แล้ว **ติด loop จนต้องกด Stop** — บนจอมี dialog
+           "Are you Sure? / No, Cancel / Yes, Delete" เปิดค้างชัดเจน แต่ agent ไม่เคยกด
+           "Yes, Delete" เลย กลับไล่คลิกของที่อยู่ *หลัง* dialog แล้ว timeout ทุกครั้ง
+           (`Click "Search [obscured]"` -> `[FAIL] ... (after 3 attempts)` ซ้ำๆ)
+
+           **กลไกกดปุ่มยืนยันมีอยู่แล้วและเขียนไว้ดี แต่เข้าไม่ถึง** — `resolve_confirmation_modal()`
+           หาปุ่มจาก `_MODAL_CONFIRM_BUTTON_SELECTORS` ซึ่งตัวแรกสุดคือปุ่ม "Yes, Delete" ของ
+           OrangeHRM เป๊ะ แต่มีจุดเรียกเดียวในโปรเจกต์ และซ้อนอยู่ **ใต้ `if result.success:`**
+           มันจึงเป็นกลไก "ปิด modal ที่ click เมื่อกี้เพิ่งเปิด" ไม่ใช่ "หน้าถูกบล็อกอยู่ จัดการซะ"
+           orchestrator ไม่เคยเรียกมันเลยสักครั้ง
+
+           สาเหตุที่รอบนี้ไม่ทำงานทั้งที่ click สำเร็จ (W_modal_appear_race):
+           `_detect_confirmation_modal()` เรียก `count()` **ทันที** หลัง click โดยไม่รอเลย —
+           dialog animate เข้ามา ตอนเช็ค node ยังไม่อยู่ใน DOM จึงได้ 0 -> False พอ dialog โผล่
+           ทีหลังก็บล็อกทั้งหน้า แล้วทุก click ถัดไป `success=False` = **เข้าไม่ถึงจุดเช็คอีกเลย
+           ตลอดกาล** เป็น dead-end ที่ออกเองไม่ได้ (ราคาแต่ละคลิกที่เสียเปล่า ~12-18 วินาที)
+
+           แนวคิดที่ร่างไว้ตอนแรกว่าจะกรองด้วย `_dom_signature()` (ความยาว body.innerHTML) ก่อน
+           ค่อยรอ — **ตรวจแล้วพบว่าใช้ไม่ได้** modal ที่ markup อยู่ใน DOM อยู่แล้วและเปิดด้วยการ
+           สลับ class (Bootstrap `.modal.show`, MUI keepMounted, Radix) ความยาวไม่เปลี่ยนสัก
+           ตัวอักษร ตัวกรองนั้นจะพลาด modal ทั้งตระกูล -> ตัดทิ้ง ใช้การรอสั้นๆ ตรงๆ แทน
+           (`_MODAL_APPEAR_TIMEOUT_MS = 600`) ราคาที่จ่ายคือ click ที่ไม่เปิดอะไรเลยเสียเพิ่ม
+           600ms ซึ่งสะสมทั้ง task แล้วยังน้อยกว่าการคลิกพลาดเพราะโดน modal บังแค่ครั้งเดียว
+
+           W_dialog_generic (C3): `_DIALOG_CONTAINER_SELECTOR` เดิมมี 3 ตัวและ **2 ใน 3 เป็นของ
+           OrangeHRM ล้วน** เหลือของมาตรฐานแค่ `[role="dialog"]` ตัวเดียว — dialog ที่พบบ่อยที่สุด
+           ในโลกจริงจึงตรวจไม่เจอเลย เพิ่ม `<dialog open>`, `[role=alertdialog]`,
+           `[aria-modal=true]`, Bootstrap, MUI, antd, SweetAlert และให้ชั้น generic ของ
+           `_MODAL_CONFIRM_BUTTON_SELECTORS` scope ด้วยชุด container เดียวกัน ไม่ hardcode ซ้ำ
+           (ตรวจเจอ dialog ได้แต่หาปุ่มยืนยันในนั้นไม่เจอ = ยังค้างเหมือนเดิม แย่กว่าไม่ตรวจเจอ)
+
+           **ยืนยันด้วย Chromium จริง ไม่ใช่ mock** — mock ที่ตอบว่าเจอจะเจอเสมอไม่ว่า selector
+           จะผิดแค่ไหน สิ่งที่ต้องพิสูจน์คือ selector ตรงกับ DOM จริงไหม:
+             bootstrap class-toggle / <dialog> native / aria-modal ล้วน -> ตรวจเจอครบ 3
+             และกดปุ่มยืนยันปิด dialog ได้จริงทั้ง 3 (ของเดิมพลาดทั้งหมด)
+             หน้าที่ไม่มี dialog เลย -> ยังคืน False (ไม่มี false positive จากการรอ)
+           เทสต์ทั้งชุดอยู่ใน test_actions.py ซึ่ง import async_playwright ไว้อยู่แล้ว
+
+  [x] W99  ("dialog ต้องมองเห็นได้จาก snapshot และห้ามคลิกของที่มันบัง" — P8 M2/M3/M4)
+
+           (1) W_dialog_in_snapshot (M2) — dialog ไม่ใช่ทั้ง navigation และ main
+           (`getRegion()` มีแค่สองอย่างนี้) ปุ่มใน dialog จึงได้ `region=''` ไม่มี marker อะไรเลย
+           ปนอยู่กลางลิสต์ร่วมกับของที่อยู่ *หลัง* dialog ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ
+           และ in_viewport เหมือนกันด้วย การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออกเลย
+           แก้: เพิ่ม `region='dialog'` (ตรวจก่อน navigation/main เสมอ — dialog ที่ render อยู่
+           ข้างใน `<main>` ต้องยังนับเป็น dialog) + ป้าย `[in open dialog]` + เรียงของใน dialog
+           ขึ้นก่อน **ก่อน in_viewport ด้วยซ้ำ** เพราะมันคือสิ่งเดียวที่กดได้จริง ณ ตอนนั้น
+           ใช้ชุด selector เดียวกับ actions.py::_DIALOG_CONTAINER_SELECTORS โดยเจตนา
+
+           (2) W_reject_obscured_click (M3) — `[obscured]` ถูกติดป้ายมาตั้งแต่ต้น แต่ค้นทั้ง
+           backend/ แล้ว **ไม่มีโค้ดส่วนไหนอ่านมันเลยสักบรรทัด** (มีแต่ตัวสร้างป้าย + comment
+           1 บรรทัด + เทสต์ที่ assert ว่าป้ายมีอยู่) prompt ก็ไม่เคยพูดถึง ต่างจากป้ายพี่น้อง
+           (`[already active]`/`[disabled]`/`[hidden — may need to hover]`) ที่มีกฎรองรับครบ
+           แก้: ปฏิเสธคลิกเมื่อ **มีครบทั้งสองอย่าง** คือเป้ามี `[obscured]` และมี element ที่
+           ติด `[in open dialog]` อยู่ใน snapshot เดียวกัน — ใช้ `[obscured]` เป็นเงื่อนไขเดียว
+           ไม่ได้ เพราะ comment ที่ perception เขียนไว้ถูกต้องว่าจงใจเก็บของที่ถูกบังไว้ในลิสต์
+           (overlay อาจหายไปเองก่อนถึงเวลาคลิกจริง เช่น dropdown/tooltip) การมี dialog เปิดค้าง
+           ต่างหากคือสิ่งที่ทำให้ "ถูกบัง" กลายเป็นถาวรจนคลิกไม่ได้แน่ๆ
+           อ่านสถานะ dialog จาก snapshot ที่เพิ่งดึงมาแล้ว ไม่ยิง DOM query เพิ่มต่อ action
+           ประหยัด ~12-18 วินาทีต่อคลิกที่รู้ล่วงหน้าอยู่แล้วว่าจะ timeout
+
+           (3) W_modal_check_on_failure (M4) — จุดเช็ค modal ทั้งหมดอยู่ใต้ `if result.success:`
+           พอ modal บล็อกจนคลิกไม่สำเร็จ ระบบก็ไม่มีทางรู้ว่ามี modal อยู่ = dead-end ที่ป้อน
+           ตัวเอง (คลิกไม่ได้ -> ไม่เช็ค -> ไม่รู้ -> คลิกไม่ได้อีก)
+           แก้แบบจำกัดขอบเขต: click ที่ล้มเหลวครบ retry แล้วให้เช็ค dialog แล้ว **แนบข้อความ
+           บอกความจริง** ไปกับผลลัพธ์ — *ไม่* กดปุ่มยืนยันให้เอง ตามระดับที่ user เลือกไว้
+           (การกดปุ่มใน dialog ที่ agent ไม่ได้เปิดเองคือการตัดสินใจทำลายข้อมูลโดยโค้ด)
+           pattern เดียวกับ W_click_native_select/W_confident_zero: รายงานตามความจริงให้โมเดล
+           ตัดสินใจบนข้อมูลจริง ดีกว่าปล่อยให้เข้าใจว่า "element หาไม่เจอ" แล้วไล่คลิกตัวอื่นต่อ
+
+           (4) กฎใน `_PROMPT_CORE` ข้าง marker พี่น้องที่มีกฎอยู่แล้ว — อธิบายว่า
+           `[in open dialog]` แปลว่ามี dialog เปิดอยู่ตอนนี้ และ `[obscured]` คือของที่อยู่หลังมัน
+           ซึ่งคลิกไปก็ได้แค่รอจน timeout
+
+           ยืนยันด้วย Chromium จริงด้วยเคสของ user เป๊ะ (Search/Select All อยู่หลัง dialog):
+             idx=2 region=dialog 'No, Cancel [in open dialog]'   <- ขึ้นก่อน
+             idx=3 region=dialog 'Yes, Delete [in open dialog]'
+             idx=0 region=''     'Search [obscured]'             <- ยังอยู่ในลิสต์ แต่คลิกไม่ได้
+             idx=1 region=''     'Select All [obscured]'
+
+  [x] W100 ("guard ที่เงียบสนิทโดยไม่มีใครรู้" — C4 จาก audit, W_field_label_for_plain_inputs)
+           W94 (filter-scope guard) อ่านชื่อ field จาก prefix `"User Role: ..."` ที่ perception
+           เติมให้ — แต่ prefix นั้นเติมเฉพาะ `isDropdownTriggerCandidate` (role=combobox /
+           aria-haspopup / class select-text|select-wrapper) เท่านั้น
+           **`<select>` มาตรฐานและ `<input type=text>` ไม่เข้าเงื่อนไขสักข้อ** label จึงเป็นแค่
+           ค่าที่เลือก/พิมพ์อยู่ ("ESS", "William") -> `_filter_field_from_label()` คืน `""`
+           -> guard fail-open เงียบๆ ทุกครั้ง
+
+           อันตรายเป็นพิเศษเพราะ **ไม่ error ไม่ log อะไรเลย** ดูจากภายนอกเหมือน guard ทำงาน
+           ปกติทุกประการ — guard ที่พังดังๆ ยังดีกว่า guard ที่เงียบแบบนี้ เพราะอย่างน้อยก็รู้
+           เหตุผลเดียวกับ W_widget_semantic_label ที่เขียนไว้ในไฟล์เดียวกันอยู่แล้วเป๊ะ: ค่าที่อยู่
+           ข้างในคือ "เนื้อหา" ไม่ใช่ "ชื่อของช่อง" ต่างกันแค่ตรงนี้รู้ชื่อช่องจาก <label for> ได้ตรงๆ
+
+           แก้: ขยาย prefix ให้ `<select>` / `<textarea>` / `<input>` (ยกเว้นชนิดที่มี label ทาง
+           ของตัวเองอยู่แล้ว — checkbox/radio มี wrapper label, ปุ่มมีข้อความบนตัวมันเอง)
+
+           **บั๊กที่เจอระหว่างทางและต้องแก้เพิ่ม:** `getAssociatedLabelText()` คืน innerText ของ
+           `<label>` ทั้งก้อน ซึ่งกรณี label แบบ *ห่อครอบ*
+           (`<label>User Role <select>...</select></label>`) จะมีค่าที่เลือกอยู่ติดมาด้วย
+           -> prefix เพี้ยนเป็น `"User Role Admin: Admin"` เทสต์เดิมจับได้ทันที
+           แยก `getFieldNameLabel()` ออกมาเฉพาะงาน prefix: ใช้ `label[for=id]` ก่อน (ไม่ได้ห่อ
+           control จึงเป็นชื่อช่องล้วนๆ) ถ้าไม่มีค่อยใช้ label ที่ห่อ **โดยตัดข้อความของ control
+           เองออก** แล้วค่อย fallback ไป preceding sibling — ไม่แก้ `getAssociatedLabelText()`
+           เดิมเพราะมันยังทำหน้าที่ "label เต็มๆ" ได้ถูกต้องอยู่
+
+           ยืนยันด้วย Chromium จริง:
+             'User Role: -- Select -- ESS'    -> field='userrole'   (native <select>)
+             'Employee Name: William'         -> field='employeename' (input + <label for>)
+             'Department: Type for hints...'  -> field='department' (input + พี่น้องข้างหน้า)
+             'Select row' / 'Search'          -> field=''           (ไม่โดนเติมซ้ำ)
+           = ปิดช่องว่างที่ W94 บันทึกไว้เองว่า "ยังจับการพิมพ์ลง Employee Name ไม่ได้"
+
+           เทสต์เดิม 1 เคสต้องอัปเดต (`select_with_option_selected_still_shows_current_value`)
+           — assertion เดิมคาดว่าไม่มี prefix ซึ่งเป็นจริงเพราะ native `<select>` ถูกกันออกจาก
+           กฎนั้นไว้เฉยๆ ไม่ใช่เพราะตั้งใจให้ไม่มีชื่อ field เจตนาที่เทสต์ปกป้องจริงๆ คือ
+           "ค่าที่เลือกอยู่ต้องไม่ถูกทับทิ้ง" ซึ่งยังเป็นจริงทุกประการ (prefix เป็นการ *เพิ่ม*
+           ข้อมูล กฎเดียวกับ W_dropdown_field_label ที่ทำกับ custom dropdown อยู่ก่อนแล้ว)
+
+  [x] W101 ("เก็บของเล็กจาก audit" — MR3/MR4 แก้, MR5 ตรวจแล้วไม่ต้องแก้)
+
+           (1) W_field_match_min_length (MR3) — กฎ "ครอบกันอยู่" ใน `_field_names_match()`
+           สร้างมารับมือคำไทยที่ติดหน้า key ("แล้บลบuserole") และการพิมพ์ผิด ("userole") แต่กับ
+           ชื่อสั้นมันหลวมเกินไป: goal `name=john` ทำให้ "name" ครอบอยู่ใน "employeename" /
+           "username" / "nationality" ทั้งหมด -> guard ปล่อยให้ตั้งค่าช่องผิดผ่านไปได้เงียบๆ
+           แก้: ใช้ containment ได้เฉพาะเมื่อชื่อที่สั้นกว่ายาว >= 5 ตัวอักษร (ชื่อ field จริงที่
+           สั้นกว่านั้นมีน้อยมาก แต่ชื่อที่ *มี* คำสั้นพวกนี้เป็นส่วนประกอบมีเยอะมาก) — ต้องใส่
+           เพดานนี้ **ทั้งสองชั้น** เพราะชั้น ASCII fallback ก็ใช้ containment เหมือนกัน
+           ตอนแก้ชั้นแรกอย่างเดียวแล้ววัด "name vs employeename" ยังรั่วอยู่ จับได้จากการวัด
+           ไม่ใช่จากการอ่านโค้ด ส่วนการตรงกันเป๊ะยังผ่านเสมอไม่ว่าชื่อจะสั้นแค่ไหน
+
+           (2) W_account_keyword_scope (MR4) — `_ACCOUNT_GOAL_KEYWORDS` มี `"setting"`/`"ตั้งค่า"`
+           เดี่ยวๆ ซึ่งกว้างเกินไป: goal ที่พูดถึง settings *ของระบบ* ("ไปที่หน้า Configuration
+           แล้วตั้งค่าอีเมล") จะปิด guard กันเมนูโปรไฟล์ทิ้งฟรีๆ ทั้งที่ไม่เกี่ยวกับบัญชีของผู้ใช้
+           ที่ล็อกอินอยู่เลย -> เปลี่ยนเป็นรูปที่ระบุว่าเป็นของตัวผู้ใช้เอง
+           ("my settings"/"account settings"/"ตั้งค่าบัญชี"/"ตั้งค่าส่วนตัว")
+
+           (3) MR5 — **ตรวจแล้วไม่ต้องแก้ ผมประเมินเกินไปตอน audit**
+           ที่เขียนไว้ว่า "W96 ทำให้ delete-all goal ไม่มีทางจบด้วยธงของแผน ถ้าอ่านตารางไม่ได้
+           จะวิ่งจนหมด max_steps เงียบๆ" — ผิด 2 จุด: (ก) guard พวกนั้นมีโควตา
+           (`_MAX_DELETE_ALL_UNVERIFIED_RETRIES = 2`) แล้วปล่อยผ่าน เป็น escape valve อยู่แล้ว
+           (ข) เส้นทางหมดรอบมี W_step_budget ที่เอา "เหตุผลล่าสุดที่โมเดลรายงาน" มาต่อท้าย
+           ข้อความอยู่แล้ว จึงไม่ได้เงียบ
+           บันทึกไว้เพราะการ "ตรวจแล้วพบว่าไม่ต้องแก้" มีค่าเท่ากับการแก้ — กันคนหลัง (รวมทั้ง
+           ตัวเอง) ไปสร้าง escape valve ซ้อนอันที่มีอยู่แล้ว
+
+  [x] W102 ("live verify W97-W101 + ตัวนับ record หยิบ div ที่ครอบทั้งหน้า"
+           — W_record_count_picks_wrapper)
+
+           **live run ผ่าน และหนักกว่าทุกรอบที่ผ่านมา** (user อนุมัติ, provider openai)
+           ground truth ก่อนรัน: 54 records / ESS 30 คน (มี pagination 50 แถวต่อหน้าด้วย)
+           step trace 8 steps:
+             Admin -> User Role dropdown -> ESS -> Search -> Select All -> Delete Selected
+             -> **Yes, Delete [in open dialog]** -> (คลิก × ที่หายไปแล้ว 1 ครั้ง)
+           ป้าย `[in open dialog]` ที่เพิ่งเพิ่มใน W99 **เห็นผลตรงๆ**: โมเดลกดปุ่มใน dialog เอง
+           แทนที่จะไล่คลิกของที่อยู่หลังมันเหมือนรอบที่ user รายงาน
+           guard ที่ทำงานให้เห็น: `[finish_task(true) ยังลบไม่ครบ 1/2]` พร้อมหลักฐาน
+           "(30) Records Found" แล้วจบเมื่อได้ "No Records Found"
+           **ground truth หลังรัน: 28 records / ESS 0 คน** (ลบครบ 30 ตัว ส่วนยอดรวมไม่ตรงเป๊ะ
+           เพราะผู้ใช้คนอื่นบนเดโมสาธารณะเพิ่ม record ระหว่างรัน ซึ่งวัดเจอมาตลอดทุกรอบ)
+
+           **บั๊กที่ live run เจอ:** ข้อความผลลัพธ์ของ task ยัด innerText ทั้งหน้าเข้าไปทั้งก้อน
+           สาเหตุ: `_RECORD_COUNT_SELECTOR` เป็น selector เดียวคั่นด้วย comma แล้วหยิบ `.first`
+           โดยเชื่อ comment ตัวเองว่า "ของเจาะจงที่วางไว้ก่อนจะชนะ" — **ผิด** CSS ที่คั่นด้วย
+           comma คืน element ตาม *ลำดับใน DOM* ไม่ใช่ลำดับที่เขียนใน selector และ `:has-text()`
+           ก็ match บรรพบุรุษทุกชั้นที่มีข้อความนั้นอยู่ข้างใน `.first` จึงได้ `<div>` ก้อนใหญ่เสมอ
+
+           ไม่ใช่แค่เรื่องความสวย: ข้อความก้อนนั้นถูกส่งต่อให้ `_RECORD_COUNT_PATTERNS` หาตัวเลข
+           ซึ่งอาจไปเจอเลขอื่นบนหน้าที่ไม่เกี่ยวเลย = **guard กัน hallucination ตัวเรือธงอ่านค่าผิด**
+           (ทิศที่อันตราย: หน้าที่มี "(30) Records Found" แต่ wrapper มีคำว่า "no results" อยู่ที่
+           อื่นด้วย จะถูกอ่านเป็น 0 = อ้างว่าลบครบทั้งที่ยังเหลือ)
+
+           แก้: แยกเป็นลิสต์แล้วไล่ทีละ selector (pattern เดียวกับ
+           actions.py::_find_visible_modal_confirm_button) ลำดับใน list ถึงจะมีความหมายจริง และ
+           ในแต่ละ selector เลือก element ที่ข้อความ **สั้นที่สุด** = ตัวสรุปเอง ไม่ใช่ container
+           ที่ห่อมันอยู่ + แก้ชื่อที่อ้างถึงใน comment อีก 2 ที่ให้ตรงกัน
+
+           บทเรียน: comment ที่เขียนอธิบายเจตนาไว้ ("ของเจาะจงชนะก่อน") ไม่ได้แปลว่าโค้ดทำแบบนั้น
+           จริง — อันนี้เป็นครั้งที่สองในรอบเดียวกันที่ comment ถูกแต่โค้ดไม่ทำตาม (ครั้งแรกคือ
+           W97: comment เตือนเรื่องคอลัมน์ไว้ตรงตัวแต่ helper ไม่เคยใช้)
+
+  [x] W103 ("แผนที่บันทึกฟอร์มแก้ไข + แผนไม่คืบหน้า" — MR1/MR2 ขั้นสุดท้ายของ audit)
+
+           (1) W_plan_commits_a_record_edit (MR1) — `_plan_drops_goal_operation()` เดิมผ่าน
+           ทันทีที่แผนมีคำกลุ่มลบ *ที่ไหนก็ได้* แผนที่ทำให้ agent ไปเปลี่ยน Role ของ user จริงใน
+           รันที่ user รายงาน ("เปิดแต่ละรายการเพื่อแก้ไข -> เปลี่ยน Role -> บันทึก -> ลบสิทธิ์ ESS")
+           มีคำว่า "ลบ" อยู่ด้วย จึงผ่านฉลุยทั้งที่ workflow เป็น edit ล้วน
+           เพิ่มกฎ B: goal ลบ *ล้วนๆ* + แผนมีขั้นตอน **บันทึก** การแก้ไข record = ผิด
+           เพราะงานลบล้วนไม่มีวันต้องกด Save ฟอร์มเลยสักครั้ง — กฎเดียวกับที่ runtime บังคับอยู่
+           แล้วใน W_no_record_edit_for_delete_goal แค่ย้ายมาตรวจตั้งแต่ตอนร่างแผน
+
+           **ไม่สร้างคลังคำที่สาม:** `_RECORD_COMMIT_LABEL_RE` ผูก `^` ไว้เพราะใช้กับ *label ปุ่ม*
+           (กัน "Saved Searches"/"Updated on") จึง match ข้อความแผนไม่ได้ — แยก
+           `_RECORD_COMMIT_WORDS` ออกมาแล้วสร้าง **สอง** regex จากคำชุดเดียวกัน (anchored สำหรับ
+           label เหมือนเดิม + non-anchored สำหรับข้อความแผน) จงใจไม่ใช้ `_EDIT_ALL_MUTATION_VERBS`
+           (มี "set"/"change" ซึ่ง docstring เดิมของฟังก์ชันนี้เตือนไว้เองว่าแผนลบที่ถูกต้องใช้ตั้ง
+           filter ได้) และไม่ใช้ `_FORM_SUBMIT_LABEL_KEYWORDS` (มี confirm/ยืนยัน ซึ่งเป็น label
+           ของ dialog ยืนยัน*การลบ*) — เหตุผลเดียวกับที่ comment ของ `_RECORD_COMMIT_LABEL_RE`
+           อธิบายไว้อยู่ก่อนแล้ว
+           เปลี่ยน return เป็น `Optional[str]` (เหตุผลที่ผิด) — ผู้เรียกทั้ง 3 ที่ใช้เป็น boolean
+           อยู่แล้วจึงไม่กระทบ แต่ข้อความบอกได้ว่าผิดกฎข้อไหน
+
+           (2) W_plan_warn_not_abort — **ตรวจแล้วพบว่าพฤติกรรมเดิมของ W95 แรงเกินไป**
+           gate ก่อนเข้าลูป `return {"steps": 0}` หยุดทั้ง task — แต่กว่าจะมาถึงจุดนั้น plan_text
+           มาจาก `approved_plan` หรือ `_confirm_plan()` ซึ่ง **ทั้งสองทางคือแผนที่ user ยืนยันมาแล้ว**
+           (และอาจแก้ข้อความเองด้วยซ้ำ) การหยุดจึงเท่ากับตัดสินใจแทน user บนสิ่งที่เขาเพิ่งอ่านและ
+           กดยืนยันไปเอง — user เลือก "เตือนแต่ไม่หยุด" เปลี่ยนเป็นต่อคำเตือนท้าย `effective_goal`
+           (ไม่ยัดเข้า `messages` เพราะตอนนั้น messages ยังว่าง จะได้ user turn สองอันติดกันก่อน goal
+           ซึ่ง provider บางเจ้าไม่รับ — และการอยู่ใน goal ทำให้คำเตือนติดไปทุก step ไม่ใช่หายไป
+           หลังเทิร์นแรก)
+           ความปลอดภัยไม่หายไป: guard ตอน execution ยังบล็อกการกด Save จริงอยู่ครบ
+           (W_no_record_edit_for_delete_goal เป็น hard reject ไม่มีโควตา + W_prefer_row_delete)
+
+           (3) W_plan_progress_stall (MR2) — สำรวจแล้วยืนยันว่ามี stall detector 3 ตัว (action
+           ซ้ำเป๊ะ / label เดิม / วนเป็นคาบ 2-4) แต่**ไม่มีตัวไหนมอง plan_cursor** และ counter
+           ทั้งหมดในไฟล์เป็นแบบ "reset เมื่อสำเร็จ" ไม่ใช่ "นับว่าผ่านไปกี่ครั้งแล้ว" — agent ที่ทำ
+           action *ต่างกันทุกครั้ง* แต่ไม่คืบหน้าตามแผนเลย จึงไม่มีอะไรจับได้
+           เพิ่ม `actions_since_plan_progress` ผูกกับ `plan_cursor` ที่มีอยู่แล้ว (ไม่สร้างนิยาม
+           "ความคืบหน้า" ตัวที่สอง และใช้ชุด action type เดียวกับที่ cursor ใช้ — ในไฟล์นี้มีนิยาม
+           "mutating" อยู่ 2 ชุดแล้วและต่างกัน)
+
+           **ข้อจำกัดที่กำหนดวิธีแก้ (เจอจากการสำรวจ ไม่ใช่จากการเดา):** จุดที่รู้ว่าแผนไม่คืบหน้า
+           อยู่ *หลัง* dispatch และยังไม่ได้ตอบ `tool_result` ของเทิร์นนั้น — nudge แบบ
+           reject+continue ที่ guard อื่นใช้กันทั้งไฟล์ **ใช้ที่นี่ไม่ได้** จะทิ้ง tool_use ไว้โดยไม่มี
+           คำตอบ ซึ่ง docstring ของ `_force_loop_recovery` เตือนไว้ตรงตัวว่า Anthropic/Groq จะ error
+           จึงแนบข้อความไปกับ `result_text` แทน (pattern เดียวกับ `blocked_note` ของ
+           W_modal_check_on_failure) — ไม่เสียเทิร์น LLM เพิ่ม และโมเดลเห็นทันที
+           โควตา 2 ครั้งต่อ task + รีเซ็ตตัวนับหลังเตือน กันสแปมทุก action ที่เหลือ
+
+  [x] W104 ("live stability check 3 รอบ — เจอ 2 บั๊ก แก้แล้ว + 1 ช่องโหว่ที่ยังไม่ได้แก้")
+           user สั่งให้เช็คความเสถียรด้วยการรันสดหลายรอบบน provider openai (อนุมัติแล้ว)
+           เก็บ ground truth ด้วย Playwright ตรงๆ ทั้งก่อนและหลังทุกรอบ
+
+           **หมายเหตุที่ต้องอ่านก่อนตีความตัวเลข:** ระหว่างเช็ค เดโมสาธารณะถูกคนอื่นใช้งานหนัก
+           จำนวน ESS ขึ้นๆ ลงๆ เองตลอด (รอบหนึ่ง 3 rows/2 ESS ก่อนรัน -> 5 rows/4 ESS หลังรัน
+           ทั้งที่ agent ลบไปแล้ว) การเทียบ before/after จึงพิสูจน์ "ลบครบไหม" ไม่ได้เหมือนรอบ
+           W96/W102 ที่ข้อมูลนิ่งกว่า — ต้องอ่าน step trace ประกอบเสมอ ไม่ดูแต่ตัวเลข
+
+           **บั๊กที่ 1 — W_field_label_without_value (แก้แล้ว)**
+           รอบแรกของชุดที่หนึ่ง agent ไป `fill` ช่อง "Username" ทั้งที่ goal บอกแค่ userrole=ess
+           — W94 filter-scope guard ควรปฏิเสธ แต่ไม่ปฏิเสธ
+           สาเหตุ: prefix "ชื่อ field: ค่า" จะมีก็ต่อเมื่อช่องนั้น *มีค่าอยู่แล้ว* เพราะตัวเติม
+           prefix ข้ามไปเมื่อ label มีชื่อนั้นอยู่แล้ว — ช่องที่ยังว่าง label จึงเป็น "Username"
+           เปล่าๆ ไม่มี ":" เลย `_filter_field_from_label()` คืน "" -> fail-open
+           => **guard ตาบอดพอดีตอนที่ช่องยังไม่ถูกแตะ ซึ่งคือจังหวะเดียวที่มันต้องทำงาน**
+           แก้: label ที่ไม่มี ":" ให้ถือว่าเป็นชื่อ field ได้ **เฉพาะ action fill/select เท่านั้น**
+           — ห้ามตีความแบบนี้กับ click เด็ดขาด ไม่งั้นปุ่มชื่อ "Search"/"Delete" จะกลายเป็น
+           "ชื่อ field" แล้ว guard จะบล็อกทุกปุ่มบนหน้า (มีเทสต์คุมทั้งสองทาง)
+
+           **บั๊กที่ 2 — W_verify_text_on_delete_goal (แก้แล้ว)**
+           อีกรอบจบด้วย `VERIFICATION_FAILED: Item not found in results table` ทั้งที่ทำถูกทุกอย่าง
+           โมเดลส่ง `verify_text="No Records Found"` มาบนงานลบ แล้ว guard W63[7.2] ก็ไล่หาข้อความ
+           นั้นเป็น *แถวหนึ่งในตาราง* ตามหน้าที่ ไม่เจอ (มันเป็นข้อความสถานะ ไม่ใช่แถว) จึงพลิกงาน
+           ที่สำเร็จจริงให้กลายเป็นล้มเหลว — **ตารางว่างเปล่าคือหลักฐานว่าสำเร็จของงานลบ ไม่ใช่
+           หลักฐานว่าล้มเหลว** (SYSTEM_PROMPT เขียนไว้ตรงตัวแล้วว่างานลบให้เว้น verify_text ว่าง
+           แต่พึ่ง prompt อย่างเดียวไม่พอ ตามบทเรียนเดิมของโปรเจกต์นี้)
+           แก้ 2 ชั้น: ข้ามการหาแถวเมื่อ goal เป็นงานลบล้วน (ตรงตามสัญญาที่ prompt เขียนไว้) และ
+           เมื่อ verify_text เป็นวลี "ไม่มีผลลัพธ์" (ใช้ `_RECORD_COUNT_ZERO_TEXTS` ชุดเดิม)
+
+           **ช่องโหว่ที่เจอแต่ยังไม่ได้แก้ — "ตารางว่างเพราะกรองผิด" ยังนับเป็นสำเร็จ**
+           รอบหนึ่งของชุดที่สอง agent คลิก dropdown ซ้ำซ้อน (Select row -> User Role: ESS -> ESS)
+           แล้วกด Search ได้ตารางว่าง จึงรายงานว่า "ลบครบแล้ว" ทั้งที่ ground truth ก่อนและหลัง
+           เท่ากันที่ 1 ESS = **ไม่ได้ลบอะไรเลย**
+           guard ฝั่ง finish_task ตรวจแค่ "ตารางที่แสดงอยู่เหลือ 0 แถว" โดย **ไม่เคยตรวจว่าตัวกรอง
+           บนหน้ายังตั้งเป็นค่าที่ goal สั่งอยู่จริงไหม** — ตารางว่างเพราะกรองผิดกับตารางว่างเพราะ
+           ลบครบ หน้าตาเหมือนกันเป๊ะสำหรับ guard ตัวนี้
+           น่าสังเกตว่าฝั่ง *ทำลายข้อมูล* มี guard แบบนี้อยู่แล้ว (W80 guard B ตรวจว่าแถวที่เห็น
+           ตรงเงื่อนไขก่อนยอมให้ลบ) แต่ฝั่ง *ยืนยันว่าจบงาน* ไม่มีคู่ของมัน
+           แนวทางที่ควรทำต่อ: ก่อนรับ "0 แถว" เป็นหลักฐานความสำเร็จของ goal ลบแบบมีเงื่อนไข
+           ให้ตรวจว่า element ตัวกรองบนหน้าแสดงค่าที่ goal สั่งจริง — perception ติดป้าย
+           "User Role: ESS" ให้อยู่แล้วตั้งแต่ W100 จึงอ่านได้ตรงๆ ไม่ต้องถาม LLM
+
+  [x] W105 ("ตารางว่างเป็นหลักฐานได้ก็ต่อเมื่อกรองถูก" — W_empty_table_needs_right_filter)
+           ปิดช่องโหว่ที่ W104 บันทึกไว้ — guard ฝั่ง "ยืนยันว่าจบงาน" รับ "ตารางเหลือ 0 แถว"
+           เป็นหลักฐาน โดยไม่เคยตรวจว่าตัวกรองบนหน้ายังตั้งเป็นค่าที่ goal สั่งอยู่จริงไหม
+
+           `_page_filter_matches_goal()` อ่านจาก label ที่ perception ทำไว้ให้แล้วล้วนๆ
+           ("User Role: ESS" — W_dropdown_field_label + W_field_label_for_plain_inputs)
+           ไม่เรียก LLM ไม่ยิง DOM เพิ่มสักครั้ง ใช้ helper เดิมครบทั้งชุด
+           (`_filter_field_from_label` / `_field_names_match` / `_cell_matches_value`)
+
+           **3 สถานะเป็นหัวใจ:** True = ตรงทุก field · False = เจอ field แต่ค่าไม่ตรง (รวมกรณี
+           ค่ากลับไปเป็น "-- Select --" = ตัวกรองหลุด) · **None = อ่านไม่ได้ -> fail-open คง
+           พฤติกรรมเดิมทุกประการ** ไม่งั้นเว็บที่ perception อ่าน label ตัวกรองไม่ได้จะพังทันที
+           + `_extra_filters_set_on_page()` จับตัวกรองส่วนเกินที่ยังตั้งค้างอยู่ (เคส
+           Status=Enabled ที่ user เจอตั้งแต่ต้น) — W_filter_scope_guard กันตอน *จะตั้ง*
+           ตัวนี้กันตอน *จะสรุปผล*
+
+           ต่อเข้า 2 จุดที่รับ "0 แถว": guard ของ finish_task และ goal-scope hard stop
+           (จุดเดียวกับที่ W86 วางไว้ — เลือกจุดนี้เพราะ `elements` เป็น snapshot ของ iteration
+           ปัจจุบันแล้ว ต่างจากจุดที่ตั้ง `goal_scope_satisfied_reason` ซึ่งเกิด *ก่อน*
+           get_snapshot จึงถือ snapshot ที่เก่าไปหนึ่ง action)
+
+           **live check 3 รอบ: guard นี้ไม่เคยยิงเลยสักครั้ง** — ทั้ง 3 รอบชนเพดาน max_steps
+           แต่ยืนยันด้วย verbose run แล้วว่าการปฏิเสธมาจาก guard เดิมที่อ่าน "(12) Records Found"
+           แล้ว "(2) Records Found" = แถวเหลือจริง ไม่ใช่ของใหม่
+           **บันทึกความเข้าใจผิดของตัวเองไว้ด้วย:** ตอนเห็นผล 3/3 ชนเพดานครั้งแรก ผมสรุปทันทีว่า
+           W105 ทำ regression (เพราะรอบก่อนหน้า 3/3 ผ่านใน 4-10 steps) — ผิด รอบก่อนหน้านั้น
+           เดโมมี ESS แค่ 0-2 คน ส่วนรอบนี้เริ่มที่ 5-12 คนและมีคนอื่นสร้างเพิ่มระหว่างรัน
+           (รอบหนึ่งเริ่มที่ 0 ESS จบที่ 5 ESS) คนละความยากกันคนละเรื่อง ไม่ใช่ regression
+           => **บนเดโมสาธารณะ อย่าเทียบผลข้ามรอบโดยไม่ดูปริมาณข้อมูลตั้งต้นก่อน** และเมื่อสงสัยว่า
+           ของที่เพิ่งใส่ทำพัง ให้รัน verbose แล้วดูว่ามันยิงจริงไหม ก่อนจะสรุป
+
+           ผลข้างเคียงที่สรุปได้จริง: guard นี้ไม่สร้าง false positive ในการรันสด 3 รอบ (ไม่ยิงเลย)
+           ส่วนความถูกต้องของตรรกะคุมด้วย unit test 4 เคส (ตรง / ไม่ตรง / อ่านไม่ได้ต้อง fail-open
+           / ตัวกรองส่วนเกิน) และเคส "กรองถูก + ตารางว่าง = ต้องยังจบงานได้" กันไม่ให้ guard นี้
+           ทำให้งานลบที่สำเร็จจริงจบไม่ได้
+
+  [x] W106 ("ช่องว่างต้องไม่ดูเหมือนมีค่าอยู่แล้ว" — W_empty_field_shows_no_value)
+           **W105 สร้าง false positive จริงทันทีที่ user รันรอบถัดไป** — agent ทำถูกครบ 12 steps
+           (Search -> Select All -> Delete Selected -> Yes, Delete -> ตรวจซ้ำได้ 0 แถว) แต่ UI
+           ขึ้น Failed พร้อมข้อความ:
+             "an extra filter the goal never mentioned is still narrowing it
+              ('Employee Name: Type for hints...')"
+           `"Type for hints..."` คือ **placeholder ของช่องที่ยังว่างเปล่า** ไม่ใช่ค่าที่ถูกกรอก
+
+           **ต้นตออยู่ที่ W100 ไม่ใช่ W105:** W100 เติม prefix ชื่อ field ให้ input ธรรมดา แต่
+           label ของช่องที่ยังว่างตกไปใช้ placeholder (label chain: `el.value || associatedLabel
+           || placeholder`) พอเติม prefix จึงได้ "Employee Name: Type for hints..." ซึ่งอ่านยังไง
+           ก็เหมือนช่องนี้มีค่าแล้ว — W105 ที่อ่านค่าตัวกรองจาก label ตัวนี้จึงเห็นเป็นตัวกรอง
+           ส่วนเกินที่ตั้งค้างอยู่ แล้วปฏิเสธงานที่ทำสำเร็จแล้ว
+
+           **แก้ที่ perception ไม่ใช่ที่ guard** — label ที่บอกว่า "ช่องว่างมีค่า" เป็นข้อมูลผิด
+           ตั้งแต่ต้นทาง ถ้าไปแก้ที่ guard อย่างเดียว โมเดลก็ยังเห็น label ที่ทำให้เข้าใจผิดอยู่ดี
+           ช่อง form field ที่ `el.value` ว่าง -> แสดงแค่ชื่อช่องเฉยๆ (placeholder เป็นคำใบ้ของ UI
+           ไม่ใช่ค่าที่ถูกกรอกไว้) ส่วนชื่อ field ยังอ่านได้ตามปกติผ่าน W104 ที่รับ label ไม่มี ":"
+
+           ยืนยันด้วย Chromium จริง:
+             'Employee Name: Type for hints...' -> 'Employee Name'      (ว่าง = ไม่มีค่า)
+             'Username: jsmith'                 -> 'Username: jsmith'   (มีค่าจริง ยังจับได้)
+             'Status: -- Select --'             -> คงเดิม (ไม่นับเป็นส่วนเกินอยู่แล้ว)
+           => `extra filters set` ของเคสที่ user เจอเหลือ [] guard ไม่ยิง งานจบเป็น success
+
+           **บทเรียนของรอบนี้ (คู่กับ W105):** W105 ผ่าน unit test ครบและ "ไม่ยิงเลย" ในการรันสด
+           3 รอบ ผมจึงสรุปว่าไม่มี false positive — แต่ 3 รอบนั้นบังเอิญไม่มีหน้าไหนที่มีช่อง input
+           ว่างพร้อม placeholder อยู่ในสถานะที่ guard จะอ่าน "ไม่ยิงเลย" ไม่ใช่หลักฐานว่าไม่มี
+           false positive มันแปลว่า **ยังไม่เคยถูกทดสอบ** ต่างหาก
+
+  [x] W107+W108 ("marker คือสถานะ ไม่ใช่ตัวตน" — W_label_marker_key + W_marker_registry)
+           live stability 3 รอบหลัง W106: **1/3 ผ่าน** (รอบที่ผ่าน 20 rows/14 ESS -> 1 row/0 ESS
+           ใน 10 steps = ผลดีที่สุดเท่าที่เคยได้) อีก 2 รอบชนเพดาน max_steps โดยเผา step ไปกับ:
+             Select row [hidden — may need to hover the row first] -> Select row ->
+             Select row [hidden — ...] -> Select row -> ...  (8 steps ติด)
+
+           guard ที่เขียนมาเพื่อเคสนี้โดยตรง (`_MAX_CONSECUTIVE_SAME_LABEL_ACTIONS = 4` —
+           comment ของมันอ้าง goal ของ user คนนี้ตรงตัว) **ไม่เคยได้ทำงาน** เพราะ key คือ label
+           *ดิบ* — `"Select row"` กับ `"Select row [hidden — ...]"` เป็นปุ่มชนิดเดียวกันเป๊ะแต่เป็น
+           คนละ key ตัวนับจึงรีเซ็ตทุกครั้งที่สลับ ไม่มีวันถึง 4
+
+           **สำรวจแล้วพบว่าใหญ่กว่าที่ประเมินตอนแรก (บอก user ไว้ว่า "~10 บรรทัด")** — marker
+           ตัวเดียวกันทำให้โค้ดที่เพิ่งเขียนในเซสชันนี้เองอ่านค่าผิดอีก 2 จุด:
+             - `_filter_value_from_label` (W105) คืน `"ESS [in open dialog]"` เป็น *ค่า* ของตัวกรอง
+               -> `_cell_matches_value` และ `_FILTER_UNSET_VALUE_TEXTS` อ่านผิดทั้งคู่
+             - `_filter_field_from_label` (W104) คืน `"Username [required]"` เป็น *ชื่อ field*
+               -> `_field_names_match` ไม่ match อะไรเลย guard เงียบไปเฉยๆ
+
+           แก้: `_label_without_markers()` ตัวเดียว ใช้ที่จุดที่ต้องการ "ตัวตน" ของ element
+           **ตัดเฉพาะ marker ที่รู้จัก ไม่ตัด `[...]` ทั่วไป** เพราะ label จริงของเว็บมีวงเล็บ
+           เหลี่ยมของตัวเองได้ ("[Beta] Export") การตัดมั่วจะทำให้ของคนละตัวกลายเป็นตัวเดียวกัน
+           ซึ่งอันตรายกว่าไม่ตัดเลย (มีเคสควบคุมในเทสต์)
+           marker ต่อท้ายเป็นปกติ แต่กลายเป็น label ทั้งก้อนได้ถ้า label เดิมว่าง และซ้อนกันได้
+           จึงตัดทุกตำแหน่ง ไม่ใช่แค่ท้ายสตริง
+
+           **W108 — สิ่งที่สำคัญที่สุดของรอบนี้คือเทสต์ ไม่ใช่ทะเบียน**
+           ฝั่ง JS เติม marker 7 ตัว แต่ฝั่ง Python เคยตั้งชื่อไว้แค่ 3 และ `"[already active]"`
+           ถูกพิมพ์เป็น literal ซ้ำ 5 ที่ ส่วน `[disabled]`/`[required]`/`[hidden — ...]` ไม่มีชื่อเลย
+           => รวมเป็นทะเบียนเดียว `_PERCEPTION_LABEL_MARKERS` **พร้อมเทสต์ที่อ่านซอร์สของ
+           perception.py จริงแล้วยืนยันว่า marker ทุกตัวที่ JS เติมมีอยู่ในทะเบียนครบ**
+           วันที่มีใครเพิ่ม marker ตัวที่ 8 โดยไม่แตะทะเบียน ตัวตัดจะตัดมันไม่ออกแล้ว loop
+           detector ก็เงียบไปอีกครั้ง — เทสต์ตัวนี้คือสิ่งเดียวที่ทำให้ drift *ดัง* ขึ้นมา
+           ซึ่งเป็นรูปแบบที่เจอซ้ำมาแล้วหลายครั้งในเซสชันนี้ (เจตนา/comment ถูก แต่โค้ดอีกฝั่ง
+           ไม่ทำตาม: W97 คอลัมน์, W102 ลำดับ selector, W103 คำในแผน)
+
+  [x] W109 ("ตอบให้ได้ว่างานจริงดีขึ้นไหม ไม่ใช่แค่ benchmark" — W_production_kpi)
+           telemetry เขียนครบมาตั้งแต่ W78/W83 แต่ **ไม่มีอะไรอ่านมันเพื่อสรุปผลเลย** — grep หา
+           ผู้ใช้ `token_usage_log_path`/`step_trace_log_path` เจอแต่ตัวเขียนกับเทสต์ ส่วน
+           release_gate อ่านเฉพาะ `data/eval_results/*.json` จึงตอบได้แค่ "benchmark ดีขึ้นไหม"
+           => `core/kpi.py` + `python run.py kpi [จำนวนวัน]` (อ่านอย่างเดียว ไม่เปิด browser
+           ไม่เรียก LLM รันพร้อม task อื่นได้)
+
+           **การสร้างมันเปิดโปงว่าข้อมูลที่มีอยู่เชื่อไม่ได้ 2 ชั้น — ทั้งสองชั้นเจอจากการวัด
+           ไม่ใช่จากการอ่านโค้ด:**
+
+           (1) `source="api"` แยกงานจริงออกจาก fixture ของเทสต์ไม่ได้ — วัดจริงพบว่า **564 จาก
+           642 แถวที่ source=api ชี้ไป example.com** (เทสต์รุ่นเก่าที่เขียนลงไฟล์จริง) รายงาน
+           รอบแรกจึงออกมา success 99% / duration median 0.0s / 10 tokens ซึ่งไม่ใช่ความจริงของ
+           งานจริงเลยสักตัวเลข
+           กรองด้วยกฎที่ไม่ต้องเดา: **RFC 2606/6761 สงวนโดเมนกลุ่มนี้ไว้สำหรับเอกสาร/ทดสอบ**
+           ("ไม่มีงานจริงที่ไหนวิ่งไป example.com ได้") — ต่างจากการเดาว่า "แถวที่ duration=0
+           น่าจะปลอม" ซึ่งจะไปตัดงานจริงที่จบเร็วทิ้งด้วย และรายงาน **บอกเสมอว่าตัดออกกี่แถว**
+           เพราะการกรองเงียบๆ ทำให้คนอ่านเชื่อตัวเลขผิด
+
+           (2) หลังกรองแล้ว median ของ steps/duration ยังเป็น 0.0 — เพราะ routes.py มีทางลัด
+           4 ทางที่คืนผลโดยไม่แตะเบราว์เซอร์เลย (`/context`, ไฟล์แนบ, general chat, follow-up
+           จากไฟล์) ทุกทางคืน steps=0 *ตามออกแบบ* และคิดเป็น 41 จาก 78 task
+           => แยก "งานเบราว์เซอร์" ออกจาก "งานที่ตอบแบบแชท" เสมอ แล้วคิดสถิติจากกลุ่มแรกเท่านั้น
+
+           ตัวเลขจริงหลังกรองครบ (ณ วันที่ทำ): **78 task — เบราว์เซอร์ 37 / แชท 41 — สำเร็จเฉพาะ
+           งานเบราว์เซอร์ 81%** · steps median 4 p95 27 · วินาที median 64.5 p95 311.5 ·
+           input tokens median 68k p95 616k · failure_class ของ step: ok 197 /
+           element_not_found 17 / wrong_action_type 1 / timeout 1
+
+           หลักการที่ยกมาจาก W91 ตรงๆ: **ห้ามโชว์ค่าเฉลี่ยเดี่ยวๆ แล้วสรุปว่าดีขึ้น** ทุกตัวเลข
+           มาพร้อม median + p95 + n และรายงาน *ไม่* สรุปให้เองว่าดีขึ้น/แย่ลง เพราะ noise ของ
+           metric กลุ่มนี้สูงพอที่การสรุปอัตโนมัติจะหลอกคนอ่านได้
+
+  [x] W110 ("ตารางที่ไม่มีหัวคอลัมน์ต้องบอกว่าตัดสินไม่ได้" — W_column_headers_fallback)
+           ช่องโหว่ที่เหลือจาก W97: `_VISIBLE_TABLE_ROWS_JS` หา header จากแถวที่มี
+           `th`/`[role=columnheader]` เท่านั้น — ไม่มีแถวไหนเข้าเงื่อนไข -> `headers = []` ->
+           `_column_index_for_field()` คืน None -> `_row_matches_condition()` **fail-open กลับไป
+           เทียบข้อความทั้งแถว = บั๊ก W97 เดิมเป๊ะ** (ค่า "ess" ไปตรงกับชื่อคน "Jessica")
+           เพียงแต่เงียบกว่าเพราะไม่มีใครเห็น
+
+           แก้ 2 ส่วน:
+           (1) หาชื่อคอลัมน์เพิ่มอีก 2 ชั้นก่อนจะยอมแพ้ — ตารางจำนวนมากไม่มี th แต่บอกชื่อคอลัมน์
+               ไว้ที่ตัวเซลล์เอง โดยเฉพาะตาราง responsive ที่ต้องโชว์ชื่อคอลัมน์บนมือถือ:
+                 ชั้น 2 = `headers=` / `aria-labelledby` ของเซลล์ ชี้ไปหาหัวคอลัมน์ที่ประกาศไว้
+                 ชั้น 3 = `data-col` / `data-field` / `data-label` / `data-title`
+           (2) **ที่สำคัญกว่า: เมื่อยังหาไม่เจอ ต้อง "ตัดสินไม่ได้" ให้ชัด ไม่ใช่เดาเงียบๆ**
+               `_count_rows_matching_condition(..., require_columns=True)` คืน None แทนที่จะ
+               ถอยไปเทียบทั้งแถว และ `_table_columns_are_addressable()` เช็คทั้ง "มีชื่อคอลัมน์"
+               และ "แถวถูกแยกเป็นเซลล์จริง" (ตาราง div ล้วนถูกยัดทั้งแถวเป็นเซลล์เดียว
+               ซึ่งเทียบเท่ากับไม่มีคอลัมน์ ถึงจะมีชื่อหัวตารางก็ตาม)
+
+           **ผู้เรียกต้องเลือกตามทิศทางของการตัดสินใจ ไม่ใช่ตั้งค่าเดียวใช้ทุกที่:**
+             - ทิศปลอดภัย (บล็อกไว้ก่อน เช่นกันลบจากตารางที่ยังไม่กรอง) -> เทียบทั้งแถวได้
+               เพราะเดาเกินแล้วบล็อก อย่างมากก็เสีย step
+             - ทิศอันตราย (ใช้เป็นหลักฐานว่า "จบงานแล้ว" — W96 fallback) -> ต้องเล็งคอลัมน์ได้จริง
+               เพราะนับเกินในทิศนี้แปลว่าอ้างว่าเสร็จทั้งที่ยังเหลือ
+
+           ยืนยันด้วย Chromium จริง (mock พิสูจน์ไม่ได้ว่า JS อ่าน DOM จริงเจอไหม):
+             th / aria-labelledby / data-col -> เจอชื่อคอลัมน์ครบทั้ง 3 และนับได้ 1 จาก 2 แถว
+               โดย "jessica (Admin)" ไม่ถูกนับเป็น ESS
+             ไม่มีชื่อคอลัมน์เลย -> require_columns=True คืน None (ตัดสินไม่ได้)
+               ส่วนค่าเริ่มต้นยังตอบได้เหมือนเดิม
+
+  [x] W111 ("ทำตรงกับ step ที่กำลังทำอยู่ไหม" — W_action_matches_plan_step)
+           ปิดข้อสุดท้ายจาก 4 ช่องว่างที่ user ระบุ — W_plan_progress_stall (W103) เป็นแค่ *ตัวนับ*
+           มันถามว่า "cursor ขยับไหม" ไม่ใช่ "สิ่งที่ทำตรงกับ step ที่กำลังทำอยู่ไหม" และ live run
+           แสดงจุดอ่อนตรงๆ: โมเดลใส่ `completed_plan_step` มาแทบทุก action ทำให้ cursor ขยับตลอด
+           ตัวนับจึงไม่มีวันถึงเกณฑ์ ทั้งที่งานไม่คืบเลย
+           ตัวใหม่จึง **ไม่รีเซ็ตเมื่อ cursor ขยับ** — รีเซ็ตเฉพาะตอน action *ตรงกับ step* จริงๆ
+
+           **สามอย่างที่ต้องแก้ระหว่างทาง ทุกอย่างเจอจากการวัด ไม่ใช่การอ่านโค้ด:**
+
+           (1) แผนเป็นภาษาไทยแต่ label ของเว็บเป็นอังกฤษเกือบเสมอ — เทียบ token ตรงๆ ตอบ
+           "ไม่ตรง" ให้คู่ที่ถูกต้อง (step "แล้วกดค้นหา" กับปุ่ม "Search") ซึ่งจะทำให้ guard เตือน
+           ผิดเป็นปกติ => ใช้ regex สองภาษาที่มีอยู่แล้วในไฟล์เป็นสะพาน (`_SEARCH_LABEL_RE`,
+           `_DESTRUCTIVE_LABEL_RE`, `_ROW_ACTION_LABEL_RE`, `_PLAN_COMMIT_STEP_RE`) ไม่สร้าง
+           พจนานุกรมใหม่ — ทุกตัวครอบไทย/อังกฤษอยู่แล้วเพราะเขียนมาเพื่ออ่าน label เว็บไทยตั้งแต่ต้น
+           ฝั่ง label ยังใช้ตัวผูก `^` ตามเดิม เพื่อไม่ให้ "Saved Searches" นับเป็นปุ่มบันทึก
+           (เหตุผลเดียวกับที่ W103 แยก regex สองตัวจากคำชุดเดียวกันไว้)
+
+           (2) ภาษาไทยไม่มีเว้นวรรค การตัดคำด้วย regex จึงได้ token เดียวยาวๆ ต่อประโยค ทำให้
+           step ภาษาไทยเกือบทุกข้อมีคำน้อยกว่าเกณฑ์และกลายเป็น "ตัดสินไม่ได้" ทั้งหมด
+           => ต้องเช็คสะพานข้ามภาษา *ก่อน* เกณฑ์จำนวนคำ ไม่งั้น guard ไม่มีวันได้ทำงานกับแผนจริง
+
+           (3) cursor วิ่งเลยข้อสุดท้ายได้ (จากจุดอ่อนข้อบน) แล้วจะไม่มี step ให้เทียบเลย —
+           ซึ่งคือเคสที่ต้องการ guard นี้ที่สุดพอดี => ตรึงไว้ที่ข้อสุดท้าย (แผน "เสร็จ" ตามตัวนับ
+           แล้วแต่ agent ยังทำอะไรอยู่ = อย่างน้อยต้องเกี่ยวกับข้อสุดท้าย)
+
+           advisory ล้วน ไม่บล็อก และเป็น **สัญญาณอ่อนโดยเจตนา** — ข้อความของ step เขียนโดย LLM
+           จึงกว้าง/กำกวมได้เสมอ การเอาไปบล็อก action จะพังงานที่ถูกต้อง คืน None เมื่อ step กว้าง
+           เกินไปหรือ action ไม่มี label ("อ่านไม่ออก" กับ "ทำผิด" คนละเรื่องกัน) และแนบข้อความ
+           ไปกับ result_text ที่จุดเดียวกับ W103 ด้วยเหตุผลเดียวกัน (ห้าม continue หลัง dispatch)
+
+           **หมายเหตุจากการเขียนเทสต์ ซึ่งเปิดโปงพฤติกรรมจริงของลูป:** เทสต์แรกใช้ action ซ้ำเป๊ะ
+           แล้ว loop detector เดิมกินเทิร์นไปก่อน และใช้แผนข้อเดียวแล้ว `plan_fully_completed`
+           ติดตั้งแต่ action แรกจน Goal Boundary Gate หยุด task ก่อน guard ใหม่ได้ทำงาน —
+           ทั้งสองอย่างเป็นพฤติกรรมที่ถูกต้องของ guard เดิม แต่แปลว่า **เทสต์ที่จะพิสูจน์ guard
+           ใหม่ต้องหลบ guard เก่าให้เป็น** ไม่งั้นจะสรุปผิดว่าโค้ดใหม่ไม่ทำงาน
+
+  [x] W112 ("filter-scope guard มองไม่เห็น action ที่ทำสิ่งเดียวกันด้วยชนิดอื่น"
+           — W_filter_scope_via_dropdown)
+           live 2026-09-01: agent ตั้ง Status=Enabled ได้ทั้งที่ goal บอกแค่ userrole=ess
+           trace คือ `8:press_key(Status: -- Select --)` แล้วตามด้วย `9:click(Enabled)`
+           ตัว guard (W94/W104) ถูกทุกบรรทัด ชื่อ field ก็อ่านออก — วัดแล้วยืนยัน:
+             'Status: -- Select --'  press_key -> field='status'
+             'Status: -- Select --'  click     -> field='status'
+             'Enabled'               click     -> field=''
+           แต่ลิสต์ชนิด action ของมันมีแค่ `("fill", "select", "click")` press_key จึงผ่านฉลุย
+           => ครอบให้ครบทุกชนิดที่ตั้งค่า filter ได้: + `press_key` (เลือกค่าใน dropdown ด้วย
+           ลูกศร/Enter ได้จริง) และ + `check` (เว็บที่ทำ filter เป็น checkbox/toggle)
+
+           **ทางที่สองที่สงสัยว่าหลุด แล้วตรวจพบว่าไม่มีอยู่จริง — บันทึกไว้กัน "แก้ซ้ำ":**
+           ตอนแรกจะเพิ่มกลไกจำว่า dropdown ที่เพิ่งเปิดคือช่องไหน เพื่อโยงการกด `click(Enabled)`
+           (label เป็นแค่ค่า ไม่มีชื่อ field นำหน้า guard จึงอ่านไม่ออก) กลับไปที่ช่องนั้น —
+           เขียนเสร็จแล้วไล่ reachability ก่อน commit พบว่าเป็นโค้ดตาย: ลิสต์ตัวเลือกจะเปิดขึ้นมา
+           ได้ก็ต่อเมื่อ action ที่เปิดมัน *ผ่าน guard นี้ไปแล้ว* ซึ่งแปลว่าช่องนั้นอยู่ในขอบเขต
+           goal (ไม่ต้องปฏิเสธ) หรือโควตาหมดไปแล้ว (guard ปิดตัวเองอยู่ดี) — สาขานั้นจึงยิงไม่ได้
+           เลยสักทาง พอครอบที่ตัว trigger ครบทุกชนิด ทางที่สองก็ปิดตัวเองไปด้วย
+           ถอดออกทั้งก้อน รวมทั้ง DOM query (`classify_click_index_disturbance`) ที่จะต้องเรียก
+           เพิ่มต่อคลิกเพื่อยืนยันว่าเป็น "ตัวเลือก" จริง
+
+           เทสต์ 2 ตัว คุมสองทิศ: press_key/check บนช่องนอกขอบเขตต้องไม่ถูก dispatch ·
+           press_key บนช่องของ goal เอง **และ** ปุ่ม Search (label อ่านชื่อ field ไม่ได้)
+           ต้องผ่าน — ทิศหลังสำคัญกว่าเพราะ guard ตระกูลนี้ตั้งใจใช้โควตาไม่ใช่บล็อกตาย
+           ยืนยันว่าเทสต์ตัวแรก **ล้มจริงบนโค้ดก่อนแก้** ก่อนจะเชื่อว่ามันพิสูจน์อะไรได้
+           (บทเรียนจาก W111 ที่ guard เก่าบังการทำงานของ guard ใหม่จนอ่านผลผิด)
+
+  [~] W_token_trim ("ลด input token ต่อ step ของ agent loop" — แผนเต็มอยู่ที่
+           ~/.claude/plans/now-provider-open-ai-bubbly-bonbon.md, Section 1-5)
+           ที่มา: telemetry จริง (data/token_usage.jsonl, provider "openai" เป็น default)
+           input 10k-25k token/step ไต่ขึ้นถึง 590k-715k บน task 25-28 step และ prompt
+           กินราว 80% ของ input บน gate run 15 task — เกือบทั้งหมดไม่ใช่เนื้อหาหน้าเว็บ
+
+           เฟสที่ทำเสร็จแล้ว (pytest ผ่านหมด baseline 0 fail, ยกเว้น
+           test_site_learning_crawler::...mid_crawl_login_page_as_dead_end ที่ล้มอยู่ก่อน
+           แล้วบน HEAD สะอาด — ยืนยันด้วย git stash — ไม่เกี่ยวกับงานนี้):
+
+           P1  (commit W_token_trim P1+P2): clip result string หัว+ท้าย 200+120 char
+               (memory.clip_result ใช้ใน failed/recent summary + _build_history_digest);
+               RAG/long-term chunk 3->2; _focused_plan_context ส่งแค่ CURRENT+NEXT+FINAL
+               เต็มข้อความ ยุบข้อที่ทำแล้ว/ข้อกลางเป็นบรรทัดนับ; ตัด key/then_click_index
+               tool-param description ให้สั้น (คง warning "swap fill+submit เขียนค่าแต่ไม่
+               submit เงียบๆ")
+           P2/M1  (commit เดียวกัน): _dedupe_stale_snapshots — stub บล็อก "Current page:"
+               ของ user turn เก่าทุกอันยกเว้นอันล่าสุด ก่อนยิง next_action (idempotent,
+               ไม่ throw, provider-agnostic); next_action ต่อ snapshot สดของ step นี้เอง
+               = ทุก request เห็น snapshot เต็ม 2 อันล่าสุดพอดี (ที่เหลือ SYSTEM_PROMPT
+               W19 "Action Trap" สั่งห้ามอ้างอิงข้ามอยู่แล้ว); _COMPACT_AFTER_STEPS 6->4
+           P3/M3  (commit W_token_trim P3/M3): site manual คงที่ทั้ง task แต่เดิมส่งเต็ม
+               ทุก step (~0.8k-2k tok x N) — llm.site_manual_blocks() คืน (full, ref);
+               orchestrator ส่ง full เฉพาะ step แรก + step แรกหลัง compaction ทุกครั้ง
+               (ซึ่งจะตัด copy เต็มอันเก่าทิ้ง) นอกนั้นส่ง "[id=<sha1 ย่อ>] unchanged.
+               Covers: <summary>"; _render_site_manual แปลง marker กลับเป็น prose แล้ว
+               ตัด sentinel ทิ้ง — string ธรรมดา (test/generate_plan/qa_summary) render
+               เท่าเดิมเป๊ะ; [PRE_LEARNED_MANUAL] marker ยังอยู่ต้น body และถูกฉีดเต็มใหม่
+               ภายใน 1 step หลัง compaction ทุกครั้ง = strict mode ยังถึงโมเดลทุก
+               compaction window
+           P4/M2  (commit W_token_trim P4/M2): compress bullet ที่ไม่ใช่ safety ของ
+               _PROMPT_CORE/_PROMPT_PLAN/_PROMPT_WIDGET/_PROMPT_PASSWORD/_PROMPT_TABLE —
+               เก็บทุก directive + trigger literal + W-tag ตัด "ทำไม"/ประวัติบั๊ก/
+               ตัวอย่างที่แค่พูดกฎซ้ำ/cross-ref; **ไม่แตะเลยแม้แต่ byte เดียว** (ยืนยันจาก
+               diff): bullet ที่ tag W21/W50/W63/W64 ทั้งหมด + format spec ของ card list
+               *** ตามด้วย commit "P4/M2 follow-up: revert _PROMPT_CORE compression" —
+               live A/B (openai, opensource-demo.orangehrmlive.com) พบว่า CORE ที่บีบแล้ว
+               ทำให้โมเดลเล็ก "เปราะ" ขึ้นแบบ probabilistic บน edge case เดียว: ช่องค่า
+               search เจอ validation "Invalid" (autocomplete ของ OrangeHRM ปฏิเสธชื่อที่
+               ไม่มีจริง) โมเดลบางครั้งเรียก request_user_input ขอค่าใหม่แทนที่จะอ่านว่า
+               "Invalid = ไม่มี record = นั่นแหละคำตอบ" — task search_no_results ทั้งวัน:
+               ก่อน M2 (87d42a0) ผ่าน 6/6, มี M2 (5addd80) ผ่าน 3/9 (MiniWoB ยัง 100%/100%
+               −7% token จึงเป็นปัญหาเฉพาะ CORE ตรงตามที่ risk table ของแผนทำนายไว้)
+               => คืน _PROMPT_CORE เป็นข้อความก่อน M2 ทุก byte, เก็บ P4 ของ PLAN/WIDGET/
+               PASSWORD/TABLE (MiniWoB สะอาด เสี่ยงน้อยกว่า) + M4 ไว้ ต้อง retry CORE บน
+               self-hosted OrangeHRM (public demo noisy เกินจะ bisect — ดู optimize.txt)
+           P5/M4  (commit W_token_trim P5/M4): compress _PLAN_PROMPT_TEMPLATE วิธีเดียวกัน
+               ไม่แตะ 2 บล็อก W21 + Page-Grouped Format spec + format placeholder
+
+           วัดด้วย backend/tests/measure_prompt_size.py (script ใหม่ ไม่ใช่ pytest —
+           ประกอบ input ต่อ step ของ step กลาง task สังเคราะห์แล้วพิมพ์ char + char//4),
+           {plan,table} mid-task step:
+             baseline 13,606 tok proxy (system prompt 38,368 char)
+             หลัง M2 เต็ม     12,026 (32,712)
+             หลัง revert CORE 13,152 (37,216)  <- สถานะปัจจุบัน
+           *** ตัวเลขนี้เห็นแค่ผลต่อ 1 turn — ผลหลักของ M1/Q1 อยู่ที่ conversation history
+           ที่โตขึ้นเรื่อยๆ ตลอด task ยาว (stub snapshot ทบต้น 15-25 step + compact ถี่ขึ้น)
+           ซึ่ง scoreboard 1-step ไม่จับ ต้องดู data/step_trace.jsonl tokens.input จาก live
+           run จริง ***
+
+           live A/B ที่รันแล้ว (provider openai):
+             - MiniWoB (87d42a0 vs 5addd80): 100% -> 100%, avg token 73,239 -> 68,297
+               (−6.7%; −14–15% บน task 1-step ที่ noise ต่ำ) — สะอาด
+             - OrangeHRM: พบ regression ของ M2 CORE (ด้านบน) แก้แล้วด้วย revert
+             - add_candidate ล้มทุก run ทุกฝั่ง (Save ไม่มี toast บน shared demo — pre-existing
+               ไม่เกี่ยว token trim)
+
+           ค้าง:
+             - retry CORE compression บน self-hosted OrangeHRM
+             - run.py release-gate A/B สำหรับ M2 (non-CORE) + M4
+             - 1 live run.py agent บนเว็บที่มี learned manual — ยืนยัน [PRE_LEARNED_MANUAL]
+               ยังถึงโมเดลทุก compaction window (M3)
+             - safety spot-check: OrangeHRM "ลบ user ที่ Role=ESS ออกให้หมด" 1 รอบ
+             - Q5 (ย้ายบรรทัดเวลา): **ตัดทิ้ง** — แผนเองให้คะแนน "~0 tok" ไม่คุ้มเสี่ยง churn
+
+  [~] W_token_cut ("ลด input token ≥50% โดย success rate ไม่ตก — ต่อจาก W_token_trim")
+           ที่มา: live run 2026-09-02 (goal สั้น "เปิดเว็ปแล้วไปที่หน้าแอดมิน") กิน 94.3k
+           token = input 77,888 + cache_read 16,128 + output 295 — output แค่ 0.3%
+           step_trace อธิบายได้แค่ 2 เทิร์น (25,299) ที่เหลือ 52,589 (67%) ไม่มีไฟล์ไหน
+           บันทึก แผนเต็ม W1-W6 อยู่ในหัวข้อ W_token_cut ของ auto-memory session
+
+           W1 (commit "W_token_cut W1: full per-task LLM-turn telemetry") — เสร็จ:
+             token_usage.jsonl ต่อ task ได้ field ใหม่: action_calls, finish_task_calls,
+             guard_rejections{ชื่อ guard: n}, notool_retries, cache_hit_turns,
+             cache_miss_turns, avg_{input,output}_tokens_per_call
+             - llm.TokenUsage +notool_retries (นับ retry ของ no-tool-call loop ทั้ง 4
+               provider, รวมผ่าน __add__ เหมือน field token)
+             - orchestrator.run_task: ตัวนับ monotonic (ไม่ reset ตอน action สำเร็จ
+               ต่างจาก consecutive_* guard counter) + _bump_guard() tag ~20 จุด continue
+               ของ guard ที่มีชื่อ + _run_stats() ป้อนเข้า result dict 4 เส้นทาง
+             - kpi.py: metric ใหม่ทุกตัวรายงาน median/p95/n + guard_rejections รวมข้าม
+               task แยกตามชื่อ + cache hit ratio รวม
+             - เทสต์: +3 (telemetry passthrough/default, kpi breakdown); แก้ 5 เทสต์
+               no-tool-call ของ test_llm ให้ assert notool_retries
+             baseline: test_orchestrator/test_api/test_task_manager/test_telemetry/
+             test_kpi/test_llm ผ่านครบ
+
+           W2 (commit "W_token_cut W2: constant system prefix ...") — เสร็จ:
+             build_system_prompt(sections) คืนคนละ string ทุกครั้งที่ชุด gate เปลี่ยน
+             (ตารางโผล่กลาง task = +บล็อก table) -> prefix cache ของ provider ขาดทั้ง
+             conversation (cache_read ติดครั้งเดียว ~6.5k แล้ว 0 ตลอด)
+             - ทั้ง 4 provider ส่ง _PROMPT_CORE เป็น system เป๊ะทุกเทิร์นทุก task
+             - บล็อก plan/table/widget/password ย้ายไปต่อ *ท้าย* user turn ผ่าน
+               _build_user_turn_text(prompt_sections=) — gate เดิม ข้อความเดิม แค่ย้ายที่
+             - qa_summary ส่ง ALL_PROMPT_SECTIONS (คงกฎครบเท่า build_system_prompt(None))
+             token รวมต่อ step เท่าเดิม แต่ prefix ~7.6k คงที่ -> cache ติดตั้งแต่เทิร์น 2
+             เทสต์: +5 / แก้ 3 (assert system = _PROMPT_CORE)
+
+           BASELINE (live 2026-09-02, 6 runs openai goal "เปิดเว็ปแล้วไปที่หน้าแอดมิน"):
+             output = 0.4% ของ token ทั้งหมด (ทุกอย่างคือ input) · notool_retries = 0/18
+             call ทุกรอบ -> W4 ไม่มีอะไรให้ทำ · guard ที่ยิงจริง = login_skip (2, ใน
+             run ที่ login fumble) + table_verify (1) · เทิร์นที่ไม่ลงมือ = finish_task
+             (จำเป็น) + guard เท่านั้น · cache hit 50% (W2 อุ่นเครื่องแล้ว) ·
+             avg 13.3k input/call — ตัวใหญ่คือ prefix ~7.6k ที่ cache ได้ = W2 ไม่ใช่ W3-5
+
+           W3 (commit "W_token_cut W3: cut avoidable LLM turns ...") — เสร็จ:
+             - finish_task per-reason collapse: ปฏิเสธ finish ด้วย table_verify ไปแล้ว
+               1 ครั้ง ครั้งที่สอง (เหตุผลเดิม) ไม่เสียเทิร์นเตือนซ้ำ ตกไปเส้นทาง
+               VERIFICATION_FAILED ทันที (guard ข้อมูล deletion/delete-all/validation
+               คงโควตาเต็ม ไม่แตะ) — A/B สังเคราะห์: true finish loop 4 call -> 3 call
+               (-25%), ผลลัพธ์เหมือนเดิมเป๊ะ
+             - login_skip: ครั้งซ้ำ drop user-turn nudge (~500 tok) tool_result พอ
+             - backstop: guard รวม >= 9 หรือเหตุผลเดียว >= 4 -> จบ task ตามความจริง
+               (EXECUTION_FAILED_NEEDS_REPAIR) เช็คที่หัวลูปจุดเดียวที่ break ปลอดภัย
+             - telemetry: guard_reason_counts / repeated_guard_count /
+               finish_loop_prevented -> token_usage.jsonl + kpi
+             AFTER (live 6 runs ซ้ำ): friction เกิดซ้ำรูปเดิมเป๊ะ (login_skip x2 run,
+             table_verify x1 run) — llm_calls 18->18, input 239k->238k, success 6/6->6/6
+             **ไม่มี true multi-rejection loop เกิดในทั้ง 12 run** — "premature finish
+             cycle" ของ baseline (c2) จริงๆ คือปฏิเสธ 1 ครั้งแล้วโมเดลแก้ถูก ไม่ใช่ลูป
+             => W3 ถูกต้องและ regression = 0 แต่ผลต่อ workload นี้ ~0% เพราะโมเดลเชื่อ
+             nudge แรกทุกครั้ง; ค่าของมันคือกันลูปจริงที่หายากกว่าที่ n=1 ของ baseline บอก
+             (พิสูจน์ด้วย A/B สังเคราะห์ + unit test) เทสต์: +2, test_orchestrator 289 ผ่าน
+
+           W4: ปิด — 0 no-tool retry ใน 18 call, kpi p95 = 0
+
+           W_prompt_audit (commit "per-LLM-call prompt payload breakdown" +
+             "decompose the other bucket") — เสร็จ:
+             token_usage.jsonl ได้ field payload_audit = 1 entry ต่อ LLM call มี char
+             count ของ request แยกตามหมวด + _input_tokens จริงของ call (แปลง char->token
+             โดยเทียบสัดส่วน — วัด chars/token = 4.23-4.36 คงที่ => _input_tokens ของ
+             endpoint openai = payload เต็ม *รวม cached* ไม่ใช่บวกกับ cache_read
+             => W1 avg_input_tokens_per_call ที่ใช้ (input+cache_read)/calls สูงไป ~1.5-2x)
+
+             ผลวัดจริง (6 task 16 call, mixed short+long):
+               system_prompt 41% (คงที่ทุก call ~5.8k tok, cache ได้ — W2 จัดการแล้ว
+                 เหลือแต่ call ที่ cache miss)
+               assistant conversation history 31% (0 ที่ call 0 แล้ว +~4.7k tok/call
+                 ไม่มีเพดาน — call 4 ของงาน 5-call = ~17.7k tok; _dedupe_stale_snapshots
+                 ของ W_token_trim stub แค่ user turn ไม่แตะ assistant turn) => W5
+               gated_prompt 14% (~700 tok ถ้ามีแค่ plan, ~3.9k เมื่อหน้ามีตาราง
+                 W2 ย้ายบล็อกกฎออกจาก system ที่ cache ได้ มาไว้ user turn ที่ cache ไม่ได้)
+               tool_schema 8% (cache ได้) · page_snapshot 4% · ที่เหลือ 1-2%/หมวด
+             dominant source: total = system_prompt แต่ cache ได้; growth/non-cacheable
+             = assistant history (คือเหตุผลที่งานยาว = 100k+)
+
+           W5 (commit "W_token_cut W5: assistant / conversation history compaction") — เสร็จ:
+             _compact_stale_user_turns(messages, goal): user turn ของ step เก่า (ขึ้นต้น
+             "Goal: " + มี snapshot marker) เกิน keep_last_full=1 อันท้าย -> เหลือ
+             "Goal: <goal>\n\n<stub>". รันทุก step ต่อจาก _dedupe_stale_snapshots.
+             idempotent, provider-agnostic, ไม่แตะ tool_result/function_call/nudge.
+             telemetry: history_compaction_events, history_chars_saved, history_tokens_saved
+             (chars/4.3), assistant_history_tokens/_compacted_tokens (apportion จาก payload_audit)
+
+             ผล (deterministic A/B, digest-compaction ปิด = สถานการณ์ของงาน <=4 step ที่
+             เป็นส่วนใหญ่, gated block ขนาดจริง):
+               2 step: assistant history 12,598 -> 9,997 tok  (-21%)
+               3 step: 19,789 -> 13,886  (-30%)
+               5 step: 35,788 -> 21,846  (-39%)
+             => ยิ่งงานยาว ยิ่งลดมาก ผ่านเกณฑ์ >=30% ที่ >=3 step
+             deterministic char test (บทสนทนา 6 step จริง): 102k -> 21k chars = ตัด
+             ~19k tok ของบล็อกกฎ/plan/scaffolding ที่ค้างใน turn เก่า
+
+             live 6 run (openai, goal เดิม): success 6/6 -> 6/6 · llm_calls 16 -> 16 (ไม่เพิ่ม)
+             · cache hit 62% -> 75% (W2 อุ่นเครื่อง ไม่ใช่ W5) · 3-call run matched:
+             assistant_history 9,785 -> ~7,834 tok (-20%) · งานส่วนใหญ่ 2 call = W5 ไม่ทำงาน
+             (ยังไม่มีอะไรสะสม)
+             หมายเหตุ: task > 4 step มี digest compaction (_compact_*_messages) bound
+             history อยู่แล้ว W5 เพิ่มอีก ~10-15% (trim บล็อกกฎใน 3 turn ที่รอด)
+             เทสต์: +3, test_orchestrator 292 ผ่าน
+
+           W6 (commit "W_token_cut W6: rollup ...") — เสร็จ:
+             live A/B 6+6 รอบ (goal เดิม, openai): BEFORE = checkout 3731b11 (ก่อน
+             W_token_cut, มี W_token_trim อยู่แล้ว) / AFTER = HEAD (W1-W5 ครบ)
+             - success: 6/6 -> 6/6
+             - total input: 388,126 -> 199,155 (-48.7% แต่ step-mix ปน: BEFORE มี run
+               5-step 151k เป็น outlier)
+             - matched by step: 1-step ~เท่าเดิม (+2%, งาน 2-call ไม่มีอะไรให้ตัด) ·
+               2-step 63,561 -> 42,892 (-33%) · 5-step BEFORE 151k ไม่มีคู่ AFTER
+             - AFTER runs นิ่งมาก (2-step 42-43k ทุกครั้ง) BEFORE แกว่ง 34-98k = W3 +
+               ลูปที่แน่นขึ้นตัด friction tail
+             - cache hit ratio 62->75-80% (W2 อุ่นเครื่องสะสม)
+             - deterministic full-stack A/B (anthropic, ไม่มี real cache): BEFORE~=AFTER
+               (-0.3% ถึง -3.5%) => W_token_cut ไม่เพิ่ม overhead; win จริงมาจาก provider
+               prefix cache (W2, เห็นเฉพาะ API จริง) + W5 stub บล็อกกฎใน turn เก่า
+
+             AFTER payload breakdown (6 run 15 call, 199k tok): system_prompt 44% ·
+             gated_prompt 19% (W2 ย้ายออกจาก cacheable prefix) · other 18%
+             (assistant_history 15%, W5 bound ไว้แล้ว) · tool_schema 8% · snapshot 6%
+
+             cleanup: avg_input_tokens_per_call แก้จาก (input+cache_read)/calls เป็น
+             input/calls (W_prompt_audit พิสูจน์ว่า input_tokens รวม cached แล้ว) +
+             เพิ่ม avg_cached_tokens_per_call
+
+           W7 (commit "W_token_cut W7: dereference stale gated-rule blocks ...") — เสร็จ:
+             W7b: บล็อกกฎที่ gate ใน turn เก่า (history) เหลือ 1 บรรทัดอ้างอิง — header
+               line ใน _build_user_turn_text + _dedupe_stale_gated (รันทุก step ต่อจาก
+               _dedupe_stale_snapshots/W5) turn ปัจจุบันยังส่งเต็ม -> model เห็นกฎเต็ม 1 ชุด
+             W7a: openai prompt_cache_key คงที่ (route ไป cache slot เดิม — endpoint codex
+               ปฏิเสธ prompt_cache_retention ยืด TTL ไม่ได้) · anthropic cache_control
+               ttl "1h" (จาก 5m)
+             live A/B 6+6 (matched step-mix) vs W6-AFTER:
+               success 6/6 -> 6/6 · total input 199,155 -> 175,866 (-11.7%)
+               2-step avg 42,892 -> 35,937 (-16.2%) · accumulated history ("other")
+               36,505 -> 19,662 tok (-46%) · cache hit 80% -> 93% (prompt_cache_key ใช้ได้
+               จริงบน codex) · llm_calls 15 -> 15
+
+           สรุป W_token_cut ทั้งชุด (W1-W7 vs 3731b11):
+             - 2-step task (median): input -43% matched (63,561 -> 35,937)
+             - 1-step task: ~0% (งาน 2-call เป็น cacheable prefix เกือบล้วน ไม่มีอะไรตัด)
+             - batch รวม -49% (ปน outlier 5-step ของ before)
+             - success ไม่ตก · llm_calls ไม่เพิ่ม · W4 ปิด (0 retry)
+             - เป้า >=50% matched ยังไม่ถึง — ที่เหลือ: system_prompt (44%) ยัง full
+               price บน cache miss (turn 0 + TTL), gated_prompt (turn ปัจจุบัน ~3k tok
+               ต่อ call บนหน้าตาราง — บีบข้อความไม่ได้ ดู W_token_trim CORE revert)
+
+  [x] T1-T3 ("goal ภาษาไทยไม่มีความจำ ไม่มีตัวเลข และไม่มี intent กลาง" — core/goal_intent.py)
+           หลักฐานที่ทำให้ต้องทำ ทั้งสามข้ออยู่ในโค้ดอยู่แล้ว ไม่ใช่การคาดเดา:
+             - plan_memory._UNSUPPORTED_SCRIPT_RE ปิด Plan Memory ทั้ง find และ save สำหรับ
+               ไทย/จีน/ญี่ปุ่น/เกาหลี/อาหรับ/ซีริลลิก (embedding เป็น English-only tokenizer —
+               goal ไทยสองอันที่ไม่เกี่ยวกันเลยได้ cosine distance ~ 0) => งานภาษาไทยจ่ายค่า
+               ร่างแผนใหม่ทุกครั้งตลอดไป
+             - site_learning/storage.find_matching_page() ตัดคำด้วย [^\w]+ แล้วทิ้ง token ที่
+               สั้นกว่า 3 ตัวอักษร ภาษาไทยไม่มีเว้นวรรค => ได้ token ก้อนเดียว หา page ไม่เจอเลย
+             - orchestrator มี predicate ที่อ่าน goal 15 ตัว ไม่มีที่ไหนรวมคำตอบไว้เป็นก้อนเดียว
+               และ token_usage.jsonl ไม่มี field ไหนบอกภาษาของ goal เลย
+
+           T1 detect_goal_language() -> goal_script/goal_chars/goal_word_count ลง
+             token_usage.jsonl (คำนวณใน telemetry จาก goal ตรงๆ เส้นทาง exception จึงมีครบ
+             เหมือนกัน) + kpi.py แยกรายงานตาม goal_script
+             หมายเหตุที่ตั้งใจให้เห็น: goal ไทยได้ word_count = 1 เสมอ นั่นคือสาเหตุของข้อ 2
+             ไม่ใช่ข้อบกพร่องของตัววัด
+
+           T2 normalize_goal_for_matching()/matching_tokens() — ดึงคู่ field=value ออกมาเป็น
+             token ของตัวเอง (goal จริงคือ "แล้บลบuserole=ess" ไม่มีเว้นวรรคเลย) แล้ว union
+             เข้ากับ token เดิมใน find_matching_page() (ไม่ใช่แทนที่ — พฤติกรรมของ goal
+             ภาษาอังกฤษต้องไม่เปลี่ยนแม้แต่นิดเดียว)
+             จงใจไม่แก้คำสะกดด้วยพจนานุกรม: _field_names_match() ทนพิมพ์ผิดอยู่แล้ว การเดา
+             สองชั้นทำให้ debug ไม่ออกว่าชั้นไหนเดาผิด
+
+           T3 canonical_intent() -> GoalIntent(operation/scope/conditions/about_own_account/
+             asks_for_count/script) **ประกอบจาก predicate เดิมทั้งหมด ไม่มี logic ตัดสินใหม่**
+             (จึงไม่กระทบ guard ที่ใช้ predicate เหล่านั้นอยู่) + plan_memory_intent_key()
+             ปลดล็อก Plan Memory ให้ภาษาไทยโดยไม่ต้องมี multilingual embedding: ใช้กุญแจ
+             "operation:scope:field=value" ผ่าน where filter ล้วน ไม่แตะ query() เลย
+             เงื่อนไขเข้มโดยตั้งใจ — ต้องรู้ operation และมี field=value อย่างน้อย 1 คู่ ไม่งั้น
+             คืน None = พฤติกรรมเดิมเป๊ะ (ยอมไม่ match ดีกว่า match ผิดเจตนา ซึ่งคือบั๊กที่ทำให้
+             ต้องปิดระบบตั้งแต่แรก)
+             ที่ไม่มี operation "navigate": ต้องสร้างคลังคำชุดที่ 16 ซึ่งขัดกับกฎของไฟล์นี้
+
+           ข้อจำกัดที่ยอมรับและบันทึกไว้: key ไม่ทนคำสะกดผิด — "userole" กับ "userrole" เป็นคนละ
+           lineage แล้วอันที่ไม่ตรง fallback ไปให้ LLM ร่างใหม่ = พฤติกรรมเดิม ไม่มีแผนผิด
+           เจตนาถูกเสิร์ฟ
+
+           เทสต์: test_goal_intent.py (ใหม่ 14) + plan_memory 5 + telemetry 2 + storage 3 +
+           kpi 1 — เทสต์เดิมที่ยืนยันว่า "goal ไทยไม่แตะ ChromaDB เลย" ยังผ่านครบ เพราะ goal
+           ที่ไม่มี field=value ยังคืน None ก่อนแตะ collection เหมือนเดิม
+
+  [x] W91  ("release gate จับ regression ไม่ได้เลย เพราะ noise ของตัวมันเองใหญ่กว่าเกณฑ์"
+           — W_gate_noise_floor)
+           รัน gate หลัง W86-W90 แล้วขึ้น "ไม่ผ่าน" 5 metric รวด (avg_tokens +30%, p50 +42.6%,
+           avg_llm_calls +29.8%, p95 +12.4%, approval_rate +25%) — ดูเผินๆ เหมือน W86-W90
+           ทำพัง แต่ก่อนจะไล่แก้ ลองวัด "ความแกว่งของ gate เอง" ก่อนตามบทเรียนของ W84/W88
+
+           วัดจริง — gate 2 รันติดกันบน commit เดิม (64e069e) ไม่มีอะไรเปลี่ยนเลยสักบรรทัด:
+             success_rate  0.933 -> 0.800  (-14.3%)     p95      105.9 -> 158.2  (+49.5%)
+             approval_rate 0.933 -> 0.667  (-28.6%)     avg_tokens  161k -> 174k  (+7.8%)
+           และ avg_tokens ของ 4 รันบน commit เดียวกันกระจาย 124k-211k = กว้าง 70%
+           => **noise floor ของ harness เองใหญ่กว่าเกณฑ์ 10% ที่ตั้งไว้หลายเท่า** gate เดิม
+           เทียบกับ "รันเดียวก่อนหน้า" ซึ่งบังเอิญเป็นรันที่ดวงดีที่สุด (124k) จึงเท่ากับตั้ง
+           baseline ไว้ที่ค่าที่ทำซ้ำไม่ได้ แล้วประกาศ FAIL ทุกครั้งที่ดวงกลับสู่ปกติ
+
+           แก้ 2 ชั้น:
+           (1) baseline = median ของ N รันหลังสุด (settings.release_gate_baseline_runs=5)
+               แทนรันเดียว — median ไม่ใช่ mean เพราะรันที่ timeout หนึ่งครั้งไม่ควรลาก
+               baseline ทั้งก้อน
+           (2) วัด spread ต่อ metric = (max-min)/median ของ history แล้ว metric ไหนที่
+               "แกว่งเองกว้างกว่าเกณฑ์" ถูกทำเครื่องหมาย [NOISE] — รายงานทิศทางให้เห็นครบ
+               แต่ไม่ถ่วง pass/fail ปล่อยให้มัน fail = สร้าง false alarm ประจำจนคนเลิกเชื่อ
+               gate ทั้งตัว ซึ่งแย่กว่าไม่มี gate
+           baseline_path ที่ผู้เรียกปักหมุดเอง ยังหมายถึงไฟล์เดียวเหมือนเดิม (ไม่ไปเฉลี่ยให้)
+           และ compare_against_baseline() ที่ไม่ส่ง noise_pct ได้พฤติกรรมเดิมเป๊ะ (เทสต์เดิม
+           26 เคสผ่านครบโดยไม่ต้องแก้)
+
+           ผลเมื่อใช้เกณฑ์ใหม่กับ run เดียวกัน: จาก 5 FAIL เหลือ **1** — avg_tokens ที่เดิม
+           ขึ้น +30% กลายเป็น -3.8% เมื่อเทียบกับ median จริง เหลือ avg_llm_calls +26.0%
+           (แกว่งเองแค่ ±8%) เป็นสัญญาณเดียวที่ทั้งนิ่งพอและแย่ลงจริง
+
+           ตรวจสัญญาณนั้นต่อด้วย ground truth: MiniWoB เป็น suite เดียวที่ตัดสินด้วย
+           WOB_REWARD_GLOBAL ไม่ใช่คำพูดของ agent เอง — 3 gate run ล่าสุดได้ 7/8, 8/8, 7/8
+           และ click-checkboxes ที่ล้มในรันล่าสุด ก็ล้มมาแล้วบน 64e069e ก่อนหน้านี้เหมือนกัน
+           => ไม่มีหลักฐานว่า W86-W90 ทำ regression จริง avg_llm_calls +26% ตั้งอยู่บนการ
+           ประมาณ noise จากตัวอย่างแค่ 4 รัน ยืนยันไม่ได้จากรันเดียว ต้องรอสะสม history
+
+           แก้ตัวเลขที่เคลมเกินไว้ใน W88 ตามความจริง: ที่บันทึกว่า prompt sectioning ลด
+           avg_tokens 211,226 -> 124,001 (-41.3%) — 124k คือปลายที่ดวงดีของการกระจาย
+           124k-211k บน commit เดิม ตัวเลข -41.3% จึงเป็นดวงปนอยู่มาก **หลักฐานที่ยังยืนอยู่
+           คือ step-1 input median 11,350 -> 7,047 (-38%)** ซึ่งวัดขนาด prompt ตรงๆ ไม่ผ่าน
+           ค่าเฉลี่ย end-to-end ที่มี noise ปนเต็มไปหมด
+
+           ของที่ยังค้าง: git_commit ของ gate run นี้บันทึกเป็น "unknown" ทั้งที่
+           _git_commit_short() ทำงานถูกเมื่อเรียกมือ (คาดว่า timeout=5s ไม่พอตอนเครื่องโหลด
+           หนัก เพราะรันพร้อม pytest ชุดใหญ่) — กระทบแค่ชื่อไฟล์/ป้ายกำกับ ไม่กระทบการเทียบ
+           ยังไม่แก้เพราะยังทำซ้ำไม่ได้ บันทึกไว้ก่อน
+
+  [x] W_gate_is_noisy ("benchmark รอบเดียวตัดสิน commit ไม่ได้" — 5 ข้อตามที่ user สั่ง)
+           หลักฐานที่ปิดเรื่องนี้: commit 3ddb18a เดียวกันเป๊ะ ไม่แตะโค้ดเลย ให้ผล 12/15 (ธง
+           FAIL) กับ 15/15 (ผ่าน) และ ec556ba ให้ 1.000 แล้ว 0.800 — ธง [FAIL] บนเมตริกที่
+           ไม่ใช่ success_rate หลอกมาแล้ว 3 ครั้งในวันเดียว ทุกครั้งด้วยกลไกเดียวกัน (แบนด์
+           noise คำนวณจาก 5 รันล่าสุด พอบังเอิญนิ่ง แบนด์แคบลงจนความแกว่งปกติกลายเป็น regression)
+
+           1. task_flakiness() + `run.py flakiness [n] [delay]` — pass rate ต่อ task ข้ามหลาย
+              รัน 20-80% = FLAKY ไม่ตัดสิน pass/fail และไม่ exit 1
+           2. run_release_gate_repeated() — median ของ N รัน (settings.release_gate_repeats=3)
+              รายงาน min/median/max baseline ยึดจากรอบแรกเสมอ
+           3. _result_row() เก็บ action_calls/finish_task_calls/message ต่อ task +
+              compare_tasks() diff ราย task (success พลิก หรือตัวนับขยับ >50%)
+           4. _CORRECTNESS_METRICS = {"success_rate"} — มีตัวเดียวที่ gate ได้ ที่เหลือพิมพ์
+              เป็น [info] task ที่สำเร็จใน 9 step กับ 22 step คือ task ที่สำเร็จเหมือนกัน
+           5. กฎ "ต้องล้ม 2 ใน 3 รอบบน commit เดียวกันก่อน debug" พิมพ์ท้ายผลทุกครั้งที่รัน gate
+              (อยู่ใน output ที่คนรันเห็น ไม่ใช่ฝังในเอกสาร)
+
+           ผลวัดจริง (gemini, 5 รอบ): FLAKY 0 task — 15/15 stable-pass ทั้งหมด
+           => ความแกว่งที่เสียเวลาไล่ทั้งวันเป็นของคู่กับ gpt-5.4-mini ไม่ใช่ของ benchmark
+           โค้ด/โจทย์/เกณฑ์ชุดเดียวกันเป๊ะ เปลี่ยนแค่โมเดลแล้วได้ 15/15 สี่รอบติด
+
+  [x] W_gate_infra_failure + W_gate_run_invalid ("provider ล่ม ไม่ใช่ commit แย่ลง")
+           false positive ที่แย่ที่สุดของ gate: 2026-09-09 endpoint ของ ChatGPT OAuth ปฏิเสธ
+           ทุกโมเดลกลางวัน flakiness 5 รอบได้ 0/5 ทุก task แล้ว gate อ่านเป็น success_rate
+           0.000 = fail commit ให้กับ provider ที่ล่ม
+
+           run_is_invalid(summary) — รันที่ไม่มี task ไหนได้ลงมือทำอะไรเลย = วัดไม่ได้ ไม่ใช่
+             regression (เกณฑ์ "ทุก task จบด้วย steps == 0")
+           task_failed_on_infrastructure(row) — task เดี่ยวที่ล้มที่ step 0 ด้วย 429/โควตา/คีย์
+             ไม่ถูกนับใน pass rate (โควตาหมดกลางรันเคยสร้าง FLAKY ปลอมขึ้นมา 4 ตัว)
+           2026-09-10 เพิ่ม: 404 "model_not_found"/"does not exist or you do not have access"
+             นับเป็น infra ด้วย + รันที่ task ส่วนใหญ่ตายด้วยเหตุ infra = วัดไม่ได้ ต่อให้บาง
+             task จะเดินจบก็ตาม (รันจริงได้ 5/15 โดย 10 ตัวที่เหลือตายเพราะโควตา เกณฑ์
+             all(steps==0) เดิมมองว่ายัง valid แล้วปล่อย 0.333 เข้าไปเป็นค่าจริง)
+           ขยาย message ที่เก็บต่อ task 160 -> 400 ตัวอักษร: 160 ตัดกลางคำว่า "access" พอดี
+             marker ที่เขียนตามข้อความจริงจึง match ไม่ติด (เจอตอนแก้แล้วผลยังไม่เปลี่ยน)
+
+  [x] W_gate_model_baseline ("baseline เทียบข้ามโมเดลมาตลอด")
+           summary ทุกไฟล์บันทึก "model" ไว้ตั้งแต่แรกแต่ไม่มีใครอ่านเลย — baseline คือ "5 ไฟล์
+           ล่าสุดในโฟลเดอร์" เฉยๆ สภาพจริง: gpt-5.4-mini 42 ไฟล์ / gpt-5.5 7 / gemini 5
+           รัน gemini วันนี้จึงถูกเทียบกับรัน gpt-5.5 ที่ตายเพราะโควตา แล้วรายงานว่าดีขึ้น 3 เท่า
+           โมเดลเป็นตัวแปรที่ใหญ่กว่า commit หลายเท่า (โค้ดชุดเดียวกัน gpt-5.4-mini 12/15 vs
+           gemini-flash-lite 15/15) — กรองด้วย model + ตัดรันที่วัดไม่ได้ออกจาก baseline ด้วย
+           เหตุผลเดียวกับที่มันไม่ควรทำให้ commit ตก · โมเดลใหม่ = ไม่มี baseline (gate รับมือ
+           ได้อยู่แล้ว) ดีกว่าเทียบกับของที่เทียบไม่ได้
+
+  [x] W_codex_model_retired + backoff ทั้งสอง provider ("429 ที่ปลอมตัวมาเป็น error อื่น")
+           endpoint codex เลิกรับ gpt-5.4-mini กลางวันของ 09-09 โดยไม่มีอะไรฝั่งเราเปลี่ยน
+           ยิงโพรบ 15 ชื่อโมเดลได้ 400 ข้อความเดียวกันเป๊ะทุกตัว ยกเว้น "gpt-5.5" ตัวเปล่า
+           ตัวเดียวที่ผ่าน — 400 ที่พูดถึง "ChatGPT account" ชวนให้เข้าใจผิดว่าเป็นเรื่องสิทธิ์
+           ของบัญชี ทั้งที่เป็นเรื่องทะเบียนชื่อโมเดล (บัญชี free ก็เรียก gpt-5.5 ได้)
+
+           _openai_create_with_backoff() — จุดเดียวที่ทุก call ของ openai ผ่าน (5 จุดเรียก)
+             รอ 15 -> 30 -> 60 วินาที รวม 105 < llm_step_timeout_seconds (180) โดยตั้งใจ
+             วัดมาแล้ว: บัญชี free ยิงได้ 6-9 call ติดกัน แล้วโดนตัดราว 1-2 นาที แล้วฟื้นเอง
+             404 "model_not_found" สำหรับโมเดลที่เพิ่งใช้ได้เมื่อ 10 วินาทีก่อน = rate limit
+             ที่รายงานผิดชนิด ตัวชี้ขาดคือมันเปลี่ยนกลางรันแล้วหายเองเมื่อรอ
+           _gemini_generate_with_backoff() — ของเดิมมีอยู่จุดเดียวคือ next_action_gemini
+             อีก 15 จุด (classify_intent, generate_plan, abstractor, repair-step, vision,
+             chat/ไฟล์/รูป) ไม่มีเลย 429 ครั้งเดียวที่ตกใส่จุดใดจุดหนึ่งฆ่าทั้ง task ทั้งที่
+             โควตาคืนใน 29 วินาที · Gemini บอก retry_delay มาให้ตรงๆ จึงรอตามที่ API สั่ง (+1
+             วินาทีกันชนหน้าต่างเดิม cap 60s) แม่นกว่าการเดาแบบเท่าตัวของ openai
+           เทสต์ที่เป็นหัวใจของทั้งสองตัว: อ่านซอร์สจริงแล้วยืนยันว่า call ตรงเหลือที่เดียวคือใน
+             helper — จุดที่ยิงตรงจะเงียบสนิทจนกว่าจะโดน 429 จริงตอนรันสด (บทเรียนเดียวกับ
+             ทะเบียน marker ของ W108 และเลขเมนูของ run.py)
+
+  [x] step_pacing_delay_seconds ("หน่วง 3 วินาทีก่อนทุก LLM call คุ้มไหม" — A/B วัดจริง)
+           KPI ทำให้ดูเหมือนของเสียเปล่า: pacing กิน 3,266 วินาที = 16% ของเวลาที่ trace ไว้
+           ทั้งหมด และ 3 วินาที/call = 20 call/นาที ซึ่งเกินเพดานจริงของ Gemini free tier
+           (15 call/นาที — quota_value ในข้อความ 429 เอง) อยู่แล้ว แปลว่ากันสิ่งที่ถูกใส่มากัน
+           ไม่ได้ด้วยซ้ำ ยิ่งตอนนี้มี backoff ครบทั้งสอง provider
+
+           วัดแล้วสมมติฐานผิด — A/B 3 รอบต่อฝั่ง โค้ดชุดเดียวกัน (gemini-flash-lite):
+                               รันที่ใช้ได้   median   pacing     llm     ชน 300s
+             pacing = 3.0        3/3         1.000     99.5s   258.0s       0
+             pacing = 0          2/3         0.933      0.0s   453.2s       2
+           ที่ประหยัด pacing 99.5s กลับไปโผล่เป็นเวลารอ backoff ในเฟส llm +195s (+76%)
+           เสียไปทั้งรอบหนึ่งรอบเพราะ 429 รัวจนทุก task ตาย และ 2 task ชนเพดาน wall-clock
+           300s เพราะมัวรอ backoff => หน่วงล่วงหน้าถูกกว่าโดนตัดแล้วค่อยรอ เพราะ 429 หนึ่งครั้ง
+           ทำให้ทุก call ถัดไปในหน้าต่างนั้นโดนด้วย ไม่ใช่แค่ call ที่โดน
+           ห้ามลดค่านี้โดยไม่รัน A/B ซ้ำ (ตัวเลขทั้งตารางอยู่ในคอมเมนต์ที่ config.py)
+
+  [x] P5.2 ("3 ไฟล์เทสต์ที่ถูกกันออกจากทุกการรันมานาน")
+           ชุดเต็มไม่เคยรันครบจริงเลย เพราะต้อง --ignore สามไฟล์ที่เชื่อกันว่าค้าง 400 วินาที
+           จับเวลาจริงทีละไฟล์:
+             test_rag.py                       มีเทสต์ 0 ตัว  0.9s
+             test_site_learning_extractor.py   39 ผ่าน       24.6s
+             test_site_learning_crawler.py     71 ผ่าน 1 ล้ม  308s
+           test_rag.py ไม่ใช่ไฟล์เทสต์เลย เป็นสคริปต์วัด precision@k ที่สั่งรันเอง (docstring
+             บอกเอง) ติดร่างแหเพราะชื่อขึ้นต้นด้วย test_ => เปลี่ยนชื่อเป็น
+             manual_rag_precision_check.py
+           เคสที่ล้มเป็นบั๊กจริงที่ซ่อนอยู่เพราะไฟล์ถูกกันออก: หน้า login ที่โผล่ซ้ำกลางทาง
+             (session หลุด) ถูก dedup ของ W33 กลืนไป เพราะโครงสร้างเหมือนหน้า login แรกเป๊ะ
+             ผลคือ manual มีแต่บรรทัด error ที่ชี้ไปยังหน้าที่ไม่มีอยู่ในคู่มือ — ขัดกับเจตนาที่
+             คอมเมนต์ตรงนั้นเขียนไว้เองว่าให้บันทึกหน้านั้นไว้ · แก้ด้วย check_page_template=False
+             เฉพาะจุดเรียกนั้น (dedup ของ W33 มีไว้กัน feed ที่มีสิบรายการหน้าตาเหมือนกัน ไม่ใช่
+             กันจุดที่ crawl เดินต่อไม่ได้)
+           ชุดเต็มไม่ --ignore อะไรเลย: 1,715 passed / 12 นาที
+
+  [x] run.py ไม่เคยส่งอาร์กิวเมนต์ให้คำสั่งเลย
+           main() เรียก func() เปล่าๆ เสมอ — `run.py flakiness 3` จึงรัน 5 รอบเงียบๆ มาตลอด
+           (default เป็น 5 พอดี จึงไม่มีใครสังเกต) คำสั่งเดียวที่ใช้ได้คือ kpi เพราะมันอ่าน
+           sys.argv เองในตัวฟังก์ชัน => ส่ง sys.argv[2:] เท่าที่ signature รับได้ + เทสต์ที่อ่าน
+           ซอร์สจริง (บั๊กชนิดนี้เงียบสนิท เหมือนเลขเมนูซ้ำที่หลุดมาก่อนหน้านี้)
+
+  [x] W_benchmark_target ("eval พึ่ง opensource-demo.orangehrmlive.com — เว็บ demo สาธารณะที่คน
+           อื่นก็ใช้พร้อมกัน ไม่มี reset/fixture/ground-truth" — ดูรายละเอียดเต็มใน
+           ARCHITECTURE_AUDIT.md + IMPLEMENTATION_REPORT.md ที่ root repo)
+           สร้าง `benchmark_target/` เป็นเว็บ HRM สไตล์ OrangeHRM ของตัวเอง แยก 2 process/port
+           เด็ดขาดตามลำดับความสำคัญของ spec (correctness > isolation > determinism >
+           reproducibility > verifiability > realism > maintainability > performance > breadth):
+             - Target Surface (`app/`, port 8100) — หน้าเดียวที่ browser ของ agent ไปถึงได้ ไม่มี
+               ลิงก์ไหนในหน้าเว็บชี้เข้า Control Plane เลย
+             - Control Plane (`control/`, port 8101) — FastAPI แยกอีกตัว, loopback-only,
+               /reset /fixtures /snapshot /state-diff /preconditions/check /verify /integrity
+               /audit /faults — `/reset` มี ENVIRONMENT_IDENTITY fail-closed guard กันรีเซ็ตผิดเครื่อง
+
+           `seed.py` deterministic ล้วน (50 employees/19 users/fixtures ทุกค่าเป็นฟังก์ชันของ
+           index+timestamp คงที่ ไม่มี wall-clock/os.urandom) และ `security.py` hash รหัสผ่านแบบ
+           deterministic เช่นกัน (salt มาจากตัวรหัสผ่านเอง ไม่ใช่ os.urandom — เจตนาให้ seed ซ้ำ
+           ได้ทุกครั้งเป๊ะ) `catalog/generate_catalog.py` generate 117 tasks (L1-L5) จาก seed จริง
+           ไม่ใช่พิมพ์มือ — employee_code/username ทุกตัวที่ task อ้างถึงจึงมีจริงเสมอโดยโครงสร้าง
+           Run Engine (`runner/`) มี Run/Attempt state machine + StubAgentAdapter (deterministic
+           ไม่พึ่ง LLM สำหรับเทสต์ wiring) และ HermesAgentAdapter (ห่อ Orchestrator จริง)
+
+           เทสต์: test_runner.py 23 + test_determinism.py 14 = 37 ผ่านหมด (รันผ่าน Control Plane
+           จริงด้วย TestClient + sqlite จริง เฉพาะตัว agent เท่านั้นที่ stub) รันจริงกับ Hermes
+           agent จริง (OpenAI ChatGPT-OAuth, headless Chromium) ไป 2 task: AUTH-LOGIN-SUCCESS-ADMIN
+           ผ่าน, PIM-EDIT-VERIFY-01 FUNCTIONAL_FAIL จริง — agent รายงานว่าแก้สำเร็จ แต่ DB ไม่ถูก
+           เซฟจริง ตรงเป้าหมายของ benchmark นี้เป๊ะ (verify จาก DB state ไม่ใช่คำพูด agent)
+
+           ที่ยังไม่ทำ (บันทึกไว้ ไม่ใช่ทำเงียบ): `download_artifact`/`http_redirect` verifier ยัง
+           เป็น stub (คืน INCONCLUSIVE ตรงๆ ไม่ปลอมว่า pass), fault injection มีแค่ 2 trigger
+           (leave/timesheet approval), fixture มีแค่ตัวเดียว (`base`), มีแค่ 2 ใน 117 task ที่รัน
+           กับ agent จริงแล้ว (ที่เหลือ validate แค่ schema/precondition/determinism) และยังไม่ได้
+           สลับ `orangehrm_eval.py` ให้มาชี้ target นี้แทนเว็บสาธารณะ (เป็น follow-up ที่ตั้งใจ
+           แยกไว้ เพราะเปลี่ยน semantics ของ eval ที่อื่นด้วย) — ดู README.md หัวข้อโครงสร้างไฟล์
+           สำหรับ layout เต็มของ `benchmark_target/`
+
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)

@@ -33,6 +33,7 @@ import uuid
 from typing import Optional
 
 from backend.app.config import settings
+from backend.app.core import goal_intent
 from backend.app.rag.chroma_client import get_plan_memory_collection
 
 # W21 (re-applied — เคยแก้ไปแล้วรอบหนึ่งแต่ไฟล์นี้กลับไปเป็นเวอร์ชันก่อนแก้โดยไม่ทราบสาเหตุ
@@ -49,16 +50,9 @@ from backend.app.rag.chroma_client import get_plan_memory_collection
 # ภาษาเดียวกันตัวอื่นๆ ในอนาคตซ้ำอีก) fallback ไปให้ LLM ร่างใหม่ทุกครั้งแทน (เหมือนไม่มี
 # Plan Memory เลยสำหรับภาษากลุ่มนี้ — งานพัง 0 ครั้ง ดีกว่าประหยัด LLM call แล้วได้แผนผิด
 # เจตนา)
-_UNSUPPORTED_SCRIPT_RE = re.compile(
-    "["
-    "฀-๿"  # Thai
-    "一-鿿"  # CJK Unified Ideographs (Chinese)
-    "぀-ヿ"  # Hiragana/Katakana (Japanese)
-    "가-힣"  # Hangul (Korean)
-    "؀-ۿ"  # Arabic
-    "Ѐ-ӿ"  # Cyrillic
-    "]"
-)
+# T1: ช่วงอักษรชุดนี้ย้ายไปอยู่ที่ core/goal_intent.py แล้ว (มีผู้ใช้ที่สอง — telemetry และ
+# ตัวสร้าง intent key ด้านล่าง) เก็บชื่อเดิมไว้เป็น alias เพื่อไม่ให้ผู้เรียก/เทสต์เดิมพัง
+_UNSUPPORTED_SCRIPT_RE = goal_intent.UNSUPPORTED_SCRIPT_RE
 
 
 def _uses_unsupported_script(text: str) -> bool:
@@ -125,6 +119,30 @@ def _latest_version(domain: str, intent_key: str) -> Optional[dict]:
     return max(metadatas, key=lambda m: m["version"])
 
 
+def _find_by_intent_key(domain: str, goal: str) -> Optional[dict]:
+    """T3: หา lineage ด้วยกุญแจที่ถอดจาก intent ตรงๆ ไม่ผ่าน embedding
+
+    ใช้กับ goal ที่ใช้สคริปต์ซึ่ง embedding แยกไม่ออก (ดู _UNSUPPORTED_SCRIPT_RE) — คืน
+    distance=0.0 เพราะนี่คือการตรงกันแบบตายตัว ไม่ใช่ความใกล้เคียงเชิงความหมาย ผู้เรียกที่
+    log ค่านี้จะได้ไม่เข้าใจผิดว่าเป็นผล semantic ที่ดีเป็นพิเศษ"""
+    intent_key = goal_intent.plan_memory_intent_key(goal)
+    if intent_key is None:
+        return None
+    try:
+        version_meta = _latest_version(domain, intent_key)
+        if version_meta is None:
+            return None
+        return {
+            "intent_key": intent_key,
+            "version": version_meta["version"],
+            "plan": version_meta["plan"],
+            "distance": 0.0,
+        }
+    except Exception as e:
+        print(f"⚠️ Plan Memory _find_by_intent_key error: {e}", flush=True)
+        return None
+
+
 def find_matching_plan(domain: str, goal: str) -> Optional[dict]:
     """W20 Step 1: หา approved plan ที่ตรงกับ goal นี้มากที่สุด (semantic ไม่ใช่ exact text
     — ดู module docstring สำหรับตัวเลข distance จริงที่ใช้คาลิเบรต threshold) คืน dict
@@ -134,7 +152,13 @@ def find_matching_plan(domain: str, goal: str) -> Optional[dict]:
     เอง (ตรงตาม Plan Priority: user-approved ก่อนเสมอ, LLM เป็นแค่ fallback ตอนไม่มี
     lineage ไหนตรงพอ)"""
     if _uses_unsupported_script(goal):
-        return None
+        # T3: เดิมยอมแพ้ตรงนี้เสมอ — งานภาษาไทยจึงไม่เคยได้ reuse แผนเลยสักครั้ง เหตุผลเดิม
+        # (embedding แยกความหมายของสคริปต์กลุ่มนี้ไม่ออก) ยังจริงทุกประการ แต่มันเป็นเหตุผลที่
+        # จะ "ไม่เชื่อ semantic distance" ไม่ใช่เหตุผลที่จะไม่มีความจำเลย — ถ้าถอด intent
+        # ออกมาได้เป็นกุญแจที่ตายตัว (operation + scope + คู่ field=value) ก็จับคู่ได้โดยไม่
+        # แตะ embedding เลย ดู goal_intent.plan_memory_intent_key() สำหรับเงื่อนไขที่เข้มพอ
+        # จะไม่ทำให้ goal คนละเรื่องมาชนกัน (คืน None เมื่อตัดสินไม่ได้ = พฤติกรรมเดิมเป๊ะ)
+        return _find_by_intent_key(domain, goal)
     try:
         match = _best_match(domain, goal)
         if match is None:
@@ -172,12 +196,23 @@ def save_confirmed_plan(domain: str, goal: str, plan: str) -> Optional[dict]:
       - ไม่เจอ lineage ไหนตรงพอ: เป็น intent ใหม่จริง (intent_key สุ่มใหม่, version=1)
     คืน None เงียบๆ ถ้า error ระหว่างทาง (ไม่ throw — ห้ามทำให้ execute_plan ทั้ง endpoint
     พังแค่เพราะบันทึกความจำไม่สำเร็จ, task ที่กำลังจะรันต้องรันต่อได้ปกติเสมอ)"""
+    forced_intent_key = None
     if _uses_unsupported_script(goal):
-        return None
+        # T3 (คู่กับ find_matching_plan ด้านบน): บันทึกได้ก็ต่อเมื่อถอด intent key ออกมาได้
+        # เท่านั้น ไม่งั้นคืน None เหมือนเดิม — document ยังถูก embed ตามปกติ แต่ไม่มีใคร
+        # query ด้วย embedding สำหรับ goal กลุ่มนี้ (ทั้ง find และ save ใช้ where filter)
+        forced_intent_key = goal_intent.plan_memory_intent_key(goal)
+        if forced_intent_key is None:
+            return None
     try:
-        match = _best_match(domain, goal)
-        intent_key = None
+        match = None if forced_intent_key else _best_match(domain, goal)
+        intent_key = forced_intent_key
         new_version = 1
+        if forced_intent_key is not None:
+            latest = _latest_version(domain, forced_intent_key)
+            if latest is not None and latest["plan"] == plan:
+                return {"intent_key": forced_intent_key, "version": latest["version"], "plan": plan, "created": False}
+            new_version = (latest["version"] + 1) if latest is not None else 1
         if match is not None and match[1] <= settings.plan_memory_max_distance:
             candidate_key = match[0]
             latest = _latest_version(domain, candidate_key)

@@ -1,3 +1,4 @@
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -149,7 +150,7 @@ async def test_run_one_task_raises_runtime_error_when_package_not_installed():
 
 @pytest.mark.asyncio
 async def test_run_miniwob_evaluation_continues_after_one_task_errors():
-    async def _fake_run_one_task(task_name, max_steps, provider, headless):
+    async def _fake_run_one_task(task_name, max_steps, provider, headless, **kwargs):
         if task_name == "broken-task":
             raise RuntimeError("browser launch failed")
         return MiniWobResult(
@@ -171,7 +172,7 @@ async def test_run_miniwob_evaluation_continues_after_one_task_errors():
 
 @pytest.mark.asyncio
 async def test_run_miniwob_evaluation_defaults_to_default_tasks():
-    async def _fake_run_one_task(task_name, max_steps, provider, headless):
+    async def _fake_run_one_task(task_name, max_steps, provider, headless, **kwargs):
         return MiniWobResult(
             task=task_name, utterance="u", success=True, reward=1.0,
             steps=1, total_tokens=1, message="ok",
@@ -216,3 +217,42 @@ def test_miniwob_report_empty_results_does_not_divide_by_zero():
     assert report.success_rate == 0.0
     assert report.avg_steps == 0.0
     assert report.avg_tokens == 0.0
+
+
+# --- W_miniwob_seed_not_stable: seed ต้องคงที่ข้าม process จริงๆ ไม่ใช่แค่ในคอมเมนต์ ---
+
+
+def test_task_seed_is_the_same_in_every_process():
+    """เดิมใช้ abs(hash(task_name)) ซึ่ง PYTHONHASHSEED สุ่มใหม่ทุก process — gate แต่ละรอบ
+    จึงเจอ episode คนละอันของแต่ละ task และการเทียบ regression ข้ามรอบก็เทียบคนละโจทย์กัน
+    มาตลอด (วัดเจอตอนไล่บั๊ก click-checkboxes: รอบที่ล้มได้ 6 ช่องติ๊ก 4 ส่วนตอนไล่บั๊กได้
+    "Select nothing")
+
+    ต้องรันเป็น subprocess จริงเท่านั้น — ภายใน process เดียว hash() ก็คงที่อยู่แล้ว
+    เทสต์ที่เรียกฟังก์ชันเฉยๆ จึงผ่านทั้งที่บั๊กยังอยู่"""
+    import subprocess
+    import sys
+
+    code = (
+        "from backend.app.core.miniwob_eval import task_seed;"
+        "print(task_seed('click-checkboxes'), task_seed('enter-text'))"
+    )
+    seen = set()
+    for hash_seed in ("0", "1", "42"):
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True,
+            env={**os.environ, "PYTHONHASHSEED": hash_seed}, check=True,
+        )
+        seen.add(out.stdout.strip())
+
+    assert len(seen) == 1, f"seed เปลี่ยนตาม PYTHONHASHSEED: {seen}"
+
+
+def test_task_seed_is_a_usable_nonzero_32_bit_number():
+    """เงื่อนไขเดิมของ _init_script (mulberry32 ต้องการเลข 32-bit ที่ไม่ใช่ 0)"""
+    seeds = {name: miniwob_eval.task_seed(name) for name in DEFAULT_TASKS}
+
+    for name, seed in seeds.items():
+        assert 0 < seed < 2_147_483_647, name
+    # task คนละตัวต้องไม่ได้ episode เดียวกันหมด
+    assert len(set(seeds.values())) == len(seeds)

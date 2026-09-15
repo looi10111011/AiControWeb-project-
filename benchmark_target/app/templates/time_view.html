@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Timesheet — Hermes HRM{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>{{ timesheet.first_name }} {{ timesheet.last_name }} — Week of {{ timesheet.week_start_date }}</h1>
+  <div class="actions">
+    {% if can_edit %}<a class="btn" href="/time/timesheets/{{ timesheet.id }}/edit">Edit</a>{% endif %}
+    {% if can_submit %}
+    <form method="post" action="/time/timesheets/{{ timesheet.id }}/submit" style="display:inline">
+      <button type="submit" class="btn btn-primary">Submit</button>
+    </form>
+    {% endif %}
+    {% if can_approve %}
+    <form method="post" action="/time/timesheets/{{ timesheet.id }}/approve" style="display:inline">
+      <button type="submit" class="btn btn-primary">Approve</button>
+    </form>
+    <form method="post" action="/time/timesheets/{{ timesheet.id }}/reject" style="display:inline">
+      <button type="submit" class="btn btn-danger">Reject</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<p><span class="status-badge status-{{ 'active' if timesheet.status == 'approved' else 'terminated' if timesheet.status == 'rejected' else '' }}">{{ timesheet.status }}</span>
+{% if timesheet.status == 'approved' %} — locked, no further edits allowed{% endif %}</p>
+
+<table class="data-table">
+  <thead><tr><th>Date</th><th>Project</th><th>Hours</th></tr></thead>
+  <tbody>
+    {% for e in entries %}
+    <tr><td>{{ e.work_date }}</td><td>{{ e.project }}</td><td>{{ e.hours }}</td></tr>
+    {% endfor %}
+    <tr><td></td><td><strong>Total</strong></td><td><strong>{{ total_hours }}</strong></td></tr>
+  </tbody>
+</table>
+
+<p><a href="/time/timesheets">&larr; Back to Timesheets</a></p>
+{% endblock %}

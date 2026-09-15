@@ -14,11 +14,13 @@ connection ที่เปิดอยู่จริง — ดู task_manager
 """
 
 import asyncio
+import json
 
 import pytest
 
 from backend.app.api.routes import _stream_task_events
-from backend.app.api.task_manager import TaskManager
+from backend.app.api.task_manager import TaskManager, _log_step_trace, _log_token_usage
+from backend.app.config import settings
 
 
 def _controllable_coro(finish: asyncio.Event):
@@ -548,3 +550,81 @@ async def test_stream_task_events_replays_delivered_pending_approval_on_reconnec
     await asyncio.wait_for(approval_task, timeout=1)
     finish.set()
     await _drain_task_done(queue)
+
+
+# ---------------- W_step_trace: per-step trace + log ทุกเส้นทาง ----------------
+
+
+class _FakeTaskRecord:
+    """พอสำหรับ _log_token_usage/_log_step_trace ซึ่งอ่านแค่ attribute ไม่กี่ตัว"""
+
+    def __init__(self, result, status="done", error=None):
+        self.task_id = "t-1"
+        self.url = "https://example.com"
+        self.goal = "goal"
+        self.provider = "openai"
+        self.status = status
+        self.error = error
+        self.created_at = 0.0
+        self.result = result
+
+
+def test_log_step_trace_writes_one_line_per_step(tmp_path, monkeypatch):
+    trace = tmp_path / "step_trace.jsonl"
+    monkeypatch.setattr(settings, "step_trace_log_path", str(trace))
+    record = _FakeTaskRecord({
+        "history": [
+            {"step": 1, "cmd": {"type": "click", "index": 2}, "label": "Login",
+             "success": True, "failure_class": "ok",
+             "timing": {"snapshot": 0.5, "llm": 3.2, "action": 1.1}, "result": "[OK] click(2)"},
+            {"step": 2, "cmd": {"type": "fill", "index": 3}, "label": "User",
+             "success": False, "failure_class": "element_not_found",
+             "timing": {"snapshot": 0.4, "llm": 2.9, "action": 9.0}, "result": "[FAIL] element not found"},
+        ],
+    })
+
+    _log_step_trace(record)
+
+    lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["action_type"] == "click"
+    assert lines[0]["failure_class"] == "ok"
+    assert lines[1]["failure_class"] == "element_not_found"
+    assert lines[1]["timing"]["action"] == 9.0
+
+
+def test_log_step_trace_does_nothing_without_history(tmp_path, monkeypatch):
+    trace = tmp_path / "step_trace.jsonl"
+    monkeypatch.setattr(settings, "step_trace_log_path", str(trace))
+
+    _log_step_trace(_FakeTaskRecord(None, status="error", error="boom"))
+
+    assert not trace.exists()
+
+
+def test_log_step_trace_truncates_very_long_result_text(tmp_path, monkeypatch):
+    trace = tmp_path / "step_trace.jsonl"
+    monkeypatch.setattr(settings, "step_trace_log_path", str(trace))
+    record = _FakeTaskRecord({
+        "history": [{"step": 1, "cmd": {"type": "read_page_data"}, "success": True,
+                     "result": "x" * 5000}],
+    })
+
+    _log_step_trace(record)
+
+    entry = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert len(entry["result"]) == 300
+
+
+def test_log_token_usage_records_failed_and_cancelled_tasks_too(tmp_path, monkeypatch):
+    """W_step_trace: เดิมเรียกเฉพาะเส้นทางสำเร็จ — task ที่ crash/ถูก Stop ไม่เคยถูกบันทึกเลย
+    ทำให้ success rate ที่คำนวณจากไฟล์นี้เป็นเพดานบน ไม่ใช่ค่าจริง"""
+    usage = tmp_path / "token_usage.jsonl"
+    monkeypatch.setattr(settings, "token_usage_log_path", str(usage))
+
+    _log_token_usage(_FakeTaskRecord(None, status="cancelled", error="หยุดโดยผู้ใช้ (Stop)"))
+
+    entry = json.loads(usage.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["status"] == "cancelled"
+    assert entry["success"] is False
+    assert entry["tokens"] == {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}

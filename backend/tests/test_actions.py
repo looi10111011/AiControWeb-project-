@@ -4,20 +4,27 @@ import pytest
 from playwright.async_api import TimeoutError as PWTimeout, async_playwright
 
 from backend.app.core.actions import (
+    _ACTION_RETRIES,
     ActionResult,
     _DIALOG_CONTAINER_SELECTOR,
+    _DIALOG_CONTAINER_SELECTORS,
     _ELEMENT_ACTION_TIMEOUT_MS,
     _MODAL_CONFIRM_BUTTON_SELECTORS,
     _MODAL_CONFIRM_CLICK_RETRIES,
     _MODAL_DETACH_TIMEOUT_MS,
     _MODAL_RELOAD_TIMEOUT_MS,
     _SUCCESS_TOAST_SELECTOR,
+    _deterministic_count_note,
+    system_counted_conditions,
+    _dispatch_click_with_retry,
     _detect_confirmation_modal,
     _detect_success_toast,
+    _extracted_entries,
     execute,
     fill_secret,
     resolve_confirmation_modal,
 )
+from backend.app.core import actions
 from backend.app.core.perception import get_snapshot
 
 
@@ -94,7 +101,7 @@ async def test_execute_click_retries_on_transient_failure_then_succeeds(_no_real
     result = await execute(mock_page, {"type": "click", "index": 2})
 
     assert result.success is True
-    assert "ลองครั้งที่ 2/3" in result.message
+    assert "attempt 2/2" in result.message
     assert mock_page.click.await_count == 2
     _no_real_sleep.assert_awaited_once()  # หน่วงแค่ระหว่างครั้งที่ 1->2 ครั้งเดียว
 
@@ -107,9 +114,9 @@ async def test_execute_fill_gives_up_after_max_retries(_no_real_sleep):
     result = await execute(mock_page, {"type": "fill", "index": 0, "text": "hello"})
 
     assert result.success is False
-    assert "ลองแล้ว 3 ครั้ง" in result.message
-    assert mock_page.fill.await_count == 3
-    assert _no_real_sleep.await_count == 2  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
+    assert "after 2 attempts" in result.message
+    assert mock_page.fill.await_count == 2
+    assert _no_real_sleep.await_count == 1  # หน่วงระหว่างแต่ละครั้ง ไม่หน่วงหลังครั้งสุดท้าย
 
 
 # ---------------- W19 ("Safe Input Replacement"): focus -> select-all -> Backspace -> fill ----------------
@@ -185,8 +192,11 @@ async def test_execute_fill_dismisses_any_popup_opened_by_focus_after_success():
     result = await execute(mock_page, {"type": "fill", "index": 0, "text": "2026-15-05"})
 
     assert result.success is True
-    dismiss_locator.evaluate.assert_awaited_once_with(
-        "el => { el.blur(); document.body.click(); }"
+    # W_file_input_guard: mock page คืน locator ตัวเดียวกันให้ทุก query — guard ที่เช็คว่า
+    # เป้าหมายเป็น <input type=file> ไหม ก็เรียก evaluate() ผ่าน locator ตัวนี้ด้วย จำนวนครั้ง
+    # จึงไม่ใช่ 1 อีกต่อไป สิ่งที่เทสต์นี้สนใจจริงๆ คือ "blur+body click ถูกยิงจริงหลัง fill"
+    dismiss_locator.evaluate.assert_any_await(
+        "el => { el.blur(); document.body.click(); }", timeout=500,
     )
     mock_page.wait_for_timeout.assert_awaited_once_with(200)
 
@@ -280,6 +290,31 @@ async def test_execute_click_chains_then_click_index_when_provided():
 
 
 @pytest.mark.asyncio
+async def test_execute_click_reports_success_when_only_the_chained_click_fails():
+    """W_chain_partial_success (บั๊กจริง live-reproduce บน OrangeHRM กับ provider openai):
+    primary คลิกสำเร็จและเปลี่ยนหน้าไปแล้วจริง แต่ chain ตัวที่สองพัง (index ค้างจาก snapshot
+    ก่อนหน้า เพราะหน้าเพิ่งเปลี่ยนไปนั่นแหละ) — เดิมคืน success=False ทั้งก้อน ทำให้โมเดลอ่านว่า
+    ล้มเหลวแล้ว "คลิก primary ซ้ำ" วนอยู่ 10 step ติดกันจนหมด max_steps ทั้งที่ไปถึงหน้า
+    เป้าหมายตั้งแต่ step แรก — ต้องคืนความจริง: primary สำเร็จ, บอกให้สั่งคลิกที่สองแยก step"""
+    mock_page = AsyncMock()
+    call_count = {"n": 0}
+
+    async def _click(selector, **kwargs):
+        call_count["n"] += 1
+        if selector == '[data-ai-index="5"]':
+            raise Exception("element not found")
+
+    mock_page.click = AsyncMock(side_effect=_click)
+
+    result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is True  # ความคืบหน้าจริงของ primary ต้องไม่หายไป
+    assert "chained click(5) failed" in result.message
+    assert "separate next step" in result.message
+    assert "do not repeat the first action" in result.message
+
+
+@pytest.mark.asyncio
 async def test_execute_click_does_not_chain_when_primary_action_fails():
     mock_page = AsyncMock()
     mock_page.click = AsyncMock(side_effect=Exception("boom"))
@@ -317,7 +352,7 @@ async def test_execute_click_chain_skipped_when_secondary_needs_confirmation_and
     )
 
     assert result.success is True  # primary (index 0) ยังสำเร็จอยู่
-    assert "ไม่ได้คลิกต่อ" in result.message
+    assert "did not go on to click" in result.message
     ask_user_func.assert_awaited_once()
     click_selectors = {c.args[0] for c in mock_page.click.await_args_list}
     assert '[data-ai-index="5"]' not in click_selectors  # ไม่เคยคลิกจริง
@@ -431,11 +466,12 @@ async def test_execute_click_hovers_before_every_retry_attempt_until_giving_up(_
     result = await execute(mock_page, {"type": "click", "index": 5})
 
     assert result.success is False
-    assert mock_page.click.await_count == 3
-    assert mock_page.hover.await_count == 2  # ก่อนรอบ 2 และรอบ 3 (ไม่ใช่ก่อนรอบแรก)
+    assert mock_page.click.await_count == _ACTION_RETRIES
+    # hover ก่อนทุกรอบตั้งแต่รอบ 2 เป็นต้นไป = จำนวนรอบทั้งหมด - 1 (ไม่ hover ก่อนรอบแรก)
+    assert mock_page.hover.await_count == _ACTION_RETRIES - 1
     # กรองเอาแค่ click/hover (ตัด query_selector ที่ resolve_frame() เรียกแทรกก่อนทุกครั้งออก)
     call_order = [c[0] for c in mock_page.method_calls if c[0] in ("click", "hover")]
-    assert call_order == ["click", "hover", "click", "hover", "click"]
+    assert call_order == ["click"] + ["hover", "click"] * (_ACTION_RETRIES - 1)
 
 
 @pytest.mark.asyncio
@@ -504,6 +540,81 @@ async def test_detect_confirmation_modal_fails_safe_on_bare_mock_page():
 
     assert result is False
 
+
+# --- W_dialog_generic / W_modal_appear_race (C2+C3 จาก audit ของ P7/P8) ---
+# เทสต์กลุ่มนี้ใช้ Chromium จริง (ไฟล์นี้ import async_playwright ไว้แล้ว) เพราะสิ่งที่ต้อง
+# พิสูจน์คือ "selector ตรงกับ DOM จริงไหม" ซึ่ง mock พิสูจน์ไม่ได้เลย — mock ที่ตอบว่าเจอ
+# ก็จะเจอเสมอไม่ว่า selector จะผิดแค่ไหน
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_finds_dialogs_that_appear_after_a_delay():
+    """บั๊กจริงที่ user เจอ: dialog animate เข้ามาหลัง click ตอนเช็คยังไม่อยู่ใน DOM
+    -> สรุปว่า "ไม่มีโมดัล" -> โมดัลโผล่มาบังทั้งหน้า -> ทุก click ถัดไป fail -> ไม่มีทาง
+    กลับมาถึงจุดเช็คอีกเลย (จุดเรียกเดียวอยู่ใต้ if result.success) = ติด loop จนต้องกด Stop
+
+    3 เคสนี้คือ modal ที่ selector ชุดเดิมตรวจไม่เจอเลยสักตัว — โดยเฉพาะ Bootstrap ที่
+    markup อยู่ใน DOM อยู่แล้วและเปิดด้วยการสลับ class ซึ่งทำให้แนวคิดเดิมที่จะกรองด้วย
+    ความยาว body.innerHTML ใช้ไม่ได้เลย (ความยาวไม่เปลี่ยนสักตัวอักษร)"""
+    cases = {
+        "bootstrap class toggle": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').classList.add('show'),120)\">Delete</button>"
+            "<style>.modal{display:none}.modal.show{display:block}</style>"
+            "<div id='m' class='modal'><button>No, Cancel</button>"
+            "<button>Yes, Delete</button></div>"
+        ),
+        "native <dialog>": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').showModal(),120)\">Delete</button>"
+            "<dialog id='m'><button>No, Cancel</button>"
+            "<button>Yes, Delete</button></dialog>"
+        ),
+        "aria-modal without role": (
+            "<button id='go' onclick=\"setTimeout(()=>"
+            "document.getElementById('m').hidden=false,120)\">Delete</button>"
+            "<div id='m' aria-modal='true' hidden><button>ตกลง</button></div>"
+        ),
+    }
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            for name, html in cases.items():
+                await page.set_content(html)
+                await page.click("#go")
+                assert await _detect_confirmation_modal(page) is True, name
+                # เจอแล้วต้องกดปุ่มยืนยันในนั้นได้จริงด้วย — ตรวจเจอแต่หาปุ่มไม่เจอ
+                # แย่กว่าไม่ตรวจเจอตั้งแต่แรก เพราะ agent จะค้างอยู่หน้าโมดัลเหมือนเดิม
+                assert await resolve_confirmation_modal(page) is not None, name
+                assert await page.locator("#m").is_visible() is False, name
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_detect_confirmation_modal_stays_false_on_a_page_with_no_dialog():
+    """ราคาที่จ่ายจากการรอต้องไม่แลกมาด้วย false positive — หน้าที่ไม่มี dialog เลยต้อง
+    ตอบ False เสมอ ไม่ว่าจะรอนานแค่ไหน"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content("<button>Just a button</button><div>Are you sure?</div>")
+            assert await _detect_confirmation_modal(page) is False
+        finally:
+            await browser.close()
+
+
+def test_generic_confirm_button_selectors_are_scoped_to_every_known_container():
+    """ตรวจเจอ dialog ของ framework ใหม่ได้ แต่หาปุ่มยืนยันในนั้นไม่เจอ = ยังค้างเหมือนเดิม
+    ทั้งสองลิสต์จึงต้องมาจากชุด container เดียวกันเสมอ ไม่ hardcode แยกกัน"""
+    joined = " ".join(_MODAL_CONFIRM_BUTTON_SELECTORS)
+
+    for container in _DIALOG_CONTAINER_SELECTORS:
+        assert container in _DIALOG_CONTAINER_SELECTOR, container
+        assert f'{container} button:has-text(' in joined, container
 
 @pytest.mark.asyncio
 async def test_resolve_confirmation_modal_clicks_most_specific_selector_first():
@@ -627,8 +738,8 @@ async def test_resolve_confirmation_modal_retries_then_succeeds_without_reload(_
     result = await resolve_confirmation_modal(mock_page)
 
     assert result is not None
-    assert "ไม่ตอบสนอง" not in result
-    assert "ลองครั้งที่ 2" in result
+    assert "was unresponsive" not in result
+    assert "attempt 2" in result
     assert yes_delete.click.await_count == 2
     mock_page.reload.assert_not_awaited()
 
@@ -662,7 +773,7 @@ async def test_resolve_confirmation_modal_reloads_page_after_button_unresponsive
     result = await resolve_confirmation_modal(mock_page)
 
     assert result is not None
-    assert "ไม่ตอบสนอง" in result
+    assert "was unresponsive" in result
     assert "navigate" in result or "กรองข้อมูลใหม่" in result
     assert yes_delete.click.await_count == _MODAL_CONFIRM_CLICK_RETRIES
     mock_page.reload.assert_awaited_once()
@@ -695,7 +806,7 @@ async def test_resolve_confirmation_modal_reload_does_not_throw_if_reload_itself
     result = await resolve_confirmation_modal(mock_page)  # ต้องไม่ throw
 
     assert result is not None
-    assert "ไม่ตอบสนอง" in result
+    assert "was unresponsive" in result
 
 
 @pytest.mark.asyncio
@@ -752,32 +863,35 @@ async def test_execute_delete_action_also_auto_resolves_confirmation_modal():
 
 @pytest.mark.asyncio
 async def test_detect_success_toast_returns_text_when_visible():
-    mock_page = MagicMock()
-    toast = MagicMock()
-    toast.wait_for = AsyncMock()
-    toast.inner_text = AsyncMock(return_value="Successfully Saved")
-    wrapper = MagicMock()
-    wrapper.first = toast
-    mock_page.locator = MagicMock(return_value=wrapper)
+    """W_toast_container_is_empty: เดิม mock page.locator(...).first ซึ่งเป็นการตรึง *วิธีการ*
+    ไม่ใช่พฤติกรรม — พอเปลี่ยนไปหา element ตัวแรกที่มีข้อความจริง เทสต์ก็ล้มทั้งที่ผลลัพธ์ถูกขึ้น
+    ทดสอบกับ Chromium จริงแทน จะได้ตรึงสิ่งที่ผู้เรียกต้องการจริงๆ: ได้ข้อความ toast กลับมา"""
+    from backend.app.core.actions import _detect_success_toast as detect
 
-    result = await _detect_success_toast(mock_page)
-
-    assert result == "Successfully Saved"
-    mock_page.locator.assert_called_once_with(_SUCCESS_TOAST_SELECTOR)
+    pw, browser, page = await _with_page(
+        "<html><body><div class='oxd-toast--success'>Successfully Saved</div></body></html>"
+    )
+    try:
+        assert await detect(page) == "Successfully Saved"
+    finally:
+        await browser.close()
+        await pw.stop()
 
 
 @pytest.mark.asyncio
 async def test_detect_success_toast_returns_none_when_not_visible_in_time():
-    mock_page = MagicMock()
-    toast = MagicMock()
-    toast.wait_for = AsyncMock(side_effect=PWTimeout("timeout"))
-    wrapper = MagicMock()
-    wrapper.first = toast
-    mock_page.locator = MagicMock(return_value=wrapper)
+    """หน้าที่ไม่มี toast เลยต้องคืน None — รวมถึงหน้าที่มีแต่กล่องครอบว่างๆ ซึ่งเป็นเคสที่
+    ทำให้ action ที่บันทึกสำเร็จถูกรายงานว่าไม่มีคำยืนยัน (W_toast_container_is_empty)"""
+    from backend.app.core.actions import _detect_success_toast as detect
 
-    result = await _detect_success_toast(mock_page)
-
-    assert result is None
+    pw, browser, page = await _with_page(
+        "<html><body><div class='oxd-toast-container'></div></body></html>"
+    )
+    try:
+        assert await detect(page) is None
+    finally:
+        await browser.close()
+        await pw.stop()
 
 
 @pytest.mark.asyncio
@@ -803,7 +917,7 @@ async def test_execute_click_checks_toast_when_label_matches_save():
         result = await execute(mock_page, {"type": "click", "index": 5}, label="Save")
 
     assert result.success is True
-    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+    assert 'Success confirmation found: "Successfully Saved"' in result.message
     assert result.toast_confirmed is True  # W64[7.2]
     mock_toast.assert_awaited_once()
 
@@ -816,7 +930,11 @@ async def test_execute_click_notes_missing_toast_when_label_matches_save():
         result = await execute(mock_page, {"type": "click", "index": 5}, label="บันทึก")
 
     assert result.success is True
-    assert "ไม่พบ toast" in result.message
+    # W_no_toast_is_not_a_reason_to_repeat: ข้อความเดิมชวนให้ "ไปตรวจว่ามี validation error
+    # ไหม" ซึ่งโมเดลตีความเป็นการกดปุ่มเดิมซ้ำ (MiniWoB click-checkboxes เสีย 11 step ไปกับ
+    # เรื่องนี้ ทั้งที่ได้คะแนนเต็มไปแล้วตั้งแต่คลิกแรก)
+    assert "No confirmation message appeared" in result.message
+    assert "will not make one appear" in result.message
     assert result.toast_confirmed is False  # W64[7.2]
 
 
@@ -872,7 +990,7 @@ async def test_execute_submit_action_preserves_toast_confirmed():
 
     assert result.success is True
     assert result.toast_confirmed is True
-    assert 'พบข้อความยืนยันสำเร็จ: "Successfully Saved"' in result.message
+    assert 'Success confirmation found: "Successfully Saved"' in result.message
 
 
 # W3[A] (ปิดจ็อบ 2026-07-15): switch_tab() implement ไว้แล้วตั้งแต่ก่อนหน้านี้ (dispatch
@@ -903,7 +1021,7 @@ async def test_execute_switch_tab_fails_when_tab_index_out_of_range():
     result = await execute(mock_page, {"type": "switch_tab", "tab_index": 5})
 
     assert result.success is False
-    assert "มีแค่ 1 tab" in result.message
+    assert "there are only 1 tab" in result.message
 
 
 @pytest.mark.asyncio
@@ -916,7 +1034,7 @@ async def test_execute_does_not_retry_switch_tab_on_failure():
     result = await execute(mock_page, {"type": "switch_tab", "tab_index": 0})
 
     assert result.success is False
-    assert "มีแค่ 0 tab" in result.message
+    assert "there are only 0 tab" in result.message
 
 
 # ---------------- W19: Deterministic State Filter short-circuits ก่อน dispatch จริง ----------------
@@ -935,7 +1053,7 @@ async def test_execute_fill_skips_dispatch_when_already_redundant():
         result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.fill.assert_not_awaited()
 
 
@@ -949,7 +1067,7 @@ async def test_execute_check_skips_dispatch_when_already_redundant():
         result = await execute(mock_page, {"type": "check", "index": 3})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.check.assert_not_awaited()
 
 
@@ -963,7 +1081,7 @@ async def test_execute_scroll_skips_dispatch_when_already_at_edge():
         result = await execute(mock_page, {"type": "scroll", "direction": "down"})
 
     assert result.success is True
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.mouse.wheel.assert_not_awaited()
 
 
@@ -979,7 +1097,7 @@ async def test_execute_click_fails_without_dispatch_when_element_disabled():
         result = await execute(mock_page, {"type": "click", "index": 5})
 
     assert result.success is False
-    assert "[ข้าม]" in result.message
+    assert "[Skipped]" in result.message
     mock_page.click.assert_not_awaited()
 
 
@@ -995,7 +1113,7 @@ async def test_execute_fill_dispatches_normally_when_not_redundant():
         result = await execute(mock_page, {"type": "fill", "index": 0, "text": "standard_user"})
 
     assert result.success is True
-    assert "[ข้าม]" not in result.message
+    assert "[Skipped]" not in result.message
     mock_page.fill.assert_awaited_once()
 
 
@@ -1032,7 +1150,7 @@ async def test_fill_secret_fails_gracefully_when_no_credential_stored():
         result = await fill_secret(mock_page, 4, "current_password")
 
     assert result.success is False
-    assert "ไม่มี credential ที่บันทึกไว้" in result.message
+    assert "no credential saved for this site" in result.message
     mock_page.fill.assert_not_awaited()
 
 
@@ -1044,7 +1162,7 @@ async def test_fill_secret_rejects_unknown_secret_key():
         result = await fill_secret(mock_page, 4, "new_password")
 
     assert result.success is False
-    assert "ไม่รู้จัก secret_key" in result.message
+    assert "unknown secret_key" in result.message
     mock_load.assert_not_called()  # ไม่ต้องเสีย I/O เรียก vault เลยถ้า secret_key ไม่รู้จักตั้งแต่แรก
     mock_page.fill.assert_not_awaited()
 
@@ -1302,7 +1420,7 @@ async def test_execute_read_page_data_reports_failure_from_extract_table_data():
     mock_page = AsyncMock()
     with patch(
         "backend.app.core.actions.extract_table_data",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+        AsyncMock(return_value="[FAIL] no element matching '#missing'"),
     ):
         result = await execute(
             mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"}
@@ -1329,15 +1447,1268 @@ async def test_execute_read_page_data_waits_for_page_to_settle_before_reading():
 
 
 @pytest.mark.asyncio
-async def test_execute_read_page_data_does_not_retry_on_failure(_no_real_sleep):
+async def test_execute_read_page_data_does_not_retry_the_same_call_on_failure(_no_real_sleep):
     """read_page_data ไม่ผ่าน _dispatch_with_retry เหมือน click/fill — target_hint ที่หา
-    ไม่เจอเป็น deterministic mismatch ไม่ใช่ DOM-timing issue ที่ retry แล้วจะเปลี่ยนผล"""
+    ไม่เจอเป็น deterministic mismatch ไม่ใช่ DOM-timing issue ที่ retry แล้วจะเปลี่ยนผล
+
+    W_query_is_a_question: มีการเรียก extract_table_data ครั้งที่สองจริง แต่ไม่ใช่ "retry"
+    (ยิงคำถามเดิมซ้ำเผื่อฟลุก) — เป็นคำถามคนละข้อ คือ "ที่ hint นี้มีข้อมูลอะไรอยู่บ้างไหม
+    ถ้าไม่เอา query ไปกรอง" ซึ่งตอบได้ต่างจากเดิมโดยไม่ต้องรอ DOM เปลี่ยน เหตุผลเดิมในชื่อ
+    เทสต์ยังคงอยู่ครบ: argument ชุดเดิมเป๊ะไม่เคยถูกยิงซ้ำ และไม่มีการ sleep รออะไรทั้งสิ้น"""
     mock_page = AsyncMock()
     with patch(
         "backend.app.core.actions.extract_table_data",
-        AsyncMock(return_value="[FAIL] ไม่พบ element ที่ตรงกับ '#missing'"),
+        AsyncMock(return_value="[FAIL] no element matching '#missing'"),
     ) as mock_extract:
-        await execute(mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"})
+        result = await execute(
+            mock_page, {"type": "read_page_data", "query": "สรุปให้หน่อย", "target_hint": "#missing"},
+        )
 
-    assert mock_extract.await_count == 1
+    assert result.success is False
+    called_queries = [call.args[2] for call in mock_extract.await_args_list]
+    assert called_queries == ["สรุปให้หน่อย", ""]  # คนละ argument ไม่ใช่การยิงซ้ำ
     _no_real_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_read_page_data_returns_the_data_when_the_query_is_a_question(_no_real_sleep):
+    """W_query_is_a_question (เจอจาก step trace): query ที่เป็นคำถามภาษาธรรมชาติไม่มีวัน
+    ปรากฏเป็นข้อความในตาราง extract_table_data จึงคืน [FAIL] แล้วทิ้งข้อมูลที่อ่านมาได้ทั้งหมด
+    — live run เสีย 3 step ติดกันกับเรื่องนี้ ต้องคืนข้อมูลให้โมเดลตอบเอง พร้อมบอกตรงๆ ว่า
+    ไม่เจอข้อความนั้นแบบตรงตัว (ห้ามแกล้งทำเป็นเจอ ตามเจตนาเดิมของ W46)"""
+    mock_page = AsyncMock()
+    with patch(
+        "backend.app.core.actions.extract_table_data",
+        AsyncMock(side_effect=["[FAIL] nothing matching or close to 'first product name'",
+                               '["Sauce Labs Onesie", "Sauce Labs Bike Light"]']),
+    ):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "first product name", "target_hint": ".inventory_item_name"},
+        )
+
+    assert result.success is True
+    assert "verbatim" in result.message
+    assert "Sauce Labs Onesie" in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_select_on_custom_dropdown_is_rejected_with_actionable_hint():
+    """W_custom_dropdown: OrangeHRM ทำ dropdown ด้วย div + role=combobox ไม่ใช่ <select> —
+    select_option() เดิมจะไล่หา <option> ไม่เจอแล้วคืน "no options found in this dropdown"
+    ซึ่งอ่านเหมือน "ตัวเลือกไม่มี" ทั้งที่ปัญหาคือ "ใช้ action ผิดชนิด" ต้องปฏิเสธก่อน dispatch
+    พร้อมชี้ทางไป protocol W50 (คลิกเปิดก่อน แล้วคลิกตัวเลือก)"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.check_select_target_is_native",
+        AsyncMock(return_value=(
+            "This element is a <div>, not a native <select> — the 'select' action only works "
+            "on a real <select>. This is a custom dropdown: use type 'click' on this same index "
+            "to OPEN it first, then look at the new indexed elements and 'click' the option whose "
+            "label matches exactly what you want."
+        )),
+    ):
+        result = await execute(mock_page, {"type": "select", "index": 22, "label": "ESS"})
+
+    assert result.success is False
+    assert "not a native <select>" in result.message
+    assert "click" in result.message
+    mock_page.select_option.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_select_on_real_native_select_still_dispatches():
+    """ต้องไม่ไปบล็อก <select> จริงที่ทำงานถูกอยู่แล้ว"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.check_select_target_is_native",
+        AsyncMock(return_value=None),
+    ), patch("backend.app.core.actions.select_option", AsyncMock(
+        return_value=ActionResult(True, "select(2)", "selected 'Price' succeeded"),
+    )) as mock_select:
+        result = await execute(mock_page, {"type": "select", "index": 2, "label": "Price"})
+
+    assert result.success is True
+    mock_select.assert_awaited_once()
+
+
+# --- W_chain_stale_index -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_click_drops_the_chained_click_when_it_opens_a_dropdown():
+    """เคสจาก live run โดยตรง: click เปิด dropdown แล้ว chain ต่อทันที — คลิกที่สองต้องไม่ถูก
+    dispatch เลย เพราะ index ของมันมาจาก snapshot ตอนที่ตัวเลือกยังไม่มีอยู่"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="trigger"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 22, "then_click_index": 26})
+
+    # คลิกหลักสำเร็จจริง (เปิด dropdown ได้ตามต้องการ) — ไม่ใช่ failure
+    assert result.success is True
+    assert "dropdown" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="22"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_click_still_chains_on_an_ordinary_button():
+    """guard ต้องไม่แตะ compound action ปกติที่ทำงานถูกอยู่แล้ว (ปุ่ม Submit ที่เห็นในหน้าเดิม)"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value=None),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 0, "then_click_index": 5})
+
+    assert result.success is True
+    assert "then click(5)" in result.message
+    click_selectors = [c.args[0] for c in mock_page.click.await_args_list]
+    assert click_selectors == ['[data-ai-index="0"]', '[data-ai-index="5"]']
+
+
+@pytest.mark.asyncio
+async def test_execute_click_without_a_chain_does_not_ask_for_a_chain_hint():
+    """W_dropdown_sets_filter_dirty: การจำแนก dropdown ย้ายมาอยู่กับ *ทุก* click แล้ว (เพราะ
+    orchestrator ต้องรู้ด้วยว่าคลิกนี้เลือกค่าใน filter หรือเปล่า — ดู ActionResult.
+    dropdown_option_selected) แต่ click ที่ไม่มี then_click_index ต้องไม่ไปสร้างข้อความ
+    "ไม่ chain ต่อเพราะ..." ติดมาในผลลัพธ์ ซึ่งไม่มีความหมายเลยเมื่อไม่มี chain ตั้งแต่ต้น"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="trigger"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 0})
+
+    assert "chained click" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_execute_click_marks_a_dropdown_option_selection():
+    """W_dropdown_sets_filter_dirty: คลิกที่เป็นการ "เลือกตัวเลือกใน dropdown" ต้องติดธงบน
+    ActionResult ให้ orchestrator ยก filter_dirty_since_search ได้ — เดิมธงนั้นยกเฉพาะ
+    fill/select ซึ่งไม่มีทางเกิดกับ custom dropdown เลย ทำให้ guard "ห้ามคลิก row action
+    ก่อนกด Search" ตายสนิทบนเว็บ SPA"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value="option"),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.success is True
+    assert result.dropdown_option_selected is True
+
+
+@pytest.mark.asyncio
+async def test_execute_click_on_an_ordinary_button_is_not_a_dropdown_selection():
+    """กระจกบานตรงข้ามของเทสต์ด้านบน — click ทั่วไปต้องไม่ติดธงนี้ ไม่งั้น guard จะยิงมั่ว"""
+    mock_page = AsyncMock()
+
+    with patch(
+        "backend.app.core.actions.state_filter.classify_click_index_disturbance",
+        AsyncMock(return_value=None),
+    ):
+        result = await execute(mock_page, {"type": "click", "index": 5})
+
+    assert result.dropdown_option_selected is False
+
+
+# ---------------- W_confident_zero: count=0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ ----------------
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_zero_count_falls_back_to_extraction_instead_of_answering_zero():
+    """W_confident_zero (บั๊กจริงบน OrangeHRM): selector ที่ไม่ตรงอะไรเลยทำให้ count_elements()
+    คืน 0 ซึ่งเดิมถูกรายงานเป็น "found 0 entries" (success=True) — โมเดลจึงตอบว่า "เจอ 0
+    รายการ" อย่างมั่นใจทั้งที่ความจริงมีอยู่ 5 ต้องลองอ่านข้อมูลจริงด้วย hint เดิมก่อนเสมอ"""
+    mock_page = AsyncMock()
+    table = "| Username | User Role |\n| --- | --- |\n| a | ESS |"
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=table)) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is True
+    assert "0 entries" not in result.message
+    assert table in result.message
+    mock_extract.assert_awaited_once_with(mock_page, "table tbody tr", "")
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_zero_count_with_nothing_readable_refuses_to_answer_zero():
+    """ไม่มีอะไรอ่านได้เลย = selector ผิด ไม่ใช่ "คำตอบคือศูนย์" — ต้องคืน success=False และ
+    บอกตรงๆ ว่าห้ามรายงาน 0 เป็นคำตอบ"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value="[FAIL] nope")):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is False
+    assert "does NOT mean the answer is zero" in result.message
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_nonzero_count_still_answers_directly():
+    """ทางเร็วเดิมต้องไม่เปลี่ยน: นับได้ > 0 ตอบตรงๆ ไม่ต้องแตะ extract_table_data เลย"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=6)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock()) as mock_extract:
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many users", "target_hint": '[role="row"]'},
+        )
+
+    assert result.success is True
+    assert "6" in result.message
+    mock_extract.assert_not_awaited()
+
+
+# ---------------- W_deterministic_count: โค้ดนับให้ ไม่ปล่อยให้โมเดลนับด้วยตา ----------------
+
+_USERS_TABLE = """|  | Username | User Role | Status |
+| --- | --- | --- | --- |
+|  | Admin | Admin | Enabled |
+|  | DemoNonAdminPH | ESS | Disabled |
+|  | ess.irhrg0 | ESS | Enabled |
+|  | kabir | Admin | Enabled |"""
+
+
+def test_extracted_entries_parses_markdown_table_without_header_or_separator():
+    entries = _extracted_entries(_USERS_TABLE)
+
+    assert len(entries) == 4
+    assert all("---" not in e for e in entries)
+    assert not any("Username" in e for e in entries)
+
+
+def test_extracted_entries_parses_json_list():
+    assert len(_extracted_entries('["Sauce Labs Backpack", "Sauce Labs Onesie"]')) == 2
+
+
+def test_extracted_entries_returns_empty_when_it_cannot_parse():
+    """นับไม่ได้ต้องไม่เดา — ไม่มีตัวเลขดีกว่าตัวเลขผิด"""
+    assert _extracted_entries("just some prose from the page") == []
+
+
+def test_deterministic_count_note_reports_total_entries():
+    note = _deterministic_count_note(_USERS_TABLE, "how many users are there")
+
+    assert "exactly 4 entries" in note
+    assert "do not recount" in note
+
+
+def test_deterministic_count_note_also_counts_a_key_value_condition_from_the_goal():
+    """W_deterministic_count (บั๊กจริง): goal จริงของ user เขียนว่า "userrole=ess" — ดึงค่า
+    ฝั่งขวาของ = มานับให้เลย แทนที่จะปล่อยให้โมเดลไล่นับแถวเอง (ซึ่งตอบผิด 6 จาก 7 จริง)"""
+    note = _deterministic_count_note(_USERS_TABLE, "ลบ userrole=ess ออกให้หมด เจอกี่รายการ")
+
+    assert "exactly 4 entries" in note
+    assert "2 of those 4 entries contain 'ess'" in note
+
+
+def test_deterministic_count_note_is_empty_when_data_cannot_be_parsed():
+    assert _deterministic_count_note("just some prose", "how many") == ""
+
+
+@pytest.mark.asyncio
+async def test_read_page_data_attaches_the_system_computed_count_to_extracted_data():
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=0)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=_USERS_TABLE)):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many have userrole=ess",
+             "target_hint": "table tbody tr"},
+        )
+
+    assert result.success is True
+    assert "exactly 4 entries" in result.message
+    assert "2 of those 4 entries contain 'ess'" in result.message
+    assert _USERS_TABLE in result.message
+
+
+# ---------------- W_click_navigated (P0 F1): click ที่พาไป navigate ไม่ใช่ failure ----------------
+
+
+@pytest.mark.asyncio
+async def test_click_that_times_out_but_navigates_is_reported_as_success():
+    """บั๊กจริงบน OrangeHRM: คลิก "Admin" สำเร็จและหน้าเปลี่ยนไปแล้ว แต่ attempt 2/3 ไปหา
+    data-ai-index เดิมบนหน้าใหม่ (ซึ่งไม่มีทางมี) จน timeout แล้วข้อความของรอบสุดท้ายชนะ —
+    รายงานเป็น [FAIL] ทั้งที่คลิกได้ผลจริง"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+
+    async def _click_then_navigate(selector, timeout=None):
+        mock_page.url = "https://app.example.com/admin/users"
+        raise PWTimeout("Timeout 3000ms exceeded")
+
+    mock_page.click.side_effect = _click_then_navigate
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is True
+    assert "https://app.example.com/admin/users" in result.message
+    # ต้องเลิก retry ทันทีที่รู้ว่า URL เปลี่ยนแล้ว — retry ต่อไม่มีทางสำเร็จและกินเวลาเปล่า
+    assert mock_page.click.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_click_that_navigates_only_by_hash_route_still_counts_as_navigation():
+    """SPA จำนวนมากใช้ hash router (#/admin/users) — ห้าม normalize fragment ทิ้งเหมือนที่
+    crawler._normalize_url() ทำ (คนละหน้าที่กันสิ้นเชิง) ไม่งั้นจะเป็น false FAIL เหมือนเดิม"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/#/admin/list"
+
+    async def _click_then_navigate(selector, timeout=None):
+        mock_page.url = "https://app.example.com/#/admin/users"
+        raise PWTimeout("Timeout 3000ms exceeded")
+
+    mock_page.click.side_effect = _click_then_navigate
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is True
+
+
+def _dom_signature_only(*sizes):
+    """evaluate ปลอมที่ตอบเฉพาะ _dom_signature ตามลำดับ sizes ที่ให้มา ส่วน query อื่น
+    (เช่นตัวอ่านข้อความ error ของ W_rejected_submit_reports_success) ตอบ "ไม่มีอะไร"
+
+    เดิมเทสต์กลุ่มนี้ใช้ side_effect เป็นลิสต์ ซึ่งผูกกับ *จำนวนครั้ง* ที่ evaluate ถูกเรียก
+    พอมีการอ่าน DOM เพิ่มอีกจุด เทสต์ก็พังทั้งที่พฤติกรรมที่มันตรึงไว้ไม่ได้เปลี่ยนเลย
+    — ผูกกับสคริปต์ที่ถูกเรียกแทน จึงทนการเพิ่มจุดอ่านใหม่"""
+    remaining = list(sizes)
+
+    async def _evaluate(script, *args, **kwargs):
+        if "innerHTML" in str(script):
+            return remaining.pop(0) if remaining else 0
+        return []
+
+    return _evaluate
+
+@pytest.mark.asyncio
+async def test_click_that_fails_without_navigating_still_fails_but_reports_dom_change():
+    """สัญญาณสำรองสำหรับ SPA ที่เปลี่ยนแค่ state ภายใน — ห้ามพลิกเป็น success จาก DOM signature
+    เพราะ DOM อาจเปลี่ยนจาก toast/spinner ที่ไม่เกี่ยวเลย แต่ต้องแนบหลักฐานไปให้โมเดลเห็น"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+    mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
+    mock_page.evaluate = _dom_signature_only(1000, 4200)
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is False
+    assert "DOM did change" in result.message
+
+
+@pytest.mark.asyncio
+async def test_click_that_fails_with_no_change_at_all_reports_a_plain_failure():
+    """กันการ regress: การล้มเหลวจริงๆ ต้องยังรายงานตรงไปตรงมาเหมือนเดิม ไม่มีโน้ตเสริมมั่ว"""
+    mock_page = AsyncMock()
+    mock_page.url = "https://app.example.com/admin/list"
+    mock_page.click.side_effect = PWTimeout("Timeout 3000ms exceeded")
+    mock_page.evaluate = _dom_signature_only(1000, 1000)
+
+    result = await _dispatch_click_with_retry(mock_page, 3)
+
+    assert result.success is False
+    assert "DOM did change" not in result.message
+    assert "after 2 attempts" in result.message
+
+
+# ---------------- W_conditional_count / W_count_answer_check (P1.1) ----------------
+
+
+def test_deterministic_count_note_reports_a_zero_match_instead_of_staying_silent():
+    """W_conditional_count: เดิมเงียบไปเลยตอนไม่มีแถวไหนตรงเงื่อนไข เหลือแต่บรรทัด "exactly N
+    entries" ให้โมเดลอ่านแล้วรายงาน N เป็นคำตอบของคำถามที่มีเงื่อนไข ซึ่งตอบคนละคำถามกัน"""
+    note = _deterministic_count_note(_USERS_TABLE, "มี userrole=manager กี่คน")
+
+    assert "0 of those 4 entries contain 'manager'" in note
+    # ต้องคงเจตนาของ W_confident_zero ไว้ด้วย — 0 ไม่ใช่คำตอบจนกว่าจะพิสูจน์ได้ว่าอ่านถูกตาราง
+    assert "not the right table" in note
+
+
+def test_system_counted_conditions_reads_back_what_the_note_wrote():
+    """W_count_answer_check: ตัวเขียนกับตัวอ่าน format เดียวกันต้องตรงกันเสมอ (วางไว้ติดกันใน
+    ไฟล์เดียวกันด้วยเหตุผลนี้) — เทสต์นี้คือสิ่งที่จะพังทันทีถ้ามีใครแก้ข้อความฝั่งเดียว"""
+    note = _deterministic_count_note(_USERS_TABLE, "มี userrole=ess กี่คน")
+
+    assert system_counted_conditions(note) == {"ess": 2}
+    assert system_counted_conditions("[OK] click(3) -> click succeeded") == {}
+
+
+@pytest.mark.asyncio
+async def test_count_query_with_a_condition_never_answers_with_a_raw_selector_count():
+    """W_conditional_count (บั๊กจริง พิสูจน์ซ้ำได้ 2026-08-26): เส้นทางหลักของคำถามเชิงนับ
+    (count_elements คืนค่ามากกว่า 0) ไม่รู้จักเงื่อนไขใน query เลย — "มี user ที่ userrole=ess
+    กี่คน" + '[role=row]' คืน "found 21 entries" ทั้งที่คำตอบจริงคือ 2 และคืน success=True ด้วย
+    จึงไม่มีสัญญาณให้ใครจับได้ว่าตอบผิด"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=21)) as mock_count, \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value=_USERS_TABLE)), \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "มี user ที่ userrole=ess กี่คน",
+             "target_hint": '[role="row"]'},
+        )
+
+    assert result.success is True
+    assert "2 of those 4 entries contain 'ess'" in result.message
+    assert "found 21 entries" not in result.message
+    # อ่านแถวจริงได้แล้ว ไม่ต้องเสีย round-trip ไปนับ selector ดิบอีก
+    mock_count.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_count_query_with_a_condition_refuses_to_offer_the_raw_count_when_rows_are_unreadable():
+    """อ่านแถวจริงไม่ได้แต่ selector ยังนับได้ — ต้องรายงานตามความจริงว่านี่คือจำนวน element
+    ไม่ใช่จำนวนรายการที่ตรงเงื่อนไข (ธีมเดียวกับ W_click_native_select/W_confident_zero)"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=21)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock(return_value="[FAIL] nothing")), \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "มี user ที่ userrole=ess กี่คน",
+             "target_hint": '[role="row"]'},
+        )
+
+    assert "Do NOT report 21 as the answer" in result.message
+
+
+@pytest.mark.asyncio
+async def test_count_query_without_any_condition_still_uses_the_cheap_selector_count():
+    """กันการ regress: คำถามเชิงนับที่ไม่มีเงื่อนไขต้องยังนับด้วย selector ตรงๆ เหมือนเดิม
+    (ถูกกว่าและถูกต้องอยู่แล้ว ไม่มีเหตุผลให้ไปอ่านตารางทั้งก้อนมา)"""
+    mock_page = AsyncMock()
+    with patch("backend.app.core.actions.count_elements", AsyncMock(return_value=6)), \
+         patch("backend.app.core.actions.extract_table_data", AsyncMock()) as mock_extract, \
+         patch("backend.app.core.actions.wait_stable", AsyncMock()):
+        result = await execute(
+            mock_page,
+            {"type": "read_page_data", "query": "how many products are there",
+             "target_hint": ".inventory_item"},
+        )
+
+    assert result.message == "found 6 entries matching '.inventory_item'"
+    mock_extract.assert_not_awaited()
+
+
+_MIXED_COLUMN_TABLE = """| Username | User Role | Status |
+| --- | --- | --- |
+| ess.irhrg0 | Admin | Enabled |
+| jane | ESS | Enabled |"""
+
+
+def test_count_uses_the_column_named_on_the_left_of_the_equals_sign():
+    """W_column_aware_count: "userrole=ess" หมายถึงคอลัมน์ User Role ไม่ใช่ "แถวไหนก็ได้ที่มี
+    คำว่า ess" — username "ess.irhrg0" ที่ Role เป็น Admin เคยถูกนับเป็น ESS ด้วย ทำให้ตอบ 2
+    ทั้งที่ความจริงคือ 1 (ฝั่งซ้ายของ = ถูกทิ้งไปทั้งหมดในเวอร์ชันก่อน)"""
+    note = _deterministic_count_note(_MIXED_COLUMN_TABLE, "มี userrole=ess กี่คน")
+
+    assert "1 of those 2 entries contain 'ess' in the 'User Role' column" in note
+
+
+def test_count_falls_back_to_the_whole_row_when_the_column_name_does_not_match():
+    """ตารางที่ไม่มีคอลัมน์ชื่อนั้น (หรือ JSON list ที่ไม่มีคอลัมน์เลย) ต้องยังนับได้เหมือนเดิม
+    — fallback ต้องไม่หายไปพร้อมกับการเพิ่มความแม่นยำ"""
+    note = _deterministic_count_note('["Sauce Labs Backpack", "Sauce Labs Onesie"]', "how many name=Sauce")
+
+    assert "2 of those 2 entries contain 'Sauce' anywhere in the row" in note
+
+
+def test_column_matching_ignores_spacing_and_case_in_the_header():
+    """user พิมพ์ชื่อคอลัมน์รูปแบบไหนก็ได้ ("userrole"/"user_role"/"User Role") ต้องเทียบติดหมด"""
+    note = _deterministic_count_note(_MIXED_COLUMN_TABLE, "how many user_role=admin")
+
+    assert "1 of those 2 entries contain 'admin' in the 'User Role' column" in note
+
+
+# ---------------- W_fill_wrapper_resolves_to_inner_input ----------------
+# บั๊กจริงหน้า Update Password ของ OrangeHRM (2026-09-03): fill_secret(40) ล้มด้วย
+# "Element is not an <input>, <textarea>, <select> or [contenteditable]" เพราะ index ชี้ที่
+# div ที่ห่อ <input> ไว้ (perception ติด index ให้ตัวห่อเพราะมันคือตัวที่มี label อ่านได้)
+
+
+def _fill_target(is_fillable, inner_found=object()):
+    target = AsyncMock()
+    locator = MagicMock()
+    locator.evaluate = AsyncMock(return_value=is_fillable)
+    target.locator = MagicMock(return_value=locator)
+    target.query_selector = AsyncMock(return_value=inner_found)
+    return target
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_points_at_the_input_inside_a_wrapper():
+    target = _fill_target(is_fillable=False)
+
+    selector = await actions._effective_fill_selector(target, '[data-ai-index="40"]', 3000)
+
+    assert selector.startswith('[data-ai-index="40"] ')
+    assert "input" in selector
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_leaves_a_real_input_untouched():
+    """ช่องกรอกปกติต้องไม่ถูกแตะเลย — ไม่งั้น selector ยาวขึ้นโดยไม่จำเป็นทุก fill"""
+    target = _fill_target(is_fillable=True)
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="2"]', 3000,
+    ) == '[data-ai-index="2"]'
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_gives_up_honestly_when_nothing_is_fillable_inside():
+    """ไม่มีช่องกรอกข้างในเลย = คืน selector เดิม ให้ Playwright บอก error ตามความจริง
+    ดีกว่าเดาไปเรื่อยแล้วกรอกผิดที่ (หลักการเดียวกับ W_confident_zero)"""
+    target = _fill_target(is_fillable=False, inner_found=None)
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="3"]', 3000,
+    ) == '[data-ai-index="3"]'
+
+
+@pytest.mark.asyncio
+async def test_effective_fill_selector_fails_open_when_the_dom_cannot_be_read():
+    target = _fill_target(is_fillable=False)
+    target.locator.return_value.evaluate = AsyncMock(side_effect=Exception("detached"))
+
+    assert await actions._effective_fill_selector(
+        target, '[data-ai-index="9"]', 3000,
+    ) == '[data-ai-index="9"]'
+
+
+# ---------------------------------------------------------------------------
+# W_submit_before_confirm_password + W_menu_open_note_needs_no_chain
+#
+# ทั้งสองบั๊กมาจากรันสด 2026-09-03 บน OrangeHRM และทั้งคู่เป็นพฤติกรรมของ DOM จริง
+# (ค่าในช่อง password ว่างหรือไม่ / เมนูที่เพิ่งเปิดสร้าง element ใหม่) — mock พิสูจน์ไม่ได้
+# จึงใช้ Chromium จริง เหมือน W_fill_wrapper_resolves_to_inner_input
+# ---------------------------------------------------------------------------
+
+_PASSWORD_FORM_HTML = """
+<html><body>
+  <form onsubmit="document.title='SUBMITTED'; return false;">
+    <input data-ai-index="1" type="password" />
+    <input data-ai-index="2" type="password" />
+    <input data-ai-index="3" type="password" />
+    <button data-ai-index="4" type="submit">Save</button>
+  </form>
+</body></html>
+"""
+
+_MENU_HTML = """
+<html><body>
+  <div data-ai-index="1" role="button" aria-haspopup="true"
+       onclick="document.getElementById('m').hidden = !document.getElementById('m').hidden">Profile</div>
+  <ul id="m" role="menu" hidden>
+    <li data-ai-index="2" role="menuitem">About</li>
+    <li data-ai-index="3" role="menuitem">Change Password</li>
+  </ul>
+  <button data-ai-index="4">Elsewhere</button>
+</body></html>
+"""
+
+
+async def _with_page(html):
+    """context manager แบบง่ายๆ ไม่ได้ — คืน (playwright, browser, page) ให้ปิดเอง"""
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch()
+    page = await browser.new_page()
+    await page.set_content(html)
+    return pw, browser, page
+
+
+@pytest.mark.asyncio
+async def test_fill_does_not_submit_while_other_password_fields_are_empty():
+    pw, browser, page = await _with_page(_PASSWORD_FORM_HTML)
+    try:
+        result = await execute(
+            page, {"type": "fill", "index": 1, "text": "abc",
+                   "key": "Enter", "then_click_index": 4},
+        )
+        assert result.success is True          # การกรอกยังต้องสำเร็จตามปกติ
+        assert "did not submit the form" in result.message
+        assert await page.title() != "SUBMITTED"
+        assert await page.input_value('[data-ai-index="1"]') == "abc"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_fill_still_submits_once_it_is_the_last_empty_password_field():
+    """ห้ามตัดการส่งฟอร์มทิ้งเสมอ — ไม่งั้นงานเปลี่ยนรหัสผ่านจะกดบันทึกไม่ได้เลย"""
+    pw, browser, page = await _with_page(_PASSWORD_FORM_HTML)
+    try:
+        await execute(page, {"type": "fill", "index": 1, "text": "abc"})
+        await execute(page, {"type": "fill", "index": 2, "text": "abc"})
+        result = await execute(
+            page, {"type": "fill", "index": 3, "text": "abc",
+                   "key": "Enter", "then_click_index": 4},
+        )
+        assert result.success is True
+        assert "did not submit the form" not in result.message
+        assert await page.title() == "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_click_that_opens_a_menu_says_the_indexes_are_stale_without_a_chained_click():
+    pw, browser, page = await _with_page(_MENU_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 1})
+        assert result.success is True
+        assert "now OPEN" in result.message
+        assert "do NOT reuse the index you just clicked" in result.message
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_click_gets_no_extra_note():
+    """โน้ตนี้กินโควตา token ทุก step ที่แนบ — ต้องไม่แถมให้คลิกที่ไม่เกี่ยวกับเมนู"""
+    pw, browser, page = await _with_page(_MENU_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 4})
+        assert result.success is True
+        assert result.message.strip() == "click succeeded"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_chained_submit_after_fill (บั๊กจริงจากรันสดสองเทิร์นผ่าน REST API 2026-09-04): เทิร์นแรก
+# กรอก 12345678 ทั้งช่อง Password และ Confirm แล้วเว็บปฏิเสธเพราะไม่มีตัวพิมพ์เล็ก เทิร์นที่สอง
+# user ตอบด้วยรหัสที่ผ่านนโยบาย โมเดลกรอกทับเฉพาะช่อง Password แล้วพ่วง click Save มาด้วย
+# ช่อง Confirm ยังค้างค่าเดิม -> 'Passwords do not match'
+#
+# ต้องเช็คหลัง fill เท่านั้น: ก่อน fill ทั้งสองช่องยังถือค่าเก่าซึ่ง "ตรงกัน" พอดี guard ที่
+# เช็คก่อน dispatch จึงมองไม่เห็นปัญหาเลย
+
+_CHANGE_PASSWORD_HTML = """
+<html><body>
+  <form onsubmit="document.title='SUBMITTED'; return false;">
+    <div><label>Current Password</label><input data-ai-index="1" type="password" /></div>
+    <div><label>Password</label><input data-ai-index="2" type="password" /></div>
+    <div><label>Confirm Password</label><input data-ai-index="3" type="password" /></div>
+    <button data-ai-index="4" type="submit">Save</button>
+  </form>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_chained_submit_is_dropped_when_the_confirmation_still_holds_the_old_value():
+    pw, browser, page = await _with_page(_CHANGE_PASSWORD_HTML)
+    try:
+        for i, v in [(1, "old"), (2, "12345678"), (3, "12345678")]:
+            await page.fill(f'[data-ai-index="{i}"]', v)
+        result = await execute(
+            page, {"type": "fill", "index": 2, "text": "Abcd1234",
+                   "key": "Tab", "then_click_index": 4},
+        )
+        assert result.success is True                     # การกรอกยังต้องสำเร็จ
+        assert "do not hold the same value" in result.message
+        assert await page.title() != "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_chained_submit_goes_through_once_both_fields_agree():
+    """ห้ามตัดการส่งฟอร์มทิ้งเสมอ — ไม่งั้นงานเปลี่ยนรหัสผ่านจะจบไม่ได้เลย"""
+    pw, browser, page = await _with_page(_CHANGE_PASSWORD_HTML)
+    try:
+        for i, v in [(1, "old"), (2, "Abcd1234"), (3, "12345678")]:
+            await page.fill(f'[data-ai-index="{i}"]', v)
+        result = await execute(
+            page, {"type": "fill", "index": 3, "text": "Abcd1234",
+                   "key": "Tab", "then_click_index": 4},
+        )
+        assert result.success is True
+        assert "did not submit the form" not in result.message
+        assert await page.title() == "SUBMITTED"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_expanded_alone_is_not_a_menu (regression ที่ release gate จับได้ 2026-09-07, MiniWoB
+# "click-tab"): tab ของ jQuery UI มี aria-expanded จึงถูกจัดเป็น dropdown trigger แล้วได้
+# ข้อความ "กดซ้ำจะปิดเมนู" ซึ่งผิดสำหรับ tab — โมเดลวนคลิกแท็บเดิมจนโดน loop detector
+# งานนี้เคยผ่านมาก่อน จนกระทั่ง W_menu_open_note_needs_no_chain ทำให้ note แนบทุกคลิก
+
+_TABS_AND_DROPDOWN_HTML = """
+<html><body>
+  <div role="tablist">
+    <a data-ai-index="1" role="tab" aria-expanded="true" href="#">Tab #1</a>
+    <a data-ai-index="2" role="tab" aria-expanded="false" href="#">Tab #3</a>
+  </div>
+  <div data-ai-index="3" role="combobox" aria-haspopup="listbox">-- Select --</div>
+  <button data-ai-index="4">Plain</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_tab_is_not_described_as_a_menu_that_closes_when_clicked_again():
+    pw, browser, page = await _with_page(_TABS_AND_DROPDOWN_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 2})
+        assert result.success is True
+        assert result.message.strip() == "click succeeded"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_real_dropdown_trigger_still_gets_the_note():
+    """กันแก้เกินจนบล็อกที่ควรได้หายไปด้วย — combobox จริงต้องยังได้ข้อความเหมือนเดิม"""
+    pw, browser, page = await _with_page(_TABS_AND_DROPDOWN_HTML)
+    try:
+        result = await execute(page, {"type": "click", "index": 3})
+        assert "now OPEN" in result.message
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_blank_navigation_destroys_the_task (release gate จับได้ 2026-09-07, MiniWoB
+# "click-checkboxes"): หลังโดนบังคับ go_back หน้าเว็บกลายเป็นหน้าว่าง โมเดลจึงสั่ง goto ด้วย url
+# ว่าง ซึ่งพาไป about:blank แล้วรายงานว่าสำเร็จ — จากจุดนั้น read_page_data ล้มด้วย
+# "no element matching 'body'" ทุกครั้ง task กู้ตัวเองไม่ได้อีกเลยแต่ยังเผา step จนหมดงบ
+
+_ONE_BUTTON_HTML = "<html><body><button data-ai-index='1'>Submit</button></body></html>"
+
+
+@pytest.mark.asyncio
+async def test_goto_refuses_a_blank_destination_and_leaves_the_page_alone():
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        for url in ("", "about:blank", "  "):
+            result = await execute(page, {"type": "goto", "url": url})
+            assert result.success is False
+            assert "[Rejected]" in result.message
+        assert await page.locator("[data-ai-index='1']").count() == 1
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_real_destination_is_untouched_by_the_blank_check():
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        result = await execute(page, {"type": "goto", "url": "https://example.com"})
+        assert result.success is True
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+@pytest.mark.asyncio
+async def test_go_back_with_no_history_reports_failure_instead_of_success():
+    """Playwright คืน None เฉยๆ เมื่อไม่มีประวัติให้ย้อน เดิมจึงรายงานว่าสำเร็จทุกครั้ง —
+    recovery ที่ล้มเหลวถูกนับเป็นสำเร็จ แล้ว loop ก็เดินต่อบนหน้าที่ใช้อะไรไม่ได้"""
+    pw, browser, page = await _with_page(_ONE_BUTTON_HTML)
+    try:
+        result = await execute(page, {"type": "go_back"})
+        assert result.success is False
+        assert "no previous page" in result.message
+        assert await page.locator("[data-ai-index='1']").count() == 1
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# W_toast_container_is_empty (วัดกับหน้าจริง 2026-09-07): _SUCCESS_TOAST_SELECTOR มี
+# ".oxd-toast-container" ปนอยู่ และ .first หยิบกล่องครอบที่ยังว่างเปล่ามาก่อนตัว toast จริง
+# โค้ดจึงอ่านข้อความได้ "" แล้วสรุปว่าไม่มี toast ทั้งที่บันทึกสำเร็จ — วัดได้ว่า toast โผล่ที่
+# 156 ms และอยู่ถึง 3500 ms คือทันเวลาที่รออยู่ (2500 ms) สบายๆ ปัญหาอยู่ที่เลือก element ผิดตัว
+
+_TOAST_HTML = """
+<html><body>
+  <div class="oxd-toast-container"></div>
+  <button data-ai-index="1" onclick="
+    document.querySelector('.oxd-toast-container').innerHTML =
+      '<div class=&quot;oxd-toast--success&quot;>Successfully Saved</div>';
+  ">Save</button>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_an_empty_toast_container_does_not_hide_the_real_toast():
+    from backend.app.core.actions import _detect_success_toast
+
+    pw, browser, page = await _with_page(_TOAST_HTML)
+    try:
+        assert await _detect_success_toast(page) is None      # ยังไม่กด ยังไม่มี toast
+        await page.click("[data-ai-index='1']")
+        assert await _detect_success_toast(page) == "Successfully Saved"
+    finally:
+        await browser.close()
+        await pw.stop()
+
+
+# --- W_chained_submit_after_check: ห้ามกดปุ่มส่งพ่วงท้ายการติ๊กช่องแรกของกลุ่ม ---
+#
+# บั๊กจริงจาก release-gate 2026-09-07 (MiniWoB click-checkboxes): โจทย์ให้ติ๊ก 4 จาก 6 ช่อง
+# แล้วกด Submit — โมเดลพ่วง then_click_index ของ Submit มาตั้งแต่การติ๊กช่องแรก episode จบ
+# ทันทีด้วยคะแนน 0 และ freeze ค่านั้นไว้ อีก 14 step ที่เหลือจึงไม่มีความหมาย ทุก action
+# รายงาน [OK] ตลอดทาง
+#
+# ใช้ Chromium จริงเพราะสิ่งที่ต้องพิสูจน์คือการไล่ ancestor หา "กลุ่ม" ของ checkbox บน DOM
+# จริง — mock ที่ตอบว่าเจอก็จะเจอเสมอไม่ว่า JS จะผิดแค่ไหน
+
+_CHECKBOX_GROUP_HTML = """<!doctype html><html><body><div id="boxes">
+<label><input type="checkbox" data-ai-index="0" id="a">alpha</label>
+<label><input type="checkbox" data-ai-index="1" id="b">beta</label>
+<label><input type="checkbox" data-ai-index="2" id="c">gamma</label>
+</div><button data-ai-index="3" id="go" onclick="window.__submitted=true">Submit</button>
+</body></html>"""
+
+_LONE_CHECKBOX_HTML = """<!doctype html><html><body><form>
+<label><input type="checkbox" data-ai-index="0" id="agree">I agree</label>
+<input data-ai-index="1" id="name">
+</form><button data-ai-index="2" id="go" onclick="window.__submitted=true">Submit</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_check_never_presses_a_chained_button_inside_a_checkbox_group():
+    """โจทย์ส่วนใหญ่ขอแค่บางช่องในกลุ่ม ชั้น actions ไม่รู้จัก goal จึงตัดสินไม่ได้ว่า
+    "ติ๊กครบหรือยัง" — กฎคือกลุ่มที่มีหลายช่องไม่พ่วงปุ่มเลย ไม่ว่าสถานะจะเป็นยังไง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 3}, [])
+
+            assert result.success is True                       # การติ๊กเองสำเร็จตามปกติ
+            assert await page.locator("#a").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+            assert "3 checkboxes in the same group" in result.message
+
+            # ติ๊กครบทุกช่องแล้วก็ยังไม่พ่วง — เวอร์ชันแรกปล่อยผ่านตรงนี้ แล้ว gate
+            # พิสูจน์ว่ามันสอนให้โมเดลติ๊กช่องที่โจทย์ไม่ได้ขอเพื่อให้ "ครบ"
+            await page.check("#b")
+            result = await execute(page, {"type": "check", "index": 2, "then_click_index": 3}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_the_dropped_chain_never_names_individual_boxes():
+    """บั๊กจริงจาก gate 2026-09-07: ข้อความเวอร์ชันแรกไล่ชื่อช่องที่ยังไม่ถูกติ๊ก โมเดลอ่าน
+    เป็นรายการที่ต้องทำแล้วติ๊กช่องที่โจทย์ไม่ได้ขอ (ขอ 3 จาก 4 ติ๊กครบ 4 ได้คะแนนบางส่วน)"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 3}, [])
+
+            for name in ("alpha", "beta", "gamma"):
+                assert name not in result.message
+            assert "the instruction names" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_lone_checkbox_still_submits_in_the_same_command():
+    """"ยอมรับเงื่อนไข" ช่องเดียวในฟอร์มคือเคสที่กฎ then_click_index มีไว้ให้แต่แรก —
+    guard ต้องไม่แตะมันเลย ไม่งั้นการแก้บั๊กนี้ไปทำให้ฟอร์มปกติช้าลงทุกใบ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_LONE_CHECKBOX_HTML)
+            result = await execute(page, {"type": "check", "index": 0, "then_click_index": 2}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is True
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_chaining_another_checkbox_is_left_alone():
+    """พ่วง checkbox ตัวถัดไปคือการติ๊กสองช่องรวด ซึ่งเป็นสิ่งที่ต้องการพอดี ไม่ใช่การส่ง
+    ฟอร์มก่อนเวลา — ตัด chain ตรงนี้จะทำให้ทุก task ที่ต้องติ๊กหลายช่องช้าลงเปล่าๆ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            elements = [
+                {"index": 0, "tag": "input", "type": "checkbox", "label": "alpha"},
+                {"index": 1, "tag": "input", "type": "checkbox", "label": "beta"},
+            ]
+            result = await execute(
+                page, {"type": "check", "index": 0, "then_click_index": 1}, elements)
+
+            assert result.success is True
+            assert await page.locator("#a").is_checked() is True
+            assert await page.locator("#b").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_click_on_a_checkbox_cannot_chain_the_button_either():
+    """gate รอบที่วัด noise บน commit เดิม (2026-09-07) จับได้ว่าโมเดลสลับมาใช้ click กับ
+    checkbox ตัวเดิมแล้วพ่วง Submit ต่อ — failure mode เดียวกันเป๊ะ แค่คนละ action type
+    guard ที่ปิดแค่ทาง "check" จึงไม่ได้ปิดอะไรเลย"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECKBOX_GROUP_HTML)
+            result = await execute(page, {"type": "click", "index": 0, "then_click_index": 3}, [])
+
+            assert result.success is True                       # การคลิกเองสำเร็จตามปกติ
+            assert await page.locator("#a").is_checked() is True
+            assert await page.evaluate("() => !!window.__submitted") is False
+            assert "3 checkboxes in the same group" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_click_next_to_a_checkbox_group_still_chains():
+    """เป้าที่ไม่ใช่ checkbox ต้องไม่โดน guard นี้เลย แม้จะอยู่ในหน้าที่มีกลุ่ม checkbox อยู่ —
+    ไม่งั้นการแก้บั๊กนี้ไปทำให้ทุกหน้าที่มี checkbox เสีย chain ไปทั้งหน้า"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(
+                _CHECKBOX_GROUP_HTML.replace(
+                    '<button data-ai-index="3"',
+                    '<input data-ai-index="4" id="q"><button data-ai-index="3"'))
+            result = await execute(page, {"type": "click", "index": 4, "then_click_index": 3}, [])
+
+            assert result.success is True
+            assert await page.evaluate("() => !!window.__submitted") is True
+        finally:
+            await browser.close()
+
+
+# --- W_fill_untypable_target: พิมพ์ลงของที่ไม่ใช่ช่องกรอก ต้องได้ทางออก ไม่ใช่ error ดิบ ---
+
+_UNTYPABLE_HTML = """<!doctype html><html><body>
+<div data-ai-index="1" class="oxd-select-text-input" tabindex="0"><span>-- Select --</span></div>
+<div data-ai-index="2" class="oxd-input-group"><input data-ai-index="3" type="text"></div>
+<input data-ai-index="4" type="text">
+<button data-ai-index="5">Save</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_fill_on_a_dropdown_trigger_points_at_the_way_that_works():
+    """วัดบนฟอร์ม Add Candidate จริง (2026-09-08): agent พิมพ์อีเมลลง div.oxd-select-text-input
+    แล้วได้ error ดิบของ Playwright กลับไป ซึ่งบอกว่าอะไรผิดแต่ไม่บอกว่าต้องทำอะไรต่อ"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_UNTYPABLE_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "x@y.com"}, [])
+
+            assert result.success is False
+            assert "dropdown" in result.message
+            assert "Click it to open the menu" in result.message
+            assert "Element is not an" not in result.message      # ไม่ปล่อย error ดิบออกไป
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_fill_still_works_through_a_wrapper_that_holds_the_real_input():
+    """W_fill_wrapper_resolves_to_inner_input มีมาก่อนและต้องไม่ถูก guard ตัวใหม่ตัดทิ้ง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_UNTYPABLE_HTML)
+
+            wrapper = await execute(page, {"type": "fill", "index": 2, "text": "x@y.com"}, [])
+            plain = await execute(page, {"type": "fill", "index": 4, "text": "z@y.com"}, [])
+
+            assert wrapper.success is True
+            assert plain.success is True
+            assert await page.locator("[data-ai-index='3']").input_value() == "x@y.com"
+        finally:
+            await browser.close()
+
+
+# --- W_menu_overlay_blocks_target: เมนูที่เปิดค้างบังเป้าหมายไว้ ---
+#
+# ทำซ้ำบนฟอร์ม Add Candidate ของ OrangeHRM 2026-09-08: กด Tab ท้ายช่อง Last Name ทำให้โฟกัส
+# ตกที่ dropdown Vacancy เมนูเปิดคลุมช่อง Email ที่อยู่ถัดลงไป fill ช่องนั้นรอ actionability
+# จนหมดเวลา 6.6 วินาที แล้วล้ม ตามด้วย click ที่ล้มแบบเดียวกัน จน task พังทั้งงาน
+# หลังแก้: 0.5 วินาที สำเร็จ
+
+_MENU_OVER_FIELD_HTML = """<!doctype html><html><body style="margin:0">
+<input data-ai-index="1" id="email" style="position:absolute;top:50px;left:0;width:200px;height:30px">
+<div id="menu" role="listbox" style="position:absolute;top:40px;left:0;width:300px;height:80px;background:#fff">
+  <div role="option" data-ai-index="2">Option A</div>
+</div>
+<script>document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.getElementById("menu").remove();
+});</script>
+</body></html>"""
+
+_DIALOG_OVER_FIELD_HTML = _MENU_OVER_FIELD_HTML.replace('role="listbox"', 'role="dialog"')
+
+
+@pytest.mark.asyncio
+async def test_fill_closes_a_menu_that_is_covering_the_field():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_MENU_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "a@b.com"}, [])
+
+            assert result.success is True
+            assert "covering this field" in result.message
+            assert await page.locator("#email").input_value() == "a@b.com"
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_an_overlay_that_is_not_a_menu_is_left_alone():
+    """Escape ถูกยิงเฉพาะเมื่อรู้ว่าเป็นเมนูบังอยู่จริง — dialog ที่โมเดลอาจกำลังต้องการ
+    ต้องไม่ถูกปิดทิ้งโดยผลข้างเคียงของ guard นี้"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_DIALOG_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "fill", "index": 1, "text": "a@b.com"}, [])
+
+            assert "covering this field" not in result.message
+            assert await page.locator("#menu").count() == 1        # dialog ยังอยู่
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_clicking_an_option_inside_the_open_menu_is_not_treated_as_blocked():
+    """เป้าที่อยู่ *ใน* เมนูเองคือการเลือกตัวเลือกตามปกติ ปิดเมนูตรงนั้นจะทำลายงาน"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_MENU_OVER_FIELD_HTML)
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert result.success is True
+            assert "covering this element" not in result.message
+            assert await page.locator("#menu").count() == 1
+        finally:
+            await browser.close()
+
+
+# --- W_rejected_submit_reports_success: ฟอร์มที่ถูกปฏิเสธต้องไม่รายงานว่าสำเร็จเฉยๆ ---
+#
+# release-gate 8c0f68a (login_checkout): กด Continue บนฟอร์ม checkout ที่ยังไม่ได้กรอก หน้า
+# ขึ้น "Error: First Name is required" ชัดเจน แต่โมเดลได้ "[OK] click succeeded" จึงกดซ้ำอีก
+# สองครั้งแล้วโดนบังคับ go_back จนงบ step หมดก่อนกรอกฟอร์มเสร็จ
+
+_VALIDATING_FORM_HTML = """<!doctype html><html><body>
+<input data-ai-index="1" id="name">
+<div id="err" class="error-message-container" style="display:none">Error: First Name is required</div>
+<button data-ai-index="2" onclick="
+  var v = document.getElementById('name').value;
+  document.getElementById('err').style.display = v ? 'none' : 'block';
+  if (v) document.body.setAttribute('data-sent', '1');
+">Continue</button>
+</body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_a_click_that_the_page_rejects_says_why():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_VALIDATING_FORM_HTML)
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert result.success is True                 # คลิกโดนจริง ไม่ได้โกหกเรื่องนั้น
+            assert "First Name is required" in result.message
+            assert "nothing was submitted" in result.message
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_click_that_the_page_accepts_stays_quiet():
+    """ต้องไม่ไปแปะโน้ต error ให้คลิกที่ผ่านฉลุย และต้องไม่รายงาน error ที่ค้างอยู่ก่อน
+    คลิกว่าเป็นผลของคลิกนี้"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_VALIDATING_FORM_HTML)
+            await execute(page, {"type": "click", "index": 2}, [])      # ทำให้ error โผล่ค้างไว้
+            await page.fill("#name", "Somchai")
+
+            result = await execute(page, {"type": "click", "index": 2}, [])
+
+            assert "rejected" not in result.message
+            assert await page.evaluate("() => document.body.dataset.sent") == "1"
+        finally:
+            await browser.close()
+
+
+# --- W_check_fires_a_button: ติ๊กใส่ของที่ไม่ใช่ checkbox ---
+#
+# release-gate d29ed4a (MiniWoB click-checkboxes): โมเดลสั่ง check ใส่ปุ่ม Submit — check()
+# ตกไปทางสำรอง (JS-click แล้วค่อยยืนยันสถานะติ๊ก) ผลคือกดปุ่มไปจริงแล้วรายงานว่า "clicked,
+# but the checked state could not be confirmed" ซึ่งอ่านเหมือนไม่มีอะไรเกิดขึ้น โมเดลจึงทำซ้ำ
+# แล้วโดนบังคับ go_back จนเสีย 11 step
+
+_CHECK_TARGETS_HTML = """<!doctype html><body>
+<button data-ai-index="1" onclick="document.body.dataset.fired='1'">Submit</button>
+<input data-ai-index="2" type="checkbox">
+<span data-ai-index="3" role="checkbox" aria-checked="false"
+      onclick="this.setAttribute('aria-checked','true')">custom</span>
+<label data-ai-index="4"><input type="checkbox" id="inner">wrapped</label>
+<input data-ai-index="5" type="text">
+</body>"""
+
+
+@pytest.mark.asyncio
+async def test_check_on_a_button_does_not_press_it():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECK_TARGETS_HTML)
+
+            result = await execute(page, {"type": "check", "index": 1}, [])
+
+            assert result.success is False
+            assert "not a checkbox" in result.message
+            # หัวใจของบั๊ก: ปุ่มต้องไม่ถูกกด ไม่ใช่แค่ข้อความสวยขึ้น
+            assert await page.evaluate("() => document.body.dataset.fired") is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_check_still_ticks_every_kind_of_real_checkbox():
+    """custom checkbox ที่ซ่อน input ไว้ (แบบ OrangeHRM) คือเหตุผลที่ check() มีทางสำรอง
+    อยู่ตั้งแต่ต้น — guard ตัวใหม่ต้องไม่ไปตัดทางนั้นทิ้ง"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_CHECK_TARGETS_HTML)
+
+            for index in (2, 3, 4):
+                assert (await execute(page, {"type": "check", "index": index}, [])).success is True
+
+            assert await page.locator("[data-ai-index='2']").is_checked() is True
+            assert await page.locator("#inner").is_checked() is True
+        finally:
+            await browser.close()
+
+
+# --- W_select_reorders_the_page: เลือกค่าแล้วหน้าจัดเรียงใหม่ ---
+#
+# release-gate 50eefd0 (long_flow): โมเดลสั่ง select "Name (Z to A)" พร้อมพ่วงคลิกสินค้า
+# index 10 ในคำสั่งเดียว — SauceDemo render ลิสต์ใหม่ทั้งชุด node เก่าถูกทิ้งพร้อม
+# data-ai-index คลิกที่พ่วงจึง timeout สองรอบแล้วงานเดินผิดทางยาวจนหมด 25 step
+
+_REORDERING_SELECT_HTML = """<!doctype html><body>
+<select data-ai-index="1" onchange="
+  document.getElementById('list').innerHTML =
+    '<button onclick=&quot;document.body.dataset.clicked=this.textContent&quot;>Banana</button>';">
+  <option>A to Z</option><option>Z to A</option>
+</select>
+<div id="list"><button data-ai-index="2"
+  onclick="document.body.dataset.clicked=this.textContent">Apple</button></div>
+</body>"""
+
+_STABLE_SELECT_HTML = """<!doctype html><body>
+<select data-ai-index="1"><option>x</option><option>y</option></select>
+<button data-ai-index="2" onclick="document.body.dataset.clicked='stable'">Go</button>
+</body>"""
+
+
+@pytest.mark.asyncio
+async def test_a_select_that_rerenders_the_page_does_not_run_its_chained_click():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_REORDERING_SELECT_HTML)
+
+            result = await execute(page, {"type": "select", "index": 1, "label": "Z to A",
+                                          "then_click_index": 2}, [])
+
+            assert result.success is True                  # การเลือกค่าเองสำเร็จ
+            assert "re-ordered the page" in result.message
+            assert await page.evaluate("() => document.body.dataset.clicked") is None
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_a_select_that_leaves_the_page_alone_still_chains():
+    """ราคาต้องจ่ายเฉพาะตอนหน้าจัดเรียงใหม่จริง — select ธรรมดาต้องพ่วงได้เหมือนเดิม"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.set_content(_STABLE_SELECT_HTML)
+
+            result = await execute(page, {"type": "select", "index": 1, "label": "y",
+                                          "then_click_index": 2}, [])
+
+            assert result.success is True
+            assert "re-ordered" not in result.message
+            assert await page.evaluate("() => document.body.dataset.clicked") == "stable"
+        finally:
+            await browser.close()

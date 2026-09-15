@@ -28,9 +28,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 
 from backend.app.config import settings
+from backend.app.core import goal_intent
+from backend.app.core.crypto_store import get_fernet
 from backend.app.site_learning.schema import ButtonInfo, FormFieldInfo, PageInfo, SiteManual
 
 
@@ -329,27 +331,6 @@ def _credentials_path(domain: str) -> Path:
     return _domain_dir(domain) / "credentials.json"
 
 
-def _credential_key_path() -> Path:
-    # Security 1.4: key ต่อเครื่อง เก็บที่ระดับ "data/" เดียว (parent ของ site_manuals_dir)
-    # ไม่ใช่ต่อโดเมน — credentials.json ของทุกโดเมนใช้ key เดียวกัน
-    return Path(settings.site_manuals_dir).parent / ".credential_key"
-
-
-def _get_fernet() -> Fernet:
-    """Security 1.4: เข้ารหัส/ถอดรหัส credentials.json ด้วย key แบบ local-machine — generate
-    ครั้งแรกที่ต้องใช้แล้วเก็บไว้ที่ data/.credential_key (gitignored) ไม่ต้องให้ user ตั้ง
-    env var เพิ่มเอง ไฟล์นี้เป็น secret ต่อเครื่อง — ย้ายเครื่อง/ลบไฟล์นี้ทิ้งแล้ว
-    credentials.json เก่าที่เข้ารหัสไว้แล้วจะถอดรหัสไม่ได้อีก (ต้องกรอก credential ใหม่)"""
-    path = _credential_key_path()
-    if path.exists():
-        key = path.read_bytes()
-    else:
-        key = Fernet.generate_key()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(key)
-    return Fernet(key)
-
-
 def save_credentials(domain: str, username: str, password: str) -> None:
     """W17: เก็บ username/password สำหรับโดเมนนี้ไว้ให้ orchestrator ดึงไปใช้ auto-login
     ตอนรัน task จริง (ดู core/orchestrator.py::_maybe_auto_login, site_learning/
@@ -359,7 +340,7 @@ def save_credentials(domain: str, username: str, password: str) -> None:
 
     Security 1.4: username/password เข้ารหัสด้วย Fernet ก่อนเขียนลงดิสก์เสมอ (marker
     "encrypted": true ให้ load_credentials() แยกจากไฟล์เก่าที่ยังเป็น plaintext ได้)"""
-    fernet = _get_fernet()
+    fernet = get_fernet()
     encrypted = {
         "encrypted": True,
         "username": fernet.encrypt(username.encode("utf-8")).decode("ascii"),
@@ -396,7 +377,7 @@ def load_credentials(domain: str) -> Optional[dict]:
             pass
         return {"username": username, "password": password}
     try:
-        fernet = _get_fernet()
+        fernet = get_fernet()
         username = fernet.decrypt(username.encode("ascii")).decode("utf-8")
         password = fernet.decrypt(password.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError):
@@ -428,7 +409,13 @@ def find_matching_page(manual: SiteManual, goal: str, min_score: int = 1) -> Opt
     W67: เพิ่ม min_score ให้ caller ที่ต้องการความมั่นใจสูงกว่า (เช่น nav-fastpath auto-decide
     ที่ลงมือคลิกจริงตาม match ไม่ใช่แค่โชว์ context ให้ LLM อ่านเฉยๆ) ปรับ threshold เข้มขึ้นได้
     โดยไม่กระทบ caller เดิมที่ยังใช้ default 1"""
+    # T2: ภาษาไทยไม่มีเว้นวรรค การตัดคำด้วย [^\w]+ จึงได้ token ก้อนเดียวยาวๆ ต่อประโยค ซึ่ง
+    # ไม่มีทางตรงกับชื่อหน้า/breadcrumb ของคู่มือเลย = หา page ไม่เจอสำหรับ goal ภาษาไทยทุกอัน
+    # goal_intent.matching_tokens() เติม token ที่เป็น ASCII จากคู่ field=value เข้ามาให้ ซึ่ง
+    # เป็นส่วนที่เป็นภาษาอังกฤษเสมอแม้ประโยครอบๆ จะเป็นภาษาไทย — union ไม่ใช่แทนที่ เพื่อไม่ให้
+    # พฤติกรรมของ goal ภาษาอังกฤษเดิมเปลี่ยนแม้แต่นิดเดียว
     goal_tokens = {t for t in re.split(r"[^\w]+", (goal or "").lower()) if len(t) >= 3}
+    goal_tokens |= goal_intent.matching_tokens(goal or "")
     if not goal_tokens:
         return None
 

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Login — Hermes HRM{% endblock %}
+{% block content_standalone %}
+<div class="login-card">
+  <h1>Hermes HRM</h1>
+  <p class="subtitle">Sign in</p>
+  {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+  <div class="demo-creds">
+    <strong>Demo accounts</strong>
+    <ul>
+      <li>Admin — <code>admin</code> / <code>Admin@123</code></li>
+      <li>ESS (employee) — <code>james.wilson</code> / <code>James@123</code></li>
+      <li>Supervisor — <code>alice.nguyen</code> / <code>Alice@123</code></li>
+    </ul>
+    <span class="demo-creds-note">Password pattern for any account: capitalize the username's first name, then "@123".</span>
+  </div>
+  <form method="post" action="/login">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Login</button>
+  </form>
+</div>
+{% endblock %}

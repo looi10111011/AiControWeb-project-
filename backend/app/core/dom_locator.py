@@ -129,6 +129,12 @@ _STABLE_LOCATOR_JS = r"""
 """
 
 
+# W_descriptor_timeout: เพดานเวลาของ evaluate() ใน compute_locator_descriptor() (ดูเหตุผล
+# เต็มใน docstring ของฟังก์ชันนั้น) — สั้นพอที่จะไม่เสียเวลาเปล่าเมื่อ element หายไปแล้ว
+# แต่ยาวพอสำหรับ element ที่ยังอยู่จริงบนหน้าที่ยังไม่นิ่งสนิท
+_DESCRIPTOR_TIMEOUT_MS = 1000
+
+
 async def compute_locator_descriptor(target: Union[Page, Frame], selector: str) -> dict:
     """เรียกตอน action (click/fill/select_option/check) สำเร็จแล้วเท่านั้น — target คือ
     Frame/Page ที่ resolve_frame() คืนมา (ตัวเดียวกับที่ actions.py ใช้ dispatch action
@@ -136,9 +142,25 @@ async def compute_locator_descriptor(target: Union[Page, Frame], selector: str) 
     ได้ในจังหวะที่ action พึ่งสำเร็จ) คืน dict ว่างเปล่าถ้า evaluate ล้มเหลวไม่ว่ากรณีใด
     (element หาย/frame ถูก detach ระหว่างทาง ฯลฯ) — ไม่ throw ออกไปให้ actions.py พังตาม
     เด็ดขาด (descriptor เป็นแค่ข้อมูลเสริมสำหรับบันทึกไว้ใช้ทีหลัง ไม่ใช่ผลลัพธ์ของ
-    action เอง)"""
+    action เอง)
+
+    W_descriptor_timeout (เจอจาก step trace ตัวใหม่ ไม่ใช่จากการอ่านโค้ด — ดู
+    config.py::step_trace_log_path): เดิม evaluate() ตรงนี้ไม่ได้ตั้ง timeout เลย จึงใช้ค่า
+    default ของ Playwright คือ **30 วินาที** และ Locator.evaluate() เป็น API ที่ auto-wait
+    ให้ element โผล่ก่อนเสมอ — พอ action ที่เพิ่งสำเร็จทำให้หน้า re-render (ซึ่งเป็นเรื่องปกติ
+    มากสำหรับ action ที่ "ได้ผล" จริง เช่น เปลี่ยนการเรียงสินค้า/กด Search) attribute
+    data-ai-index จะหายไปพร้อมกับ DOM node เดิม selector จึงไม่ตรงอะไรเลย แล้วรอจนครบ 30
+    วินาทีก่อนจะ throw ให้ except ด้านล่างจับ
+
+    วัดได้จริงบน saucedemo: step ที่ select เรียงตามราคา ใช้เวลา action 30.0 วินาที จากทั้ง
+    task 42 วินาที โดยได้ descriptor เป็น {} ในตอนท้ายอยู่ดี — เสียเวลาเปล่าล้วนๆ
+
+    ตั้ง timeout สั้นๆ แทน: descriptor นี้มีความหมายเฉพาะ "ณ จังหวะที่ action เพิ่งสำเร็จ"
+    เท่านั้น ถ้า element ไม่อยู่แล้วตอนนี้ การรอต่อไม่ได้ทำให้มันกลับมา"""
     try:
-        return await target.locator(selector).first.evaluate(_STABLE_LOCATOR_JS)
+        return await target.locator(selector).first.evaluate(
+            _STABLE_LOCATOR_JS, timeout=_DESCRIPTOR_TIMEOUT_MS,
+        )
     except Exception:
         return {}
 

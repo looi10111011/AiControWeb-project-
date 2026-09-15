@@ -19,6 +19,10 @@ playwright==1.62.0
 anthropic==0.116.0
 google-generativeai==0.8.3   # provider สำรอง (Gemini) — agent loop function calling
 groq==1.5.0   # ทางเลือกไว้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
+# W_openai_oauth: SDK ใช้แค่ Responses API client (client.responses.create) ยิงไปที่
+# chatgpt.com/backend-api/codex ผ่าน OAuth token ไม่ใช่ api.openai.com + OPENAI_API_KEY
+# ปกติ — ดู core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม
+openai==3.1.0
 
 # RAG / Vector DB
 chromadb==1.5.9

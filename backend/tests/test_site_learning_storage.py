@@ -567,3 +567,43 @@ def test_save_manual_writes_llm_manual_file_derived_from_the_same_data():
     import json
     data = json.loads(open(llm_manual_path, encoding="utf-8").read())
     assert data["pages"]["dashboard_page"]["elements"]["export_button"] == "button.export"
+
+
+# --- T2: goal ภาษาไทยต้องหา page เจอได้ ---
+# ภาษาไทยไม่มีเว้นวรรค การตัดคำด้วย [^\w]+ จึงได้ token ก้อนเดียวยาวๆ ต่อประโยค ซึ่งไม่มีทาง
+# ตรงกับชื่อหน้า/breadcrumb ของคู่มือเลย — คู่ field=value เป็นสะพานที่เป็น ASCII เสมอ
+
+
+def _manual_with_user_role_page() -> SiteManual:
+    return SiteManual(website="example.com", pages=[
+        PageInfo(name="Dashboard", url="/dashboard", description="home page"),
+        PageInfo(
+            name="User Management", url="/admin/users",
+            description="Search system users by username and userrole",
+            breadcrumb=["Home", "Admin", "User Management"],
+        ),
+    ])
+
+
+def test_find_matching_page_finds_the_page_for_an_unspaced_thai_goal():
+    manual = _manual_with_user_role_page()
+
+    page = storage.find_matching_page(manual, "ลบuserrole=ess ออกให้หมด")
+
+    assert page is not None
+    assert page.name == "User Management"
+
+
+def test_find_matching_page_behaviour_for_english_goals_is_unchanged():
+    """T2 เป็นการ union token เข้าไป ไม่ใช่แทนที่ตัวเดิม — goal ภาษาอังกฤษต้องได้ผลเท่าเดิม"""
+    manual = _manual_with_user_role_page()
+
+    assert storage.find_matching_page(manual, "users").name == "User Management"
+    assert storage.find_matching_page(manual, "users", min_score=2) is None
+
+
+def test_find_matching_page_still_returns_none_for_a_thai_goal_with_nothing_to_match():
+    """ไม่ได้แปลว่า goal ไทยจะ match มั่วได้ — ถ้าไม่มี token ที่ตรงจริงต้องยังคืน None"""
+    manual = _manual_with_user_role_page()
+
+    assert storage.find_matching_page(manual, "ซื้อของแล้วจ่ายเงิน") is None
