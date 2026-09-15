@@ -5703,6 +5703,40 @@
            sys.argv เองในตัวฟังก์ชัน => ส่ง sys.argv[2:] เท่าที่ signature รับได้ + เทสต์ที่อ่าน
            ซอร์สจริง (บั๊กชนิดนี้เงียบสนิท เหมือนเลขเมนูซ้ำที่หลุดมาก่อนหน้านี้)
 
+  [x] W_benchmark_target ("eval พึ่ง opensource-demo.orangehrmlive.com — เว็บ demo สาธารณะที่คน
+           อื่นก็ใช้พร้อมกัน ไม่มี reset/fixture/ground-truth" — ดูรายละเอียดเต็มใน
+           ARCHITECTURE_AUDIT.md + IMPLEMENTATION_REPORT.md ที่ root repo)
+           สร้าง `benchmark_target/` เป็นเว็บ HRM สไตล์ OrangeHRM ของตัวเอง แยก 2 process/port
+           เด็ดขาดตามลำดับความสำคัญของ spec (correctness > isolation > determinism >
+           reproducibility > verifiability > realism > maintainability > performance > breadth):
+             - Target Surface (`app/`, port 8100) — หน้าเดียวที่ browser ของ agent ไปถึงได้ ไม่มี
+               ลิงก์ไหนในหน้าเว็บชี้เข้า Control Plane เลย
+             - Control Plane (`control/`, port 8101) — FastAPI แยกอีกตัว, loopback-only,
+               /reset /fixtures /snapshot /state-diff /preconditions/check /verify /integrity
+               /audit /faults — `/reset` มี ENVIRONMENT_IDENTITY fail-closed guard กันรีเซ็ตผิดเครื่อง
+
+           `seed.py` deterministic ล้วน (50 employees/19 users/fixtures ทุกค่าเป็นฟังก์ชันของ
+           index+timestamp คงที่ ไม่มี wall-clock/os.urandom) และ `security.py` hash รหัสผ่านแบบ
+           deterministic เช่นกัน (salt มาจากตัวรหัสผ่านเอง ไม่ใช่ os.urandom — เจตนาให้ seed ซ้ำ
+           ได้ทุกครั้งเป๊ะ) `catalog/generate_catalog.py` generate 117 tasks (L1-L5) จาก seed จริง
+           ไม่ใช่พิมพ์มือ — employee_code/username ทุกตัวที่ task อ้างถึงจึงมีจริงเสมอโดยโครงสร้าง
+           Run Engine (`runner/`) มี Run/Attempt state machine + StubAgentAdapter (deterministic
+           ไม่พึ่ง LLM สำหรับเทสต์ wiring) และ HermesAgentAdapter (ห่อ Orchestrator จริง)
+
+           เทสต์: test_runner.py 23 + test_determinism.py 14 = 37 ผ่านหมด (รันผ่าน Control Plane
+           จริงด้วย TestClient + sqlite จริง เฉพาะตัว agent เท่านั้นที่ stub) รันจริงกับ Hermes
+           agent จริง (OpenAI ChatGPT-OAuth, headless Chromium) ไป 2 task: AUTH-LOGIN-SUCCESS-ADMIN
+           ผ่าน, PIM-EDIT-VERIFY-01 FUNCTIONAL_FAIL จริง — agent รายงานว่าแก้สำเร็จ แต่ DB ไม่ถูก
+           เซฟจริง ตรงเป้าหมายของ benchmark นี้เป๊ะ (verify จาก DB state ไม่ใช่คำพูด agent)
+
+           ที่ยังไม่ทำ (บันทึกไว้ ไม่ใช่ทำเงียบ): `download_artifact`/`http_redirect` verifier ยัง
+           เป็น stub (คืน INCONCLUSIVE ตรงๆ ไม่ปลอมว่า pass), fault injection มีแค่ 2 trigger
+           (leave/timesheet approval), fixture มีแค่ตัวเดียว (`base`), มีแค่ 2 ใน 117 task ที่รัน
+           กับ agent จริงแล้ว (ที่เหลือ validate แค่ schema/precondition/determinism) และยังไม่ได้
+           สลับ `orangehrm_eval.py` ให้มาชี้ target นี้แทนเว็บสาธารณะ (เป็น follow-up ที่ตั้งใจ
+           แยกไว้ เพราะเปลี่ยน semantics ของ eval ที่อื่นด้วย) — ดู README.md หัวข้อโครงสร้างไฟล์
+           สำหรับ layout เต็มของ `benchmark_target/`
+
 
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
