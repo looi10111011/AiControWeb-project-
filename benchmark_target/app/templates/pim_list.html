@@ -1,13 +1,67 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Employees — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Employees ({{ total }})</h1>
-  {% if can_create %}<a class="btn btn-primary" href="/pim/employees/new">Add Employee</a>{% endif %}
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('users', 22) }}</span>
+    <div>
+      <h1>Employees ({{ total }})</h1>
+      <p class="page-sub">Manage your organization's people and their information.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<span>Employees</span>
+    </nav>
+    {% if can_create %}<a class="btn btn-primary" href="/pim/employees/new">{{ icon('plus', 16) }}Add Employee</a>{% endif %}
+  </div>
+</div>
+
+<div class="card-row">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('users', 20) }}</span>
+    <div class="stat-value">{{ stat_total.value }}</div>
+    <div class="stat-label">Total Employees</div>
+    {% if stat_total.direction != 'flat' %}
+    <div class="stat-trend trend-{{ stat_total.direction }}">{{ '↑' if stat_total.direction == 'up' else '↓' }} {{ stat_total.pct }}% <span>vs last month</span></div>
+    {% else %}
+    <div class="stat-trend trend-flat">— <span>No change</span></div>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-green">{{ icon('user-circle', 20) }}</span>
+    <div class="stat-value">{{ stat_active.value }}</div>
+    <div class="stat-label">Active Employees</div>
+    {% if stat_active.direction != 'flat' %}
+    <div class="stat-trend trend-{{ stat_active.direction }}">{{ '↑' if stat_active.direction == 'up' else '↓' }} {{ stat_active.pct }}% <span>vs last month</span></div>
+    {% else %}
+    <div class="stat-trend trend-flat">— <span>No change</span></div>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-pink">{{ icon('user-circle', 20) }}</span>
+    <div class="stat-value">{{ stat_inactive.value }}</div>
+    <div class="stat-label">Inactive Employees</div>
+    {% if stat_inactive.direction != 'flat' %}
+    <div class="stat-trend trend-{{ stat_inactive.direction }}">{{ '↑' if stat_inactive.direction == 'up' else '↓' }} {{ stat_inactive.pct }}% <span>vs last month</span></div>
+    {% else %}
+    <div class="stat-trend trend-flat">— <span>No change</span></div>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-amber">{{ icon('building', 20) }}</span>
+    <div class="stat-value">{{ stat_departments }}</div>
+    <div class="stat-label">Departments</div>
+    <div class="stat-trend trend-flat">— <span>No change</span></div>
+  </div>
 </div>
 
 <form method="get" action="/pim/employees" class="filter-bar">
-  <input type="text" name="q" placeholder="Search name or employee code" value="{{ q }}">
+  <div class="search-input">
+    {{ icon('search', 17) }}
+    <input type="text" name="q" placeholder="Search by name, employee code, or job title..." value="{{ q }}">
+  </div>
   <select name="department">
     <option value="">All departments</option>
     {% for d in departments %}
@@ -19,18 +73,27 @@
     <option value="active" {% if status == 'active' %}selected{% endif %}>Active</option>
     <option value="terminated" {% if status == 'terminated' %}selected{% endif %}>Terminated</option>
   </select>
+  <select name="hire_range">
+    <option value="">All hire dates</option>
+    {% for key, info in hire_ranges.items() %}
+    <option value="{{ key }}" {% if key == hire_range %}selected{% endif %}>{{ info[0] }}</option>
+    {% endfor %}
+  </select>
   <input type="hidden" name="sort" value="{{ sort }}">
   <input type="hidden" name="direction" value="{{ direction }}">
-  <button type="submit">Search</button>
-  <a href="/pim/employees">Reset</a>
+  <input type="hidden" name="page_size" value="{{ page_size }}">
+  <a class="btn" href="/pim/employees">{{ icon('refresh', 16) }}Reset</a>
+  <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Search</button>
 </form>
 
 {% macro sort_link(col, label) %}
   {% set next_dir = 'desc' if (sort == col and direction == 'asc') else 'asc' %}
-  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ col }}&direction={{ next_dir }}&page={{ page }}">
+  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&hire_range={{ hire_range }}&sort={{ col }}&direction={{ next_dir }}&page={{ page }}&page_size={{ page_size }}">
     {{ label }}{% if sort == col %} {{ '▲' if direction == 'asc' else '▼' }}{% endif %}
   </a>
 {% endmacro %}
+
+{% macro page_link(p) %}/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&hire_range={{ hire_range }}&sort={{ sort }}&direction={{ direction }}&page={{ p }}&page_size={{ page_size }}{% endmacro %}
 
 {% if employees|length == 0 %}
 <p class="empty-state">No employees match this search/filter.</p>
@@ -39,39 +102,82 @@
   <thead>
     <tr>
       <th>{{ sort_link('employee_code', 'Code') }}</th>
-      <th>{{ sort_link('first_name', 'First Name') }}</th>
-      <th>{{ sort_link('last_name', 'Last Name') }}</th>
+      <th>Name</th>
       <th>{{ sort_link('department', 'Department') }}</th>
       <th>Job Title</th>
       <th>{{ sort_link('hire_date', 'Hire Date') }}</th>
       <th>Status</th>
-      <th></th>
+      <th>Actions</th>
     </tr>
   </thead>
   <tbody>
     {% for e in employees %}
     <tr>
       <td>{{ e.employee_code }}</td>
-      <td>{{ e.first_name }}</td>
-      <td>{{ e.last_name }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ e.initial }}</span>
+          <span>{{ e.first_name }} {{ e.last_name }}</span>
+        </div>
+      </td>
       <td>{{ e.department }}</td>
       <td>{{ e.job_title }}</td>
       <td>{{ e.hire_date }}</td>
-      <td><span class="status-badge status-{{ e.status }}">{{ e.status }}</span></td>
-      <td><a href="/pim/employees/{{ e.id }}">View</a></td>
+      <td><span class="status-dot-badge status-{{ e.status }}"><span class="dot"></span>{{ e.status|capitalize }}</span></td>
+      <td>
+        <div class="row-actions">
+          <a class="btn btn-small" href="/pim/employees/{{ e.id }}">{{ icon('eye', 14) }}View</a>
+          {% if can_edit or can_deactivate %}
+          <details class="row-menu">
+            <summary aria-label="More actions">{{ icon('dots', 16) }}</summary>
+            <div class="row-menu-panel">
+              {% if can_edit %}<a href="/pim/employees/{{ e.id }}/edit">Edit</a>{% endif %}
+              {% if can_deactivate %}
+                {% if e.status == 'active' %}
+                <form method="post" action="/pim/employees/{{ e.id }}/deactivate"
+                      onsubmit="return confirm('Deactivate {{ e.first_name }} {{ e.last_name }}? This can be reversed later.');">
+                  <input type="hidden" name="confirm" value="yes">
+                  <button type="submit" class="danger">Deactivate</button>
+                </form>
+                {% else %}
+                <form method="post" action="/pim/employees/{{ e.id }}/activate">
+                  <button type="submit">Reactivate</button>
+                </form>
+                {% endif %}
+              {% endif %}
+            </div>
+          </details>
+          {% endif %}
+        </div>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
 
-<nav class="pagination" aria-label="Pagination">
-  {% if page > 1 %}
-  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ sort }}&direction={{ direction }}&page={{ page - 1 }}">Previous</a>
-  {% endif %}
-  <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
-  {% if page < total_pages %}
-  <a href="/pim/employees?q={{ q }}&department={{ department }}&status={{ status }}&sort={{ sort }}&direction={{ direction }}&page={{ page + 1 }}">Next</a>
-  {% endif %}
-</nav>
+<div class="pagination pagination-rich">
+  <span class="page-info">Showing {{ showing_from }} to {{ showing_to }} of {{ total }} employees</span>
+  <div class="page-nav">
+    {% if page > 1 %}<a class="page-btn" href="{{ page_link(page - 1) }}" aria-label="Previous page">{{ icon('chevron-left', 15) }}</a>{% else %}<span class="page-btn disabled" aria-hidden="true">{{ icon('chevron-left', 15) }}</span>{% endif %}
+    {% if total_pages <= 12 %}
+      {% for p in range(1, total_pages + 1) %}
+      <a class="page-btn {% if p == page %}active{% endif %}" href="{{ page_link(p) }}">{{ p }}</a>
+      {% endfor %}
+    {% else %}
+      <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% endif %}
+    {% if page < total_pages %}<a class="page-btn" href="{{ page_link(page + 1) }}" aria-label="Next page">{{ icon('chevron-right', 15) }}</a>{% else %}<span class="page-btn disabled" aria-hidden="true">{{ icon('chevron-right', 15) }}</span>{% endif %}
+  </div>
+  <form method="get" action="/pim/employees" class="page-size-form">
+    <input type="hidden" name="q" value="{{ q }}"><input type="hidden" name="department" value="{{ department }}">
+    <input type="hidden" name="status" value="{{ status }}"><input type="hidden" name="hire_range" value="{{ hire_range }}">
+    <input type="hidden" name="sort" value="{{ sort }}"><input type="hidden" name="direction" value="{{ direction }}">
+    <select name="page_size" onchange="this.form.submit()">
+      {% for size in page_size_choices %}
+      <option value="{{ size }}" {% if size == page_size %}selected{% endif %}>{{ size }} / page</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
 {% endif %}
 {% endblock %}

@@ -1,23 +1,187 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Dashboard — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
+<div class="greeting">
+  <div>
+    <h1>Welcome back, {{ user.username }}</h1>
+    <p class="greeting-sub">Here's what's happening with your organization today.</p>
+  </div>
+  <div class="greeting-date">
+    <span class="stat-icon-chip chip-indigo">{{ icon('calendar', 18) }}</span>
+    <span>
+      <span class="date-main">{{ today_label }}</span><br>
+      <span class="date-sub">Have a productive day!</span>
+    </span>
+  </div>
+</div>
+
 <div class="card-row">
-  <div class="stat-card">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('users', 20) }}</span>
     <div class="stat-value">{{ total_employees }}</div>
     <div class="stat-label">Active employees</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-green">{{ icon('user-circle', 20) }}</span>
     <div class="stat-value">{{ total_users }}</div>
     <div class="stat-label">Enabled user accounts</div>
   </div>
   {% if user.role == 'supervisor' %}
-  <div class="stat-card">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-amber">{{ icon('briefcase', 20) }}</span>
     <div class="stat-value">{{ direct_reports_count }}</div>
     <div class="stat-label">Direct reports</div>
   </div>
   {% endif %}
+  {% if user.role != 'ess' %}
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-amber">{{ icon('calendar', 20) }}</span>
+    <div class="stat-value">{{ on_leave_today }}</div>
+    <div class="stat-label">On leave today</div>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-pink">{{ icon('star', 20) }}</span>
+    <div class="stat-value">{{ open_positions }}</div>
+    <div class="stat-label">Open positions</div>
+  </div>
+  {% endif %}
 </div>
+
+{% if user.role != 'ess' %}
+{% set dept_colors = ['#4f46e5', '#059669', '#f59e0b', '#db2777', '#0891b2', '#9ca3af'] %}
+<div class="panel-row">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <span class="stat-icon-chip chip-indigo">{{ icon('chart-pie', 18) }}</span>
+        <div>
+          <h2>Employee Overview</h2>
+          <div class="panel-sub">Active employees by department</div>
+        </div>
+      </div>
+    </div>
+    {% if department_breakdown %}
+    <div class="donut-row">
+      {% set cum = namespace(deg=0) %}
+      <div class="donut" style="background: conic-gradient(
+        {% for d in department_breakdown %}
+        {{ dept_colors[loop.index0 % dept_colors|length] }} {{ cum.deg }}deg {{ cum.deg + (d.c / total_employees * 360 if total_employees else 0) }}deg{% if not loop.last %},{% endif %}
+        {% set cum.deg = cum.deg + (d.c / total_employees * 360 if total_employees else 0) %}
+        {% endfor %}
+      );">
+        <div class="donut-center">
+          <span class="donut-value">{{ total_employees }}</span>
+          <span class="donut-label">Employees</span>
+        </div>
+      </div>
+      <ul class="donut-legend">
+        {% for d in department_breakdown %}
+        <li>
+          <span class="swatch" style="background: {{ dept_colors[loop.index0 % dept_colors|length] }};"></span>
+          <span class="legend-label">{{ d.department }}</span>
+          <span class="legend-value">{{ d.c }} ({{ (d.c / total_employees * 100) | round | int if total_employees else 0 }}%)</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% else %}
+    <p class="empty-state">No active employees yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <span class="stat-icon-chip chip-green">{{ icon('briefcase', 18) }}</span>
+        <div>
+          <h2>Hiring Pipeline</h2>
+          <div class="panel-sub">Candidates by current stage</div>
+        </div>
+      </div>
+    </div>
+    {% set max_count = (hiring_pipeline | map(attribute='count') | max) or 1 %}
+    <div class="funnel-chart">
+      {% for stage in hiring_pipeline %}
+      <div class="funnel-bar-wrap">
+        <span class="funnel-bar-value">{{ stage.count }}</span>
+        <div class="funnel-bar" style="height: {{ (stage.count / max_count * 100) if max_count else 0 }}%;"></div>
+        <span class="funnel-bar-label">{{ stage.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="panel-row">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <span class="stat-icon-chip chip-amber">{{ icon('calendar', 18) }}</span>
+        <div>
+          <h2>Leave Summary</h2>
+          <div class="panel-sub">All leave requests by status</div>
+        </div>
+      </div>
+    </div>
+    {% if leave_summary.total %}
+    {% set leave_colors = {'approved': '#059669', 'pending': '#f59e0b', 'rejected': '#dc2626'} %}
+    <div class="donut-row">
+      {% set cum2 = namespace(deg=0) %}
+      <div class="donut" style="background: conic-gradient(
+        {% for key in ['approved', 'pending', 'rejected'] %}
+        {{ leave_colors[key] }} {{ cum2.deg }}deg {{ cum2.deg + (leave_summary[key] / leave_summary.total * 360) }}deg{% if not loop.last %},{% endif %}
+        {% set cum2.deg = cum2.deg + (leave_summary[key] / leave_summary.total * 360) %}
+        {% endfor %}
+      );">
+        <div class="donut-center">
+          <span class="donut-value">{{ leave_summary.total }}</span>
+          <span class="donut-label">Requests</span>
+        </div>
+      </div>
+      <ul class="donut-legend">
+        <li><span class="swatch" style="background: #059669;"></span><span class="legend-label">Approved</span><span class="legend-value">{{ leave_summary.approved }}</span></li>
+        <li><span class="swatch" style="background: #f59e0b;"></span><span class="legend-label">Pending</span><span class="legend-value">{{ leave_summary.pending }}</span></li>
+        <li><span class="swatch" style="background: #dc2626;"></span><span class="legend-label">Rejected</span><span class="legend-value">{{ leave_summary.rejected }}</span></li>
+      </ul>
+    </div>
+    {% else %}
+    <p class="empty-state">No leave requests this month yet.</p>
+    {% endif %}
+  </div>
+
+  {% if user.role == 'admin' %}
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <span class="stat-icon-chip chip-pink">{{ icon('clock', 18) }}</span>
+        <div>
+          <h2>Recent Activity</h2>
+          <div class="panel-sub">Latest actions across the system</div>
+        </div>
+      </div>
+      <a class="btn btn-small" href="/reports">View all</a>
+    </div>
+    {% if recent_activity %}
+    <ul class="activity-list">
+      {% for a in recent_activity %}
+      <li class="activity-item">
+        <span class="activity-icon {{ a.chip_class }}">{{ icon(a.icon, 16) }}</span>
+        <div class="activity-body">
+          <div class="activity-title">{{ a.title }}</div>
+          <div class="activity-detail">{{ a.detail }}</div>
+        </div>
+        <span class="activity-time">{{ a.when }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty-state">No recent activity yet.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 {% if my_employee %}
 <div class="panel">
@@ -29,12 +193,25 @@
 
 <div class="panel">
   <h2>Quick actions</h2>
-  <ul class="quick-actions">
-    <li><a href="/pim/employees">Browse employees</a></li>
+  <div class="action-tiles">
+    <a class="action-tile" href="/pim/employees">
+      <span class="stat-icon-chip chip-indigo">{{ icon('users', 18) }}</span>
+      Browse employees
+    </a>
     {% if user.role == 'admin' %}
-    <li><a href="/pim/employees/new">Add employee</a></li>
-    <li><a href="/admin/users">Manage users</a></li>
+    <a class="action-tile" href="/pim/employees/new">
+      <span class="stat-icon-chip chip-green">{{ icon('plus', 18) }}</span>
+      Add employee
+    </a>
+    <a class="action-tile" href="/admin/users">
+      <span class="stat-icon-chip chip-amber">{{ icon('gear', 18) }}</span>
+      Manage users
+    </a>
+    <a class="action-tile" href="/reports">
+      <span class="stat-icon-chip chip-pink">{{ icon('chart-bar', 18) }}</span>
+      Generate report
+    </a>
     {% endif %}
-  </ul>
+  </div>
 </div>
 {% endblock %}

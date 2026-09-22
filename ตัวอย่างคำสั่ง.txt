@@ -1,0 +1,54 @@
+ตัวอย่างคำสั่ง
+Admin Commands
+1. ค้นหา employee Sarah Chen แล้วเปิดโปรไฟล์ของเธอ
+2. ค้นหา employee Sarah Chan แล้วตรวจว่า employee code คือ EMP-0011
+3. กรอง Employees เฉพาะ department Engineering
+4. กรอง Employees ให้แสดงเฉพาะ status Terminated
+5. ไปหน้า Employees page 3 แล้วหา EMP-0042
+6. เปิดโปรไฟล์ EMP-0008 แล้วแก้ job title เป็น QA Engineer
+7. เปิดโปรไฟล์ EMP-0031 แล้ว deactivate employee คนนี้
+8. เปิดโปรไฟล์ EMP-0013 แล้ว reactivate ให้กลับเป็น Active
+9. สร้าง employee ใหม่ใน department Engineering
+10. สร้าง ESS user account ให้ employee EMP-0009
+11. ไปหน้า Users แล้วหา user daniel.garcia
+12. enable user daniel.garcia
+13. disable user bob.martinez
+14. เปลี่ยน role ของ sarah.chan เป็น supervisor
+15. เปิด Recruitment แล้ว shortlist candidate Priya Natarajan
+16. เปิด candidate Marcus Webb แล้ว schedule interview
+17. เปิด candidate Yuki Tanaka แล้ว hire เป็น employee ใหม่
+18. ไปหน้า Documents ของ EMP-0025 แล้ว upload ไฟล์ .txt
+19. ไปหน้า Documents ของ EMP-0014 แล้วลอง upload filename ซ้ำ จากนั้นตรวจว่าโดน reject
+20. export Employees Report เฉพาะ department HR เป็น CSV
+21. export Leave Report ของ January 2026 เป็น CSV
+22. ปิด review cycle 2026 H1 Review
+23. เปิด Leave Report แล้ว filter เฉพาะ status approved
+24. เปิด Employees Report แล้ว filter department Sales และ status active
+25. เปิดโปรไฟล์ supervisor EMP-0004 แล้ว deactivate แต่ตรวจว่า direct reports ไม่หาย
+Supervisor Commands
+26. เปิด Dashboard แล้วอ่านจำนวน direct reports ของฉัน
+27. เปิด Employees list แล้วดูเฉพาะ direct reports ของฉัน
+28. เปิด leave requests แล้วหา pending request ของ direct report
+29. approve pending leave request ของ James Wilson
+30. reject pending leave request ของ direct report พร้อมใส่ comment
+31. เปิด Team Timesheets แล้วหา submitted timesheet ของ James Wilson
+32. approve timesheet ของ James Wilson
+33. reject submitted timesheet ของ direct report พร้อม comment
+34. เปิด Performance Reviews แล้วหา review ที่รอ manager review
+35. ส่ง manager review ให้ direct report ที่รออยู่
+36. เปิด Documents ของ direct report แล้วตรวจว่ามีเอกสารอะไรบ้าง
+37. เปิด Recruitment Vacancies แล้วดูรายการ vacancies
+38. shortlist candidate Helen Osei
+39. schedule interview ให้ candidate ที่ shortlisted อยู่
+40. ตรวจว่า employee นอก direct reports เปิดดูไม่ได้หรือถูก deny
+ESS Commands
+41. เปิดโปรไฟล์ของฉันเอง
+42. แก้ข้อมูลโปรไฟล์ของฉันเองแล้ว save
+43. เปิด Leave แล้วดู Annual leave balance ของฉัน
+44. submit Annual leave request 2 วัน
+45. submit Sick leave request 1 วันโดยไม่ใส่ comment
+46. cancel pending leave request ของฉัน
+47. ลอง submit leave ที่ end date มาก่อน start date แล้วตรวจว่าโดน reject
+48. เปิด Timesheets ของฉัน
+49. สร้าง timesheet สัปดาห์ 2026-03-02 ใส่อย่างน้อย 1 entry แล้ว submit
+50. เปิด Performance Reviews แล้ว submit self-review พร้อม rating และ comment

@@ -1,25 +1,167 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_charts.html" import sparkline %}
 {% block title %}Vacancies — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Vacancies</h1>
-<table class="data-table">
-  <thead><tr><th>Title</th><th>Department</th><th>Candidates</th><th>Status</th><th></th></tr></thead>
-  <tbody>
-    {% for v in vacancies %}
-    <tr>
-      <td><a href="/recruitment/vacancies/{{ v.id }}">{{ v.title }}</a></td>
-      <td>{{ v.department }}</td>
-      <td>{{ v.candidate_count }}</td>
-      <td><span class="status-badge status-{{ 'active' if v.status == 'open' else 'terminated' }}">{{ v.status }}</span></td>
-      <td>
-        {% if can_manage %}
-        <form method="post" action="/recruitment/vacancies/{{ v.id }}/toggle-status" class="inline-form">
-          <button type="submit" class="btn btn-small">{{ 'Close' if v.status == 'open' else 'Reopen' }}</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('briefcase', 22) }}</span>
+    <div>
+      <h1>Vacancies</h1>
+      <p class="page-sub">Manage open positions and track your hiring progress.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/recruitment/vacancies">Recruitment</a>{{ icon('chevron-right', 14) }}<span>Vacancies</span>
+    </nav>
+    {# No "Create Vacancy" route exists in recruitment.py (only /vacancies/{id}/toggle-status,
+       not /vacancies/new) — omitted rather than pointing at a page that isn't there. #}
+  </div>
+</div>
+
+<div class="card-row">
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-indigo">{{ icon('briefcase', 20) }}</span>
+      {{ sparkline(stat_total.spark, '#4f46e5') }}
+    </div>
+    <div class="stat-value">{{ stat_total.value }}</div>
+    <div class="stat-label">Total Vacancies</div>
+    {% if stat_total.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_total.direction }}">{{ '↑' if stat_total.direction == 'up' else '↓' }} {{ stat_total.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-green">{{ icon('check-circle', 20) }}</span>
+      {{ sparkline(stat_open.spark, '#059669') }}
+    </div>
+    <div class="stat-value">{{ stat_open.value }}</div>
+    <div class="stat-label">Open</div>
+    {% if stat_open.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_open.direction }}">{{ '↑' if stat_open.direction == 'up' else '↓' }} {{ stat_open.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-pink">{{ icon('x-circle', 20) }}</span>
+      {{ sparkline(stat_closed.spark, '#dc2626') }}
+    </div>
+    <div class="stat-value">{{ stat_closed.value }}</div>
+    <div class="stat-label">Closed</div>
+    {% if stat_closed.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_closed.direction }}">{{ '↑' if stat_closed.direction == 'up' else '↓' }} {{ stat_closed.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-amber">{{ icon('users', 20) }}</span>
+      {{ sparkline(stat_candidates.spark, '#d97706') }}
+    </div>
+    <div class="stat-value">{{ stat_candidates.value }}</div>
+    <div class="stat-label">Total Candidates</div>
+    {% if stat_candidates.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_candidates.direction }}">{{ '↑' if stat_candidates.direction == 'up' else '↓' }} {{ stat_candidates.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+</div>
+
+<div class="leave-layout">
+  <div class="leave-main">
+    <form method="get" action="/recruitment/vacancies" class="filter-bar">
+      <div class="search-input">
+        {{ icon('search', 17) }}
+        <input type="text" name="q" placeholder="Search by title, department..." value="{{ q }}">
+      </div>
+      <select name="department">
+        <option value="">All departments</option>
+        {% for d in departments %}
+        <option value="{{ d }}" {% if department == d %}selected{% endif %}>{{ d }}</option>
+        {% endfor %}
+      </select>
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for s in ['open', 'closed'] %}
+        <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s|capitalize }}</option>
+        {% endfor %}
+      </select>
+      <a class="btn" href="/recruitment/vacancies">{{ icon('refresh', 16) }}Reset</a>
+      <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Filter</button>
+    </form>
+
+    {% if vacancies|length == 0 %}
+    <p class="empty-state">No vacancies match this search/filter.</p>
+    {% else %}
+    <table class="data-table">
+      <thead><tr><th>Title</th><th>Department</th><th>Candidates</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for v in vacancies %}
+        <tr>
+          <td><a href="/recruitment/vacancies/{{ v.id }}">{{ v.title }}</a></td>
+          <td>{{ v.department }}</td>
+          <td>
+            {% if v.candidates %}
+            <div class="avatar-stack">
+              {% for c in v.candidates %}
+              <span class="avatar avatar-sm" title="{{ c.first_name }} {{ c.last_name }}">{{ c.initial }}</span>
+              {% endfor %}
+              {% if v.candidate_count > v.candidates|length %}
+              <span class="avatar avatar-sm avatar-more" title="{{ v.candidate_count - v.candidates|length }} more candidate(s)">+{{ v.candidate_count - v.candidates|length }}</span>
+              {% endif %}
+            </div>
+            {% else %}
+            <span>No candidates yet</span>
+            {% endif %}
+          </td>
+          <td><span class="status-dot-badge status-{{ v.status }}"><span class="dot"></span>{{ v.status|capitalize }}</span></td>
+          <td>{{ v.created_at[:10] }}</td>
+          <td>
+            <div class="row-actions">
+              {% if can_manage %}
+              <form method="post" action="/recruitment/vacancies/{{ v.id }}/toggle-status" class="inline-form">
+                <button type="submit" class="btn btn-small">{{ 'Close' if v.status == 'open' else 'Reopen' }}</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="leave-side">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-header-icon">
+          <span class="stat-icon-chip chip-green">{{ icon('briefcase', 18) }}</span>
+          <div>
+            <h2>Hiring Funnel</h2>
+            <div class="panel-sub">Candidates by current stage, org-wide</div>
+          </div>
+        </div>
+      </div>
+      {% set max_count = (hiring_funnel | map(attribute='count') | max) or 1 %}
+      <div class="funnel-chart">
+        {% for stage in hiring_funnel %}
+        <div class="funnel-bar-wrap">
+          <span class="funnel-bar-value">{{ stage.count }}</span>
+          <div class="funnel-bar" style="height: {{ (stage.count / max_count * 100) if max_count else 0 }}%;"></div>
+          <span class="funnel-bar-label">{{ stage.label }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}

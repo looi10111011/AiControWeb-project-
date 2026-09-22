@@ -1,0 +1,28 @@
+{# Shared page-content macros used across list pages, on top of the header/stat-card/table
+   patterns already established in pim_list.html and leave_list.html. Keep additions here
+   generic (icon + text), never tied to fabricated numbers — an empty state describes real
+   "there is nothing yet", a feature strip is static help copy, neither claims a metric. #}
+{% from "_icons.html" import icon %}
+
+{% macro empty_state(icon_name, chip_class, title, subtitle) %}
+<div class="empty-state-rich">
+  <div class="empty-state-icon {{ chip_class }}">{{ icon(icon_name, 40) }}</div>
+  <h3>{{ title }}</h3>
+  <p>{{ subtitle }}</p>
+  <div class="empty-state-actions">{{ caller() }}</div>
+</div>
+{% endmacro %}
+
+{% macro feature_strip(items) %}
+<div class="feature-strip">
+  {% for it in items %}
+  <div class="feature-item">
+    <span class="feature-icon {{ it.chip }}">{{ icon(it.icon, 18) }}</span>
+    <div>
+      <div class="feature-title">{{ it.title }}</div>
+      <div class="feature-sub">{{ it.sub }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}

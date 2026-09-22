@@ -11,6 +11,8 @@ from benchmark_target.app.deps import can, get_current_user, get_scope
 router = APIRouter(prefix="/performance")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+CYCLES_PER_PAGE = 10
+
 
 def _forbidden(request: Request, user: dict):
     return templates.TemplateResponse(request, "403.html", {"user": user}, status_code=403)
@@ -76,6 +78,42 @@ def list_reviews(request: Request, view: str = "mine"):
         else:
             rows = []
 
+        rows = [dict(row, initial=row["first_name"][:1].upper()) for row in rows]
+
+        # Stat row: scope-restricted to the same ceiling as `scope` above (what this role
+        # is allowed to see at all) but independent of the mine/team `view` toggle — a
+        # summary of what this role covers, not of the currently selected view. Unlike
+        # pim.py's _trend, there's no historical column on reviews to diff against (the
+        # `reviews` table only has `updated_at`, which any self/manager submission bumps,
+        # not a creation timestamp), so these are plain current counts with no invented
+        # delta and no sparkline — see the matching comment in performance_list.html.
+        stat_where = ["1=1"]
+        stat_params: list = []
+        if scope == "own":
+            stat_where.append("r.employee_id = ?")
+            stat_params.append(user.get("employee_id"))
+        elif scope == "direct_reports":
+            stat_where.append("e.supervisor_id = ?")
+            stat_params.append(user.get("employee_id"))
+        stat_where_sql = " AND ".join(stat_where)
+
+        def _count(extra_sql: str = "", extra_params: tuple = ()) -> int:
+            return conn.execute(
+                f"""SELECT COUNT(*) c FROM reviews r JOIN employees e ON e.id = r.employee_id
+                    WHERE {stat_where_sql} {extra_sql}""",
+                [*stat_params, *extra_params],
+            ).fetchone()["c"]
+
+        stat_total = _count()
+        stat_completed = _count("AND r.status = 'finalized'")
+        # "In Progress" = anything not yet finalized (either half of the two-step
+        # self-review-then-manager-review flow). "Manager Pending" is called out as its
+        # own card too since it's the subset that needs a manager's action right now.
+        stat_in_progress = _count("AND r.status IN ('self_pending', 'manager_pending')")
+        stat_manager_pending = _count("AND r.status = 'manager_pending'")
+
+    can_finalize = can(user["role"], "performance", "finalize")
+
     return templates.TemplateResponse(
         request,
         "performance_list.html",
@@ -84,6 +122,11 @@ def list_reviews(request: Request, view: str = "mine"):
             "reviews": rows,
             "view": "team" if show_team else "mine",
             "can_view_team": scope in ("direct_reports", "all"),
+            "can_finalize": can_finalize,
+            "stat_total": stat_total,
+            "stat_completed": stat_completed,
+            "stat_in_progress": stat_in_progress,
+            "stat_manager_pending": stat_manager_pending,
         },
     )
 
@@ -189,7 +232,7 @@ def submit_manager_review(request: Request, review_id: int, manager_rating: int 
 
 
 @router.get("/cycles")
-def list_cycles(request: Request):
+def list_cycles(request: Request, q: str = "", status: str = "", page: int = 1):
     user = get_current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -197,14 +240,82 @@ def list_cycles(request: Request):
         return _forbidden(request, user)
 
     with get_conn() as conn:
-        cycles = conn.execute(
-            """SELECT rc.*,
+        # Stat row: unfiltered by the search/status fields below — a summary of every
+        # cycle this role can finalize, not of the current search result (same rule as
+        # pim.py/leave.py/admin.py's stat rows). review_cycles has no timestamp column at
+        # all (see db.py: id/name/status only, no created_at) — so unlike those pages'
+        # _trend()/sparkline there is no historical value to diff against or bucket by
+        # day; showing one would fabricate a comparison point that was never recorded.
+        # Same reasoning as recruitment.py's vacancy stats: plain current-state counts,
+        # no invented delta, no sparkline.
+        all_cycles = conn.execute(
+            """SELECT rc.status,
                       (SELECT COUNT(*) FROM reviews r WHERE r.cycle_id = rc.id) AS total,
                       (SELECT COUNT(*) FROM reviews r WHERE r.cycle_id = rc.id AND r.status = 'finalized') AS finalized
-               FROM review_cycles rc ORDER BY rc.id DESC"""
+               FROM review_cycles rc"""
         ).fetchall()
 
-    return templates.TemplateResponse(request, "performance_cycles.html", {"user": user, "cycles": cycles})
+        stat_total = len(all_cycles)
+        stat_open = sum(1 for c in all_cycles if c["status"] == "open")
+        # "In progress": open, and at least one (but not all) of its reviews have already
+        # been finalized — real work has started but the cycle isn't done yet. A cycle
+        # with zero reviews assigned doesn't count here; nothing has started.
+        stat_in_progress = sum(
+            1 for c in all_cycles if c["status"] == "open" and 0 < c["finalized"] < c["total"]
+        )
+        # "Completed": closed outright, or still open but every assigned review has
+        # already been finalized (the org just hasn't clicked Close Cycle yet). A cycle
+        # with zero reviews assigned is not "completed" merely because 0/0 matches.
+        stat_completed = sum(
+            1 for c in all_cycles
+            if c["status"] == "closed" or (c["total"] > 0 and c["finalized"] == c["total"])
+        )
+
+        where = ["1=1"]
+        params: list = []
+        if q:
+            where.append("rc.name LIKE ?")
+            params.append(f"%{q}%")
+        if status:
+            where.append("rc.status = ?")
+            params.append(status)
+        where_sql = " AND ".join(where)
+
+        total_matching = conn.execute(
+            f"SELECT COUNT(*) c FROM review_cycles rc WHERE {where_sql}", params
+        ).fetchone()["c"]
+        total_pages = max(1, (total_matching + CYCLES_PER_PAGE - 1) // CYCLES_PER_PAGE)
+        page = min(max(1, page), total_pages)
+        offset = (page - 1) * CYCLES_PER_PAGE
+
+        cycles = conn.execute(
+            f"""SELECT rc.*,
+                       (SELECT COUNT(*) FROM reviews r WHERE r.cycle_id = rc.id) AS total,
+                       (SELECT COUNT(*) FROM reviews r WHERE r.cycle_id = rc.id AND r.status = 'finalized') AS finalized
+                FROM review_cycles rc WHERE {where_sql}
+                ORDER BY rc.id DESC LIMIT ? OFFSET ?""",
+            [*params, CYCLES_PER_PAGE, offset],
+        ).fetchall()
+
+    return templates.TemplateResponse(
+        request,
+        "performance_cycles.html",
+        {
+            "user": user,
+            "cycles": cycles,
+            "q": q,
+            "status": status,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total_matching,
+            "showing_from": offset + 1 if cycles else 0,
+            "showing_to": offset + len(cycles),
+            "stat_total": stat_total,
+            "stat_open": stat_open,
+            "stat_in_progress": stat_in_progress,
+            "stat_completed": stat_completed,
+        },
+    )
 
 
 @router.post("/cycles/{cycle_id}/close")

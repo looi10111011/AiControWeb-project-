@@ -1,7 +1,11 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Access Denied — Hermes HRM{% endblock %}
 {% block content %}
 <div class="error-page">
+  <div style="display:flex; justify-content:center; margin-bottom:1rem;">
+    <span class="stat-icon-chip chip-pink" style="width:52px; height:52px;">{{ icon('user-circle', 26) }}</span>
+  </div>
   <h1>403 — Access Denied</h1>
   <p>You do not have permission to view this page.</p>
   <a href="/dashboard">Back to Dashboard</a>

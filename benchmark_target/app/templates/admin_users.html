@@ -1,49 +1,168 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_charts.html" import sparkline %}
 {% block title %}Users — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Users</h1>
-  <a class="btn btn-primary" href="/admin/users/new">Add User</a>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('gear', 22) }}</span>
+    <div>
+      <h1>Users ({{ total }})</h1>
+      <p class="page-sub">Manage system accounts, roles and access.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<span>Admin (Users)</span>
+    </nav>
+    {% if can_create %}<a class="btn btn-primary" href="/admin/users/new">{{ icon('plus', 16) }}Add User</a>{% endif %}
+  </div>
+</div>
+
+<div class="card-row">
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-indigo">{{ icon('users', 20) }}</span>
+      {{ sparkline(stat_total.spark, '#4f46e5') }}
+    </div>
+    <div class="stat-value">{{ stat_total.value }}</div>
+    <div class="stat-label">Total Users</div>
+    {% if stat_total.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_total.direction }}">{{ '↑' if stat_total.direction == 'up' else '↓' }} {{ stat_total.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-green">{{ icon('user-circle', 20) }}</span>
+      {{ sparkline(stat_enabled.spark, '#059669') }}
+    </div>
+    <div class="stat-value">{{ stat_enabled.value }}</div>
+    <div class="stat-label">Enabled</div>
+    {% if stat_enabled.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_enabled.direction }}">{{ '↑' if stat_enabled.direction == 'up' else '↓' }} {{ stat_enabled.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-pink">{{ icon('user-circle', 20) }}</span>
+      {{ sparkline(stat_disabled.spark, '#dc2626') }}
+    </div>
+    <div class="stat-value">{{ stat_disabled.value }}</div>
+    <div class="stat-label">Disabled</div>
+    {% if stat_disabled.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_disabled.direction }}">{{ '↑' if stat_disabled.direction == 'up' else '↓' }} {{ stat_disabled.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-amber">{{ icon('gear', 20) }}</span>
+      {{ sparkline(stat_admins.spark, '#d97706') }}
+    </div>
+    <div class="stat-value">{{ stat_admins.value }}</div>
+    <div class="stat-label">Admins</div>
+    {% if stat_admins.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_admins.direction }}">{{ '↑' if stat_admins.direction == 'up' else '↓' }} {{ stat_admins.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
 </div>
 
 <form method="get" action="/admin/users" class="filter-bar">
-  <input type="text" name="q" placeholder="Search username" value="{{ q }}">
-  <button type="submit">Search</button>
-  <a href="/admin/users">Reset</a>
+  <div class="search-input">
+    {{ icon('search', 17) }}
+    <input type="text" name="q" placeholder="Search username..." value="{{ q }}">
+  </div>
+  <a class="btn" href="/admin/users">{{ icon('refresh', 16) }}Reset</a>
+  <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Search</button>
 </form>
 
-<table class="data-table">
-  <thead>
-    <tr>
-      <th>Username</th><th>Role</th><th>Linked Employee</th><th>Status</th><th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for u in users %}
-    <tr>
-      <td>{{ u.username }}</td>
-      <td>
-        <form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form">
-          <select name="role" onchange="this.form.submit()">
-            {% for r in ['admin', 'supervisor', 'ess'] %}
-            <option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r }}</option>
-            {% endfor %}
-          </select>
-        </form>
-      </td>
-      <td>{% if u.first_name %}{{ u.first_name }} {{ u.last_name }}{% else %}—{% endif %}</td>
-      <td><span class="status-badge status-{{ 'active' if u.enabled else 'terminated' }}">
-        {{ 'enabled' if u.enabled else 'disabled' }}
-      </span></td>
-      <td>
-        {% if u.id != user.id %}
-        <form method="post" action="/admin/users/{{ u.id }}/toggle-enabled" class="inline-form">
-          <button type="submit" class="btn btn-small">{{ 'Disable' if u.enabled else 'Enable' }}</button>
-        </form>
+{% if users|length == 0 %}
+<p class="empty-state">No users match this search.</p>
+{% else %}
+<form id="usersBulkForm" method="post">
+  {% if can_update %}
+  <div class="bulk-bar" id="bulkBar" hidden>
+    <span><strong id="bulkCount">0</strong> selected</span>
+    <div class="bulk-bar-actions">
+      <button type="submit" class="btn btn-small btn-success" formaction="/admin/users/bulk-enable">{{ icon('check-circle', 14) }}Enable Selected</button>
+      <button type="submit" class="btn btn-small btn-danger" formaction="/admin/users/bulk-disable" onclick="return confirm('Disable the selected user account(s)?');">{{ icon('x-circle', 14) }}Disable Selected</button>
+    </div>
+  </div>
+  {% endif %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        {% if can_update %}<th><input type="checkbox" id="selectAllUsers" aria-label="Select all users"></th>{% endif %}
+        <th>Username</th><th>Role</th><th>Linked Employee</th><th>Status</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        {% if can_update %}
+        <td>{% if u.id != user.id %}<input type="checkbox" class="row-check" name="user_ids" value="{{ u.id }}">{% endif %}</td>
         {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+        <td>
+          <div class="employee-name-cell">
+            <span class="avatar avatar-sm">{{ u.initial }}</span>
+            <span>{{ u.username }}</span>
+          </div>
+        </td>
+        <td>
+          <form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form">
+            <select name="role" onchange="this.form.submit()">
+              {% for r in ['admin', 'supervisor', 'ess'] %}
+              <option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r }}</option>
+              {% endfor %}
+            </select>
+          </form>
+        </td>
+        <td>{% if u.first_name %}{{ u.first_name }} {{ u.last_name }}{% else %}—{% endif %}</td>
+        <td><span class="status-dot-badge status-{{ 'enabled' if u.enabled else 'disabled' }}"><span class="dot"></span>{{ 'Enabled' if u.enabled else 'Disabled' }}</span></td>
+        <td>
+          {% if u.id != user.id %}
+          <div class="row-actions">
+            <form method="post" action="/admin/users/{{ u.id }}/toggle-enabled" class="inline-form">
+              <button type="submit" class="btn btn-small">{{ 'Disable' if u.enabled else 'Enable' }}</button>
+            </form>
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</form>
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById('usersBulkForm');
+  if (!form) return;
+  var checks = form.querySelectorAll('.row-check');
+  var selectAll = document.getElementById('selectAllUsers');
+  var bar = document.getElementById('bulkBar');
+  var countEl = document.getElementById('bulkCount');
+  function update() {
+    var n = form.querySelectorAll('.row-check:checked').length;
+    if (bar) bar.hidden = n === 0;
+    if (countEl) countEl.textContent = n;
+    if (selectAll) selectAll.checked = checks.length > 0 && n === checks.length;
+  }
+  checks.forEach(function (c) { c.addEventListener('change', update); });
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      checks.forEach(function (c) { c.checked = selectAll.checked; });
+      update();
+    });
+  }
+})();
+</script>
 {% endblock %}

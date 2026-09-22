@@ -1,7 +1,55 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_ui.html" import empty_state, feature_strip %}
 {% block title %}Performance Reviews — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Performance Reviews</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('star', 22) }}</span>
+    <div>
+      <h1>Performance Reviews</h1>
+      <p class="page-sub">Manage employee performance reviews and track growth.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/performance/reviews">Performance</a>{{ icon('chevron-right', 14) }}<span>Performance Reviews</span>
+    </nav>
+    {# No route lets anyone create a single review directly (reviews only come from a
+       review cycle, and /performance/cycles has no "create cycle" action either — see
+       performance.py). Rather than link a "Create Review" button nowhere, admins/finalizers
+       get a real link to the cycles page instead. #}
+    {% if can_finalize %}<a class="btn btn-primary" href="/performance/cycles">{{ icon('briefcase', 16) }}Manage Review Cycles</a>{% endif %}
+  </div>
+</div>
+
+{# Reviews have no created_at/timestamp column (see db.py's `reviews` table) — only
+   `updated_at`, which any self/manager submission bumps, not a creation time. There is no
+   honest way to build a real daily sparkline or a now-vs-past trend for these counts (see
+   the matching comment in performance.py), so these cards show plain current totals with
+   no sparkline/trend decoration, unlike leave's or timesheets' stat cards. #}
+<div class="card-row">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('file', 20) }}</span>
+    <div class="stat-value">{{ stat_total }}</div>
+    <div class="stat-label">Total Reviews</div>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-green">{{ icon('check-circle', 20) }}</span>
+    <div class="stat-value">{{ stat_completed }}</div>
+    <div class="stat-label">Completed</div>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-amber">{{ icon('clock', 20) }}</span>
+    <div class="stat-value">{{ stat_in_progress }}</div>
+    <div class="stat-label">In Progress</div>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-pink">{{ icon('briefcase', 20) }}</span>
+    <div class="stat-value">{{ stat_manager_pending }}</div>
+    <div class="stat-label">Manager Pending</div>
+  </div>
+</div>
 
 {% if can_view_team %}
 <div class="filter-bar">
@@ -11,20 +59,39 @@
 {% endif %}
 
 {% if reviews|length == 0 %}
-<p class="empty-state">No reviews.</p>
+{% call empty_state('chart-bar', 'chip-indigo', 'No performance reviews yet', 'Start your first performance review to track progress, give feedback, and help your team grow.') %}
+{% if can_finalize %}<a class="btn btn-primary" href="/performance/cycles">{{ icon('briefcase', 16) }}View Review Cycles</a>{% endif %}
+<a class="btn" href="/dashboard">{{ icon('home', 16) }}Back to Dashboard</a>
+{% endcall %}
 {% else %}
 <table class="data-table">
-  <thead><tr><th>Employee</th><th>Cycle</th><th>Status</th><th></th></tr></thead>
+  <thead><tr><th>Employee</th><th>Cycle</th><th>Status</th><th>Actions</th></tr></thead>
   <tbody>
     {% for r in reviews %}
     <tr>
-      <td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ r.initial }}</span>
+          <span>{{ r.first_name }} {{ r.last_name }}</span>
+        </div>
+      </td>
       <td>{{ r.cycle_name }}</td>
-      <td><span class="status-badge status-{{ 'active' if r.status == 'finalized' else '' }}">{{ r.status }}</span></td>
-      <td><a href="/performance/reviews/{{ r.id }}">View</a></td>
+      <td><span class="status-dot-badge status-{{ r.status }}"><span class="dot"></span>{{ r.status.replace('_', ' ')|title }}</span></td>
+      <td>
+        <div class="row-actions">
+          <a class="btn btn-small" href="/performance/reviews/{{ r.id }}">{{ icon('eye', 14) }}View</a>
+        </div>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
 {% endif %}
+
+{{ feature_strip([
+  {'icon': 'star', 'chip': 'chip-indigo', 'title': 'Set Goals', 'sub': 'Define clear objectives for each review cycle.'},
+  {'icon': 'send', 'chip': 'chip-green', 'title': 'Give Feedback', 'sub': 'Share honest, constructive feedback with your team.'},
+  {'icon': 'chart-bar', 'chip': 'chip-amber', 'title': 'Track Progress', 'sub': 'Monitor growth and performance over time.'},
+  {'icon': 'check-circle', 'chip': 'chip-pink', 'title': 'Build Success', 'sub': 'Turn every review into real career growth.'},
+]) }}
 {% endblock %}

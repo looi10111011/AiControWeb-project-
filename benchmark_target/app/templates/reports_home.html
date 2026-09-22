@@ -1,9 +1,170 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_charts.html" import sparkline %}
+{% from "_ui.html" import empty_state %}
 {% block title %}Reports — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Reports</h1>
-<ul class="quick-actions">
-  <li><a href="/reports/employees">Employees Report</a></li>
-  <li><a href="/reports/leave">Leave Report</a></li>
-</ul>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('chart-pie', 22) }}</span>
+    <div>
+      <h1>Reports</h1>
+      <p class="page-sub">Generate and export organization-wide reports.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<span>Reports</span>
+    </nav>
+  </div>
+</div>
+
+<div class="card-row">
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-indigo">{{ icon('users', 20) }}</span>
+      {{ sparkline(stat_employees.spark, '#4f46e5') }}
+    </div>
+    <div class="stat-value">{{ stat_employees.value }}</div>
+    <div class="stat-label">Total Employees</div>
+    {% if stat_employees.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_employees.direction }}">{{ '↑' if stat_employees.direction == 'up' else '↓' }} {{ stat_employees.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-green">{{ icon('calendar', 20) }}</span>
+      {{ sparkline(stat_leave_days.spark, '#059669') }}
+    </div>
+    <div class="stat-value">{{ stat_leave_days.value }}</div>
+    <div class="stat-label">Total Leave Days</div>
+    <p class="page-sub" style="margin: 0.15rem 0 0; font-size: 0.72rem;">Approved requests only</p>
+    {% if stat_leave_days.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_leave_days.direction }}">{{ '↑' if stat_leave_days.direction == 'up' else '↓' }} {{ stat_leave_days.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-amber">{{ icon('clock', 20) }}</span>
+      {{ sparkline(stat_hours.spark, '#d97706') }}
+    </div>
+    <div class="stat-value">{{ '%.1f'|format(stat_hours.value) }}</div>
+    <div class="stat-label">Total Working Hours</div>
+    {% if stat_hours.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_hours.direction }}">{{ '↑' if stat_hours.direction == 'up' else '↓' }} {{ stat_hours.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-pink">{{ icon('chart-bar', 20) }}</span>
+      {{ sparkline(stat_reports.spark, '#dc2626') }}
+    </div>
+    <div class="stat-value">{{ stat_reports.value }}</div>
+    <div class="stat-label">Reports Generated</div>
+    {% if stat_reports.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_reports.direction }}">{{ '↑' if stat_reports.direction == 'up' else '↓' }} {{ stat_reports.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+</div>
+
+<div class="leave-layout">
+  <div class="leave-main">
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 1.1rem;">
+      <button type="button" class="btn btn-small btn-primary" id="reportTabBtnTypes" onclick="switchReportTab('types')">{{ icon('chart-bar', 14) }}Report Types</button>
+      <button type="button" class="btn btn-small" id="reportTabBtnRecent" onclick="switchReportTab('recent')">{{ icon('clock', 14) }}Recent Reports</button>
+    </div>
+
+    <div id="reportTabTypes">
+      <div class="action-tiles">
+        <a class="action-tile" href="/reports/employees">
+          <span class="stat-icon-chip chip-indigo">{{ icon('users', 18) }}</span>
+          Employees Report
+        </a>
+        <a class="action-tile" href="/reports/leave">
+          <span class="stat-icon-chip chip-green">{{ icon('calendar', 18) }}</span>
+          Leave Report
+        </a>
+      </div>
+    </div>
+
+    <div id="reportTabRecent" hidden>
+      {% if recent_reports|length == 0 %}
+      {% call empty_state('file', 'chip-indigo', 'No reports generated yet', 'Export the Employees or Leave report and it will show up here automatically.') %}
+      <a class="btn btn-primary" href="/reports/employees?format=csv">{{ icon('file', 16) }}Export Employees Report</a>
+      <a class="btn" href="/reports/leave?format=csv">{{ icon('file', 16) }}Export Leave Report</a>
+      {% endcall %}
+      {% else %}
+      <table class="data-table">
+        <thead><tr><th>Report</th><th>Generated On</th><th>Generated By</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for r in recent_reports %}
+          <tr>
+            <td class="type-cell">{{ icon(r.icon, 15) }}{{ r.name }}</td>
+            <td>{{ r.generated_on }}</td>
+            <td>{{ r.generated_by }}</td>
+            <td>
+              {# "Completed" reuses the existing green success class group (status-approved)
+                 — this app has no status-completed rule, and every logged export succeeded
+                 by definition (it's logged right before the CSV response is returned), so
+                 there is no other status a synchronous, already-finished export could have. #}
+              <span class="status-dot-badge status-approved"><span class="dot"></span>Completed</span>
+            </td>
+            <td>
+              {% if r.download_url %}
+              <a class="btn btn-small" href="{{ r.download_url }}"
+                 title="Re-exports a fresh CSV of this report type. The original export file isn't stored, so filters used at the time aren't reproduced.">{{ icon('file', 14) }}Re-export</a>
+              {% else %}
+              <span class="page-sub">Not available</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="leave-side">
+    <div class="panel">
+      <span class="stat-icon-chip chip-indigo">{{ icon('sparkle', 20) }}</span>
+      <h2>Turn your data into insights</h2>
+      <p class="page-sub">Filter, export, and share organization-wide reports with your team.</p>
+      <a class="btn btn-primary" href="/reports/employees">{{ icon('users', 16) }}Generate Employees Report</a>
+    </div>
+
+    <div class="panel">
+      <h2>Quick Tips</h2>
+      <ul class="quick-actions">
+        <li>Narrow a report with the filters before exporting — the CSV download respects whatever filters are currently applied.</li>
+        <li>The Leave Days total only counts approved requests, so pending or rejected days never inflate the number.</li>
+        <li>Every export you generate is logged and appears under Recent Reports.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var typesBtn = document.getElementById('reportTabBtnTypes');
+  var recentBtn = document.getElementById('reportTabBtnRecent');
+  var typesPanel = document.getElementById('reportTabTypes');
+  var recentPanel = document.getElementById('reportTabRecent');
+  window.switchReportTab = function (which) {
+    var showRecent = which === 'recent';
+    typesPanel.hidden = showRecent;
+    recentPanel.hidden = !showRecent;
+    typesBtn.classList.toggle('btn-primary', !showRecent);
+    recentBtn.classList.toggle('btn-primary', showRecent);
+  };
+})();
+</script>
 {% endblock %}

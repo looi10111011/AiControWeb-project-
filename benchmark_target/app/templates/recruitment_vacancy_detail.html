@@ -1,22 +1,74 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ vacancy.title }} — Hermes HRM{% endblock %}
 {% block content %}
-<h1>{{ vacancy.title }} <span class="status-badge status-{{ 'active' if vacancy.status == 'open' else 'terminated' }}">{{ vacancy.status }}</span></h1>
-<p>{{ vacancy.department }}</p>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('briefcase', 22) }}</span>
+    <div>
+      <h1>{{ vacancy.title }} <span class="status-dot-badge status-{{ vacancy.status }}"><span class="dot"></span>{{ vacancy.status|capitalize }}</span></h1>
+      <p class="page-sub">{{ vacancy.department }} &middot; {{ candidates|length }} candidate{{ '' if candidates|length == 1 else 's' }}</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/recruitment/vacancies">Recruitment</a>{{ icon('chevron-right', 14) }}<span>{{ vacancy.title }}</span>
+    </nav>
+  </div>
+</div>
 
+{% if candidates|length == 0 %}
+<p class="empty-state">No candidates have applied to this vacancy yet.</p>
+{% else %}
 <table class="data-table">
-  <thead><tr><th>Candidate</th><th>Email</th><th>Status</th><th></th></tr></thead>
+  <thead><tr><th>Candidate</th><th>Email</th><th>Status</th><th>Actions</th></tr></thead>
   <tbody>
     {% for c in candidates %}
     <tr>
-      <td>{{ c.first_name }} {{ c.last_name }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ c.first_name[:1]|upper }}</span>
+          <span>{{ c.first_name }} {{ c.last_name }}</span>
+        </div>
+      </td>
       <td>{{ c.email }}</td>
-      <td><span class="status-badge">{{ c.status }}</span></td>
-      <td><a href="/recruitment/candidates/{{ c.id }}">View</a></td>
+      <td><span class="status-dot-badge status-{{ c.status }}"><span class="dot"></span>{{ c.status|capitalize }}</span></td>
+      <td>
+        <div class="row-actions">
+          <a class="btn btn-small" href="/recruitment/candidates/{{ c.id }}">{{ icon('eye', 14) }}View</a>
+          {% if can_manage and c.status in ['applied', 'shortlisted', 'interview'] %}
+          <details class="row-menu">
+            <summary aria-label="More actions">{{ icon('dots', 16) }}</summary>
+            <div class="row-menu-panel">
+              {% if c.status == 'applied' %}
+              <form method="post" action="/recruitment/candidates/{{ c.id }}/status" class="inline-form">
+                <input type="hidden" name="status" value="shortlisted">
+                <button type="submit">Shortlist</button>
+              </form>
+              {% endif %}
+              {% if c.status in ['applied', 'shortlisted'] %}
+              <form method="post" action="/recruitment/candidates/{{ c.id }}/status" class="inline-form">
+                <input type="hidden" name="status" value="rejected">
+                <button type="submit" class="danger">Reject</button>
+              </form>
+              {% endif %}
+              {% if c.status in ['shortlisted', 'interview'] %}
+              <a href="/recruitment/candidates/{{ c.id }}#schedule-interview">Schedule Interview</a>
+              <form method="post" action="/recruitment/candidates/{{ c.id }}/hire" class="inline-form"
+                    onsubmit="return confirm('Hire {{ c.first_name }} {{ c.last_name }}? This creates a new employee record.');">
+                <button type="submit">Hire</button>
+              </form>
+              {% endif %}
+            </div>
+          </details>
+          {% endif %}
+        </div>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
 
 <p><a href="/recruitment/vacancies">&larr; Back to Vacancies</a></p>
 {% endblock %}

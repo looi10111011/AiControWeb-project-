@@ -1,10 +1,22 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Employees Report — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Employees Report ({{ rows|length }})</h1>
-  <a class="btn btn-primary"
-     href="/reports/employees?department={{ department }}&status={{ status }}&format=csv">Export CSV</a>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('users', 22) }}</span>
+    <div>
+      <h1>Employees Report ({{ rows|length }})</h1>
+      <p class="page-sub">Employee roster filtered by department and status.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/reports">Reports</a>{{ icon('chevron-right', 14) }}<span>Employees</span>
+    </nav>
+    <a class="btn btn-primary"
+       href="/reports/employees?department={{ department }}&status={{ status }}&format=csv">{{ icon('file', 16) }}Export CSV</a>
+  </div>
 </div>
 
 <form method="get" action="/reports/employees" class="filter-bar">
@@ -19,20 +31,30 @@
     <option value="active" {% if status == 'active' %}selected{% endif %}>Active</option>
     <option value="terminated" {% if status == 'terminated' %}selected{% endif %}>Terminated</option>
   </select>
-  <button type="submit">Filter</button>
+  <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Filter</button>
 </form>
 
+{% if rows|length == 0 %}
+<p class="empty-state">No employees match this filter.</p>
+{% else %}
 <table class="data-table">
   <thead><tr><th>Code</th><th>Name</th><th>Department</th><th>Job Title</th><th>Status</th><th>Hire Date</th></tr></thead>
   <tbody>
     {% for r in rows %}
     <tr>
-      <td>{{ r.employee_code }}</td><td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.employee_code }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ r.first_name[:1]|upper }}</span>
+          <span>{{ r.first_name }} {{ r.last_name }}</span>
+        </div>
+      </td>
       <td>{{ r.department }}</td><td>{{ r.job_title }}</td>
-      <td><span class="status-badge status-{{ r.status }}">{{ r.status }}</span></td>
+      <td><span class="status-dot-badge status-{{ r.status }}"><span class="dot"></span>{{ r.status|capitalize }}</span></td>
       <td>{{ r.hire_date }}</td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
 {% endblock %}

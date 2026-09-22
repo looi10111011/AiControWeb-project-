@@ -1,10 +1,22 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Leave Report — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Leave Report ({{ rows|length }})</h1>
-  <a class="btn btn-primary"
-     href="/reports/leave?start_date={{ start_date }}&end_date={{ end_date }}&status={{ status }}&format=csv">Export CSV</a>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-green">{{ icon('calendar', 22) }}</span>
+    <div>
+      <h1>Leave Report ({{ rows|length }})</h1>
+      <p class="page-sub">Leave requests filtered by date range and status.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/reports">Reports</a>{{ icon('chevron-right', 14) }}<span>Leave</span>
+    </nav>
+    <a class="btn btn-primary"
+       href="/reports/leave?start_date={{ start_date }}&end_date={{ end_date }}&status={{ status }}&format=csv">{{ icon('file', 16) }}Export CSV</a>
+  </div>
 </div>
 
 <form method="get" action="/reports/leave" class="filter-bar">
@@ -16,19 +28,30 @@
     <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
     {% endfor %}
   </select>
-  <button type="submit">Filter</button>
+  <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Filter</button>
 </form>
 
+{% if rows|length == 0 %}
+<p class="empty-state">No leave requests match this filter.</p>
+{% else %}
 <table class="data-table">
   <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Status</th></tr></thead>
   <tbody>
     {% for r in rows %}
     <tr>
-      <td>{{ r.employee_code }}</td><td>{{ r.first_name }} {{ r.last_name }}</td>
+      <td>{{ r.employee_code }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ r.first_name[:1]|upper }}</span>
+          <span>{{ r.first_name }} {{ r.last_name }}</span>
+        </div>
+      </td>
       <td>{{ r.leave_type }}</td><td>{{ r.start_date }}</td><td>{{ r.end_date }}</td>
-      <td>{{ r.days }}</td><td><span class="status-badge">{{ r.status }}</span></td>
+      <td>{{ r.days }}</td>
+      <td><span class="status-dot-badge status-{{ r.status }}"><span class="dot"></span>{{ r.status|capitalize }}</span></td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% endif %}
 {% endblock %}

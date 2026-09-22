@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -19,6 +19,19 @@ def _forbidden(request: Request, user: dict):
     return templates.TemplateResponse(request, "403.html", {"user": user}, status_code=403)
 
 
+def _trend(now: int, past: int) -> dict:
+    """Same shape/reasoning as leave.py's _trend(): a real now-vs-30-days-ago delta, never a
+    fabricated one. `past` here is "created 30+ days ago and currently matching this stat's
+    condition" (enabled/disabled/role='admin') — the closest honest analogue available, since
+    users has no column timestamping when enabled/role last changed (only updated_at, which
+    any edit bumps), only created_at."""
+    if past == 0:
+        return {"pct": 100, "direction": "up"} if now > 0 else {"pct": 0, "direction": "flat"}
+    pct = round((now - past) / past * 100)
+    direction = "up" if pct > 0 else "down" if pct < 0 else "flat"
+    return {"pct": abs(pct), "direction": direction}
+
+
 @router.get("/users")
 def list_users(request: Request, q: str = ""):
     user = get_current_user(request)
@@ -33,15 +46,77 @@ def list_users(request: Request, q: str = ""):
         if q:
             where += " AND username LIKE ?"
             params.append(f"%{q}%")
-        rows = conn.execute(
-            f"""SELECT u.*, e.first_name, e.last_name
-                FROM users u LEFT JOIN employees e ON e.id = u.employee_id
-                WHERE {where} ORDER BY u.username""",
-            params,
-        ).fetchall()
+        rows = [
+            dict(row, initial=row["username"][:1].upper())
+            for row in conn.execute(
+                f"""SELECT u.*, e.first_name, e.last_name
+                    FROM users u LEFT JOIN employees e ON e.id = u.employee_id
+                    WHERE {where} ORDER BY u.username""",
+                params,
+            ).fetchall()
+        ]
+
+        # Stat row: this page is admin-only already (no scope restriction like PIM's
+        # supervisor/own scopes), so the counts are simply whole-table — but still
+        # filter-independent, same as pim.py's stat row: a summary of the whole user
+        # base, not of the current username search.
+        def _count(extra_sql: str = "", extra_params: tuple = ()) -> int:
+            return conn.execute(
+                f"SELECT COUNT(*) c FROM users WHERE 1=1 {extra_sql}", [*extra_params]
+            ).fetchone()["c"]
+
+        def _sparkline(extra_sql: str = "", extra_params: tuple = (), days: int = 7) -> list[int]:
+            start = date.today() - timedelta(days=days - 1)
+            found = {
+                r["d"]: r["c"]
+                for r in conn.execute(
+                    f"""SELECT substr(created_at, 1, 10) d, COUNT(*) c FROM users
+                        WHERE 1=1 {extra_sql} AND created_at >= ?
+                        GROUP BY d""",
+                    [*extra_params, start.isoformat()],
+                ).fetchall()
+            }
+            return [found.get((start + timedelta(days=i)).isoformat(), 0) for i in range(days)]
+
+        thirty_days_ago = (date.today() - timedelta(days=30)).isoformat()
+        stat_total_now = _count()
+        stat_total_past = _count("AND created_at <= ?", (thirty_days_ago,))
+        stat_enabled_now = _count("AND enabled = 1")
+        stat_enabled_past = _count("AND enabled = 1 AND created_at <= ?", (thirty_days_ago,))
+        stat_disabled_now = _count("AND enabled = 0")
+        stat_disabled_past = _count("AND enabled = 0 AND created_at <= ?", (thirty_days_ago,))
+        stat_admins_now = _count("AND role = 'admin'")
+        stat_admins_past = _count("AND role = 'admin' AND created_at <= ?", (thirty_days_ago,))
+
+        stat_total = {"value": stat_total_now, "spark": _sparkline(), **_trend(stat_total_now, stat_total_past)}
+        stat_enabled = {
+            "value": stat_enabled_now, "spark": _sparkline("AND enabled = 1"),
+            **_trend(stat_enabled_now, stat_enabled_past),
+        }
+        stat_disabled = {
+            "value": stat_disabled_now, "spark": _sparkline("AND enabled = 0"),
+            **_trend(stat_disabled_now, stat_disabled_past),
+        }
+        stat_admins = {
+            "value": stat_admins_now, "spark": _sparkline("AND role = 'admin'"),
+            **_trend(stat_admins_now, stat_admins_past),
+        }
 
     return templates.TemplateResponse(
-        request, "admin_users.html", {"user": user, "users": rows, "q": q}
+        request,
+        "admin_users.html",
+        {
+            "user": user,
+            "users": rows,
+            "q": q,
+            "total": len(rows),
+            "stat_total": stat_total,
+            "stat_enabled": stat_enabled,
+            "stat_disabled": stat_disabled,
+            "stat_admins": stat_admins,
+            "can_create": can(user["role"], "user", "create"),
+            "can_update": can(user["role"], "user", "update"),
+        },
     )
 
 
@@ -143,6 +218,57 @@ def toggle_enabled(request: Request, user_id: int):
             str(user_id),
             row["username"],
         )
+
+    return RedirectResponse("/admin/users", status_code=303)
+
+
+@router.post("/users/bulk-enable")
+def bulk_enable(request: Request, user_ids: list[str] = Form(...)):
+    return _bulk_set_enabled(request, user_ids, 1)
+
+
+@router.post("/users/bulk-disable")
+def bulk_disable(request: Request, user_ids: list[str] = Form(...)):
+    return _bulk_set_enabled(request, user_ids, 0)
+
+
+def _bulk_set_enabled(request: Request, user_ids: list[str], new_state: int):
+    """Same rules as toggle_enabled() (permission check + never let an admin enable/disable
+    their own account through this route), applied over a checkbox selection from the list
+    page. Unlike the single-row endpoint, an invalid, self, or not-found row is silently
+    skipped rather than failing the whole batch — the checkbox selection is just "attempt
+    these," not an all-or-nothing transaction (same shape as leave.py's _bulk_decide)."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not can(user["role"], "user", "update"):
+        return _forbidden(request, user)
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        for uid_str in user_ids:
+            try:
+                uid = int(uid_str)
+            except ValueError:
+                continue
+            if uid == user["id"]:
+                # never allow disabling (or re-enabling) your own currently-logged-in
+                # account through this route — same guard as the single-row endpoint
+                continue
+            row = conn.execute("SELECT enabled, username FROM users WHERE id = ?", (uid,)).fetchone()
+            if row is None:
+                continue
+            conn.execute(
+                "UPDATE users SET enabled = ?, updated_at = ? WHERE id = ?", (new_state, now, uid)
+            )
+            log_audit(
+                conn,
+                user["username"],
+                "enable" if new_state else "disable",
+                "user",
+                str(uid),
+                row["username"],
+            )
 
     return RedirectResponse("/admin/users", status_code=303)
 

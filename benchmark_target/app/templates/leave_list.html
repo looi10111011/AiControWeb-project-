@@ -1,67 +1,241 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_charts.html" import sparkline %}
 {% block title %}Leave — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Leave Requests</h1>
-  {% if can_create %}<a class="btn btn-primary" href="/leave/requests/new">Apply for Leave</a>{% endif %}
-</div>
-
-{% if balances %}
-<div class="panel">
-  <h2>My Leave Balance</h2>
-  <div class="card-row">
-    {% for b in balances %}
-    <div class="stat-card"><div class="stat-value">{{ b.balance_days }}</div><div class="stat-label">{{ b.name }}</div></div>
-    {% endfor %}
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('calendar', 22) }}</span>
+    <div>
+      <h1>Leave Requests ({{ requests|length }})</h1>
+      <p class="page-sub">Manage employee leave requests and approvals.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<span>Leave</span>
+    </nav>
+    {% if can_create %}<a class="btn btn-primary" href="/leave/requests/new">{{ icon('plus', 16) }}Apply for Leave</a>{% endif %}
   </div>
 </div>
-{% endif %}
 
-<form method="get" action="/leave/requests" class="filter-bar">
-  <select name="status">
-    <option value="">All statuses</option>
-    {% for s in ['pending', 'approved', 'rejected', 'cancelled'] %}
-    <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
-    {% endfor %}
-  </select>
-  <button type="submit">Filter</button>
-  <a href="/leave/requests">Reset</a>
-</form>
+<div class="card-row">
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-indigo">{{ icon('file', 20) }}</span>
+      {{ sparkline(stat_total.spark, '#4f46e5') }}
+    </div>
+    <div class="stat-value">{{ stat_total.value }}</div>
+    <div class="stat-label">Total Requests</div>
+    {% if stat_total.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_total.direction }}">{{ '↑' if stat_total.direction == 'up' else '↓' }} {{ stat_total.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-green">{{ icon('check-circle', 20) }}</span>
+      {{ sparkline(stat_approved.spark, '#059669') }}
+    </div>
+    <div class="stat-value">{{ stat_approved.value }}</div>
+    <div class="stat-label">Approved</div>
+    {% if stat_approved.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_approved.direction }}">{{ '↑' if stat_approved.direction == 'up' else '↓' }} {{ stat_approved.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-amber">{{ icon('clock', 20) }}</span>
+      {{ sparkline(stat_pending.spark, '#d97706') }}
+    </div>
+    <div class="stat-value">{{ stat_pending.value }}</div>
+    <div class="stat-label">Pending</div>
+    {% if stat_pending.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_pending.direction }}">{{ '↑' if stat_pending.direction == 'up' else '↓' }} {{ stat_pending.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-pink">{{ icon('x-circle', 20) }}</span>
+      {{ sparkline(stat_rejected.spark, '#dc2626') }}
+    </div>
+    <div class="stat-value">{{ stat_rejected.value }}</div>
+    <div class="stat-label">Rejected</div>
+    {% if stat_rejected.direction != 'flat' %}
+    <span class="trend-pill trend-{{ stat_rejected.direction }}">{{ '↑' if stat_rejected.direction == 'up' else '↓' }} {{ stat_rejected.pct }}% <span class="trend-sub">vs last month</span></span>
+    {% else %}
+    <span class="trend-pill trend-flat">— <span class="trend-sub">No change</span></span>
+    {% endif %}
+  </div>
+</div>
 
-{% if requests|length == 0 %}
-<p class="empty-state">No leave requests.</p>
-{% else %}
-<table class="data-table">
-  <thead>
-    <tr><th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Comment</th><th></th></tr>
-  </thead>
-  <tbody>
-    {% for r in requests %}
-    <tr>
-      <td>{{ r.first_name }} {{ r.last_name }}</td>
-      <td>{{ r.leave_type_name }}</td>
-      <td>{{ r.start_date }} &rarr; {{ r.end_date }}</td>
-      <td>{{ r.days }}</td>
-      <td><span class="status-badge status-{{ 'active' if r.status in ['approved'] else 'terminated' if r.status in ['rejected','cancelled'] else '' }}">{{ r.status }}</span></td>
-      <td>{{ r.comment or '' }}</td>
-      <td>
-        {% if r.status == 'pending' and can_approve %}
-        <form method="post" action="/leave/requests/{{ r.id }}/approve" class="inline-form">
-          <button type="submit" class="btn btn-small">Approve</button>
-        </form>
-        <form method="post" action="/leave/requests/{{ r.id }}/reject" class="inline-form">
-          <button type="submit" class="btn btn-small btn-danger">Reject</button>
-        </form>
-        {% elif r.status == 'pending' %}
-        <form method="post" action="/leave/requests/{{ r.id }}/cancel" class="inline-form"
-              onsubmit="return confirm('Cancel this leave request?');">
-          <button type="submit" class="btn btn-small">Cancel</button>
-        </form>
+<div class="leave-layout">
+  <div class="leave-main">
+    <form method="get" action="/leave/requests" class="filter-bar">
+      <div class="search-input">
+        {{ icon('search', 17) }}
+        <input type="text" name="q" placeholder="Search by employee name..." value="{{ q }}">
+      </div>
+      <select name="leave_type_id">
+        <option value="">All types</option>
+        {% for lt in leave_types %}
+        <option value="{{ lt.id }}" {% if leave_type_id == lt.id|string %}selected{% endif %}>{{ lt.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for s in ['pending', 'approved', 'rejected', 'cancelled'] %}
+        <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s|capitalize }}</option>
+        {% endfor %}
+      </select>
+      <input type="date" name="date_from" value="{{ date_from }}" title="From date">
+      <input type="date" name="date_to" value="{{ date_to }}" title="To date">
+      <a class="btn" href="/leave/requests">{{ icon('refresh', 16) }}Reset</a>
+      <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Filter</button>
+    </form>
+
+    {% if requests|length == 0 %}
+    <p class="empty-state">No leave requests match this search/filter.</p>
+    {% else %}
+    <form id="leaveBulkForm" method="post">
+      {% if can_approve %}
+      <div class="bulk-bar" id="bulkBar" hidden>
+        <span><strong id="bulkCount">0</strong> selected</span>
+        <div class="bulk-bar-actions">
+          <button type="submit" class="btn btn-small btn-success" formaction="/leave/requests/bulk-approve">{{ icon('check-circle', 14) }}Approve Selected</button>
+          <button type="submit" class="btn btn-small btn-danger" formaction="/leave/requests/bulk-reject" onclick="return confirm('Reject the selected leave request(s)?');">{{ icon('x-circle', 14) }}Reject Selected</button>
+        </div>
+      </div>
+      {% endif %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            {% if can_approve %}<th><input type="checkbox" id="selectAllLeave" aria-label="Select all pending requests"></th>{% endif %}
+            <th>Employee</th><th>Type</th><th>Dates</th><th>Days</th><th>Status</th><th>Comment</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set type_icons = {'Annual': 'briefcase', 'Sick': 'heart', 'Unpaid': 'dots'} %}
+          {% for r in requests %}
+          <tr>
+            {% if can_approve %}
+            <td>{% if r.status == 'pending' %}<input type="checkbox" class="row-check" name="request_ids" value="{{ r.id }}">{% endif %}</td>
+            {% endif %}
+            <td>
+              <div class="employee-name-cell">
+                <span class="avatar avatar-sm">{{ r.initial }}</span>
+                <span>
+                  <span class="cell-title">{{ r.first_name }} {{ r.last_name }}</span>
+                  <span class="cell-sub">{{ r.department }}</span>
+                </span>
+              </div>
+            </td>
+            <td><span class="type-cell">{{ icon(type_icons.get(r.leave_type_name, 'calendar'), 15) }}{{ r.leave_type_name }}</span></td>
+            <td>{{ r.start_date }} ~ {{ r.end_date }}</td>
+            <td>{{ r.days }}</td>
+            <td><span class="status-dot-badge status-{{ r.status }}"><span class="dot"></span>{{ r.status|capitalize }}</span></td>
+            <td>{{ r.comment or '' }}</td>
+            <td>
+              <div class="row-actions">
+                {% if r.status == 'pending' and can_approve %}
+                <form method="post" action="/leave/requests/{{ r.id }}/approve" class="inline-form">
+                  <button type="submit" class="btn btn-small btn-success">Approve</button>
+                </form>
+                <form method="post" action="/leave/requests/{{ r.id }}/reject" class="inline-form">
+                  <button type="submit" class="btn btn-small btn-danger">Reject</button>
+                </form>
+                {% elif r.status == 'pending' %}
+                <form method="post" action="/leave/requests/{{ r.id }}/cancel" class="inline-form"
+                      onsubmit="return confirm('Cancel this leave request?');">
+                  <button type="submit" class="btn btn-small">Cancel</button>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="leave-side">
+    <div class="panel mini-calendar">
+      <div class="mini-cal-header">
+        <span>{{ cal_label }}</span>
+        <div class="mini-cal-nav">
+          <a class="icon-btn" href="/leave/requests?cal={{ cal_prev }}" aria-label="Previous month">{{ icon('chevron-left', 15) }}</a>
+          <a class="icon-btn" href="/leave/requests?cal={{ cal_next }}" aria-label="Next month">{{ icon('chevron-right', 15) }}</a>
+        </div>
+      </div>
+      <div class="mini-cal-grid">
+        {% for dow in ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] %}<div class="dow">{{ dow }}</div>{% endfor %}
+        {% for week in cal_grid %}
+          {% for cell in week %}
+            {% if cell %}
+            <div class="mini-cal-day{% if cell.status %} has-dot{% endif %}">
+              {{ cell.day }}
+              {% if cell.status %}<span class="dot status-{{ cell.status }}"></span>{% endif %}
+            </div>
+            {% else %}
+            <div class="mini-cal-day empty"></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+      <div class="mini-cal-legend">
+        <span><i class="dot status-approved"></i>Approved</span>
+        <span><i class="dot status-pending"></i>Pending</span>
+        <span><i class="dot status-rejected"></i>Rejected</span>
+      </div>
+    </div>
+
+    {% if balances %}
+    <div class="panel">
+      <h2>My Leave Balance</h2>
+      {% for b in balances %}
+      <div class="balance-row">
+        <div class="balance-row-top">
+          <span>{{ b.name }}</span>
+          <span>{{ b.balance_days }}{% if b.name == 'Annual' and annual_entitlement %} / {{ annual_entitlement }}{% endif %} days</span>
+        </div>
+        {% if b.name == 'Annual' and annual_entitlement %}
+        <div class="balance-bar"><div class="balance-bar-fill" style="width: {{ (b.balance_days / annual_entitlement * 100) if annual_entitlement else 0 }}%;"></div></div>
         {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function () {
+  var form = document.getElementById('leaveBulkForm');
+  if (!form) return;
+  var checks = form.querySelectorAll('.row-check');
+  var selectAll = document.getElementById('selectAllLeave');
+  var bar = document.getElementById('bulkBar');
+  var countEl = document.getElementById('bulkCount');
+  function update() {
+    var n = form.querySelectorAll('.row-check:checked').length;
+    if (bar) bar.hidden = n === 0;
+    if (countEl) countEl.textContent = n;
+    if (selectAll) selectAll.checked = checks.length > 0 && n === checks.length;
+  }
+  checks.forEach(function (c) { c.addEventListener('change', update); });
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      checks.forEach(function (c) { c.checked = selectAll.checked; });
+      update();
+    });
+  }
+})();
+</script>
 {% endblock %}
