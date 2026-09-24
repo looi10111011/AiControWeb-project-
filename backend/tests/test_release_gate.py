@@ -267,20 +267,24 @@ def test_compare_against_baseline_uses_settings_default_when_threshold_omitted(m
 @pytest.mark.asyncio
 async def test_run_release_gate_combines_all_three_suites_and_saves_summary(tmp_path):
     sauce_report = EvaluationReport(results=[_fake_task_result(success=True)])
-    orangehrm_report = EvaluationReport(results=[_fake_task_result(success=True)])
+    hrm_report = EvaluationReport(results=[_fake_task_result(success=True)])
     from backend.app.core.miniwob_eval import MiniWobReport, MiniWobResult
     miniwob_report = MiniWobReport(results=[
         MiniWobResult(task="t", utterance="u", success=True, reward=1.0, steps=2, total_tokens=50, message="ok"),
     ])
 
     with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=sauce_report)), \
-         patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock(return_value=orangehrm_report)), \
+         patch("backend.app.core.release_gate.run_hrm_local_evaluation", AsyncMock(return_value=hrm_report)), \
+         patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock()) as mock_orangehrm, \
          patch("backend.app.core.release_gate.run_miniwob_evaluation", AsyncMock(return_value=miniwob_report)), \
          patch("backend.app.core.release_gate._git_commit_short", return_value="deadbee"), \
          patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
         outcome = await run_release_gate(provider="anthropic", results_dir=str(tmp_path))
 
-    assert outcome["summary"]["task_count"] == 3  # 1 sauce + 1 orangehrm + 1 miniwob
+    assert outcome["summary"]["task_count"] == 3  # 1 sauce + 1 hrm_local + 1 miniwob
+    assert outcome["summary"]["suites"] == ["hrm_local", "miniwob", "saucedemo"]
+    # W_gate_local_hrm: เดโมสาธารณะปิดเป็นค่าเริ่มต้น ต้องไม่ถูกเรียกเองเงียบๆ
+    mock_orangehrm.assert_not_called()
     assert outcome["summary"]["git_commit"] == "deadbee"
     assert outcome["baseline"] is None  # first run ever, nothing to compare against
     assert outcome["passed"] is True
@@ -290,20 +294,35 @@ async def test_run_release_gate_combines_all_three_suites_and_saves_summary(tmp_
 
 
 @pytest.mark.asyncio
-async def test_run_release_gate_skips_orangehrm_and_miniwob_when_disabled(tmp_path):
+async def test_run_release_gate_skips_optional_suites_when_disabled(tmp_path):
     sauce_report = EvaluationReport(results=[_fake_task_result(success=True)])
 
-    with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=sauce_report)), \
-         patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock()) as mock_orangehrm, \
-         patch("backend.app.core.release_gate.run_miniwob_evaluation", AsyncMock()) as mock_miniwob, \
-         patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
+    with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=sauce_report)),          patch("backend.app.core.release_gate.run_hrm_local_evaluation", AsyncMock()) as mock_hrm,          patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock()) as mock_orangehrm,          patch("backend.app.core.release_gate.run_miniwob_evaluation", AsyncMock()) as mock_miniwob,          patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
         outcome = await run_release_gate(
-            provider="anthropic", results_dir=str(tmp_path), include_orangehrm=False, include_miniwob=False,
+            provider="anthropic", results_dir=str(tmp_path),
+            include_hrm_local=False, include_orangehrm=False, include_miniwob=False,
         )
 
+    mock_hrm.assert_not_called()
     mock_orangehrm.assert_not_called()
     mock_miniwob.assert_not_called()
     assert outcome["summary"]["task_count"] == 1
+    assert outcome["summary"]["suites"] == ["saucedemo"]
+
+
+@pytest.mark.asyncio
+async def test_run_release_gate_orangehrm_is_opt_in(tmp_path):
+    sauce_report = EvaluationReport(results=[_fake_task_result(success=True)])
+    orangehrm_report = EvaluationReport(results=[_fake_task_result(success=True)])
+
+    with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=sauce_report)),          patch("backend.app.core.release_gate.run_hrm_local_evaluation", AsyncMock()) as mock_hrm,          patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock(return_value=orangehrm_report)),          patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
+        outcome = await run_release_gate(
+            provider="anthropic", results_dir=str(tmp_path),
+            include_hrm_local=False, include_orangehrm=True, include_miniwob=False,
+        )
+
+    mock_hrm.assert_not_called()
+    assert outcome["summary"]["suites"] == ["orangehrm", "saucedemo"]
 
 
 @pytest.mark.asyncio
@@ -311,11 +330,13 @@ async def test_run_release_gate_compares_against_prior_run_in_same_dir(tmp_path)
     prior_summary = build_summary(
         EvaluationReport(results=[_fake_task_result(success=True)]),
         git_commit="old-commit", model="model-x", provider="anthropic",
+        suites=["hrm_local", "miniwob", "saucedemo"],
     )
     save_summary(prior_summary, results_dir=str(tmp_path))
 
     new_report = EvaluationReport(results=[_fake_task_result(success=False)])  # regression: was succeeding, now fails
     with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=new_report)), \
+         patch("backend.app.core.release_gate.run_hrm_local_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.release_gate.run_miniwob_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
@@ -337,6 +358,7 @@ async def test_run_release_gate_uses_explicit_baseline_path_when_given(tmp_path)
 
     new_report = EvaluationReport(results=[_fake_task_result(success=True)])
     with patch("backend.app.core.release_gate.run_evaluation", AsyncMock(return_value=new_report)), \
+         patch("backend.app.core.release_gate.run_hrm_local_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.release_gate.run_orangehrm_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.release_gate.run_miniwob_evaluation", AsyncMock(return_value=EvaluationReport())), \
          patch("backend.app.core.orchestrator.Orchestrator._llm_backend", return_value=(MagicMock(), "model-x", None, None, None)):
@@ -911,3 +933,36 @@ def test_a_run_that_measured_nothing_is_not_a_baseline(tmp_path):
     recent = load_recent_summaries(str(tmp_path), limit=5, model="m")
 
     assert [r["timestamp"] for r in recent] == [1.0]
+
+
+# --- W_gate_suite_baseline: baseline ต้องมาจากชุด suite เดียวกันเท่านั้น ---
+
+
+def _summary_with_suites(suites, commit):
+    kwargs = {} if suites is None else {"suites": suites}
+    summary = build_summary(
+        EvaluationReport(results=[_fake_task_result(success=True)]),
+        git_commit=commit, model="model-x", provider="anthropic", **kwargs,
+    )
+    if suites is None:
+        summary.pop("suites")  # จำลองไฟล์เก่าที่เขียนก่อนมี field นี้
+    return summary
+
+
+def test_baseline_ignores_runs_from_a_different_suite_set(tmp_path):
+    save_summary(_summary_with_suites(["hrm_local", "miniwob", "saucedemo"], "new-suites"), str(tmp_path))
+    save_summary(_summary_with_suites(["miniwob", "orangehrm", "saucedemo"], "other-suites"), str(tmp_path))
+
+    latest = load_latest_summary(str(tmp_path), suites=["saucedemo", "miniwob", "hrm_local"])
+    assert latest["git_commit"] == "new-suites"  # ลำดับใน list ไม่มีผล
+    assert [s["git_commit"] for s in load_recent_summaries(str(tmp_path), suites=["saucedemo"])] == []
+
+
+def test_legacy_summary_without_suites_field_counts_as_the_old_three_suites(tmp_path):
+    save_summary(_summary_with_suites(None, "legacy"), str(tmp_path))
+
+    assert load_latest_summary(str(tmp_path), suites=["miniwob", "orangehrm", "saucedemo"])["git_commit"] == "legacy"
+    # รันแรกหลังสลับเป็น hrm_local ต้อง "ไม่มี baseline" ไม่ใช่เทียบกับผล OrangeHRM สาธารณะ
+    assert load_latest_summary(str(tmp_path), suites=["hrm_local", "miniwob", "saucedemo"]) is None
+    # ไม่ส่ง suites = พฤติกรรมเดิม (ไม่กรอง)
+    assert load_latest_summary(str(tmp_path))["git_commit"] == "legacy"

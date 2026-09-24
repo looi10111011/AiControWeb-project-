@@ -7,6 +7,11 @@ determinism, episode-timer override ฯลฯ) เพราะ MiniWoB มี re
 evaluation.py เดิมไม่รองรับ — เว็บทั่วไปแบบนี้ตัดสิน success/fail จาก finish_task() ของ
 agent เอง เหมือน SauceDemo อยู่แล้วทุกประการ
 
+*** W_gate_local_hrm: release gate ไม่รัน suite นี้เป็นค่าเริ่มต้นอีกแล้ว — ถูกแทนด้วย
+core/hrm_local_eval.py (benchmark_target ในเครื่อง, reset fixture ทุก attempt, ตัดสินจาก DB)
+เพราะเดโมสาธารณะที่คนอื่นแก้ข้อมูลร่วมกันทำให้ commit เดียวกันได้ผลต่างกัน ยังเปิดใช้เองได้ด้วย
+`python run.py orangehrm` หรือ include_orangehrm=True ***
+
 *** สถานะชั่วคราว: ใช้ public demo instance นี้เพราะ Docker ยังใช้งานไม่ได้บนเครื่อง dev
 ตอนนี้ (Windows 11 Home ไม่มี Hyper-V, WSL2 ยังไม่ได้ติดตั้ง — ต้อง `wsl --install` +
 reboot ก่อนถึงจะรัน self-hosted OrangeHRM/PrestaShop ผ่าน Docker ได้จริง) ย้ายไป

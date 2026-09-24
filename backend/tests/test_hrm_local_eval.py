@@ -1,0 +1,111 @@
+"""W_gate_local_hrm: core/hrm_local_eval.py — suite ของ release gate บน benchmark_target
+
+ไม่แตะ LLM/browser: agent ถูกแทนด้วย StubAgentAdapter ส่วน Control Plane + fixture + verifier รัน
+จริงผ่าน TestClient บน SQLite จริง (เหมือน benchmark_target/tests/test_runner.py)
+"""
+
+from unittest.mock import patch
+
+import pytest
+
+from backend.app.config import settings
+from backend.app.core import hrm_local_eval
+from backend.app.core.hrm_local_eval import (
+    HRM_LOCAL_TASK_IDS,
+    attempt_to_eval_result,
+    load_hrm_local_tasks,
+    run_hrm_local_evaluation,
+)
+from benchmark_target.app.seed import seed
+from benchmark_target.runner.agent_adapters import AgentRunResult, StubAgentAdapter
+from benchmark_target.runner.models import AttemptResult, AttemptState, FailureClass
+
+
+def test_all_task_ids_exist_in_catalog():
+    tasks = load_hrm_local_tasks()
+    assert [t["task_id"] for t in tasks] == list(HRM_LOCAL_TASK_IDS)
+    assert len(tasks) == 6
+
+
+def test_missing_task_id_fails_loudly(monkeypatch):
+    # ตัวหารของ success_rate เปลี่ยนเงียบๆ ไม่ได้ — id หายต้อง raise ทันที
+    monkeypatch.setattr(hrm_local_eval, "HRM_LOCAL_TASK_IDS", (*HRM_LOCAL_TASK_IDS, "NO-SUCH-TASK"))
+    with pytest.raises(RuntimeError, match="NO-SUCH-TASK"):
+        load_hrm_local_tasks()
+
+
+@pytest.mark.asyncio
+async def test_no_task_passes_when_agent_does_nothing():
+    """กัน task read-only (verifier จริงเสมอ) เข้ามาใน suite — agent ที่ไม่ทำอะไรต้องไม่ผ่านสักตัว
+    และต้องไม่เชื่อ success=True ที่ agent รายงานเอง"""
+    seed()
+    stub = StubAgentAdapter([AgentRunResult(success=True, steps=3, message="stub says done", tokens={})])
+    with patch.object(hrm_local_eval, "ensure_target_running"):
+        report = await run_hrm_local_evaluation(adapter=stub, run_id="test-run")
+
+    assert [r.name for r in report.results] == list(HRM_LOCAL_TASK_IDS)
+    assert stub.call_count == len(HRM_LOCAL_TASK_IDS)
+    passed = [r.name for r in report.results if r.success]
+    assert passed == [], f"task ที่ผ่านโดย agent ไม่ได้ทำอะไร: {passed}"
+
+
+@pytest.mark.asyncio
+async def test_allow_internal_navigation_is_on_during_run_and_restored_after_a_crash():
+    """SSRF guard ต้องเปิดให้ localhost เฉพาะระหว่างรัน — crash กลาง task ก็ต้องคืนค่าเดิม"""
+    previous = settings.allow_internal_navigation
+    seen_during_run = []
+
+    def crashing_attempt(*_args, **_kwargs):
+        seen_during_run.append(settings.allow_internal_navigation)
+        raise RuntimeError("boom")
+
+    stub = StubAgentAdapter([AgentRunResult(success=True, steps=1, message="", tokens={})])
+    with patch.object(hrm_local_eval, "ensure_target_running"), \
+         patch("benchmark_target.runner.attempt_runner.run_attempt", side_effect=crashing_attempt):
+        with pytest.raises(RuntimeError, match="boom"):
+            await run_hrm_local_evaluation(adapter=stub)
+
+    assert seen_during_run == [True]
+    assert settings.allow_internal_navigation is previous
+
+
+def _attempt(**overrides) -> AttemptResult:
+    fields = dict(
+        attempt_id="a1", task_id="T-1", task_revision=1, state=AttemptState.COMPLETED, passed=True,
+        detail="passed", steps=5, duration_ms=2500.0,
+        tokens={"input": 100, "output": 20, "cache_read": 30, "cache_creation": 4},
+    )
+    fields.update(overrides)
+    return AttemptResult(**fields)
+
+
+_TASK = {"task_id": "T-1", "goal": {"description": "do a thing"}}
+
+
+def test_pass_maps_to_success_with_summed_tokens():
+    result = attempt_to_eval_result(_TASK, _attempt(), AgentRunResult(True, 5, "", {}, approval_count=2))
+    assert result.success is True
+    assert (result.name, result.steps, result.total_tokens) == ("T-1", 5, 154)
+    assert result.latency_seconds == 2.5
+    assert result.approval_count == 2
+    assert result.error is None
+
+
+def test_functional_fail_is_a_failure_not_infra():
+    attempt = _attempt(passed=False, failure_class=FailureClass.FUNCTIONAL_FAIL, detail="verification failed")
+    result = attempt_to_eval_result(_TASK, attempt, None)
+    assert result.success is False
+    assert result.steps == 5  # ลงมือทำจริง นับเป็นความล้มเหลวของ agent
+    assert result.error is None
+
+
+def test_infra_failure_reports_zero_steps_and_error():
+    """steps=0 + error ทำให้ task_failed_on_infrastructure()/run_is_invalid() ของ gate แยกออกได้"""
+    attempt = _attempt(
+        passed=False, state=AttemptState.INFRA_ERROR, failure_class=FailureClass.INFRA_ERROR,
+        detail="control plane unreachable", steps=0, tokens={},
+    )
+    result = attempt_to_eval_result(_TASK, attempt, None)
+    assert result.success is False
+    assert result.steps == 0
+    assert result.error == "control plane unreachable"

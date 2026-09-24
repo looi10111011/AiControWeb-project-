@@ -1,6 +1,7 @@
 """core/release_gate.py — W_eval: ยกระดับ core/evaluation.py + core/miniwob_eval.py +
-core/orangehrm_eval.py (ที่มีอยู่แล้ว ก่อนหน้านี้แค่พิมพ์ผลลง stdout ใน run.py) ให้เป็น
-release gate จริง — รัน 3 suite รวมกัน, เขียนสรุปเป็น JSON ต่อ run (tag ด้วย git commit +
+core/hrm_local_eval.py (และ core/orangehrm_eval.py แบบ opt-in — ก่อนหน้านี้แค่พิมพ์ผลลง
+stdout ใน run.py) ให้เป็น release gate จริง — รัน 3 suite รวมกัน (saucedemo + miniwob +
+hrm_local), เขียนสรุปเป็น JSON ต่อ run (tag ด้วย git commit +
 model + provider + timestamp) ไว้ที่ settings.release_gate_results_dir, แล้วเทียบกับผลรัน
 ล่าสุดก่อนหน้า (หรือ baseline ที่ระบุเอง) — metric ไหน regress เกิน
 settings.release_gate_max_regression_pct ถือว่า "ไม่ผ่าน" คืน exit code ไม่เท่ากับ 0 (ผ่าน
@@ -27,6 +28,7 @@ from typing import Any, Optional
 
 from backend.app.config import settings
 from backend.app.core.evaluation import EvaluationReport, run_evaluation
+from backend.app.core.hrm_local_eval import run_hrm_local_evaluation
 from backend.app.core.miniwob_eval import run_miniwob_evaluation
 from backend.app.core.orangehrm_eval import run_orangehrm_evaluation
 from backend.app.core.telemetry import new_run_id
@@ -98,9 +100,16 @@ def _result_row(result) -> dict:
     }
 
 
+# W_gate_suite_baseline: ผลของ suite ชุดหนึ่งเทียบกับชุดอื่นไม่ได้ (เหตุผลเดียวกับ
+# W_gate_model_baseline ด้านล่าง) — สลับ OrangeHRM สาธารณะเป็น hrm_local แล้วเอาไปเทียบ baseline
+# เก่าจะรายงาน "ดีขึ้น/แย่ลง" ทั้งที่โค้ดไม่เปลี่ยน ไฟล์เก่าที่ไม่มี field "suites" ถูกสร้างตอนที่
+# gate มีแค่ชุดนี้เสมอ
+LEGACY_SUITES = ["miniwob", "orangehrm", "saucedemo"]
+
+
 def build_summary(
     report: EvaluationReport, *, git_commit: str, model: str, provider: str,
-    run_id: Optional[str] = None,
+    run_id: Optional[str] = None, suites: Optional[list[str]] = None,
 ) -> dict:
     """แปลง EvaluationReport (รวมทุก suite แล้ว) เป็น dict ที่ serialize เป็น JSON ได้ตรงๆ —
     เก็บ per_suite แยกไว้ด้วย (ไม่ใช่แค่ aggregate รวม) ให้ยังสืบสาวได้ว่า suite ไหนเป็นตัว
@@ -110,6 +119,7 @@ def build_summary(
         "model": model,
         "provider": provider,
         "timestamp": time.time(),
+        "suites": sorted(suites) if suites is not None else LEGACY_SUITES,
         "task_count": len(report.results),
         # W_gate_per_task: เก็บรายตัวด้วย ไม่ใช่แค่ aggregate (ดู _result_row)
         "results": [_result_row(r) for r in report.results],
@@ -162,6 +172,7 @@ def save_summary(summary: dict, results_dir: Optional[str] = None) -> Path:
 # ได้อยู่แล้วด้วยการผ่านและบอกว่ายังไม่มีอะไรให้เทียบ — ดีกว่าเทียบกับของที่เทียบไม่ได้
 def _summaries_in(
     results_dir: Optional[str], exclude_path: Optional[Path], model: Optional[str],
+    suites: Optional[list[str]] = None,
 ) -> list[tuple[float, dict]]:
     directory = Path(results_dir or settings.release_gate_results_dir)
     if not directory.is_dir():
@@ -181,6 +192,8 @@ def _summaries_in(
             continue
         if model is not None and data.get("model") != model:
             continue
+        if suites is not None and sorted(data.get("suites") or LEGACY_SUITES) != sorted(suites):
+            continue
         # รันที่วัดอะไรไม่ได้ (provider ล่ม/โควตาหมด — ดู run_is_invalid) ต้องไม่เข้า baseline
         # ด้วยเหตุผลเดียวกับที่มันไม่ควรทำให้ commit ตก: มันไม่ได้บอกอะไรเกี่ยวกับโค้ดเลย
         # baseline ที่ประกอบจากรันแบบนั้นจะทำให้รันปกติรอบถัดไปดู "ดีขึ้น 300%" ฟรีๆ
@@ -193,24 +206,24 @@ def _summaries_in(
 
 def load_latest_summary(
     results_dir: Optional[str] = None, *, exclude_path: Optional[Path] = None,
-    model: Optional[str] = None,
+    model: Optional[str] = None, suites: Optional[list[str]] = None,
 ) -> Optional[dict]:
     """หา summary JSON ล่าสุดใน results_dir (เรียงตาม field "timestamp" ข้างในไฟล์เอง ไม่ใช่
     mtime ของไฟล์ — เผื่อไฟล์ถูก copy/sync มาจากที่อื่นแล้ว mtime ไม่ตรงกับตอนที่ eval รันจริง)
     คืน None เงียบๆ ถ้า dir ไม่มีอยู่/ไม่มีไฟล์ JSON ที่อ่านได้เลย (เช่น รัน release gate เป็น
     ครั้งแรกไม่เคยมี baseline มาก่อน) — exclude_path กันไม่ให้เทียบไฟล์ล่าสุดกับตัวเองถ้า
     caller เพิ่ง save_summary() ของ run นี้ไปแล้วก่อนเรียกฟังก์ชันนี้"""
-    candidates = _summaries_in(results_dir, exclude_path, model)
+    candidates = _summaries_in(results_dir, exclude_path, model, suites)
     return candidates[-1][1] if candidates else None
 
 
 def load_recent_summaries(
     results_dir: Optional[str] = None, *, limit: int = 5, exclude_path: Optional[Path] = None,
-    model: Optional[str] = None,
+    model: Optional[str] = None, suites: Optional[list[str]] = None,
 ) -> list[dict]:
     """คืน summary JSON ล่าสุดไม่เกิน limit ไฟล์ เรียงเก่า->ใหม่ (เกณฑ์เดียวกับ
     load_latest_summary: เรียงตาม field "timestamp" ข้างในไฟล์ ไม่ใช่ mtime)"""
-    candidates = _summaries_in(results_dir, exclude_path, model)
+    candidates = _summaries_in(results_dir, exclude_path, model, suites)
     return [data for _, data in candidates[-limit:]] if limit > 0 else []
 
 
@@ -479,11 +492,15 @@ async def run_release_gate(
     results_dir: Optional[str] = None,
     baseline_path: Optional[str] = None,
     max_regression_pct: Optional[float] = None,
-    include_orangehrm: bool = True,
+    include_orangehrm: bool = False,
     include_miniwob: bool = True,
+    include_hrm_local: bool = True,
 ) -> dict[str, Any]:
-    """รัน SauceDemo (เสมอ) + OrangeHRM + MiniWoB (ปิดได้ทีละตัวผ่าน include_*, เผื่อเครื่อง
-    dev ยังไม่ได้ pip install miniwob/เจอ shared demo ล่ม) รวมผลเป็น EvaluationReport เดียว
+    """รัน SauceDemo (เสมอ) + HRM local + MiniWoB (ปิดได้ทีละตัวผ่าน include_*, เผื่อเครื่อง
+    dev ยังไม่ได้ pip install miniwob) รวมผลเป็น EvaluationReport เดียว — OrangeHRM สาธารณะ
+    เปิดเองได้ด้วย include_orangehrm แต่ปิดเป็นค่าเริ่มต้น (W_gate_local_hrm: เดโมที่คนอื่นแก้
+    ข้อมูลร่วมกัน ผลไม่นิ่ง และตัดสินจากคำรายงานของ agent ส่วน hrm_local ตัดสินจาก DB หลัง
+    reset fixture ทุก attempt)
     (ดู module docstring สำหรับเหตุผลที่ mix TaskEvalResult/MiniWobResult ในลิสต์เดียวกันได้)
     save_summary() เสมอไม่ว่า baseline จะเจอไหม (ทุก run คือ baseline ของ run ถัดไป) แล้ว
     เทียบกับ baseline_path ที่ระบุเอง หรือถ้าไม่ระบุ ใช้ไฟล์ล่าสุดก่อนหน้า (ไม่นับไฟล์ที่
@@ -497,10 +514,17 @@ async def run_release_gate(
     combined_results = []
     sauce_report = await run_evaluation(provider=provider, run_id=run_id)
     combined_results.extend(sauce_report.results)
+    suites = ["saucedemo"]
+    if include_hrm_local:
+        suites.append("hrm_local")
+        hrm_report = await run_hrm_local_evaluation(provider=provider, run_id=run_id)
+        combined_results.extend(hrm_report.results)
     if include_orangehrm:
+        suites.append("orangehrm")
         orangehrm_report = await run_orangehrm_evaluation(provider=provider, run_id=run_id)
         combined_results.extend(orangehrm_report.results)
     if include_miniwob:
+        suites.append("miniwob")
         miniwob_report = await run_miniwob_evaluation(provider=provider, run_id=run_id)
         combined_results.extend(miniwob_report.results)
 
@@ -509,7 +533,7 @@ async def run_release_gate(
     model = Orchestrator._llm_backend(resolved_provider)[1]
     summary = build_summary(
         combined_report, git_commit=_git_commit_short(), model=model,
-        provider=resolved_provider, run_id=run_id,
+        provider=resolved_provider, run_id=run_id, suites=suites,
     )
     saved_path = save_summary(summary, results_dir)
 
@@ -522,7 +546,7 @@ async def run_release_gate(
     else:
         history = load_recent_summaries(
             results_dir, limit=settings.release_gate_baseline_runs, exclude_path=saved_path,
-            model=model,
+            model=model, suites=suites,
         )
         baseline, noise_pct = (None, None) if not history else build_noise_baseline(history)
 
@@ -547,8 +571,9 @@ async def run_release_gate_repeated(
     provider: Optional[str] = None,
     results_dir: Optional[str] = None,
     max_regression_pct: Optional[float] = None,
-    include_orangehrm: bool = True,
+    include_orangehrm: bool = False,
     include_miniwob: bool = True,
+    include_hrm_local: bool = True,
 ) -> dict[str, Any]:
     """รัน gate ซ้ำ `repeats` รอบบนโค้ดชุดเดียวกัน แล้วตัดสินด้วย median
 
@@ -567,6 +592,7 @@ async def run_release_gate_repeated(
             provider=provider, results_dir=results_dir,
             max_regression_pct=max_regression_pct,
             include_orangehrm=include_orangehrm, include_miniwob=include_miniwob,
+            include_hrm_local=include_hrm_local,
         )
         runs.append(outcome)
         summaries.append(outcome["summary"])

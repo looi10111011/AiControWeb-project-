@@ -1346,6 +1346,27 @@ def run_isolation_test():
         proc.wait(timeout=10)
 
 
+def _print_eval_summary(report):
+    """สรุปรวมท้ายรายงานของทุก eval suite — success rate / step / token"""
+    n = len(report.results)
+    n_success = sum(1 for r in report.results if r.success)
+    print("\n=== สรุปรวม ===", flush=True)
+    print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
+    print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
+    print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+
+
+def _print_eval_report(report, detail_label="message"):
+    """ผลรายภารกิจ + สรุปรวม ของ suite ที่คืน TaskEvalResult (saucedemo/orangehrm/hrm_local) —
+    hrm_local ใช้ detail_label="detail" เพราะ message ของมันคือเหตุผลจาก verifier ไม่ใช่คำพูด agent"""
+    print("=== ผลลัพธ์รายภารกิจ ===", flush=True)
+    for r in report.results:
+        outcome = "สำเร็จ" if r.success else "ไม่สำเร็จ"
+        print(f"  [{r.name}] {outcome} — {r.steps} step, {r.total_tokens} token", flush=True)
+        print(f"      {'error: ' + r.error if r.error else detail_label + ': ' + r.message}", flush=True)
+    _print_eval_summary(report)
+
+
 def run_evaluation_harness():
     """W12[B]: Evaluation แนว WebVoyager — รัน BENCHMARK_TASKS (goal เดิมจาก demo อื่นๆ ใน
     ไฟล์นี้ ดู core/evaluation.py) ทีละตัวตามลำดับผ่าน Orchestrator.run_task() ตรงๆ บน
@@ -1361,18 +1382,7 @@ def run_evaluation_harness():
     async def _run():
         report = await run_evaluation()
 
-        print("=== ผลลัพธ์รายภารกิจ ===", flush=True)
-        for r in report.results:
-            outcome = "สำเร็จ" if r.success else "ไม่สำเร็จ"
-            print(f"  [{r.name}] {outcome} — {r.steps} step, {r.total_tokens} token", flush=True)
-            print(f"      {'error: ' + r.error if r.error else 'message: ' + r.message}", flush=True)
-
-        n = len(report.results)
-        n_success = sum(1 for r in report.results if r.success)
-        print("\n=== สรุปรวม ===", flush=True)
-        print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
-        print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
-        print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+        _print_eval_report(report)
 
     asyncio.run(_run())
 
@@ -1401,12 +1411,7 @@ def run_miniwob_evaluation():
             print(f"      instruction: {r.utterance or '(อ่านไม่ได้)'}", flush=True)
             print(f"      {'error: ' + r.error if r.error else 'message: ' + r.message}", flush=True)
 
-        n = len(report.results)
-        n_success = sum(1 for r in report.results if r.success)
-        print("\n=== สรุปรวม ===", flush=True)
-        print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
-        print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
-        print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+        _print_eval_summary(report)
 
     asyncio.run(_run())
 
@@ -1427,18 +1432,25 @@ def run_orangehrm_evaluation():
     async def _run():
         report = await run_orangehrm()
 
-        print("=== ผลลัพธ์รายภารกิจ ===", flush=True)
-        for r in report.results:
-            outcome = "สำเร็จ" if r.success else "ไม่สำเร็จ"
-            print(f"  [{r.name}] {outcome} — {r.steps} step, {r.total_tokens} token", flush=True)
-            print(f"      {'error: ' + r.error if r.error else 'message: ' + r.message}", flush=True)
+        _print_eval_report(report)
 
-        n = len(report.results)
-        n_success = sum(1 for r in report.results if r.success)
-        print("\n=== สรุปรวม ===", flush=True)
-        print(f"  Success rate : {report.success_rate:.0%} ({n_success}/{n})", flush=True)
-        print(f"  Avg steps    : {report.avg_steps:.1f}", flush=True)
-        print(f"  Avg tokens   : {report.avg_tokens:.0f}", flush=True)
+    asyncio.run(_run())
+
+
+def run_hrm_local_evaluation():
+    """W_gate_local_hrm: 6 task บน benchmark_target (HRM ในเครื่อง) — ตัดสินจาก DB หลัง reset
+    fixture ทุก attempt ไม่ใช่จากคำรายงานของ agent ใช้ LLM จริง + เปิด Chromium จริง 6 ครั้ง
+    (เปิด Target Surface บน port 8100 ให้เองถ้ายังไม่มีใครรัน — ดู core/hrm_local_eval.py)"""
+    print("=== HRM Local Evaluation (benchmark_target, ตัดสินจาก DB) ===", flush=True)
+    from backend.app.config import settings
+    from backend.app.core.hrm_local_eval import HRM_LOCAL_TASK_IDS, run_hrm_local_evaluation as run_hrm_local
+
+    print(f"Provider: {settings.llm_provider}", flush=True)
+    print(f"รัน {len(HRM_LOCAL_TASK_IDS)} task (headless, auto_approve)...\n", flush=True)
+
+    async def _run():
+        report = await run_hrm_local()
+        _print_eval_report(report, detail_label="detail")
 
     asyncio.run(_run())
 
@@ -1469,7 +1481,7 @@ def run_release_gate_cmd():
 
     metric ประสิทธิภาพ (step/token/latency/llm_calls/approval) รายงานอย่างเดียว ไม่ตัดสิน
     pass/fail อีกต่อไป — task ที่สำเร็จใน 9 step กับ 22 step คือ task ที่สำเร็จเหมือนกัน"""
-    print("=== W_eval: Release Gate (SauceDemo + OrangeHRM + MiniWoB รวมกัน) ===", flush=True)
+    print("=== W_eval: Release Gate (SauceDemo + HRM local + MiniWoB รวมกัน) ===", flush=True)
     from backend.app.config import settings
     from backend.app.core.release_gate import run_release_gate_repeated
 
@@ -1665,6 +1677,7 @@ ACTIONS = {
     "24": ("W_gate_is_noisy: วัดความไม่คงที่ของ benchmark (รันซ้ำหลายรอบบน commit เดียว)", run_flakiness_cmd),
     "23": ("W_production_kpi: สรุป telemetry ของงานจริง (อ่านอย่างเดียว ไม่รัน browser/LLM)", run_kpi_cmd),
     "25": ("เปิด Benchmark HRM พร้อม Agent Bar ในหน้าเว็บ", run_web_all),
+    "26": ("W_gate_local_hrm: HRM Local Evaluation (benchmark_target 6 task, ตัดสินจาก DB)", run_hrm_local_evaluation),
 }
 
 ALIASES = {
@@ -1703,6 +1716,7 @@ ALIASES = {
     "miniwob": "20",
     "miniwob++": "20",
     "orangehrm": "21",
+    "hrm-local": "26",
     "release-gate": "22",
     "flakiness": "24",
     "flaky": "24",
