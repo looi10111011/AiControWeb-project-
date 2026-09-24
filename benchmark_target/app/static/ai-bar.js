@@ -90,8 +90,12 @@
         position: relative; width: 100%; max-width: 630px; margin: 0 auto;
         animation: bar-in 180ms ease-out;
       }
+      @keyframes thinking-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
       @media (prefers-reduced-motion: reduce) {
-        .bar-wrap, .status-line .line { animation: none !important; }
+        .bar-wrap, .status-line .line, .thinking-label, .bar.thinking .sparkle { animation: none !important; }
       }
       /* .bar's box is a fixed-height pill that never resizes — every child is pinned to an
          absolute position inside it instead of taking part in normal flex flow, so nothing
@@ -130,6 +134,19 @@
         border-radius: 14px;
       }
       .bar textarea::placeholder { color: #9aa1ac; }
+      /* While a task runs the textarea is disabled anyway, so it's hidden (not cleared —
+         a failed POST /tasks hands the goal back untouched) and "Thinking" takes its exact
+         spot. visibility, not display: the textarea's box stays in place, so nothing about
+         the pill's layout shifts when the label swaps in or out. */
+      .thinking-label {
+        position: absolute; top: 0; left: 2.5rem; height: 48px; padding: 0 0.9rem;
+        display: none; align-items: center; font-size: 0.88rem; font-weight: 600;
+        color: #6d63f0; pointer-events: none; z-index: 2;
+        animation: thinking-pulse 1.4s ease-in-out infinite;
+      }
+      .bar.thinking .thinking-label { display: flex; }
+      .bar.thinking textarea { visibility: hidden; }
+      .bar.thinking .sparkle { animation: thinking-pulse 1.4s ease-in-out infinite; }
       .bar-actions {
         position: absolute; top: 6px; right: 6px; display: flex; gap: 0.5rem; z-index: 3;
       }
@@ -194,7 +211,7 @@
       :host(.dark) .bar textarea { color: #e7e9ee; }
       :host(.dark) .bar textarea::placeholder { color: #6b7280; }
       :host(.dark) .send-btn:disabled { background: #3a3f4b; color: #6b7280; }
-      :host(.dark) .sparkle { color: #8b85f5; }
+      :host(.dark) .sparkle, :host(.dark) .thinking-label { color: #8b85f5; }
       :host(.dark) .send-btn { background: #6366f1; }
       :host(.dark) .status-line {
         background: #1b1e26; color: #e7e9ee; border-color: #2e323c;
@@ -211,6 +228,7 @@
       <div class="bar">
         <svg class="sparkle" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 12.4 8 17 9.3l-4.6 1.4L11 15.3 9.6 10.7 5 9.3l4.6-1.3z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg>
         <textarea rows="1" placeholder="วันนี้ให้ผมช่วยอะไรไหมครับ..."></textarea>
+        <span class="thinking-label" aria-live="polite">Thinking…</span>
         <div class="bar-actions">
           <button class="send-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12 20 4.5 15 20l-3.6-6.4L4.5 12Z"/></svg>Send</button>
           <button class="stop-btn" hidden>Stop</button>
@@ -325,6 +343,7 @@
     input.disabled = running;
     sendBtn.disabled = running;
     stopBtn.hidden = !running;
+    bar.classList.toggle("thinking", running);
   }
 
   const SINGLE_LINE_HEIGHT = 48;

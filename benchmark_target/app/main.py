@@ -35,7 +35,20 @@ app.add_middleware(
     session_cookie="hermes_hrm_session",
 )
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+class _RevalidatedStaticFiles(StaticFiles):
+    """StaticFiles ส่งแค่ ETag/Last-Modified ไม่มี Cache-Control — browser จึงใช้ heuristic
+    freshness (~10% ของอายุไฟล์นับจาก Last-Modified) แล้วเสิร์ฟ ai-bar.js/style.css เก่าจาก
+    cache ต่อหลายชั่วโมงโดยไม่ถาม server เลย (เจอจริง: แก้ ai-bar.js แล้วหน้าเว็บยังรันเวอร์ชัน
+    เดิม แม้ server เสิร์ฟไฟล์ใหม่แล้ว) — no-cache บังคับให้ revalidate ทุกครั้ง ถ้าไฟล์ไม่
+    เปลี่ยนก็ได้ 304 เปล่าๆ ถูกกว่าการใส่ ?v= ในทุก template"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _RevalidatedStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 app.include_router(dashboard.router)
 app.include_router(auth.router)
