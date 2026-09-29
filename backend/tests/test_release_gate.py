@@ -1,5 +1,4 @@
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -161,10 +160,6 @@ def test_load_latest_summary_skips_unreadable_json_files(tmp_path):
 
 
 # --- compare_against_baseline() ---
-
-
-def _summary_with(**aggregate) -> dict:
-    return {"aggregate": aggregate}
 
 
 def test_compare_against_baseline_flags_success_rate_drop_as_failure():

@@ -462,7 +462,7 @@ def _run_agent_real_browser_inline():
     print(f"URL: {url}", flush=True)
     print(f"Provider: {provider or settings.llm_provider}", flush=True)
     print(
-        f"Domain ที่จะถูกจำกัด (allowed_domains): auto-derive จาก URL ด้านบน — agent "
+        "Domain ที่จะถูกจำกัด (allowed_domains): auto-derive จาก URL ด้านบน — agent "
         "จะไปโดเมนอื่นไม่ได้เลยแม้ session จะ login ค้างอยู่ก็ตาม",
         flush=True,
     )
@@ -871,7 +871,7 @@ def run_vision_fallback_demo():
             elements, _ = await get_snapshot(page)
             target = next((e for e in elements if "backpack" in e["label"].lower()), elements[0])
             print(f"[perceive] target element: {target}", flush=True)
-            print(f"           *** ต้องเห็น '[ถูกบังอยู่]' ต่อท้าย label ถ้า overlay detection ทำงาน ***\n", flush=True)
+            print("           *** ต้องเห็น '[ถูกบังอยู่]' ต่อท้าย label ถ้า overlay detection ทำงาน ***\n", flush=True)
 
             result = await execute(page, {"type": "click", "index": target["index"]})
             print(f"[act] click({target['index']}) -> {result}\n", flush=True)
@@ -1526,7 +1526,7 @@ def run_release_gate_cmd():
                 flush=True,
             )
 
-        print(f"\n=== metric ประกอบ (ไม่ตัดสิน pass/fail) — รอบสุดท้าย ===", flush=True)
+        print("\n=== metric ประกอบ (ไม่ตัดสิน pass/fail) — รอบสุดท้าย ===", flush=True)
         for metric, value in last["aggregate"].items():
             if metric == "success_rate":
                 continue
@@ -1538,7 +1538,7 @@ def run_release_gate_cmd():
         )
 
         if outcome["task_diffs"]:
-            print(f"\n=== ต่างจาก baseline ราย task ===", flush=True)
+            print("\n=== ต่างจาก baseline ราย task ===", flush=True)
             for diff in outcome["task_diffs"]:
                 moves = ", ".join(
                     f"{field} {was}->{now}"
@@ -1552,14 +1552,14 @@ def run_release_gate_cmd():
                 print(f"  {diff['name']:<20} {flip}{gap}{moves}", flush=True)
 
         print(
-            f"\nกฎการสอบสวน: regression ต้องล้มอย่างน้อย 2 ใน 3 รอบบน commit เดียวกัน "
+            "\nกฎการสอบสวน: regression ต้องล้มอย่างน้อย 2 ใน 3 รอบบน commit เดียวกัน "
             "ก่อนเริ่ม debug — ตัวที่ขึ้น FLAKY ด้านบนคือ noise ห้ามใช้ตัดสิน commit",
             flush=True,
         )
         if outcome["passed"]:
-            print(f"\n=== ผ่าน release gate (median) ===", flush=True)
+            print("\n=== ผ่าน release gate (median) ===", flush=True)
         else:
-            print(f"\n=== ไม่ผ่าน release gate — median ของ success_rate ตกเกินเกณฑ์ ===", flush=True)
+            print("\n=== ไม่ผ่าน release gate — median ของ success_rate ตกเกินเกณฑ์ ===", flush=True)
         return outcome["passed"]
 
     passed = asyncio.run(_run())

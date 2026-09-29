@@ -100,3 +100,5 @@ CLAUDE.md
 *.swp
 .DS_Store
 Thumbs.db
+# ---- ไฟล์ lock ที่ Office สร้างตอนเปิดเอกสาร (เคยหลุดขึ้น repo: ~$AI_Browser_Agent_Gantt_14weeks.xlsx) ----
+~$*
