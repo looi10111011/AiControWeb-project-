@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from benchmark_target.app.config import TEMPLATES_DIR
 from benchmark_target.app.db import get_conn, log_audit
 from benchmark_target.app.deps import can, get_current_user
+from benchmark_target.app.seed import DEPARTMENTS
 
 router = APIRouter(prefix="/recruitment")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -25,21 +26,146 @@ def _guard(request: Request, action: str = "read"):
     return user, None
 
 
+def _trend(now: int, past: int) -> dict:
+    """Same shape/reasoning as leave.py's/pim.py's _trend(): a real now-vs-30-days-ago delta,
+    never a fabricated one. `past` here is "created 30+ days ago and currently in status X" —
+    vacancies/candidates have no column timestamping when a status itself last changed (only
+    created_at), the same honest proxy leave.py uses for lr.status via lr.created_at."""
+    if past == 0:
+        return {"pct": 100, "direction": "up"} if now > 0 else {"pct": 0, "direction": "flat"}
+    pct = round((now - past) / past * 100)
+    direction = "up" if pct > 0 else "down" if pct < 0 else "flat"
+    return {"pct": abs(pct), "direction": direction}
+
+
 @router.get("/vacancies")
-def list_vacancies(request: Request):
+def list_vacancies(request: Request, q: str = "", department: str = "", status: str = ""):
     user, err = _guard(request)
     if err:
         return err
 
+    where = ["1=1"]
+    params: list = []
+    if q:
+        where.append("(v.title LIKE ? OR v.department LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like])
+    if department:
+        where.append("v.department = ?")
+        params.append(department)
+    if status:
+        where.append("v.status = ?")
+        params.append(status)
+    where_sql = " AND ".join(where)
+
     with get_conn() as conn:
-        vacancies = conn.execute(
-            """SELECT v.*, (SELECT COUNT(*) FROM candidates c WHERE c.vacancy_id = v.id) AS candidate_count
-               FROM vacancies v ORDER BY v.status, v.title"""
+        vacancy_rows = conn.execute(
+            f"""SELECT v.*, (SELECT COUNT(*) FROM candidates c WHERE c.vacancy_id = v.id) AS candidate_count
+                FROM vacancies v WHERE {where_sql} ORDER BY v.status, v.title""",
+            params,
         ).fetchall()
+
+        # Candidates column shows an avatar-stack, not just a count — fetch the first few
+        # candidates per listed vacancy in one grouped query (cheap: this dataset is tiny)
+        # instead of a per-row N+1 query, then group them in Python by vacancy_id.
+        vacancy_ids = [v["id"] for v in vacancy_rows]
+        candidates_by_vacancy: dict[int, list] = {}
+        if vacancy_ids:
+            placeholders = ",".join("?" * len(vacancy_ids))
+            for c in conn.execute(
+                f"""SELECT id, vacancy_id, first_name, last_name FROM candidates
+                    WHERE vacancy_id IN ({placeholders}) ORDER BY vacancy_id, created_at""",
+                vacancy_ids,
+            ).fetchall():
+                candidates_by_vacancy.setdefault(c["vacancy_id"], []).append(
+                    dict(c, initial=c["first_name"][:1].upper())
+                )
+        vacancies = [
+            dict(v, candidates=candidates_by_vacancy.get(v["id"], [])[:3])
+            for v in vacancy_rows
+        ]
+
+        # Stat row: real counts only, independent of the q/department/status filters above —
+        # a summary of the whole board, not of the current filtered result (same convention
+        # as leave.py's stat row). `_count`/`_sparkline` are parameterized by table name since
+        # vacancies and candidates are two different tables with no shared scope/join, unlike
+        # leave.py's employee-scoped equivalents.
+        def _count(table: str, extra_sql: str = "", extra_params: tuple = ()) -> int:
+            return conn.execute(
+                f"SELECT COUNT(*) c FROM {table} WHERE 1=1 {extra_sql}", extra_params
+            ).fetchone()["c"]
+
+        def _sparkline(table: str, extra_sql: str = "", extra_params: tuple = (), days: int = 7) -> list[int]:
+            start = date.today() - timedelta(days=days - 1)
+            found = {
+                r["d"]: r["c"]
+                for r in conn.execute(
+                    f"""SELECT substr(created_at, 1, 10) d, COUNT(*) c FROM {table}
+                        WHERE 1=1 {extra_sql} AND created_at >= ?
+                        GROUP BY d""",
+                    [*extra_params, start.isoformat()],
+                ).fetchall()
+            }
+            return [found.get((start + timedelta(days=i)).isoformat(), 0) for i in range(days)]
+
+        thirty_days_ago = (date.today() - timedelta(days=30)).isoformat()
+
+        stat_total_now = _count("vacancies")
+        stat_total_past = _count("vacancies", "AND created_at <= ?", (thirty_days_ago,))
+        stat_open_now = _count("vacancies", "AND status = 'open'")
+        stat_open_past = _count("vacancies", "AND status = 'open' AND created_at <= ?", (thirty_days_ago,))
+        stat_closed_now = _count("vacancies", "AND status = 'closed'")
+        stat_closed_past = _count("vacancies", "AND status = 'closed' AND created_at <= ?", (thirty_days_ago,))
+        stat_candidates_now = _count("candidates")
+        stat_candidates_past = _count("candidates", "AND created_at <= ?", (thirty_days_ago,))
+
+        stat_total = {
+            "value": stat_total_now, "spark": _sparkline("vacancies"),
+            **_trend(stat_total_now, stat_total_past),
+        }
+        stat_open = {
+            "value": stat_open_now, "spark": _sparkline("vacancies", "AND status = 'open'"),
+            **_trend(stat_open_now, stat_open_past),
+        }
+        stat_closed = {
+            "value": stat_closed_now, "spark": _sparkline("vacancies", "AND status = 'closed'"),
+            **_trend(stat_closed_now, stat_closed_past),
+        }
+        stat_candidates = {
+            "value": stat_candidates_now, "spark": _sparkline("candidates"),
+            **_trend(stat_candidates_now, stat_candidates_past),
+        }
+
+        # Hiring Funnel sidebar widget: identical query/shape to dashboard.py's "Hiring
+        # Pipeline" panel — org-wide candidate counts by stage, not scoped to one vacancy.
+        # Duplicated rather than imported since this file's edit scope is recruitment.py only.
+        pipeline_counts = {
+            row["status"]: row["c"]
+            for row in conn.execute("SELECT status, COUNT(*) c FROM candidates GROUP BY status").fetchall()
+        }
+        hiring_funnel = [
+            {"label": "Applied", "count": pipeline_counts.get("applied", 0)},
+            {"label": "Shortlisted", "count": pipeline_counts.get("shortlisted", 0)},
+            {"label": "Interview", "count": pipeline_counts.get("interview", 0)},
+            {"label": "Hired", "count": pipeline_counts.get("hired", 0)},
+        ]
 
     return templates.TemplateResponse(
         request, "recruitment_vacancies.html",
-        {"user": user, "vacancies": vacancies, "can_manage": can(user["role"], "recruitment", "manage")},
+        {
+            "user": user,
+            "vacancies": vacancies,
+            "q": q,
+            "department": department,
+            "status": status,
+            "departments": DEPARTMENTS,
+            "can_manage": can(user["role"], "recruitment", "manage"),
+            "stat_total": stat_total,
+            "stat_open": stat_open,
+            "stat_closed": stat_closed,
+            "stat_candidates": stat_candidates,
+            "hiring_funnel": hiring_funnel,
+        },
     )
 
 

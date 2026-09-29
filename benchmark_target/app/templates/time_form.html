@@ -1,7 +1,21 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Timesheet — Hermes HRM{% endblock %}
 {% block content %}
-<h1>{% if editing_id %}Edit Timesheet{% else %}New Timesheet{% endif %}</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('clock', 22) }}</span>
+    <div>
+      <h1>{% if editing_id %}Edit Timesheet{% else %}New Timesheet{% endif %}</h1>
+      <p class="page-sub">{% if editing_id %}Update hours for the week of {{ week_start_date }}.{% else %}Log hours for a new week.{% endif %}</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/time/timesheets">Time</a>{{ icon('chevron-right', 14) }}<span>{% if editing_id %}Edit{% else %}New{% endif %}</span>
+    </nav>
+  </div>
+</div>
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
 <form method="post" action="{% if editing_id %}/time/timesheets/{{ editing_id }}/edit{% else %}/time/timesheets/new{% endif %}">

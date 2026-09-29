@@ -1,9 +1,24 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{% if employee %}Edit Employee{% else %}Add Employee{% endif %} — Hermes HRM{% endblock %}
 {% block content %}
-<h1>{% if employee %}Edit Employee{% else %}Add Employee{% endif %}</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('user-circle' if employee else 'plus', 22) }}</span>
+    <div>
+      <h1>{% if employee %}Edit Employee{% else %}Add Employee{% endif %}</h1>
+      <p class="page-sub">{% if employee %}Update {{ employee.first_name }} {{ employee.last_name }}'s record.{% else %}Create a new employee record.{% endif %}</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/pim/employees">Employees</a>{{ icon('chevron-right', 14) }}<span>{% if employee %}Edit{% else %}New{% endif %}</span>
+    </nav>
+  </div>
+</div>
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
+<div class="panel">
 <form method="post"
       action="{% if employee %}/pim/employees/{{ employee.id }}/edit{% else %}/pim/employees/new{% endif %}"
       class="employee-form">
@@ -54,6 +69,7 @@
        href="{% if employee %}/pim/employees/{{ employee.id }}{% else %}/pim/employees{% endif %}">Cancel</a>
   </div>
 </form>
+</div>
 
 <script>
   // Dirty-form guard (spec 7: "Discard changes?" on leaving a dirty form). Native

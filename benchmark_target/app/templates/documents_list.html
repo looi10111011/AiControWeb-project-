@@ -1,7 +1,21 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Documents — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Documents — {{ employee.first_name }} {{ employee.last_name }}</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('file', 22) }}</span>
+    <div>
+      <h1>Documents</h1>
+      <p class="page-sub">Files on record for {{ employee.first_name }} {{ employee.last_name }}.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/pim/employees/{{ employee.id }}">{{ employee.first_name }} {{ employee.last_name }}</a>{{ icon('chevron-right', 14) }}<span>Documents</span>
+    </nav>
+  </div>
+</div>
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
 {% if documents|length == 0 %}
@@ -12,17 +26,19 @@
   <tbody>
     {% for d in documents %}
     <tr>
-      <td>{{ d.filename }}</td>
+      <td>{{ icon('file', 16) }} {{ d.filename }}</td>
       <td>{{ (d.size_bytes / 1024) | round(1) }} KB</td>
       <td>{{ d.uploaded_at }}</td>
       <td>
-        <a href="/documents/{{ d.id }}/download">Download</a>
-        {% if can_manage %}
-        <form method="post" action="/documents/{{ d.id }}/delete" class="inline-form"
-              onsubmit="return confirm('Delete {{ d.filename }}?');">
-          <button type="submit" class="btn btn-small btn-danger">Delete</button>
-        </form>
-        {% endif %}
+        <div class="row-actions">
+          <a class="btn btn-small" href="/documents/{{ d.id }}/download">Download</a>
+          {% if can_manage %}
+          <form method="post" action="/documents/{{ d.id }}/delete" class="inline-form"
+                onsubmit="return confirm('Delete {{ d.filename }}?');">
+            <button type="submit" class="btn btn-small btn-danger">Delete</button>
+          </form>
+          {% endif %}
+        </div>
       </td>
     </tr>
     {% endfor %}

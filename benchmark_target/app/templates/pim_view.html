@@ -1,24 +1,36 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ employee.first_name }} {{ employee.last_name }} — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
-  <div class="actions">
-    {% if can_edit %}<a class="btn" href="/pim/employees/{{ employee.id }}/edit">Edit</a>{% endif %}
-    <a class="btn" href="/documents/employees/{{ employee.id }}">Documents</a>
-    {% if can_deactivate %}
-      {% if employee.status == 'active' %}
-      <form method="post" action="/pim/employees/{{ employee.id }}/deactivate" style="display:inline"
-            onsubmit="return confirm('Deactivate {{ employee.first_name }} {{ employee.last_name }}? This can be reversed later.');">
-        <input type="hidden" name="confirm" value="yes">
-        <button type="submit" class="btn btn-danger">Deactivate</button>
-      </form>
-      {% else %}
-      <form method="post" action="/pim/employees/{{ employee.id }}/activate" style="display:inline">
-        <button type="submit" class="btn">Reactivate</button>
-      </form>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('user-circle', 22) }}</span>
+    <div>
+      <h1>{{ employee.first_name }} {{ employee.last_name }}</h1>
+      <p class="page-sub">{{ employee.job_title }} &middot; {{ employee.department }}</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/pim/employees">Employees</a>{{ icon('chevron-right', 14) }}<span>{{ employee.first_name }} {{ employee.last_name }}</span>
+    </nav>
+    <div class="actions">
+      {% if can_edit %}<a class="btn" href="/pim/employees/{{ employee.id }}/edit">{{ icon('gear', 16) }}Edit</a>{% endif %}
+      <a class="btn" href="/documents/employees/{{ employee.id }}">{{ icon('file', 16) }}Documents</a>
+      {% if can_deactivate %}
+        {% if employee.status == 'active' %}
+        <form method="post" action="/pim/employees/{{ employee.id }}/deactivate" style="display:inline"
+              onsubmit="return confirm('Deactivate {{ employee.first_name }} {{ employee.last_name }}? This can be reversed later.');">
+          <input type="hidden" name="confirm" value="yes">
+          <button type="submit" class="btn btn-danger">Deactivate</button>
+        </form>
+        {% else %}
+        <form method="post" action="/pim/employees/{{ employee.id }}/activate" style="display:inline">
+          <button type="submit" class="btn">Reactivate</button>
+        </form>
+        {% endif %}
       {% endif %}
-    {% endif %}
+    </div>
   </div>
 </div>
 
@@ -27,7 +39,7 @@
     <dt>Employee Code</dt><dd>{{ employee.employee_code }}</dd>
     <dt>Department</dt><dd>{{ employee.department }}</dd>
     <dt>Job Title</dt><dd>{{ employee.job_title }}</dd>
-    <dt>Status</dt><dd><span class="status-badge status-{{ employee.status }}">{{ employee.status }}</span></dd>
+    <dt>Status</dt><dd><span class="status-dot-badge status-{{ employee.status }}"><span class="dot"></span>{{ employee.status|capitalize }}</span></dd>
     <dt>Hire Date</dt><dd>{{ employee.hire_date }}</dd>
     <dt>Supervisor</dt>
     <dd>{% if supervisor %}<a href="/pim/employees/{{ supervisor.id }}">{{ supervisor.first_name }} {{ supervisor.last_name }}</a>{% else %}—{% endif %}</dd>

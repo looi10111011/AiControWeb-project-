@@ -1,0 +1,13 @@
+{# Shared tiny chart helpers for stat-card headers across list pages (PIM, Leave, Admin
+   Users, Recruitment, Performance, Reports, ...). Keep this the ONE place a sparkline is
+   drawn so every stat card looks and scales the same way — don't redefine it per template.
+   `values` must be a real, router-computed list (e.g. daily counts over the last 7 days);
+   never fabricate a trend line for a metric with no real time-series behind it. #}
+{% macro sparkline(values, color) %}
+{% set maxv = values|max %}
+{% set denom = maxv if maxv > 0 else 1 %}
+{% set n = values|length %}
+<svg class="sparkline" viewBox="0 0 64 24" preserveAspectRatio="none" aria-hidden="true">
+  <polyline fill="none" stroke="{{ color }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="{% for v in values %}{{ (loop.index0 / (n - 1) * 64) | round(1) }},{{ (22 - (v / denom * 18)) | round(1) }}{% if not loop.last %} {% endif %}{% endfor %}" />
+</svg>
+{% endmacro %}

@@ -5738,6 +5738,31 @@
            สำหรับ layout เต็มของ `benchmark_target/`
 
 
+  [x] W_gate_local_hrm ("release gate ยังวัดบนเดโมสาธารณะที่คนอื่นแก้ข้อมูลร่วมกัน")
+           แทน suite OrangeHRM สาธารณะใน release gate ด้วย benchmark_target (HRM ในเครื่อง) 6 task:
+           PIM-EDIT-VERIFY-01, PIM-CREATE-EMPLOYEE, PIM-DEACTIVATE-EMPLOYEE, ADMIN-CREATE-USER-ACCOUNT,
+           LEAVE-APPLY-01, RECRUITMENT-SHORTLIST-01 (core/hrm_local_eval.py) — ทุก attempt reset fixture
+           ก่อนเริ่ม และ **success ตัดสินจากสถานะใน DB ไม่ใช่จาก finish_task ของ agent**
+           เลือกเฉพาะ task ที่แก้ข้อมูลจริง ห้ามใช้ PIM-SEARCH-* (read-only, verifier จริงเสมอ) —
+           เทสต์ test_no_task_passes_when_agent_does_nothing รัน stub agent ที่ไม่ทำอะไรแล้วยืนยันว่า
+           ทั้ง 6 ต้อง fail กันไม่ให้ใครเอา task แบบนั้นเข้ามาโดยไม่รู้ตัว
+           รายละเอียดที่ต้องรู้: (1) Control Plane รันในโปรเซสเดียวกันผ่าน TestClient ไม่ต้องเปิด :8101
+           แต่ Target Surface (:8100) ต้องเปิดจริง — เปิดให้เองถ้ายังไม่มีใครรัน (2) SSRF guard บล็อก
+           localhost เป็นค่าเริ่มต้น — รอบแรกเปิด settings.allow_internal_navigation (global) ระหว่างรัน
+           ซึ่ง scrutinize ชี้ว่าทุก task ใน process เดียวกันจะเข้า localhost/LAN ได้ด้วย แก้เป็น ContextVar
+           (rules.allow_internal_navigation_here) มีผลเฉพาะ thread ของ suite และ Playwright ที่ start
+           ภายในนั้น — ยืนยันด้วย Chromium จริง: ใน scope เข้า localhost:8100 ได้ ส่วน goto พร้อมกันนอก
+           scope ถูกบล็อก และเทสต์ concurrency fail ถ้าย้อนกลับไปใช้ค่า global (ทดลองแล้ว)
+           ขอบเขตของ agent คุมอีกชั้นด้วย allowed_domains={"localhost"} (3) baseline กรองตาม
+           ชุด suite ด้วย (field "suites" ใน summary; ไฟล์เก่าที่ไม่มี = ชุดเดิม 3 ตัว) — รันแรกหลังสลับ
+           จึงไม่มี baseline ให้เทียบ ซึ่งถูกต้อง ไม่ใช่บั๊ก (4) OrangeHRM สาธารณะยังใช้ได้ผ่าน
+           `run.py orangehrm` หรือ include_orangehrm=True แต่ปิดเป็นค่าเริ่มต้น
+           **ระหว่างทำ:** รันเทสต์ชุดเก่าที่ยังไม่ patch suite ใหม่ ทำให้ gate เรียก Orchestrator จริงกับ
+           provider ที่ key ใช้ไม่ได้ (steps=0) และเขียน 24+48 แถวลง data/token_usage.jsonl และ
+           step_trace.jsonl จริง — ลบออกแล้ว (task_id gate-*-<6 id นี้ หลัง 2026-09-24) บทเรียนเดิมของ
+           repo: เทสต์ที่ไม่ patch suite ใหม่จะยิงของจริงเงียบๆ
+           ยังไม่ได้ทำ: รันจริงกับ LLM (ต้องใช้โควตา) และ http_redirect/download_artifact verifier ยังเป็น stub
+
 ----------------------------------------------------------------
   แบ่งบทบาท (ปรับตามความถนัดได้)
 ----------------------------------------------------------------

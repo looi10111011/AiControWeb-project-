@@ -2084,7 +2084,10 @@ function renderHistory() {
     }
     // 🔥 ตรวจสอบ status จาก task จริง + result
     let status = (latest.status || "running").toLowerCase();
-    if (status === "running" && latest.result) {
+    // task.status บอกแค่ว่า lifecycle จบแล้ว ("done" = รันจบไม่ crash) ไม่ได้บอกว่างานสำเร็จ —
+    // agent ที่ finish_task(success=false) ก็ได้ status "done" เหมือนกัน badge จึงต้องดู
+    // result.success ด้วย ไม่งั้น session ที่ล้มเหลว (bubble แดง) ขึ้น DONE สีเขียวใน sidebar
+    if ((status === "running" || status === "done") && latest.result) {
       status = latest.result.success ? "done" : "error";
     }
     const needsApproval = !!pendingApprovals[latest.task_id];

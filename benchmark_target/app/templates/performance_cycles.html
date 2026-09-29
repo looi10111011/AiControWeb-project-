@@ -1,25 +1,121 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_ui.html" import feature_strip %}
 {% block title %}Review Cycles — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Review Cycles</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('chart-bar', 22) }}</span>
+    <div>
+      <h1>Review Cycles</h1>
+      <p class="page-sub">Open and close performance review cycles for the organization.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/performance/reviews">Performance</a>{{ icon('chevron-right', 14) }}<span>Review Cycles</span>
+    </nav>
+    {# No "Create Cycle" button here: performance.py has no create-cycle route/form to
+       point it at yet, and the HARD RULES for this page say not to invent one. #}
+  </div>
+</div>
+
+<div class="card-row">
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('chart-bar', 20) }}</span>
+    <div class="stat-value">{{ stat_total }}</div>
+    <div class="stat-label">Total Cycles</div>
+    <span class="trend-pill trend-flat">— <span class="trend-sub">All time</span></span>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-green">{{ icon('check-circle', 20) }}</span>
+    <div class="stat-value">{{ stat_open }}</div>
+    <div class="stat-label">Open Cycles</div>
+    <span class="trend-pill trend-flat">— <span class="trend-sub">Current status</span></span>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-amber">{{ icon('clock', 20) }}</span>
+    <div class="stat-value">{{ stat_in_progress }}</div>
+    <div class="stat-label">In Progress</div>
+    <span class="trend-pill trend-flat">— <span class="trend-sub">Current status</span></span>
+  </div>
+  <div class="stat-card stat-card-icon">
+    <span class="stat-icon-chip chip-pink">{{ icon('star', 20) }}</span>
+    <div class="stat-value">{{ stat_completed }}</div>
+    <div class="stat-label">Completed</div>
+    <span class="trend-pill trend-flat">— <span class="trend-sub">Current status</span></span>
+  </div>
+</div>
+
+<form method="get" action="/performance/cycles" class="filter-bar">
+  <div class="search-input">
+    {{ icon('search', 17) }}
+    <input type="text" name="q" placeholder="Search by cycle name..." value="{{ q }}">
+  </div>
+  <select name="status">
+    <option value="">All statuses</option>
+    <option value="open" {% if status == 'open' %}selected{% endif %}>Open</option>
+    <option value="closed" {% if status == 'closed' %}selected{% endif %}>Closed</option>
+  </select>
+  <a class="btn" href="/performance/cycles">{{ icon('refresh', 16) }}Reset</a>
+  <button type="submit" class="btn btn-primary">{{ icon('search', 16) }}Filter</button>
+</form>
+
+{% macro page_link(p) %}/performance/cycles?q={{ q }}&status={{ status }}&page={{ p }}{% endmacro %}
+
+{% if cycles|length == 0 %}
+<p class="empty-state">No review cycles match this search/filter.</p>
+{% else %}
 <table class="data-table">
-  <thead><tr><th>Cycle</th><th>Status</th><th>Finalized</th><th></th></tr></thead>
+  <thead><tr><th>Cycle</th><th>Status</th><th>Finalized</th><th>Actions</th></tr></thead>
   <tbody>
     {% for c in cycles %}
     <tr>
       <td>{{ c.name }}</td>
-      <td><span class="status-badge status-{{ 'active' if c.status == 'open' else 'terminated' }}">{{ c.status }}</span></td>
-      <td>{{ c.finalized }} / {{ c.total }}</td>
+      <td><span class="status-dot-badge status-{{ c.status }}"><span class="dot"></span>{{ c.status|capitalize }}</span></td>
+      <td>
+        <div>{{ c.finalized }} / {{ c.total }}</div>
+        {% if c.total > 0 %}
+        <div class="balance-bar"><div class="balance-bar-fill" style="width: {{ (c.finalized / c.total * 100) }}%;"></div></div>
+        {% endif %}
+      </td>
       <td>
         {% if c.status == 'open' %}
-        <form method="post" action="/performance/cycles/{{ c.id }}/close" class="inline-form"
-              onsubmit="return confirm('Close this review cycle? No further self/manager reviews can be submitted.');">
-          <button type="submit" class="btn btn-danger btn-small">Close Cycle</button>
-        </form>
+        <div class="row-actions">
+          <form method="post" action="/performance/cycles/{{ c.id }}/close" class="inline-form"
+                onsubmit="return confirm('Close this review cycle? No further self/manager reviews can be submitted.');">
+            <button type="submit" class="btn btn-danger btn-small">Close Cycle</button>
+          </form>
+        </div>
         {% endif %}
       </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+
+<div class="pagination pagination-rich">
+  <span class="page-info">Showing {{ showing_from }} to {{ showing_to }} of {{ total }} cycles</span>
+  <div class="page-nav">
+    {% if page > 1 %}<a class="page-btn" href="{{ page_link(page - 1) }}" aria-label="Previous page">{{ icon('chevron-left', 15) }}</a>{% else %}<span class="page-btn disabled" aria-hidden="true">{{ icon('chevron-left', 15) }}</span>{% endif %}
+    {% if total_pages <= 12 %}
+      {% for p in range(1, total_pages + 1) %}
+      <a class="page-btn {% if p == page %}active{% endif %}" href="{{ page_link(p) }}">{{ p }}</a>
+      {% endfor %}
+    {% else %}
+      <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% endif %}
+    {% if page < total_pages %}<a class="page-btn" href="{{ page_link(page + 1) }}" aria-label="Next page">{{ icon('chevron-right', 15) }}</a>{% else %}<span class="page-btn disabled" aria-hidden="true">{{ icon('chevron-right', 15) }}</span>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>About Review Cycles</h2>
+  {{ feature_strip([
+    {'icon': 'user-circle', 'chip': 'chip-indigo', 'title': 'Assign Reviewers', 'sub': 'Each employee in an open cycle gets a self-review and a manager-review step to complete before the cycle can close.'},
+    {'icon': 'calendar', 'chip': 'chip-green', 'title': 'Track Progress', 'sub': 'Follow every review as it moves from self-pending to manager-pending to finalized, right from this page.'},
+    {'icon': 'chart-bar', 'chip': 'chip-amber', 'title': 'Generate Reports', 'sub': 'Finalized ratings and comments capture how the organization performed across the cycle.'}
+  ]) }}
+</div>
 {% endblock %}

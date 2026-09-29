@@ -1,8 +1,23 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Review — Hermes HRM{% endblock %}
 {% block content %}
-<h1>{{ review.first_name }} {{ review.last_name }} — {{ review.cycle_name }}</h1>
-<p><span class="status-badge status-{{ 'active' if review.status == 'finalized' else '' }}">{{ review.status }}</span></p>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('star', 22) }}</span>
+    <div>
+      <h1>{{ review.first_name }} {{ review.last_name }} — {{ review.cycle_name }}</h1>
+      <p class="page-sub">Self and manager review details for this cycle.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/performance/reviews">Performance</a>{{ icon('chevron-right', 14) }}<span>Review</span>
+    </nav>
+  </div>
+</div>
+
+<p><span class="status-dot-badge status-{{ review.status }}"><span class="dot"></span>{{ review.status.replace('_', ' ')|title }}</span></p>
 
 <div class="panel">
   <h2>Self Review</h2>

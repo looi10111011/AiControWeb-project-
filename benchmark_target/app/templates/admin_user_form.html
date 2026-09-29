@@ -1,7 +1,21 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Add User — Hermes HRM{% endblock %}
 {% block content %}
-<h1>Add User</h1>
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('plus', 22) }}</span>
+    <div>
+      <h1>Add User</h1>
+      <p class="page-sub">Create a new system account and assign it a role.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/admin/users">Admin (Users)</a>{{ icon('chevron-right', 14) }}<span>New</span>
+    </nav>
+  </div>
+</div>
 {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
 
 <form method="post" action="/admin/users/new">

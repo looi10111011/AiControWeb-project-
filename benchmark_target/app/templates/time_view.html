@@ -1,28 +1,40 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
 {% block title %}Timesheet — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>{{ timesheet.first_name }} {{ timesheet.last_name }} — Week of {{ timesheet.week_start_date }}</h1>
-  <div class="actions">
-    {% if can_edit %}<a class="btn" href="/time/timesheets/{{ timesheet.id }}/edit">Edit</a>{% endif %}
-    {% if can_submit %}
-    <form method="post" action="/time/timesheets/{{ timesheet.id }}/submit" style="display:inline">
-      <button type="submit" class="btn btn-primary">Submit</button>
-    </form>
-    {% endif %}
-    {% if can_approve %}
-    <form method="post" action="/time/timesheets/{{ timesheet.id }}/approve" style="display:inline">
-      <button type="submit" class="btn btn-primary">Approve</button>
-    </form>
-    <form method="post" action="/time/timesheets/{{ timesheet.id }}/reject" style="display:inline">
-      <button type="submit" class="btn btn-danger">Reject</button>
-    </form>
-    {% endif %}
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('clock', 22) }}</span>
+    <div>
+      <h1>{{ timesheet.first_name }} {{ timesheet.last_name }} — Week of {{ timesheet.week_start_date }}</h1>
+      <p class="page-sub">
+        <span class="status-dot-badge status-{{ timesheet.status }}"><span class="dot"></span>{{ timesheet.status|capitalize }}</span>
+        {% if timesheet.status == 'approved' %} — locked, no further edits allowed{% endif %}
+      </p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<a href="/time/timesheets">Time</a>{{ icon('chevron-right', 14) }}<span>Week of {{ timesheet.week_start_date }}</span>
+    </nav>
+    <div class="actions">
+      {% if can_edit %}<a class="btn" href="/time/timesheets/{{ timesheet.id }}/edit">Edit</a>{% endif %}
+      {% if can_submit %}
+      <form method="post" action="/time/timesheets/{{ timesheet.id }}/submit" style="display:inline">
+        <button type="submit" class="btn btn-primary">Submit</button>
+      </form>
+      {% endif %}
+      {% if can_approve %}
+      <form method="post" action="/time/timesheets/{{ timesheet.id }}/approve" style="display:inline">
+        <button type="submit" class="btn btn-primary">Approve</button>
+      </form>
+      <form method="post" action="/time/timesheets/{{ timesheet.id }}/reject" style="display:inline">
+        <button type="submit" class="btn btn-danger">Reject</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 </div>
-
-<p><span class="status-badge status-{{ 'active' if timesheet.status == 'approved' else 'terminated' if timesheet.status == 'rejected' else '' }}">{{ timesheet.status }}</span>
-{% if timesheet.status == 'approved' %} — locked, no further edits allowed{% endif %}</p>
 
 <table class="data-table">
   <thead><tr><th>Date</th><th>Project</th><th>Hours</th></tr></thead>

@@ -4,33 +4,71 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Hermes HRM{% endblock %}</title>
+  {# Dark mode is read before paint, on EVERY page including /login (no topbar toggle
+     there, but it must still render in whatever theme the user already picked) — unlike
+     the sidebar-collapsed check below, which only matters once the sidebar exists. Falls
+     back to the OS theme only when the user has never chosen one explicitly. #}
+  <script>
+  (function () {
+    try {
+      var pref = localStorage.getItem('hermesDarkMode');
+      var dark = pref === '1' || (pref === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (dark) document.documentElement.classList.add('dark');
+    } catch (e) {}
+  })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 {% if user %}
+{% from "_icons.html" import icon %}
+{% set path = request.url.path %}
+{% macro navlink(href, label, icon_name) %}
+<li><a href="{{ href }}"{% if path == href or path.startswith(href ~ '/') %} class="active" aria-current="page"{% endif %}>{{ icon(icon_name) }}<span class="nav-label">{{ label }}</span></a></li>
+{% endmacro %}
+{# Read before paint so the sidebar never flashes expanded-then-collapsed on load. #}
+<script>if (localStorage.getItem('hermesSidebarCollapsed') === '1') document.documentElement.classList.add('sidebar-collapsed');</script>
 <div class="app-shell">
   <nav class="sidebar" aria-label="Main navigation">
-    <div class="brand">Hermes HRM</div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span class="nav-label">Hermes HRM</span></div>
     <ul>
-      <li><a href="/dashboard">Dashboard</a></li>
-      <li><a href="/pim/employees">PIM (Employees)</a></li>
-      <li><a href="/leave/requests">Leave</a></li>
-      <li><a href="/time/timesheets">Time</a></li>
+      {{ navlink('/dashboard', 'Dashboard', 'home') }}
+      {{ navlink('/pim/employees', 'PIM (Employees)', 'users') }}
+      {{ navlink('/leave/requests', 'Leave', 'calendar') }}
+      {{ navlink('/time/timesheets', 'Time', 'clock') }}
       {% if user.role != 'ess' %}
-      <li><a href="/recruitment/vacancies">Recruitment</a></li>
+      {{ navlink('/recruitment/vacancies', 'Recruitment', 'briefcase') }}
       {% endif %}
-      <li><a href="/performance/reviews">Performance</a></li>
+      {{ navlink('/performance/reviews', 'Performance', 'chart-bar') }}
       {% if user.role == 'admin' %}
-      <li><a href="/reports">Reports</a></li>
-      <li><a href="/performance/cycles">Review Cycles</a></li>
-      <li><a href="/admin/users">Admin (Users)</a></li>
+      {{ navlink('/reports', 'Reports', 'chart-pie') }}
+      {{ navlink('/performance/cycles', 'Review Cycles', 'star') }}
+      {{ navlink('/admin/users', 'Admin (Users)', 'gear') }}
       {% endif %}
     </ul>
   </nav>
   <div class="main">
     <header class="topbar">
-      <span class="who">{{ user.username }} <span class="role-badge">{{ user.role }}</span></span>
-      <a href="/logout" class="logout-link">Logout</a>
+      <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Collapse sidebar" aria-expanded="true">
+        {{ icon('chevron-left') }}
+      </button>
+      <div class="agent-slot" id="hermes-ai-bar-slot"></div>
+      <button type="button" class="icon-btn" id="darkModeToggle" aria-label="Toggle dark mode">
+        <span class="icon-sun">{{ icon('sun', 20) }}</span>
+        <span class="icon-moon">{{ icon('moon', 20) }}</span>
+      </button>
+      <a class="icon-btn" href="/leave/requests" aria-label="Leave requests">{{ icon('bell', 22) }}</a>
+      <details class="user-menu">
+        <summary>
+          <span class="avatar">{{ user.username[0]|upper }}</span>
+          <span class="who-text nav-label"><span class="who-name">{{ user.username }}</span><span class="role-badge">{{ user.role }}</span></span>
+          {{ icon('chevron-down', 16) }}
+        </summary>
+        <div class="user-menu-panel">
+          {% if my_employee %}<a href="/pim/employees/{{ my_employee.id }}">{{ icon('user-circle') }}My profile</a>{% endif %}
+          <a href="/logout">{{ icon('logout') }}Logout</a>
+        </div>
+      </details>
     </header>
     <main class="content">
       {% block content %}{% endblock %}
@@ -39,6 +77,22 @@
 </div>
 <script src="/static/page-bridge.js"></script>
 <script src="/static/ai-bar.js"></script>
+<script>
+(function () {
+  var toggle = document.getElementById('sidebarToggle');
+  toggle.addEventListener('click', function () {
+    var collapsed = document.documentElement.classList.toggle('sidebar-collapsed');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    try { localStorage.setItem('hermesSidebarCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+  });
+
+  var darkToggle = document.getElementById('darkModeToggle');
+  darkToggle.addEventListener('click', function () {
+    var dark = document.documentElement.classList.toggle('dark');
+    try { localStorage.setItem('hermesDarkMode', dark ? '1' : '0'); } catch (e) {}
+  });
+})();
+</script>
 {% else %}
 <main class="content-standalone">
   {% block content_standalone %}{% endblock %}

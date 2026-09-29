@@ -1,9 +1,68 @@
 {% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_charts.html" import sparkline %}
+{% from "_ui.html" import empty_state, feature_strip %}
 {% block title %}Timesheets — Hermes HRM{% endblock %}
 {% block content %}
-<div class="page-header">
-  <h1>Timesheets</h1>
-  {% if can_create %}<a class="btn btn-primary" href="/time/timesheets/new">New Timesheet</a>{% endif %}
+<div class="page-header page-header-rich">
+  <div class="page-header-icon">
+    <span class="stat-icon-chip chip-indigo">{{ icon('clock', 22) }}</span>
+    <div>
+      <h1>Timesheets</h1>
+      <p class="page-sub">Track and manage working hours for you and your team.</p>
+    </div>
+  </div>
+  <div class="page-header-right">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="/dashboard">Home</a>{{ icon('chevron-right', 14) }}<span>Time</span>{{ icon('chevron-right', 14) }}<span>Timesheets</span>
+    </nav>
+    {% if can_create %}<a class="btn btn-primary" href="/time/timesheets/new">{{ icon('plus', 16) }}Log Time</a>{% endif %}
+  </div>
+</div>
+
+{# All four cards are real SUM(timesheet_entries.hours) for the current calendar month
+   (filtered on entries' own work_date, joined through timesheets for status/scope — see
+   time.py). There's no historical figure worth diffing a "vs last month" percentage
+   against on this small a seed dataset, so instead of a fabricated trend each card shows
+   a real last-7-days sparkline (genuine daily work_date sums) with a plain "This month"
+   caption rather than an invented percentage. #}
+<div class="card-row">
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-indigo">{{ icon('file', 20) }}</span>
+      {{ sparkline(stat_total_hours.spark, '#4f46e5') }}
+    </div>
+    <div class="stat-value">{{ stat_total_hours.value | round(1) }}</div>
+    <div class="stat-label">Total Hours</div>
+    <span class="trend-pill trend-flat">This month</span>
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-green">{{ icon('check-circle', 20) }}</span>
+      {{ sparkline(stat_approved_hours.spark, '#059669') }}
+    </div>
+    <div class="stat-value">{{ stat_approved_hours.value | round(1) }}</div>
+    <div class="stat-label">Approved Hours</div>
+    <span class="trend-pill trend-flat">This month</span>
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-amber">{{ icon('send', 20) }}</span>
+      {{ sparkline(stat_pending_hours.spark, '#d97706') }}
+    </div>
+    <div class="stat-value">{{ stat_pending_hours.value | round(1) }}</div>
+    <div class="stat-label">Pending Hours</div>
+    <span class="trend-pill trend-flat">This month</span>
+  </div>
+  <div class="stat-card stat-card-icon stat-card-spark">
+    <div class="stat-card-top">
+      <span class="stat-icon-chip chip-pink">{{ icon('x-circle', 20) }}</span>
+      {{ sparkline(stat_rejected_hours.spark, '#dc2626') }}
+    </div>
+    <div class="stat-value">{{ stat_rejected_hours.value | round(1) }}</div>
+    <div class="stat-label">Rejected Hours</div>
+    <span class="trend-pill trend-flat">This month</span>
+  </div>
 </div>
 
 {% if can_view_team %}
@@ -14,20 +73,38 @@
 {% endif %}
 
 {% if timesheets|length == 0 %}
-<p class="empty-state">No timesheets.</p>
+{% call empty_state('clock', 'chip-indigo', 'No timesheets yet', 'Start tracking your working hours to keep your records up to date.') %}
+{% if can_create %}<a class="btn btn-primary" href="/time/timesheets/new">{{ icon('plus', 16) }}Log Your Time</a>{% endif %}
+<a class="btn" href="/dashboard">{{ icon('home', 16) }}Back to Dashboard</a>
+{% endcall %}
 {% else %}
 <table class="data-table">
-  <thead><tr><th>Employee</th><th>Week Of</th><th>Status</th><th></th></tr></thead>
+  <thead><tr><th>Employee</th><th>Week Of</th><th>Status</th><th>Actions</th></tr></thead>
   <tbody>
     {% for t in timesheets %}
     <tr>
-      <td>{{ t.first_name }} {{ t.last_name }}</td>
+      <td>
+        <div class="employee-name-cell">
+          <span class="avatar avatar-sm">{{ t.initial }}</span>
+          <span>{{ t.first_name }} {{ t.last_name }}</span>
+        </div>
+      </td>
       <td>{{ t.week_start_date }}</td>
-      <td><span class="status-badge status-{{ 'active' if t.status == 'approved' else 'terminated' if t.status == 'rejected' else '' }}">{{ t.status }}</span></td>
-      <td><a href="/time/timesheets/{{ t.id }}">View</a></td>
+      <td><span class="status-dot-badge status-{{ t.status }}"><span class="dot"></span>{{ t.status|capitalize }}</span></td>
+      <td>
+        <div class="row-actions">
+          <a class="btn btn-small" href="/time/timesheets/{{ t.id }}">{{ icon('eye', 14) }}View</a>
+        </div>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
 {% endif %}
+
+{{ feature_strip([
+  {'icon': 'clock', 'chip': 'chip-indigo', 'title': 'Log time daily', 'sub': 'Record your hours as you go to keep entries accurate.'},
+  {'icon': 'file', 'chip': 'chip-green', 'title': 'Add details', 'sub': 'Note the project for each day worked.'},
+  {'icon': 'send', 'chip': 'chip-amber', 'title': 'Submit for approval', 'sub': 'Send your completed week to your supervisor.'},
+]) }}
 {% endblock %}

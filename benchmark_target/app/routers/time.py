@@ -46,26 +46,91 @@ def list_timesheets(request: Request, view: str = "mine"):
     with get_conn() as conn:
         if show_team:
             if approve_scope == "all":
-                rows = conn.execute(
-                    """SELECT t.*, e.first_name, e.last_name FROM timesheets t
-                       JOIN employees e ON e.id = t.employee_id ORDER BY t.week_start_date DESC"""
-                ).fetchall()
+                rows = [
+                    dict(row, initial=row["first_name"][:1].upper())
+                    for row in conn.execute(
+                        """SELECT t.*, e.first_name, e.last_name FROM timesheets t
+                           JOIN employees e ON e.id = t.employee_id ORDER BY t.week_start_date DESC"""
+                    ).fetchall()
+                ]
+                scope_where_sql = "1=1"
+                scope_params: list = []
             else:
-                rows = conn.execute(
+                rows = [
+                    dict(row, initial=row["first_name"][:1].upper())
+                    for row in conn.execute(
+                        """SELECT t.*, e.first_name, e.last_name FROM timesheets t
+                           JOIN employees e ON e.id = t.employee_id
+                           WHERE e.supervisor_id = ? ORDER BY t.week_start_date DESC""",
+                        (user["employee_id"],),
+                    ).fetchall()
+                ]
+                scope_where_sql = "e.supervisor_id = ?"
+                scope_params = [user["employee_id"]]
+        elif user.get("employee_id"):
+            rows = [
+                dict(row, initial=row["first_name"][:1].upper())
+                for row in conn.execute(
                     """SELECT t.*, e.first_name, e.last_name FROM timesheets t
                        JOIN employees e ON e.id = t.employee_id
-                       WHERE e.supervisor_id = ? ORDER BY t.week_start_date DESC""",
+                       WHERE t.employee_id = ? ORDER BY t.week_start_date DESC""",
                     (user["employee_id"],),
                 ).fetchall()
-        elif user.get("employee_id"):
-            rows = conn.execute(
-                """SELECT t.*, e.first_name, e.last_name FROM timesheets t
-                   JOIN employees e ON e.id = t.employee_id
-                   WHERE t.employee_id = ? ORDER BY t.week_start_date DESC""",
-                (user["employee_id"],),
-            ).fetchall()
+            ]
+            scope_where_sql = "t.employee_id = ?"
+            scope_params = [user["employee_id"]]
         else:
             rows = []
+            scope_where_sql = "1=0"
+            scope_params = []
+
+        # Stat row: scoped exactly like the list above (mine vs. team/all vs. team/direct-reports)
+        # but never filtered further. Unlike the old status-count cards, these sum real hours
+        # (timesheet_entries.hours, joined through timesheets for status/scope) for the current
+        # calendar month, filtered on entries' own work_date rather than the timesheet's
+        # week_start_date — a week can straddle a month boundary, and work_date is the column
+        # that actually says which day the hours were worked. There's no historical column to
+        # diff a "vs last month" delta against in a way that wouldn't be noise on this small a
+        # seed dataset, so each card shows a real last-7-days-of-work_date sparkline (an honest
+        # time series) with a plain "This month" caption instead of a fabricated trend percentage.
+        today = date.today()
+        month_start = today.replace(day=1)
+        month_after = (month_start.replace(year=month_start.year + 1, month=1)
+                       if month_start.month == 12
+                       else month_start.replace(month=month_start.month + 1))
+        spark_start = today - timedelta(days=6)
+
+        def _hours_sum(status: str | None = None) -> float:
+            extra_sql = "AND t.status = ?" if status else ""
+            extra_params = (status,) if status else ()
+            return conn.execute(
+                f"""SELECT COALESCE(SUM(te.hours), 0) h FROM timesheet_entries te
+                    JOIN timesheets t ON t.id = te.timesheet_id
+                    JOIN employees e ON e.id = t.employee_id
+                    WHERE {scope_where_sql} AND te.work_date >= ? AND te.work_date < ? {extra_sql}""",
+                [*scope_params, month_start.isoformat(), month_after.isoformat(), *extra_params],
+            ).fetchone()["h"]
+
+        def _hours_spark(status: str | None = None, days: int = 7) -> list[float]:
+            extra_sql = "AND t.status = ?" if status else ""
+            extra_params = (status,) if status else ()
+            found = {
+                r["d"]: r["h"]
+                for r in conn.execute(
+                    f"""SELECT te.work_date d, COALESCE(SUM(te.hours), 0) h FROM timesheet_entries te
+                        JOIN timesheets t ON t.id = te.timesheet_id
+                        JOIN employees e ON e.id = t.employee_id
+                        WHERE {scope_where_sql} AND te.work_date >= ? {extra_sql}
+                        GROUP BY d""",
+                    [*scope_params, spark_start.isoformat(), *extra_params],
+                ).fetchall()
+            }
+            return [found.get((spark_start + timedelta(days=i)).isoformat(), 0) for i in range(days)]
+
+        stat_total_hours = {"value": _hours_sum(), "spark": _hours_spark()}
+        stat_approved_hours = {"value": _hours_sum("approved"), "spark": _hours_spark("approved")}
+        stat_pending_hours = {"value": _hours_sum("submitted"), "spark": _hours_spark("submitted")}
+        stat_rejected_hours = {"value": _hours_sum("rejected"), "spark": _hours_spark("rejected")}
 
     return templates.TemplateResponse(
         request,
@@ -76,6 +141,10 @@ def list_timesheets(request: Request, view: str = "mine"):
             "view": "team" if show_team else "mine",
             "can_view_team": approve_scope is not None,
             "can_create": can(user["role"], "timesheet", "create") and bool(user.get("employee_id")),
+            "stat_total_hours": stat_total_hours,
+            "stat_approved_hours": stat_approved_hours,
+            "stat_pending_hours": stat_pending_hours,
+            "stat_rejected_hours": stat_rejected_hours,
         },
     )
 
