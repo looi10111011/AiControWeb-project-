@@ -16,6 +16,7 @@ from backend.app.core.hrm_local_eval import (
     load_hrm_local_tasks,
     run_hrm_local_evaluation,
 )
+from backend.app.core.release_gate import _result_row, task_failed_on_infrastructure
 from benchmark_target.app.seed import seed
 from benchmark_target.runner.agent_adapters import AgentRunResult, StubAgentAdapter
 from benchmark_target.runner.models import AttemptResult, AttemptState, FailureClass
@@ -97,6 +98,25 @@ def test_functional_fail_is_a_failure_not_infra():
     assert result.success is False
     assert result.steps == 5  # ลงมือทำจริง นับเป็นความล้มเหลวของ agent
     assert result.error is None
+
+
+def test_provider_outage_is_visible_to_the_gate_as_infrastructure():
+    """provider ล่มกลางรัน: run_task คืนปกติด้วย steps=0 แต่ verifier ไม่เจออะไรใน DB -> attempt
+    เป็น FUNCTIONAL_FAIL ข้อความของ agent ต้องไปถึงแถว ไม่งั้น gate นับเป็นความล้มเหลวจริง"""
+    attempt = _attempt(
+        passed=False, state=AttemptState.VERIFYING, failure_class=FailureClass.FUNCTIONAL_FAIL,
+        detail="verification failed: no matching leave request found", steps=0, tokens={},
+    )
+    agent = AgentRunResult(success=False, steps=0, message="429 You exceeded your current quota", tokens={})
+    row = _result_row(attempt_to_eval_result(_TASK, attempt, agent))
+    assert row["message"].startswith("verification failed: no matching leave request found | agent: 429")
+    assert task_failed_on_infrastructure(row) is True
+
+
+def test_real_agent_failure_is_not_mistaken_for_infrastructure():
+    attempt = _attempt(passed=False, failure_class=FailureClass.FUNCTIONAL_FAIL, detail="verification failed: x")
+    agent = AgentRunResult(success=True, steps=5, message="Done, saved the record", tokens={})
+    assert task_failed_on_infrastructure(_result_row(attempt_to_eval_result(_TASK, attempt, agent))) is False
 
 
 def test_infra_failure_reports_zero_steps_and_error():

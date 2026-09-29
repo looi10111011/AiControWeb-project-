@@ -117,13 +117,21 @@ def attempt_to_eval_result(task: dict, attempt, agent_result) -> TaskEvalResult:
     tokens = attempt.tokens or {}
     total_tokens = sum(int(tokens.get(key, 0) or 0) for key in ("input", "output", "cache_read", "cache_creation"))
     infra = attempt.is_infra_failure()
+    # W_gate_local_hrm: attempt.detail ของ FUNCTIONAL_FAIL มีแค่ข้อความ verifier — ถ้าไม่ต่อ
+    # ข้อความของ agent เข้าไป provider ที่ล่มกลางรัน (run_task คืน steps=0 + "429 quota ...")
+    # จะไม่มี marker ให้ task_failed_on_infrastructure() เห็น แล้วถูกนับเป็นความล้มเหลวของ agent
+    # verifier detail อยู่ก่อนเสมอ เพราะ _result_row ตัดที่ 400 ตัวอักษร
+    message = attempt.detail
+    agent_message = getattr(agent_result, "message", "") if agent_result else ""
+    if agent_message:
+        message = f"{attempt.detail} | agent: {agent_message}"
     return TaskEvalResult(
         name=task["task_id"],
         goal=task["goal"]["description"],
         success=bool(attempt.passed),
         steps=0 if infra else attempt.steps,
         total_tokens=0 if infra else total_tokens,
-        message=attempt.detail,
+        message=message,
         error=attempt.detail if infra else None,
         latency_seconds=attempt.duration_ms / 1000.0,
         llm_calls=0 if infra else attempt.steps,
