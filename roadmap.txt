@@ -5748,8 +5748,12 @@
            ทั้ง 6 ต้อง fail กันไม่ให้ใครเอา task แบบนั้นเข้ามาโดยไม่รู้ตัว
            รายละเอียดที่ต้องรู้: (1) Control Plane รันในโปรเซสเดียวกันผ่าน TestClient ไม่ต้องเปิด :8101
            แต่ Target Surface (:8100) ต้องเปิดจริง — เปิดให้เองถ้ายังไม่มีใครรัน (2) SSRF guard บล็อก
-           localhost เป็นค่าเริ่มต้น จึงเปิด allow_internal_navigation เฉพาะช่วงรัน suite นี้แล้วคืนค่าเดิม
-           ใน finally (มีเทสต์) ส่วนขอบเขตจริงคุมด้วย allowed_domains={"localhost"} (3) baseline กรองตาม
+           localhost เป็นค่าเริ่มต้น — รอบแรกเปิด settings.allow_internal_navigation (global) ระหว่างรัน
+           ซึ่ง scrutinize ชี้ว่าทุก task ใน process เดียวกันจะเข้า localhost/LAN ได้ด้วย แก้เป็น ContextVar
+           (rules.allow_internal_navigation_here) มีผลเฉพาะ thread ของ suite และ Playwright ที่ start
+           ภายในนั้น — ยืนยันด้วย Chromium จริง: ใน scope เข้า localhost:8100 ได้ ส่วน goto พร้อมกันนอก
+           scope ถูกบล็อก และเทสต์ concurrency fail ถ้าย้อนกลับไปใช้ค่า global (ทดลองแล้ว)
+           ขอบเขตของ agent คุมอีกชั้นด้วย allowed_domains={"localhost"} (3) baseline กรองตาม
            ชุด suite ด้วย (field "suites" ใน summary; ไฟล์เก่าที่ไม่มี = ชุดเดิม 3 ตัว) — รันแรกหลังสลับ
            จึงไม่มี baseline ให้เทียบ ซึ่งถูกต้อง ไม่ใช่บั๊ก (4) OrangeHRM สาธารณะยังใช้ได้ผ่าน
            `run.py orangehrm` หรือ include_orangehrm=True แต่ปิดเป็นค่าเริ่มต้น

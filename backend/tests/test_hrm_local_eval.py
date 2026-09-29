@@ -16,6 +16,7 @@ from backend.app.core.hrm_local_eval import (
     load_hrm_local_tasks,
     run_hrm_local_evaluation,
 )
+from backend.app.permission import rules
 from backend.app.core.release_gate import _result_row, task_failed_on_infrastructure
 from benchmark_target.app.seed import seed
 from benchmark_target.runner.agent_adapters import AgentRunResult, StubAgentAdapter
@@ -51,23 +52,54 @@ async def test_no_task_passes_when_agent_does_nothing():
 
 
 @pytest.mark.asyncio
-async def test_allow_internal_navigation_is_on_during_run_and_restored_after_a_crash():
-    """SSRF guard ต้องเปิดให้ localhost เฉพาะระหว่างรัน — crash กลาง task ก็ต้องคืนค่าเดิม"""
-    previous = settings.allow_internal_navigation
-    seen_during_run = []
+async def test_internal_navigation_is_allowed_only_inside_the_run_and_never_globally():
+    """SSRF guard เปิดให้ localhost เฉพาะงานของ suite นี้ — ค่า global ต้องไม่ถูกแตะเลย และ
+    crash กลาง task ต้องปิด scope กลับ"""
+    global_before = settings.allow_internal_navigation
+    seen = []
 
     def crashing_attempt(*_args, **_kwargs):
-        seen_during_run.append(settings.allow_internal_navigation)
+        seen.append((rules._internal_navigation_allowed(), settings.allow_internal_navigation))
         raise RuntimeError("boom")
 
     stub = StubAgentAdapter([AgentRunResult(success=True, steps=1, message="", tokens={})])
-    with patch.object(hrm_local_eval, "ensure_target_running"), \
-         patch("benchmark_target.runner.attempt_runner.run_attempt", side_effect=crashing_attempt):
+    with patch.object(hrm_local_eval, "ensure_target_running"),          patch("benchmark_target.runner.attempt_runner.run_attempt", side_effect=crashing_attempt):
         with pytest.raises(RuntimeError, match="boom"):
             await run_hrm_local_evaluation(adapter=stub)
 
-    assert seen_during_run == [True]
-    assert settings.allow_internal_navigation is previous
+    assert seen == [(True, global_before)]
+    assert settings.allow_internal_navigation is global_before
+    assert rules._internal_navigation_allowed() is global_before
+
+
+# --- ensure_target_running: ห้ามวัดผลบนเว็บผิดตัว ---
+
+
+def test_ensure_target_running_reuses_a_target_that_is_already_up():
+    with patch.object(hrm_local_eval, "_target_is_up", return_value=True),          patch("uvicorn.Server") as server:
+        hrm_local_eval.ensure_target_running()
+    server.assert_not_called()
+
+
+def test_ensure_target_running_refuses_a_port_held_by_another_program():
+    with patch.object(hrm_local_eval, "_target_is_up", return_value=False),          patch.object(hrm_local_eval, "_port_is_taken", return_value=True),          patch("uvicorn.Server") as server:
+        with pytest.raises(RuntimeError, match="8100"):
+            hrm_local_eval.ensure_target_running()
+    server.assert_not_called()
+
+
+def test_ensure_target_running_starts_target_and_waits_until_it_answers():
+    answers = iter([False, False, True])  # ก่อนเปิด, ยังไม่พร้อม, พร้อม
+    with patch.object(hrm_local_eval, "_target_is_up", side_effect=lambda: next(answers)),          patch.object(hrm_local_eval, "_port_is_taken", return_value=False),          patch.object(hrm_local_eval.time, "sleep"),          patch("uvicorn.Server") as server:
+        hrm_local_eval.ensure_target_running()
+    server.assert_called_once()
+
+
+def test_ensure_target_running_times_out_when_target_never_answers(monkeypatch):
+    monkeypatch.setattr(hrm_local_eval, "_TARGET_READY_TIMEOUT_SECONDS", 0.0)
+    with patch.object(hrm_local_eval, "_target_is_up", return_value=False),          patch.object(hrm_local_eval, "_port_is_taken", return_value=False),          patch("uvicorn.Server"):
+        with pytest.raises(RuntimeError, match="ไม่พร้อม"):
+            hrm_local_eval.ensure_target_running()
 
 
 def _attempt(**overrides) -> AttemptResult:

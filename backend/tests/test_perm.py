@@ -557,6 +557,52 @@ async def test_ssrf_route_handler_respects_allow_internal_navigation_setting(mon
     route.abort.assert_not_awaited()
 
 
+# --- W_gate_local_hrm: allow_internal_navigation_here() — อนุญาตเฉพาะงานที่ขอ ไม่ใช่ทั้ง process ---
+
+
+@pytest.mark.asyncio
+async def test_scoped_override_allows_internal_navigation_inside_block_only():
+    from backend.app.permission.rules import allow_internal_navigation_here, _ssrf_route_handler
+
+    inside = _make_mock_route("http://127.0.0.1:8100/login", is_navigation=True)
+    with allow_internal_navigation_here():
+        await _ssrf_route_handler(inside)
+        assert classify_action({"type": "goto", "url": "http://localhost:8100/"}, allowed_domains={"localhost"}) != ActionRisk.BLOCKED
+    inside.continue_.assert_awaited_once()
+
+    after = _make_mock_route("http://127.0.0.1:8100/login", is_navigation=True)
+    await _ssrf_route_handler(after)
+    after.abort.assert_awaited_once()
+    assert classify_action({"type": "goto", "url": "http://localhost:8100/"}, allowed_domains={"localhost"}) == ActionRisk.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_scoped_override_does_not_leak_to_a_concurrent_task():
+    """หัวใจของการไม่ใช้ค่า global: task ของ user ที่รันพร้อมกันต้องยังโดนบล็อก"""
+    import asyncio
+
+    from backend.app.permission.rules import allow_internal_navigation_here, _ssrf_route_handler
+
+    scope_open = asyncio.Event()
+    release = asyncio.Event()
+
+    async def eval_task():
+        with allow_internal_navigation_here():
+            scope_open.set()
+            await release.wait()
+
+    async def user_task():
+        await scope_open.wait()
+        route = _make_mock_route("http://169.254.169.254/", is_navigation=True)
+        await _ssrf_route_handler(route)
+        release.set()
+        return route
+
+    _, route = await asyncio.gather(eval_task(), user_task())
+    route.abort.assert_awaited_once()
+    route.continue_.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_install_ssrf_guard_blocks_real_goto_to_internal_ip():
     """integration เต็มสาย: install_ssrf_guard() บน Page จริง + page.goto() จริงไป

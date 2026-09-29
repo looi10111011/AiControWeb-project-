@@ -25,6 +25,7 @@ from typing import Optional
 from backend.app.config import settings
 from backend.app.core.evaluation import EvaluationReport, TaskEvalResult
 from backend.app.core.telemetry import new_run_id
+from backend.app.permission.rules import allow_internal_navigation_here
 
 # task ที่ user เลือก (6 ตัว) — ครอบคลุม แก้ไข / สร้าง / ปิดการใช้งาน / user account / ลา / สรรหา
 HRM_LOCAL_TASK_IDS: tuple[str, ...] = (
@@ -153,22 +154,16 @@ def _run_sync(provider: Optional[str], run_id: str, adapter=None) -> EvaluationR
     )
     report = EvaluationReport()
 
-    # SSRF guard บล็อก navigation ไป localhost เป็นค่าเริ่มต้น (permission/rules.py) — เปิดเฉพาะ
-    # ช่วงที่ suite นี้รันแล้วคืนค่าเดิมเสมอ ค่านี้เป็น global ของทั้ง process ระหว่างรัน จึงรันได้
-    # เฉพาะจาก CLI (run.py hrm-local / release-gate) ห้ามเรียกจากใน API server ที่มี task ของ user
-    # รันพร้อมกัน ขอบเขตของ agent เองถูกจำกัดอีกชั้นด้วย allowed_domains={"localhost"} ใน
-    # HermesAgentAdapter
-    previous_allow = settings.allow_internal_navigation
-    settings.allow_internal_navigation = True
-    try:
-        with TestClient(control_app) as control_client:
-            for index, task in enumerate(tasks):
-                if index and settings.eval_task_delay_seconds > 0:
-                    time.sleep(settings.eval_task_delay_seconds)
-                attempt = run_attempt(task, recording, control_client)
-                report.results.append(attempt_to_eval_result(task, attempt, recording.last))
-    finally:
-        settings.allow_internal_navigation = previous_allow
+    # SSRF guard บล็อก navigation ไป localhost เป็นค่าเริ่มต้น (permission/rules.py) — เปิดผ่าน
+    # ContextVar จึงมีผลเฉพาะ thread นี้และ browser ที่ HermesAgentAdapter start ขึ้นภายในนั้น
+    # (asyncio.run ข้างใน adapter คัดลอก context ตอนสร้าง) task อื่นใน process เดียวกันยังโดนบล็อก
+    # ตามปกติ ขอบเขตของ agent เองถูกจำกัดอีกชั้นด้วย allowed_domains={"localhost"}
+    with allow_internal_navigation_here(), TestClient(control_app) as control_client:
+        for index, task in enumerate(tasks):
+            if index and settings.eval_task_delay_seconds > 0:
+                time.sleep(settings.eval_task_delay_seconds)
+            attempt = run_attempt(task, recording, control_client)
+            report.results.append(attempt_to_eval_result(task, attempt, recording.last))
     return report
 
 

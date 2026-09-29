@@ -11,6 +11,8 @@ import asyncio
 import ipaddress
 import socket
 import urllib.parse
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 
 from backend.app.config import settings
@@ -166,6 +168,33 @@ def extract_domain(url: str) -> str:
         return ""
 
 
+# W_gate_local_hrm: อนุญาต navigation ไป IP ภายใน "เฉพาะงานที่ขอ" ไม่ใช่ทั้ง process
+# เดิม hrm_local_eval เปิด settings.allow_internal_navigation ซึ่งเป็น global — ระหว่างนั้น task ของ
+# user ทุกตัวใน process เดียวกันจะเข้า localhost/LAN ได้หมด ContextVar แยกตาม thread และ asyncio
+# task (asyncio.to_thread/asyncio.run/create_task คัดลอก context ตอนสร้าง) จึงมีผลเฉพาะงานที่
+# ถูกสร้างขึ้นภายใน with block เท่านั้น
+# route handler ของ Playwright ได้ค่านี้ก็ต่อเมื่อ Playwright ถูก start ภายใน context นั้น (dispatcher
+# task สืบ context ตอนสร้าง) — browser ที่ยืมมาจาก BrowserPool ซึ่ง start ไว้ก่อนจะมองไม่เห็นค่านี้
+# และถูกบล็อกตามปกติ = พังไปทางปลอดภัย
+_internal_navigation_override: ContextVar[bool] = ContextVar(
+    "internal_navigation_override", default=False,
+)
+
+
+@contextmanager
+def allow_internal_navigation_here():
+    """เปิดให้ navigate ไป IP ภายในได้เฉพาะงานที่เริ่มภายใน block นี้ (ดูเหตุผลด้านบน)"""
+    token = _internal_navigation_override.set(True)
+    try:
+        yield
+    finally:
+        _internal_navigation_override.reset(token)
+
+
+def _internal_navigation_allowed() -> bool:
+    return settings.allow_internal_navigation or _internal_navigation_override.get()
+
+
 def is_private_or_internal(domain: str) -> bool:
     """Security 1.2 (SSRF): domain นี้ resolve เป็น private/loopback/link-local IP ไหม (เช่น
     cloud metadata endpoint 169.254.169.254, LAN ภายใน 192.168.x.x, localhost) — หน้าเว็บที่
@@ -284,7 +313,7 @@ def classify_action(
         # Security 1.2 (SSRF): เช็คก่อน BLOCKED_DOMAINS/ALLOWED_DOMAINS เสมอ เป็น hard block
         # ไม่ขึ้นกับ config ผู้ใช้เลย (defense-in-depth) — settings.allow_internal_navigation
         # เปิดได้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น
-        if not settings.allow_internal_navigation and is_private_or_internal(domain):
+        if not _internal_navigation_allowed() and is_private_or_internal(domain):
             return ActionRisk.BLOCKED
 
         if domain in BLOCKED_DOMAINS:
@@ -362,7 +391,7 @@ async def _ssrf_route_handler(route) -> None:
         # เหตุผลเดียวกับ retriever.retrieve()/long_term_memory.recall() ที่ wrap ด้วย
         # to_thread ใน orchestrator.py) + wait_for กัน DNS ช้าไม่รู้จบ (ดู
         # _SSRF_DNS_TIMEOUT_SECONDS ด้านบน)
-        blocked = not settings.allow_internal_navigation and await asyncio.wait_for(
+        blocked = not _internal_navigation_allowed() and await asyncio.wait_for(
             asyncio.to_thread(is_private_or_internal, hostname),
             timeout=_SSRF_DNS_TIMEOUT_SECONDS,
         )
