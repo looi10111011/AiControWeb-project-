@@ -324,7 +324,8 @@ _PROMPT_MARKER_DISABLED = """- ACC-2 (accuracy audit follow-up): an element with
 _PROMPT_SAVE_TOAST = """- W63[7.1] ("Save Confirmation & Toast Wait", ticket Issue 7.1): a click action whose label is a Save/Submit/Confirm/Update button automatically gets a message appended to its result stating whether a success toast/confirmation was found after the click (e.g. '[Success confirmation found: "Successfully Saved"]' or '[No toast found ...]'). If a toast was found, the save genuinely succeeded — go straight on to the next action (navigate away/check the table/call finish_task). If none was found, do NOT navigate away from this page or conclude success without checking further: check for validation errors first (per the W19 "Task Completion Verifier" rule) or see whether the page already navigated back to the list by itself (some sites have no toast and navigate straight back to the list instead, which counts as a success signal too).
 - W64[7.2] ("Add-Action Idempotency Lock", ticket Issue 7.2): the moment any Save/Submit/Add click during this task returns a result with "[Success confirmation found: ...]" appended (see W63[7.1] above), treat that create/save step as PERMANENTLY complete. NEVER fill in that same creation form again, whatever happens next. If the next step is to search/verify in the table that the newly created entry really appears, and the search doesn't find it (e.g. the table hasn't finished loading / the AJAX hasn't caught up), **NEVER interpret that as the creation having failed and go back to refill the form / press Reset and start over** (that produces duplicate entries/duplicate-data validation errors). Do this instead: (1) wait a moment and search/press Search once more, just once (the read_page_data tool already has automatic retry/wait built in), (2) if it still isn't found, call finish_task(success=true) with verify_text matching the name/value you just created (see W63[7.2] above — the system re-checks for you and is lenient here because the toast already proved it, so don't worry about being rejected as VERIFICATION_FAILED). Do not keep trying to verify it yourself over and over until you convince yourself it must be recreated."""
 
-_PROMPT_MARKER_REQUIRED = """- W65[1] ("Required-Field Validation"): for an element you need to fill/select/check, if it has the marker "[required]" appended to its label (attached by perception.py from the real HTML `required`/`aria-required` attribute — see the other markers in this file for the same pattern) and there is genuinely no value for that field in the goal or the earlier conversation, NEVER guess it or leave it blank and press submit — call request_user_input (see W_resume below for full details), stating clearly in the prompt which value is missing, before touching that field, then continue the SAME task with the answer. *** NEVER use finish_task(success=false) for this case *** (finish_task ends the whole task and discards the existing plan/browser state, so when the user supplies the value on the next turn the work has to restart from scratch — request_user_input simply pauses and then continues the same task immediately). This generalises the earlier rule that was hardcoded for the Change Password form only (see W20 "Current Password ≠ New Password" above) to every field carrying this marker, not just passwords. Exceptions: (1) the field has a usable "fill_secret" action (see W65[3] below — always try before asking), or (2) the value can genuinely be inferred from clear context (e.g. you just entered/saw it in this very conversation)."""
+_PROMPT_MARKER_REQUIRED = """- W65[1] ("Required-Field Validation"): for an element you need to fill/select/check, if it has the marker "[required]" appended to its label (attached by perception.py from the real HTML `required`/`aria-required` attribute — see the other markers in this file for the same pattern) and there is genuinely no value for that field in the goal or the earlier conversation, NEVER guess it or leave it blank and press submit — call request_user_input (see W_resume below for full details), stating clearly in the prompt which value is missing, before touching that field, then continue the SAME task with the answer. *** NEVER use finish_task(success=false) for this case *** (finish_task ends the whole task and discards the existing plan/browser state, so when the user supplies the value on the next turn the work has to restart from scratch — request_user_input simply pauses and then continues the same task immediately). This generalises the earlier rule that was hardcoded for the Change Password form only (see W20 "Current Password ≠ New Password" above) to every field carrying this marker, not just passwords. Exceptions: (1) the field has a usable "fill_secret" action (see W65[3] below — always try before asking), or (2) the value can genuinely be inferred from clear context (e.g. you just entered/saw it in this very conversation).
+- W_leave_date_no_guess (fixes a real reported bug: asked to submit a leave/time-off/vacation request, the agent filled the start/end date field with today's date — or some other date it picked itself — because the goal never stated which day(s) off were wanted): a leave request's date is NEVER something you may infer from the "Current time" line or default to "today" under exception (2) above, even though it is technically visible in the context — which day(s) to take off is a decision only the user can make, exactly like the current-password case W65[1] already covers. If the goal does not literally state an explicit date (a calendar date, "tomorrow", a named weekday, etc.) for a leave/time-off request's date field, you must call request_user_input naming exactly which date is missing (start date, and separately the end date if the form has one) before filling that field."""
 
 
 # W_core_carries_situational_rules (รอบสอง): กฎอีก 4 กลุ่มที่ทริกเกอร์อ่านจาก DOM ได้ตรงตัว
@@ -3673,6 +3674,15 @@ _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS = (
     "http://", "https://", "www.", "เว็บ", "หน้าเว็บ", "หน้านี้", "คลิก", "click", "กด",
     "ค้นหา", "search", "กรอก", "fill", "ไปที่", "ไปยัง", "เข้าไปหน้า", "เปิดเว็บ", "goto",
     "go to", "navigate", "ล็อกอิน", "login", "สั่งซื้อ", "ซื้อ", "checkout",
+    # W_leave_request_diverted_to_chat (บั๊กจริงที่พบตอนไล่แก้ W_farewell_leave_homograph
+    # ด้านล่าง): goal ยื่นใบลาจริง เช่น "ขอลาป่วยวันที่ 5 กันยายน" มีคำว่า "วันที่" ปนอยู่ตาม
+    # ธรรมชาติของการระบุวันลา — โดน _GENERAL_CHAT_TIME_DATE_PATTERNS จับว่าเป็นคำถามวันที่ทั่วไป
+    # (เพราะไม่มีคำใน list เดิมด้านบนสักคำที่บ่งบอกว่าเป็น "การกระทำ" เว็บ) ตัดไปตอบจาก general
+    # chat ทั้งดุ้น ไม่แตะ browser เลยแม้แต่ก้าวเดียว — งานลาจึงไม่มีวันถูกยื่นจริงหรือถูกถามวันที่
+    # กลับตามที่ W_leave_date_no_guess ตั้งใจไว้เลยด้วยซ้ำ ต้องกันคำที่ระบุ "การลางาน" (ไม่ใช่แค่
+    # "ลา" เฉยๆ ซึ่งจะไปชนกับคำอำลา "ลาก่อน"/"ลาจาก" ของ W_farewell_leave_homograph เข้า)
+    "ขอลา", "แจ้งลา", "ยื่นใบลา", "ลาป่วย", "ลากิจ", "ลาพักร้อน",
+    "request leave", "time off", "vacation request", "sick leave", "day off",
 )
 # (บั๊กจริงที่ user รายงาน — session log จริง): พิมพ์ตามด้วยคำถาม date/time เต็มรูปแบบ
 # ("วันนี้วันที่เท่าไหร่") ก่อนแล้ว "เวลา" คำเดียวโดดๆ เป็น follow-up time(s)ถัดไปในบทสนทนา
@@ -3691,6 +3701,11 @@ _GENERAL_CHAT_TIME_DATE_PATTERNS = (
 _GENERAL_CHAT_GREETING_EXACT_PHRASES = (
     "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "หวัดดีครับ", "หวัดดีค่ะ",
     "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    # W_farewell_leave_homograph (บั๊กจริงที่ user รายงาน): "ลา" เป็นคำพ้องรูประหว่าง "การลาบอก
+    # จากกัน" (goodbye) กับ "การลางาน" (HR leave request) — พิมพ์แค่คำทักทายลาจากเฉยๆ เช่น
+    # "ลาก่อน"/"ลาจาก" แต่ agent ตีความว่าเป็นคำสั่งงานบนเว็บ HR (ซึ่งมีเมนู Leave อยู่จริง) แล้ว
+    # เดินไปยื่นใบลาให้เอง ทั้งที่ผู้ใช้แค่กล่าวคำอำลา ไม่ได้ตั้งใจสั่งงานอะไรเลย
+    "ลาก่อน", "ลาจาก", "bye", "goodbye", "see you", "see ya",
 )
 # (บั๊กจริงที่ user รายงาน): "อยากฟังเพลงแนวอกหักๆ หามาสัก 4-5 เพลงหน่อย" เปิด browser ทั้งที่
 # จริงๆ ตอบได้จากความรู้ทั่วไปของโมเดลเอง (แนะนำชื่อเพลง ไม่ได้ขอ "ค้นหา"/ลิงก์จริงจากเว็บไหน
@@ -3770,6 +3785,59 @@ def is_general_chat_query(goal: str) -> bool:
     if any(p in lower for p in _GENERAL_CHAT_RECOMMENDATION_PATTERNS):
         return True
     if _MATH_EXPRESSION_RE.match(stripped) and any(ch.isdigit() for ch in stripped):
+        return True
+    return False
+
+
+# --- W_gibberish_goal (goal มั่ว/รูดแป้นพิมพ์ เช่น "asdfgh", "kkkkkk", "!!!123???"): ไม่ match
+# pattern ไหนของ is_general_chat_query() เลย (ไม่ใช่ทักทาย/วันเวลา/คำนวณ/คำแนะนำ) แต่ก็ไม่ควร
+# หลุดเข้า agent loop เต็มรูปแบบเหมือนกัน — เดิมไม่มี check นี้เลย ปล่อยให้โมเดลเองค่อยๆ รู้ตัว
+# กลางลูปว่า goal ไม่มีความหมาย เสีย LLM call/step ไปก่อนถึงจะ request_user_input/finish_task
+# เช็คนี้ deterministic ล้วนๆ ตาม convention เดียวกับ is_general_chat_query() ด้านบน (ห้ามเรียก
+# LLM ในเส้นทางนี้) และตั้งใจแคบมาก (false negative ปลอดภัยกว่า false positive เสมอ — goal
+# สั้นๆ คำเดียวจริงจัง เช่น "login"/"checkout" ต้องไม่โดนบล็อก): ไม่แตะข้อความที่มีช่องว่าง (มั่ว
+# จริงแทบไม่มีช่องว่าง), ไม่แตะข้อความที่ goal_mentions_web_action() เจอคำเว็บอยู่แล้ว
+#
+# W_gibberish_goal_thai (บั๊กจริงที่พบจากไล่ log จริง 2026-09-23 — data/token_usage.jsonl):
+# goal "ำไฤฑฎฆธฏ็๊ฯ๋ฯษศฐซ" (รูดแป้นพิมพ์ไทย) หลุดผ่าน check เดิมทั้งหมด (ไม่แตะ
+# goal_mentions_web_action, ไม่ match general-chat pattern ไหนเลย) เพราะเดิม "เจอตัวอักษร
+# ไทยตัวไหนก็ปล่อยผ่านทันที" ไม่เช็คอะไรต่อ — เสีย LLM call ไปเต็มๆ 27,931 input tokens,
+# 0 steps, จบด้วย fail — อักขระไทยกลุ่ม "สระ/วรรณยุกต์ลอย" (ั ิ ี ึ ื ุ ู ำ ่ ้ ๊ ๋ ์ ็)
+# ตามหลักไวยากรณ์ไทยต้องเกาะอยู่หลังพยัญชนะเสมอ ไม่มีคำไทยจริงคำไหนขึ้นต้นด้วยอักขระกลุ่มนี้
+# เลย — ถ้าตัวแรกสุดของ goal (หลัง strip) เป็นอักขระกลุ่มนี้ แปลว่าลำดับอักขระผิดหลักไวยากรณ์
+# ไทยพื้นฐาน ถือเป็นสัญญาณมั่ว/รูดแป้นพิมพ์ที่ปลอดภัยพอจะเช็คได้ (ไม่ไปแตะเนื้อหาไทยจริงส่วน
+# อื่นที่เหลือ ยังคงปล่อยผ่านตามเดิมทุกกรณี — แคบตั้งใจเหมือนเช็คอื่นในไฟล์นี้)
+_REPEATED_CHAR_RUN_RE = re.compile(r"(.)\1{3,}")
+_KEYBOARD_MASH_SUBSTRINGS = (
+    "asdf", "asdfg", "asdfgh", "qwerty", "qwert", "zxcv", "zxcvb", "jkl;", "jkl",
+    "wasd", "qazwsx", "hjkl",
+)
+_PURE_SYMBOL_DIGIT_RE = re.compile(r"^[^A-Za-zก-๙]+$")
+_THAI_DEPENDENT_MARKS = "ัิีึืุูำ่้๊๋์็๎"
+
+
+def is_unactionable_goal(goal: str) -> bool:
+    """True ถ้า goal มั่ว/รูดแป้นพิมพ์ ไม่มีความหมายพอจะลงมือทำ (ว่าง/ตัวอักษรเดียว/ตัวอักษร
+    ซ้ำรัว/keyboard mash แถวคีย์บอร์ด/สัญลักษณ์-ตัวเลขล้วน/ไทยที่ขึ้นต้นด้วยสระ-วรรณยุกต์ลอย)
+    — ดู module comment ด้านบนสำหรับเหตุผลที่แคบตั้งใจ (ไม่แตะข้อความมีช่องว่าง/มีคำเว็บ/ไทย
+    ส่วนที่เหลือนอกจาก start-with-dependent-mark)"""
+    stripped = (goal or "").strip()
+    if not stripped:
+        return True
+    if " " in stripped or "\t" in stripped:
+        return False
+    if goal_mentions_web_action(stripped):
+        return False
+    if any("฀" <= ch <= "๿" for ch in stripped):
+        return stripped[0] in _THAI_DEPENDENT_MARKS
+    if len(stripped) == 1:
+        return True
+    if _REPEATED_CHAR_RUN_RE.search(stripped):
+        return True
+    lower = stripped.lower()
+    if any(kw in lower for kw in _KEYBOARD_MASH_SUBSTRINGS):
+        return True
+    if len(stripped) > 3 and _PURE_SYMBOL_DIGIT_RE.match(stripped):
         return True
     return False
 

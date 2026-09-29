@@ -18,15 +18,16 @@
       {% if can_edit %}<a class="btn" href="/pim/employees/{{ employee.id }}/edit">{{ icon('gear', 16) }}Edit</a>{% endif %}
       <a class="btn" href="/documents/employees/{{ employee.id }}">{{ icon('file', 16) }}Documents</a>
       {% if can_deactivate %}
+        <span class="actions-divider" aria-hidden="true"></span>
         {% if employee.status == 'active' %}
         <form method="post" action="/pim/employees/{{ employee.id }}/deactivate" style="display:inline"
               onsubmit="return confirm('Deactivate {{ employee.first_name }} {{ employee.last_name }}? This can be reversed later.');">
           <input type="hidden" name="confirm" value="yes">
-          <button type="submit" class="btn btn-danger">Deactivate</button>
+          <button type="submit" class="btn btn-danger">{{ icon('x-circle', 16) }}Deactivate</button>
         </form>
         {% else %}
         <form method="post" action="/pim/employees/{{ employee.id }}/activate" style="display:inline">
-          <button type="submit" class="btn">Reactivate</button>
+          <button type="submit" class="btn">{{ icon('check-circle', 16) }}Reactivate</button>
         </form>
         {% endif %}
       {% endif %}
@@ -35,17 +36,20 @@
 </div>
 
 <div class="panel">
+  <h2>Employment</h2>
   <dl class="detail-grid">
     <dt>Employee Code</dt><dd>{{ employee.employee_code }}</dd>
     <dt>Department</dt><dd>{{ employee.department }}</dd>
     <dt>Job Title</dt><dd>{{ employee.job_title }}</dd>
     <dt>Status</dt><dd><span class="status-dot-badge status-{{ employee.status }}"><span class="dot"></span>{{ employee.status|capitalize }}</span></dd>
     <dt>Hire Date</dt><dd>{{ employee.hire_date }}</dd>
+  </dl>
+
+  <h2 style="margin-top:1.5rem">Reporting &amp; Leave</h2>
+  <dl class="detail-grid">
     <dt>Supervisor</dt>
     <dd>{% if supervisor %}<a href="/pim/employees/{{ supervisor.id }}">{{ supervisor.first_name }} {{ supervisor.last_name }}</a>{% else %}—{% endif %}</dd>
     <dt>Annual Leave Balance</dt><dd>{{ employee.leave_balance_annual }} days</dd>
   </dl>
 </div>
-
-<p><a href="/pim/employees">&larr; Back to Employees</a></p>
 {% endblock %}

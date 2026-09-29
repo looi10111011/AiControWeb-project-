@@ -110,6 +110,15 @@ does not prove completion. Password field values are deliberately hidden.
 """
 
 
+# W_embedded_loop_guard: user-reported live bug — this loop has none of orchestrator.py's
+# guard rails (W5 loop-detection, finish_task evidence check). Model re-issued the exact
+# same command (Select #18 "Terminated") 4 steps in a row, never progressing to Search,
+# then the task ended having only partially done the goal. Port the minimal version of
+# both guards here rather than the full orchestrator machinery (no plan/state_filter
+# layer exists in this loop to route around).
+_MAX_CONSECUTIVE_IDENTICAL_ACTIONS = 3
+
+
 async def run_embedded_task(page, goal, provider, max_steps, ask_user, on_event):
     # Reuse the configured provider, tool schemas, approval rules and task lifecycle.
     from backend.app.config import settings
@@ -119,6 +128,7 @@ async def run_embedded_task(page, goal, provider, max_steps, ask_user, on_event)
 
     client, model, next_action, append_result, _ = Orchestrator._llm_backend(provider or settings.llm_provider)
     messages, history = [], []
+    recent_cmds: list[dict] = []
     usage = TokenUsage()
     supported = {"click", "fill", "select", "check", "press_key", "hover", "scroll", "wait", "goto", "read_page_data"}
     indexed = {"click", "fill", "select", "check", "press_key", "hover"}
@@ -127,14 +137,34 @@ async def run_embedded_task(page, goal, provider, max_steps, ask_user, on_event)
         await page.dispatch({"type": "snapshot"})
         for step in range(1, max_steps + 1):
             snapshot = page.snapshot
-            tool, cmd, tool_id, messages, spent = await next_action(
-                client, model, goal, snapshot.describe(), messages,
-                current_url=snapshot.url, plan_context=EMBEDDED_GUIDANCE,
-                allow_fill_secret=False,
+            # W_embedded_loop_guard: user-reported live bug — a stalled OpenAI ChatGPT-OAuth
+            # response (chatgpt.com/backend-api/codex) left this awaited forever with no
+            # bound, so the task sat "Running" indefinitely after 2/3 rows were done, with
+            # no error and no way to recover short of the user hitting Stop. Mirror
+            # orchestrator.py's W_steptimeout: bound every LLM turn by the same
+            # llm_step_timeout_seconds and let a timeout fall through to the except below,
+            # which reports the rows already done instead of hanging silently.
+            tool, cmd, tool_id, messages, spent = await asyncio.wait_for(
+                next_action(
+                    client, model, goal, snapshot.describe(), messages,
+                    current_url=snapshot.url, plan_context=EMBEDDED_GUIDANCE,
+                    allow_fill_secret=False,
+                ),
+                timeout=settings.llm_step_timeout_seconds,
             )
             usage += spent
             if tool == "finish_task":
-                return {"success": bool(cmd.get("success")), "message": cmd.get("message", ""),
+                # W_embedded_loop_guard: mirror orchestrator.py's zero-evidence finish_task
+                # guard — refuse a bare success claim before a single action has executed,
+                # so the model can't fast-exit a goal it never attempted.
+                success = bool(cmd.get("success"))
+                if success and not any(h["success"] for h in history):
+                    messages = append_result(messages, tool_id, json.dumps(
+                        {"success": False,
+                         "message": "No action has succeeded yet; verify the page state "
+                                     "before reporting success"}, ensure_ascii=False))
+                    continue
+                return {"success": success, "message": cmd.get("message", ""),
                         "steps": len(history), "history": history,
                         "tokens": {"input": usage.input_tokens, "output": usage.output_tokens,
                                    "cache_read": usage.cache_read_tokens, "cache_creation": usage.cache_creation_tokens}}
@@ -153,6 +183,11 @@ async def run_embedded_task(page, goal, provider, max_steps, ask_user, on_event)
                         error = "Navigation outside the current origin is blocked"
                 except ValueError:
                     error = "Invalid navigation URL"
+            elif (len(recent_cmds) >= _MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1
+                  and all(c == cmd for c in recent_cmds[-(_MAX_CONSECUTIVE_IDENTICAL_ACTIONS - 1):])):
+                error = ("Repeated the exact same action too many times without progress; "
+                         "try a different element or move on to the next step")
+            recent_cmds.append(cmd)
             if not error:
                 risk = classify_action(cmd, label=element.label if element else "",
                                        element_tag=element.tag if element else "",
@@ -177,6 +212,16 @@ async def run_embedded_task(page, goal, provider, max_steps, ask_user, on_event)
             history.append(entry)
             await on_event({"kind": "step", **entry})
             messages = append_result(messages, tool_id, json.dumps(result, ensure_ascii=False))
-        return {"success": False, "message": "ครบจำนวนขั้นตอนที่กำหนดแล้ว", "steps": len(history), "history": history}
+        return {"success": False, "message": "ครบจำนวนขั้นตอนที่กำหนดแล้ว", "steps": len(history), "history": history,
+                "tokens": {"input": usage.input_tokens, "output": usage.output_tokens,
+                           "cache_read": usage.cache_read_tokens, "cache_creation": usage.cache_creation_tokens}}
+    except Exception as e:
+        # W_embedded_loop_crash: mirror orchestrator.py's W_loop_crash — without this, any
+        # exception (the LLM-turn timeout added above, page.dispatch()'s own 45s timeout,
+        # a closed page) unwound the whole function and lost every row already completed;
+        # the caller only saw a raw error with no record of the partial progress made.
+        return {"success": False, "message": str(e), "steps": len(history), "history": history,
+                "tokens": {"input": usage.input_tokens, "output": usage.output_tokens,
+                           "cache_read": usage.cache_read_tokens, "cache_creation": usage.cache_creation_tokens}}
     finally:
         page.close()

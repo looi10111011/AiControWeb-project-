@@ -60,6 +60,41 @@ def test_goal_mentions_web_action_false_for_plain_followup_questions(goal):
     assert llm.goal_mentions_web_action(goal) is False
 
 
+# --- W_gibberish_goal ---
+
+
+@pytest.mark.parametrize("goal", [
+    "",
+    "   ",
+    "x",
+    "aaaaaa",
+    "kkkkkk",
+    "asdf",
+    "asdfgh",
+    "qwerty",
+    "!!!123???",
+    "jkl;",
+    "ำไฤฑฎฆธฏ็๊ฯ๋ฯษศฐซ",
+    "ั่ๆ๊ืึ",
+])
+def test_is_unactionable_goal_true_for_gibberish(goal):
+    assert llm.is_unactionable_goal(goal) is True
+
+
+@pytest.mark.parametrize("goal", [
+    "login",
+    "checkout",
+    "search flights",
+    "buy shoes",
+    "test",
+    "ทดสอบ",
+    "asdf login page",
+    "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้",
+])
+def test_is_unactionable_goal_false_for_real_goals(goal):
+    assert llm.is_unactionable_goal(goal) is False
+
+
 @pytest.mark.asyncio
 async def test_chat_response_returns_text_on_anthropic_success():
     text_block = MagicMock()

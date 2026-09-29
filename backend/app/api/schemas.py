@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.app.core.embedded_page import PageSnapshot
 
 # Security (follow-up to SEC audit): attached_file_content_base64 ไม่เคยมี size limit เลย
@@ -16,10 +16,29 @@ from backend.app.core.embedded_page import PageSnapshot
 _MAX_ATTACHED_FILE_DECODED_BYTES = 10 * 1024 * 1024  # 10MB
 _MAX_ATTACHED_FILE_BASE64_CHARS = (_MAX_ATTACHED_FILE_DECODED_BYTES * 4 // 3) + 4  # + padding เผื่อ
 
+# W_gibberish_goal: schema-layer เป็นแค่ safety net กัน caller ที่เรียก API ตรงๆ (ข้าม
+# frontend's non-empty check ที่ index.html::requestPlan()) ส่ง goal ว่าง/มีแต่ whitespace
+# เข้ามา — ตั้งใจไม่เช็คความมั่ว/gibberish ที่ชั้นนี้ (นั่นเป็นเรื่องของ
+# llm.is_unactionable_goal() ที่ routes.py เรียกแล้วตอบ chat-shaped clarification แทนที่จะ
+# 422 ทื่อๆ — goal สั้นๆ อย่าง "x" ยังต้องผ่าน schema ได้ปกติ) max_length เป็นแค่ generous
+# defense net ไม่ใช่ UX limit
+_MAX_GOAL_CHARS = 8000
+
+
+def _reject_blank_goal(v: str) -> str:
+    if not (v or "").strip():
+        raise ValueError("goal must not be empty or whitespace-only")
+    return v
+
 
 class CreateTaskRequest(BaseModel):
     url: str
-    goal: str
+    goal: str = Field(min_length=1, max_length=_MAX_GOAL_CHARS)
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal_not_blank(cls, v: str) -> str:
+        return _reject_blank_goal(v)
     max_steps: int = 30
     provider: Optional[str] = None  # None = ใช้ settings.llm_provider (ดู orchestrator.py)
     headless: Optional[bool] = None  # None = ใช้ settings.browser_headless
@@ -90,7 +109,13 @@ class GeneratePlanRequest(BaseModel):
     browser ใหม่เลย (ดู orchestrator.py::Orchestrator.generate_plan())"""
 
     url: str
-    goal: str
+    goal: str = Field(min_length=1, max_length=_MAX_GOAL_CHARS)
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal_not_blank(cls, v: str) -> str:
+        return _reject_blank_goal(v)
+
     provider: Optional[str] = None
     # session_id (optional): ถ้ามี session นี้อยู่แล้วจริง (มี page เปิดค้างอยู่จาก
     # เทิร์นก่อนหน้า) จะ perceive หน้านั้นมาช่วยร่างแผนให้ grounded กับสถานะปัจจุบัน — เป็น
@@ -147,7 +172,13 @@ class ExecutePlanRequest(BaseModel):
     endpoint นี้) มี `plan` แทน"""
 
     url: str
-    goal: str
+    goal: str = Field(min_length=1, max_length=_MAX_GOAL_CHARS)
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal_not_blank(cls, v: str) -> str:
+        return _reject_blank_goal(v)
+
     # แผนที่อนุมัติแล้ว (อาจแก้ไขข้อความมาก่อนจาก POST /api/generate_plan) — ส่งต่อเข้า
     # orchestrator.run_task(approved_plan=...) ตรงๆ ไม่ส่งมา (None) = ทำงานตาม goal ตรงๆ
     # ไม่มีแผนกำกับ (ข้ามเฟสวางแผนไปเลยก็ได้ถ้าไม่ต้องการ)

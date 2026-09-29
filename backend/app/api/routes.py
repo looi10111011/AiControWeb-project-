@@ -477,6 +477,19 @@ async def _run_with_resolved_browser(
         client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
         return await _context_inspection_result(req, on_event, client, model, resolved_provider)
 
+    # W_gibberish_goal: goal มั่ว/รูดแป้นพิมพ์ (llm.is_unactionable_goal) เช็คก่อน
+    # attached_file แม้แต่ก็ตาม — แม้ user แนบไฟล์มาด้วย goal ที่ไม่มีความหมายเลยก็ยังไม่มี
+    # คำสั่งจริงให้ทำกับไฟล์นั้น ไม่ต้องเสีย resource decode ไฟล์/LLM call ไปเปล่าๆ ก่อน
+    # (ดู module comment ของ is_unactionable_goal() ใน llm.py) — deterministic ล้วนๆ เหมือน
+    # is_general_chat_query() ด้านล่าง ไม่เรียก LLM
+    if llm.is_unactionable_goal(req.goal):
+        message = (
+            "ขออภัยครับ ไม่เข้าใจคำสั่งนี้ ช่วยพิมพ์คำสั่งที่ชัดเจนขึ้นได้ไหมครับ "
+            "เช่น 'ค้นหาตั๋วเครื่องบิน' หรือ 'เข้าสู่ระบบ'"
+        )
+        await on_event({"kind": "chat_reply", "message": message})
+        return _chat_shaped_result(message)
+
     if req.attached_file_content_base64:
         resolved_provider = req.provider or settings.llm_provider
         client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
@@ -843,6 +856,13 @@ async def generate_plan(req: GeneratePlanRequest, request: Request) -> GenerateP
     # CONTEXT_INSPECTION_MODE ผ่าน _context_inspection_result() แทน (ดู routes.py::
     # _run_with_resolved_browser)
     if llm.is_context_inspection_command(req.goal):
+        return GeneratePlanResponse(plan="", is_qa=True)
+
+    # W_gibberish_goal: เช็คก่อน attached_file เหมือนกับ _run_with_resolved_browser() ด้านบน
+    # (ดู module comment ของ llm.is_unactionable_goal()) — คืน is_qa=True ทันที ให้ frontend
+    # ข้ามหน้าต่างอนุมัติ PLAN ไปเรียก execute_plan/create_task ที่จะตอบข้อความขอความชัดเจน
+    # ผ่าน _run_with_resolved_browser() แทน
+    if llm.is_unactionable_goal(req.goal):
         return GeneratePlanResponse(plan="", is_qa=True)
 
     if req.attached_file_content_base64:

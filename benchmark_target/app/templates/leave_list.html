@@ -102,13 +102,24 @@
     {% if requests|length == 0 %}
     <p class="empty-state">No leave requests match this search/filter.</p>
     {% else %}
-    <form id="leaveBulkForm" method="post">
+    {#
+      W_nested_form_swallows_row_actions (real reported bug: clicking Approve in admin, or
+      Cancel in ESS, landed on {"detail":"Method Not Allowed"} instead of deciding the
+      request): this form used to wrap the whole <table>, with each row's own Approve/
+      Reject/Cancel <form> nested inside it. HTML forbids nesting <form> elements — the
+      parser silently drops every nested <form> start tag, so those per-row buttons ended
+      up submitted BY THIS OUTER FORM instead (no explicit action -> POST to the current
+      page URL, "/leave/requests", which only has a GET handler -> 405). Kept empty and
+      moved outside the table; the checkboxes/buttons below reference it via the `form`
+      attribute instead of DOM nesting, so the per-row forms are free to be real forms.
+    #}
+    <form id="leaveBulkForm" method="post"></form>
       {% if can_approve %}
       <div class="bulk-bar" id="bulkBar" hidden>
         <span><strong id="bulkCount">0</strong> selected</span>
         <div class="bulk-bar-actions">
-          <button type="submit" class="btn btn-small btn-success" formaction="/leave/requests/bulk-approve">{{ icon('check-circle', 14) }}Approve Selected</button>
-          <button type="submit" class="btn btn-small btn-danger" formaction="/leave/requests/bulk-reject" onclick="return confirm('Reject the selected leave request(s)?');">{{ icon('x-circle', 14) }}Reject Selected</button>
+          <button type="submit" form="leaveBulkForm" class="btn btn-small btn-success" formaction="/leave/requests/bulk-approve">{{ icon('check-circle', 14) }}Approve Selected</button>
+          <button type="submit" form="leaveBulkForm" class="btn btn-small btn-danger" formaction="/leave/requests/bulk-reject" onclick="return confirm('Reject the selected leave request(s)?');">{{ icon('x-circle', 14) }}Reject Selected</button>
         </div>
       </div>
       {% endif %}
@@ -124,7 +135,7 @@
           {% for r in requests %}
           <tr>
             {% if can_approve %}
-            <td>{% if r.status == 'pending' %}<input type="checkbox" class="row-check" name="request_ids" value="{{ r.id }}">{% endif %}</td>
+            <td>{% if r.status == 'pending' %}<input type="checkbox" form="leaveBulkForm" class="row-check" name="request_ids" value="{{ r.id }}">{% endif %}</td>
             {% endif %}
             <td>
               <div class="employee-name-cell">
@@ -161,7 +172,6 @@
           {% endfor %}
         </tbody>
       </table>
-    </form>
     {% endif %}
   </div>
 
@@ -219,12 +229,17 @@
 (function () {
   var form = document.getElementById('leaveBulkForm');
   if (!form) return;
-  var checks = form.querySelectorAll('.row-check');
+  // W_nested_form_swallows_row_actions: these checkboxes now live outside <form
+  // id="leaveBulkForm"> (linked to it only via their own form="leaveBulkForm" attribute,
+  // so the per-row Approve/Reject/Cancel forms around them can be real, unnested forms) —
+  // query the whole document for them, not form.querySelectorAll(), which only searches
+  // DOM descendants and would find nothing now.
+  var checks = document.querySelectorAll('.row-check');
   var selectAll = document.getElementById('selectAllLeave');
   var bar = document.getElementById('bulkBar');
   var countEl = document.getElementById('bulkCount');
   function update() {
-    var n = form.querySelectorAll('.row-check:checked').length;
+    var n = document.querySelectorAll('.row-check:checked').length;
     if (bar) bar.hidden = n === 0;
     if (countEl) countEl.textContent = n;
     if (selectAll) selectAll.checked = checks.length > 0 && n === checks.length;

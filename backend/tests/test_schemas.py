@@ -41,3 +41,27 @@ def test_execute_plan_request_rejects_oversized_attached_file():
     oversized = "a" * (_MAX_ATTACHED_FILE_BASE64_CHARS + 1)
     with pytest.raises(ValidationError):
         ExecutePlanRequest(url="https://example.com", goal="x", attached_file_content_base64=oversized)
+
+
+# --- W_gibberish_goal: schema-layer safety net (empty/whitespace only — not gibberish) ---
+
+
+def test_create_task_request_rejects_whitespace_only_goal():
+    with pytest.raises(ValidationError):
+        CreateTaskRequest(url="https://example.com", goal="   ")
+
+
+def test_generate_plan_request_rejects_whitespace_only_goal():
+    with pytest.raises(ValidationError):
+        GeneratePlanRequest(url="https://example.com", goal="   ")
+
+
+def test_execute_plan_request_rejects_whitespace_only_goal():
+    with pytest.raises(ValidationError):
+        ExecutePlanRequest(url="https://example.com", goal="   ")
+
+
+def test_create_task_request_still_accepts_short_real_goal():
+    """sanity: schema ห้ามเช็คความมั่ว (gibberish) แค่ห้ามว่าง — goal สั้นๆ จริงจังต้องผ่านปกติ"""
+    req = CreateTaskRequest(url="https://example.com", goal="x")
+    assert req.goal == "x"

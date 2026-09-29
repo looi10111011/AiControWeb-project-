@@ -283,7 +283,8 @@ button.btn, button.btn-primary, button.btn-danger, button.btn-small { font-famil
 
 /* ---------- Page header / cards ---------- */
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; gap: 1rem; flex-wrap: wrap; }
-.page-header .actions { display: flex; gap: 0.5rem; }
+.page-header .actions { display: flex; align-items: center; gap: 0.5rem; }
+.actions-divider { width: 1px; align-self: stretch; background: var(--border); margin: 0 0.2rem; }
 .page-header h1 { margin: 0; }
 
 .page-header-rich { align-items: flex-start; }

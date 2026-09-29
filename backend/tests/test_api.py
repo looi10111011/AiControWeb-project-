@@ -211,6 +211,45 @@ def test_create_task_general_chat_goal_never_touches_browser_or_orchestrator(cli
     assert client.get("/sessions").json() == []
 
 
+# --- W_gibberish_goal ---
+
+
+def test_create_task_gibberish_goal_never_touches_browser_or_orchestrator(client):
+    """goal มั่ว/รูดแป้นพิมพ์ (เช่น "asdfgh") ต้องไม่แตะ Orchestrator/pool/session เลย —
+    ตอบด้วยข้อความขอความชัดเจน ไม่เรียก LLM ด้วยซ้ำ (deterministic ล้วนๆ)"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        resp = client.post("/tasks", json={"url": "https://example.com", "goal": "asdfgh"})
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        final = _poll_until(client, task_id)
+
+    assert final["status"] == "done"
+    assert final["result"]["steps"] == 0
+    assert final["result"]["success"] is True
+    assert "ไม่เข้าใจคำสั่งนี้" in final["result"]["message"]
+    MockOrchestrator.return_value.run_task.assert_not_called()
+    assert client.get("/pool/status").json() == {"size": 2, "available": 2, "in_use": 0}
+    assert client.get("/sessions").json() == []
+
+
+def test_generate_plan_gibberish_goal_short_circuits_to_qa_without_calling_llm(client):
+    """goal มั่ว -> /api/generate_plan ต้องคืน is_qa=True ทันที ไม่เรียก
+    Orchestrator.generate_plan() เลย"""
+    with patch("backend.app.api.routes.Orchestrator") as MockOrchestrator:
+        mock_generate_plan = AsyncMock(return_value="should not be called")
+        MockOrchestrator.return_value.generate_plan = mock_generate_plan
+
+        resp = client.post("/api/generate_plan", json={
+            "url": "https://example.com", "goal": "asdfgh",
+        })
+
+    assert resp.status_code == 200
+    assert resp.json()["is_qa"] is True
+    assert resp.json()["plan"] == ""
+    mock_generate_plan.assert_not_called()
+
+
 # --- W20 (MODULE 0): "/context" special command interceptor ---
 
 
