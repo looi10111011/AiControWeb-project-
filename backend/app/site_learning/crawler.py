@@ -1,249 +1,30 @@
-"""site_learning/crawler.py — W14: BFS deterministic crawler ที่สร้าง SiteManual — เดิน
-DOM หา nav link เองทั้งหมด (ไม่ให้ LLM ตัดสินใจว่าจะคลิก/ไปหน้าไหนต่อ ตามที่ user ยืนยัน
-ไว้ตอนคุยแผน เพื่อลด token cost ตามเป้าหมายหลักของฟีเจอร์นี้) เรียก LLM แค่ครั้งเดียวต่อ
-หน้าเพื่อเขียนชื่อ+คำอธิบายสั้นๆ เท่านั้น — ทุกอย่างอื่น (nav structure, button/form/
-table extraction, selector/xpath) เป็น DOM data ล้วนๆ ไม่มี LLM เกี่ยวข้องเลย
+"""site_learning/crawler.py — W14: BFS deterministic crawler ที่สร้าง SiteManual. LLM ไม่ตัดสินใจ navigate เลย
+(ลด token cost) — เรียกแค่ครั้งเดียวต่อหน้าเพื่อตั้งชื่อ/คำอธิบาย; ที่เหลือเป็น DOM data ล้วน.
 
-W15: ข้อยกเว้นแรกจากกฎ "ห้ามกด Submit" — login bootstrap (ดู
-site_learning/auto_login.py::attempt_login()) เพราะเว็บส่วนใหญ่ไม่มี nav link ใดๆ ให้เดินต่อเลยจนกว่าจะ sign in ก่อน (หน้า
-login มีแค่ฟอร์ม ไม่มีเมนู) ถ้าไม่ยอม submit ฟอร์มนี้เลย crawler จะสำรวจได้แค่หน้าแรกหน้า
-เดียวเสมอ — อนุญาตเฉพาะตอนที่ caller ส่ง username/password มาเองตรงๆ (ไม่ใช่ agent/LLM
-ตัดสินใจเอง) และเจอ password field จริงบนหน้าเท่านั้น ไม่บันทึก credential ไว้ที่ไหนเลย
-(ไม่ใส่ใน SiteManual, ไม่ log, ไม่ปรากฏใน progress event)
-
-W16: นอกจากเดินตาม nav link แล้ว ตอนนี้ crawler ยัง "ไล่กด" ปุ่มที่ปลอดภัย (ดู
-safety.is_crawl_safe — allowlist เดิม ไม่แตะ Delete/Submit/Purchase/Logout ฯลฯ) ทีละปุ่ม
-บนแต่ละหน้า เพื่อสำรวจ path/สถานะที่ nav link เดินไม่ถึง (เช่น ปุ่ม "View" ในตารางที่พาไป
-หน้ารายละเอียด, ปุ่ม "Expand" ที่เปิด panel) — เป็น DFS แบบไม่จำกัดความลึก (ตามที่ user
-ยืนยัน: "กดต่อไปเรื่อยๆ จนมั่นใจว่าไม่มีทางไปต่อ ... พอตันแล้วให้ถอยกลับแล้วเปลี่ยนปุ่ม")
-หน้าใหม่ที่เจอจากการกดปุ่มก็ถูกไล่กดปุ่มของมันต่อเองเสมอ ไม่มี depth cap แล้ว — ตันเมื่อไหร่
-(ไม่มีปุ่มปลอดภัยเหลือ/ทุกปุ่มพาไปหน้าที่เคยเจอแล้ว) ก็ถอยกลับไปลองปุ่มอื่นของหน้าก่อนหน้า
-โดยอัตโนมัติ (ดู _explore_buttons() — หลังกดแต่ละปุ่มจะย้อนกลับมาหน้าตั้งต้นเสมอก่อนลองปุ่ม
-ถัดไป: page.go_back() ก่อน มี page.goto() เป็น fallback ถ้า go_back ไม่พากลับไป URL เดิม
-จริง) การเดินจึงจบเองได้แน่นอนด้วย visited-set (ไม่เดินซ้ำหน้าที่เคยเจอ) +
-settings.site_learning_max_pages (เพดานรวมทั้ง crawl) + settings.site_learning_max_buttons_per_page
-(เพดานต่อหน้า กันหน้าที่มีปุ่มเยอะผิดปกติทำให้ตันช้าเกินไป)
-
-W24 — ปรับปรุงตามข้อร้องขอชุด "แก้ไข self learning" (ทำให้ contract ของการ "เรียนรู้เว็บไซต์"
-ชัดเจน+ตรวจสอบได้ แทนคำสั่งกว้างๆ แบบ "เข้าเว็บและเรียนรู้" — ระบบนี้เป็น deterministic
-crawler ไม่ใช่ LLM agent ที่ตัดสินใจเองจาก prompt ตามที่ W14 ตั้งใจไว้ตั้งแต่ต้น ดู
-docstring บรรทัดแรกของไฟล์นี้ — เลยแปล requirement เป็นการบังคับ+ตรวจสอบ "ขั้นตอน" ในโค้ด
-ตรงๆ แทนที่จะเขียนเป็นข้อความ prompt ให้ LLM ตีความเอง) ครบทุกขั้นตอนที่ระบุ:
-  1. Login -> สำรวจทุกเมนู -> คลิกทุกหน้าที่เข้าถึงได้ -> อ่านข้อมูลทุกหน้า -> บันทึกข้อมูล
-     -> จบเมื่อ queue ว่าง+retry ครบเท่านั้น (ของเดิมมีอยู่แล้วเกือบทั้งหมด ยกเว้นจุดที่ระบุ
-     ด้านล่าง — ไม่ใช่จบทันทีหลัง login/เข้า dashboard เพราะ loop หลักเดินตาม queue ต่อเสมอ)
-  2. Queue-based BFS (มีอยู่แล้วตั้งแต่ W14 — queue/queued/visited ด้านล่าง)
-  3. SPA support: เดิมพึ่ง wait_for_load_state("networkidle") อย่างเดียว ซึ่งไม่พอสำหรับ
-     client-side routing ที่ไม่ยิง network request ใหม่เลย (route เปลี่ยนจาก cache/state
-     ล้วนๆ) — เพิ่ม _wait_for_dom_stable() (poll ความยาว DOM จนนิ่ง) เรียกคู่กับ
-     networkidle ทุกจุดที่ navigate/click แล้ว
-  0. (W25, ต่อยอดจากรอบนี้) "Extract all clickable elements (a/button/role=button/
-     role=link) -> queue -> click ทีละตัว -> wait for load -> learn -> go back -> ทำจนกว่า
-     queue จะว่าง": button/role=button/role=link เป็นแบบนี้อยู่แล้วทุกประการผ่าน
-     _explore_buttons() (ดูข้อ 4 ด้านล่าง) — ส่วน <a href> เดิม extractor.py สแกนหาแค่ที่
-     อยู่ใน NAV_CONTAINERS (nav/aside/header/footer/[role=tablist]/[role=menu]) เท่านั้น
-     พลาดลิงก์ในเนื้อหา (content area) ที่ไม่มีทางอื่นเข้าถึงได้เลย — แก้เป็นสแกนทั้ง
-     เอกสาร (ดู extractor.py::_EXTRACT_JS ส่วน nav links) ให้ "extract all clickable a" จริง
-     *** ตั้งใจไม่เปลี่ยน <a href> จาก goto()-based BFS มาเป็น click()+go_back() แบบ
-     button — สองแบบนี้ให้ manual ผลลัพธ์เหมือนกันทุกประการ (เข้าเว็บ/เรียนรู้/บันทึกครบ)
-     แค่ goto() ตรงไปที่ URL ที่รู้อยู่แล้วจาก href ได้เลย ไม่ต้องเสียเวลา click+กลับมาที่
-     หน้าเดิมก่อนไปหน้าถัดไป (ไม่มี "หน้าเดิม" ให้ต้องกลับเลยในการ goto ตามคิวแบบ BFS
-     เรียงต่อกัน) — เปลี่ยนแค่ตอนนี้ scope กว้างขึ้น (ทั้งเอกสาร ไม่ใช่แค่ nav) ***
-  4. เมนูที่ไม่ใช่ <a>: extractor.py เพิ่ม role=menuitem/role=tab/router-link เข้า
-     BUTTON_SELECTOR + ธง is_nav_menu_item — ปุ่ม/element ที่ธงนี้ true จะถูกไล่กดแบบ
-     default-allow (เหมือน nav link ปกติ ดู _is_explorable ด้านล่าง) แทนที่จะต้องผ่าน
-     keyword allowlist เข้มแบบปุ่มทั่วไป — ครอบคลุม sidebar/dropdown/tab ที่ไม่ได้ทำเป็น
-     <a href> จริง (<a href="..."> ที่มีปลายทางจริงไม่นับเป็น nav menu item ในความหมายนี้
-     — ยังเดินผ่าน BFS href เดิมที่เช็ค same-origin ได้ก่อน navigate เท่านั้น กัน
-     _explore_buttons() คลิกลิงก์เดิมซ้ำแล้วเสี่ยงหลุดไปนอกโดเมนก่อนรู้ปลายทาง — ดู
-     extractor.py::isNavMenuItem() สำหรับเหตุผลเต็ม)
-  5. ไม่ปิด browser ก่อนเวลา: ตรวจสอบแล้ว — context.close()/browser.close() (routes.py)
-     อยู่ใน finally หลัง crawl loop จบสมบูรณ์เท่านั้น ไม่มีจุดไหนปิดกลางคัน (ไม่ต้องแก้)
-  6. Error handling: page.goto()/page.click() เดิมไม่มี retry เลย (fail ครั้งเดียว = ข้าม
-     เงียบๆ ทันที) — เพิ่ม _goto_with_retry()/_click_with_retry() (จำนวนครั้งปรับได้จาก
-     settings.site_learning_goto_retries/click_retries) + บันทึกลง SiteManual.errors +
-     ยิง progress event "page_error"/"button_click_failed" แทนการกลืน exception เงียบๆ
-  7. Finish condition: มีอยู่แล้ว (while queue and len(pages) < max — ดู main loop) แค่เพิ่ม
-     "ลอง retry ครบแล้ว" เป็นเงื่อนไขที่ทำให้ "ข้าม" หน้านั้น (ไม่ใช่ทำให้ crawl ทั้งหมดจบ)
-  8. ตรวจ session หลัง login: เดิมไม่เช็คอะไรเลยนอกจาก "กด submit ได้ไหม" (attempt_login()
-     คืนแค่นั้น ไม่รู้ว่า login ผ่านจริงหรือไม่) — เพิ่มการตรวจใน _login_and_continue():
-     URL เปลี่ยนจริงไหม, ยังเจอฟอร์ม login อยู่ไหม (find_login_fields), จำนวน cookie,
-     มี localStorage/sessionStorage token ไหม — ยิงเป็น event "login_result" (ดูเหตุผลที่
-     cookie/token เป็นแค่สัญญาณ informational ไม่ใช่เงื่อนไขบังคับ ในคอมเมนต์ของ
-     _login_and_continue เอง — เว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย)
-  9. Logging: progress event เดิมมีแค่ page_start/page_done/button_explored/
-     crawl_scan_done — เพิ่ม login_result/page_error/button_click_failed ครบตามที่ระบุ
-     (login สำเร็จไหม, error อะไรเกิดขึ้น) ส่วน "พบเมนู/หน้ากี่รายการ" มีอยู่แล้วใน
-     page_done (done/total) + crawl_scan_done (pages_found) เดิม เพิ่ม errors_found เข้าไป
-     ด้วย
- 10. Config: ย้าย retry/scroll count จาก magic number เป็น settings.site_learning_*
-     ปรับได้จาก .env (ดู config.py) พร้อมคอมเมนต์อธิบายว่าทำไม "ตั้งน้อยเกินไปจะหยุดเร็ว"
- 11. Dynamic content: เพิ่ม _reveal_dynamic_content() (เลื่อนจอจน scroll height นิ่ง — รองรับ
-     infinite scroll/lazy loading) เรียกก่อน extract ทุกจุด — modal/popup/accordion/
-     dropdown/tab ที่เปิดจากปุ่มมีอยู่แล้ว (ดู _explore_buttons ฝั่ง "ไม่เปลี่ยน URL") แต่
-     เดิมไม่ไล่กด element ที่เพิ่ง "โผล่มา" จากการเปิดนั้นต่อ (ถูกซ่อนด้วย display:none ตอน
-     extract ครั้งแรก มองไม่เห็นเลย) — เพิ่ม newly-revealed pass ความลึกจำกัด 1 ชั้น (ดู
-     _MAX_REVEAL_DEPTH) ให้ dropdown/accordion ที่เพิ่งเปิดถูกไล่กดต่อได้จริง
- 12. กันเรียนรู้ซ้ำ: มีอยู่แล้ว (visited/queued set ทั้ง BFS และ DFS ปุ่ม — ไม่ต้องแก้)
-
-W28: แก้ปัญหา "self learning วนลูป" ที่ user รายงาน (เจอบน YouTube Shorts — เรียนรู้ได้แค่
-หน้า Shorts วนไปเรื่อยๆ, ปุ่มค้นหา/ปุ่มอื่นที่อยู่ตำแหน่งเดิมถูกกดซ้ำไม่รู้จบข้ามหลายหน้า) —
-สาเหตุจริง: visited/queued (ข้อ 12 ข้างบน) กันแค่ "หน้า URL เดิม" ไม่ให้สำรวจซ้ำ แต่ไม่เคยกัน
-"ปุ่มเดิม" (label+role เดียวกัน เช่น ไอคอนค้นหาบน header, ปุ่ม "Previous/Next video" บน
-player) ไม่ให้ถูกไล่กดซ้ำข้าม URL ที่ต่างกัน — ผสมกับ W16 ที่ตั้งใจเอา depth cap ของ DFS
-ปุ่มออกไปแล้ว (กด "Next video" ได้ URL วิดีโอใหม่ = หน้าใหม่ที่ visited-set ไม่เคยเห็น =
-recurse ไล่กดปุ่มของหน้านั้นต่อ = เจอ "Next video" อีก = กด = ได้ URL ใหม่อีก ไม่รู้จบ) ทำให้
-เว็บที่มีเนื้อหาไม่จำกัด (ทุกคลิป Shorts มี URL ไม่ซ้ำกันเอง) ไล่กดปุ่มเดิมพาไปหน้าใหม่ที่
-"ไม่เคยเจอ" ได้เรื่อยๆ จนกิน max_pages budget ทั้งหมดไปกับหมวดเดียว ไม่เคยย้อนกลับไปสำรวจ
-ส่วนอื่นของเว็บเลย (ดูย่อหน้า W16 ด้านบนที่อธิบาย DFS ไม่จำกัดความลึกไว้ตั้งแต่ต้น) — แก้ด้วย
-explored_button_signatures (dict ระดับ crawl เดียวกับ visited/queued ไม่ใช่แค่ต่อหน้า) นับ
-จำนวนครั้งที่ปุ่ม "label+role เดียวกัน" ถูกไล่กดข้ามทุกหน้าทั้ง crawl (ดู _button_signature) —
-ถึงเพดาน settings.site_learning_max_repeat_button_clicks แล้วข้ามปุ่มนั้นไปเลยไม่ว่าจะเจอบน
-หน้าไหนอีก ทำให้ DFS ไล่ตามปุ่มประเภท pagination/chrome ที่ซ้ำกันได้จำกัดจำนวนครั้งจริง แทนที่
-จะไม่จำกัดเหมือนเดิม (ของเดิมที่ dedup ด้วย selector ในหน้าเดียวกัน — เช่น _merge_page_info,
-known_button_selectors — ยังอยู่เหมือนเดิมทุกจุด นี่เป็นเพดานเพิ่มเติมข้าม URL เท่านั้น)
-
-W33: user เสนอทางแก้เพิ่มเติมสำหรับเคส Shorts/Reels โดยเฉพาะ — "กดเข้าดูแค่ 1 รอบ แล้วเก็บ
-เทมเพลตโครงสร้างไว้ ต่อไปหากอ่านได้โครงสร้างตรงกับ template (ต่างแค่รายละเอียดแต่ปุ่มเหมือนกัน)
-ให้กด back แล้วไปทำ step ต่อไปได้เลย" — ช่องว่างจริงที่ W28/W29 (ข้างบน) ยังไม่ครอบคลุม: ถ้าเว็บ
-มี feed ที่มีลิงก์ไปคลิปคนละอันจริงๆ สิบๆ รายการ (คนละ href/URL จริง ไม่ใช่ปุ่ม "Next" ตัวเดียว
-ที่ถูกกดซ้ำ) explored_button_signatures ไม่ช่วยอะไรเลย เพราะแต่ละลิงก์เป็น nav_links ที่ต่อคิว
-BFS ตรงๆ (ดู W25 — สแกนทั้งเอกสารแล้ว) ไม่ผ่าน _explore_buttons()/signature-cap เลย แต่ละคลิป
-เลยยังถูก describe+บันทึกลง manual ครบทุกอันอยู่ดี ทั้งที่ UI เหมือนกันทุกอย่าง (ปุ่ม
-Like/Comment/Share/Next) ต่างแค่เนื้อหาคลิป — เสีย LLM describe call + กิน max_pages budget
-ไปกับหน้าที่ให้ข้อมูลโครงสร้างซ้ำซ้อนกันจริง
-
-แก้ด้วย _page_template()/known_page_templates (set ระดับ crawl เดียวกับ
-explored_button_signatures) — ก่อน describe+บันทึกหน้าใหม่ทุกครั้งใน _record_page() (จุดร่วม
-ของทั้ง BFS/DFS-ปุ่ม/หลัง-login) เทียบ "ลายนิ้วมือโครงสร้าง" ของหน้านี้ (set ของ signature ปุ่ม
-ทุกปุ่มบนหน้า + สัญญาณหยาบๆ ว่ามีฟอร์ม/ตารางไหม — ไม่สนเนื้อหา/ลำดับ) กับที่เคยเจอมาแล้ว ตรงเป๊ะ
-= ข้ามไปเลย (ไม่ describe ไม่บันทึกลง pages ไม่ไล่กดปุ่มต่อ ไม่ต่อคิว nav link ของหน้านี้ —
-ถือว่าได้ตัวแทนเพียงพอแล้วจากครั้งแรก) ไม่ตรง = บันทึกตามปกติ + จำ template นี้ไว้เป็นตัวแทนใหม่
-— ไม่ต้องมี logic "กด back" แยกต่างหากเลยตามที่ user ขอ เพราะ _explore_buttons() (เส้นทาง DFS)
-go_back()/goto(before_url) อยู่แล้วเสมอไม่ว่า _record_page() จะทำอะไรข้างในก็ตาม ส่วนเส้นทาง BFS
-ก็แค่ไปหยิบ URL ถัดไปจาก queue ต่อเองอยู่แล้วโดยธรรมชาติ (ตรงกับ "ไปทำ step ต่อไปได้เลย")
-
-W34: user ขอเพิ่มว่า "ถ้ากดแล้วลิงก์หลักเปลี่ยนไปเป็นคนละเว็บเลย (เช่น youtube.com/... กด
-แล้วหลุดไปเว็บอื่น _____.com) ให้กดกลับมาที่ลิงก์หลักทันที ไม่ต้องเรียนรู้เว็บนั้นต่อ" —
-ตรวจโค้ดแล้วพบว่า _explore_buttons() มีบั๊กจริงตรงนี้ (ไม่ใช่แค่ยังไม่ได้ทำ): เงื่อนไขเดิม
-`if after_url != before_url and extract_domain(page.url) == domain:` ครอบคลุมแค่ "navigate
-ไปหน้าใหม่ในโดเมนเดียวกัน" — ถ้า navigate ไปจริงแต่ extract_domain ไม่ตรง (หลุดออกนอกโดเมน)
-เงื่อนไขนี้เป็น False ตกไปที่ else-branch ("ไม่ navigate ไปไหน น่าจะเป็น modal") ทั้งที่จริงๆ
-navigate ไปแล้วจริง! โค้ดเดิมจะ extract_page()/merge โครงสร้างของ "เว็บอื่น" เข้ากับ
-base_page_info ของหน้าเดิม (ข้อมูลปนเปื้อนเว็บอื่นเข้า manual) แล้วไม่เคย goto กลับมาที่โดเมน
-เป้าหมายเลยสักครั้ง — page object ค้างอยู่ที่เว็บอื่นต่อไปเรื่อยๆ ทำให้ปุ่มถัดไปใน
-safe_buttons (ซึ่งอ้างอิง selector ของหน้าเดิม) หา element ไม่เจอ/กดพลาดต่อเนื่องจนกว่าจะ
-ตัน — สาเหตุที่คลิกหลุดไปเว็บอื่นได้ทั้งที่ nav_links ปกติกรอง cross-origin ไว้แล้ว (ดู
-_record_page()'s `if extract_domain(absolute) != domain: continue`): <a href="เว็บอื่น">
-บาง element ที่ label ทั่วไป (เช่น "View"/"Continue") ผ่าน is_crawl_safe() ได้ (ไม่รู้ปลายทาง
-ล่วงหน้า ต่างจาก nav_links ที่เช็ค href ได้ก่อน queue) เลยยังถูกกดผ่านเส้นทาง DFS-click ได้
-อยู่ดี
-
-แก้: เพิ่ม branch แยกสำหรับ "navigate ไปแล้วจริง แต่ extract_domain ไม่ตรงเป้าหมาย" ใน
-_explore_buttons() โดยเฉพาะ (ไม่ปนกับ branch "ไม่ navigate เลย" อีกต่อไป) — บันทึก error +
-ยิง event "off_domain_navigation" แล้ว go_back()/goto(before_url) กลับมาทันที (รูปแบบเดียว
-กับตอน navigate ไปหน้าใหม่ในโดเมนเดียวกันสำเร็จ) ไม่ extract/merge อะไรจากเว็บอื่นเข้า
-manual เลย + เพิ่ม guard เดียวกันในเส้นทาง BFS หลัก (เผื่อ URL ที่ same-domain ตอนถูกต่อคิว
-ดัน redirect ออกนอกโดเมนเองระหว่างโหลดจริง เช่น URL shortener/OAuth bounce) — ตรงนั้นแค่
-ข้าม URL นี้ไปหน้าถัดไปใน queue เฉยๆ พอ ไม่ต้อง goto กลับเพราะ BFS ไม่มี "หน้าเดิม" ที่ต้อง
-กลับไปเหมือน DFS-click
-
-W36: user รายงานว่า self-learning ยัง "กดปุ่มเยอะเกินความจำเป็น" บนหน้าที่มีปุ่มรอง/ตกแต่ง
-เยอะ (filter/sort/share/like/notification ฯลฯ) — W28-W35 (ข้างบนทั้งหมด) แก้ปัญหา "วนลูป"
-(ปุ่ม/หน้าที่ซ้ำกันข้ามหลาย URL) แต่ไม่เคยแยกแยะว่าปุ่มไหน "สำคัญ" กับ "ไม่สำคัญ" เลย — ทุก
-element ที่ผ่าน safety.is_crawl_safe() ถูกไล่กดเท่าเทียมกันหมด ทำให้หน้าที่มีปุ่มปลอดภัย
-(ตาม allowlist เดิม) จำนวนมากแต่ส่วนใหญ่เป็นแค่ decoration (share/like/notification
-bell/theme switch/pagination เลขหน้า) กินเวลา/LLM describe call ไปกับปุ่มที่ไม่ได้พาไปหน้า
-ใหม่ที่มีความหมายจริง
-
-แก้ด้วยชั้น "core function classification" ใหม่ (ดู safety.py::classify_button_tier/
-button_core_priority, extractor.py::_build_button/isFormSubmit, schema.py::ButtonInfo.tier/
-is_form_submit) — ทุกปุ่มถูกจัดเป็น 1 ใน 3 tier ตอน extract_page(): "nav" (=
-is_nav_menu_item เดิม), "core" (ฟังก์ชันหลักของหน้า เช่น search/filter/sort/submit ในฟอร์ม
-— เป็น fallback เริ่มต้นด้วยตั้งใจ กัน "View"/"Expand"/"Next" ที่ W16 พึ่งพาอยู่หายไป), หรือ
-"decorative" (share/like/notification/theme switch/pagination เลขหน้า>1 ฯลฯ) —
-_explore_buttons() (ดูด้านล่าง) ตัด tier="decorative" ออกตั้งแต่ต้นก่อนถึง _is_explorable()
-เลย (ไม่ต้องเช็ค is_crawl_safe() ด้วยซ้ำ) แล้วถ้าปุ่ม tier="core" ที่เหลือเกินเพดานใหม่
-settings.site_learning_max_core_buttons_per_page ต่อหน้า จะตัดเอาแค่ top-K ตาม priority
-(form-submit > exact keyword match > partial match) — tier ไม่ใช่ safety gate ตัวใหม่
-(is_crawl_safe() ไม่ถูกแก้เลย ยังเป็นตัวตัดสินสุดท้ายว่ากดได้จริงไหมเหมือนเดิมทุกประการ) แค่
-ลดจำนวน candidate ที่ต้องพิจารณาต่อหน้าลงอีกชั้นก่อนถึงขั้นตอนนั้น
-
-tier="nav" ยังคงไหลผ่าน _explore_buttons() เหมือนเดิมทุกประการ (ไม่ได้ถูกกรองออกแม้ตาม
-requirement เดิมจะระบุว่า "nav ไปทาง BFS queue ตามปกติ ไม่แตะ") — เหตุผล: W24 ทำให้เมนู/tab
-แบบ SPA ที่ไม่มี href จริง (<div role=menuitem>) ต้องพึ่ง _explore_buttons() (DFS-click)
-เป็นเส้นทางเดียวที่สำรวจได้ (ไม่มี href ให้ BFS queue เดินตามตรงๆ) ถ้ากรอง tier="core"
-เท่านั้นจริงๆ จะตัด SPA menu พวกนี้ออกจากการสำรวจไปเลย เป็น regression ของ W24 — ยืนยันกับ
-user แล้วว่าให้คงพฤติกรรมเดิมไว้ (กรองแค่ตัด decorative ออก ไม่ใช่จำกัดเหลือแค่ core)
-
-explored_button_signatures (W28/W29) และ known_page_templates (W33)/
-consecutive_same_name_count (W35) ทำงานต่อจาก safe_buttons ที่ผ่าน tier filter มาแล้วโดยไม่
-ถูกแก้ logic เลย — tier filter คำนวณ candidate list เสร็จสมบูรณ์ก่อน loop `for button in
-safe_buttons` จะเริ่มด้วยซ้ำ (ดูโค้ดด้านล่าง)
-
-W37: user ระบุตรงๆ ว่าแค่ต้องการเรียนรู้ "โครงสร้างของหน้าเว็บ" ไม่ต้องการให้ crawler กดดู
-วีดีโอเลย (ยกตัวอย่าง YouTube/Facebook/Instagram) เพราะคลิปวีดีโอแนะนำคลิปถัดไปต่อเรื่อยๆ ไม่
-รู้จบ พาให้เดินเข้าไปแล้วไม่ถอยกลับมาสำรวจส่วนอื่นของเว็บอีกเลย — W28-W36 (ข้างบนทั้งหมด) แค่
-จำกัดจำนวนครั้ง/ตัดปุ่มรอง ยังปล่อยให้เข้าไปดูวีดีโอได้บ้างอยู่ดี ไม่ตรงกับที่ user ต้องการรอบ
-นี้ (ไม่กดเข้าไปเลยแม้แต่ครั้งเดียว) — เพิ่ม safety.is_video_content_url()/
-is_video_content_label() (ดู docstring ของทั้งคู่สำหรับรายละเอียด path/label ที่ตรวจ) ใช้ 3 จุด:
-  1. _record_page(): nav_links loop กรอง href ที่ตรง video pattern ออกก่อนต่อคิว BFS เลย
-     (เหมือนที่กรอง cross-origin อยู่แล้ว)
-  2. safety.classify_button_tier(): label ที่บ่งบอกวีดีโอ -> tier="decorative" ทันที (ก่อน
-     เช็ค is_nav_menu_item ด้วยซ้ำ — ตั้งใจให้ชนะแม้เป็นเมนู/tab วีดีโอโดยตรง เช่น tab
-     "Watch" ของ Facebook) กัน _explore_buttons() กดเข้าไปเลย
-  3. _explore_buttons(): หลัง DFS-click navigate ไปหน้าใหม่ในโดเมนเดียวกันสำเร็จแล้ว เช็ค URL
-     ปลายทางอีกชั้น (เผื่อ label ไม่มีคำใบ้ตรงๆ เช่น thumbnail ที่ label เป็นแค่ชื่อคลิป ไม่มี
-     คำว่า "watch"/"shorts" เลย) — ถ้าตรง video pattern ไม่ extract/describe/บันทึกเป็นหน้า
-     เลย (ไม่ใช่แค่ไม่ไล่กดต่อ) แล้ว go_back()/goto(before_url) กลับทันที เหมือนวิธีจัดการ
-     off-domain navigation (W34) แค่ไม่ใช่ error (ยิง event "video_content_skipped" แทน
-     "off_domain_navigation" — ทำงานตามที่ตั้งใจ ไม่ใช่ปัญหา)
-
-W38: user ยืนยันว่า W37 แก้ปัญหาวีดีโอได้ถูกต้องแล้ว แต่รายงานปัญหาคล้ายกันแบบใหม่ — ติดลูป
-"กดดูแฮชแท็ก" แทน (กด "#คำ" ในโพสต์ -> หน้ารวมโพสต์ที่ติดแฮชแท็กเดียวกันนับพัน -> มีแฮชแท็ก
-อื่นให้กดต่อในหน้านั้นอีก -> ไม่รู้จบ เหมือนปัญหาวีดีโอเป๊ะ) — เพิ่ม safety.is_hashtag_url()/
-is_hashtag_label() ใช้ที่ 3 จุดเดียวกับ W37 เป๊ะๆ (nav_links loop/classify_button_tier/
-post-click safety net ใน _explore_buttons) รวม logic การเช็คทั้ง video (W37) และ hashtag
-(W38) ไว้ที่ _excluded_content_reason() ตัวเดียว (ดูฟังก์ชันนั้น) คืนชื่อประเภทเนื้อหาที่ควร
-ข้าม ("video"/"hashtag") หรือ None แทนที่จะเช็คแยกทีละเงื่อนไขซ้ำ 2 รอบในทั้ง nav_links loop
-และ post-click safety net — event ที่ยิงออกไปเปลี่ยนจาก "video_content_skipped" คงที่ เป็น
-f"{reason}_content_skipped" แบบไดนามิก (ได้ "video_content_skipped"/"hashtag_content_skipped"
-ตามประเภทจริง) ไม่กระทบ event เดิมของ W37 เลย (ชื่อ event เหมือนเดิมทุกประการสำหรับกรณีวีดีโอ)
-
-W39: user รายงานว่า self-learning "ไม่เห็น"/ไม่กดปุ่มที่อยู่ใน <iframe> เลย (เจอบนหน้า test
-playground ที่มี iframe ซ้อนกัน 2 ชั้น แต่ละชั้นมีปุ่ม Edit/Submit/Click me/Primary ของ
-ตัวเอง) — สาเหตุจริง: extractor.py::_EXTRACT_JS เดิมรันผ่าน page.evaluate() ซึ่ง execute ใน
-context ของ main document เท่านั้น document.querySelectorAll() มองไม่เห็น element ภายใน
-<iframe> เลย (คนละ document object กันโดยสิ้นเชิง แม้ same-origin ก็ตาม) — ต่อให้แก้แค่ฝั่ง
-extraction ก็ยังกดไม่ได้อยู่ดี เพราะ page.click(selector) (ที่ crawler.py ใช้ทุกจุด) ก็ query
-ข้าม frame boundary ไม่ได้เหมือนกัน ต้องแก้ทั้ง 2 ฝั่งคู่กัน:
-  1. extractor.py::extract_page() — ไล่ extract ซ้ำในทุก frame (page.frames คืนทุก frame
-     แบบ flat รวม nested เองอยู่แล้ว) แปะ frame_index (ตำแหน่งใน page.frames ตอน extract) ไว้
-     กับปุ่ม/ช่องฟอร์มที่เจอในแต่ละ child frame (ดู schema.py::ButtonInfo.frame_index/
-     FormFieldInfo.frame_index — 0 = main frame ตลอด เข้ากันได้กับ manual เก่าที่ไม่มีฟิลด์
-     นี้เลย default เป็น main frame ถูกต้องเหมือนพฤติกรรมเดิมทุกประการ) *** ตั้งใจใช้ index
-     แทน frame.url ตรงๆ เพราะทดสอบแล้วพบว่า <iframe srcdoc="..."> ที่ซ้อนกัน (พบได้ในเว็บ
-     demo/testing) ทุกตัวได้ frame.url เป็น "about:srcdoc" เหมือนกันหมด ไม่ unique พอให้
-     แยกแยะได้ — page.frames เป็น flat list ที่ตำแหน่งเดียวกันภายในการ visit หน้าเดียวกัน
-     เชื่อถือได้กว่า (ยอมรับความเสี่ยงที่ index อาจไม่ตรงแล้วถ้าโครงสร้าง frame เปลี่ยนไป
-     ระหว่าง extract กับตอนกดจริง เช่น หน้าที่เพิ่ม/ลบ iframe แบบ dynamic — กรณีนี้พบไม่บ่อย
-     สำหรับหน้าที่กำลังสำรวจซึ่งยังไม่ navigate ไปไหนระหว่างนั้น) ***
-  2. crawler.py::_resolve_click_target() (ใหม่) — แปลง frame_index กลับเป็น Frame object
-     จริงตอนจะกด เรียกก่อน _click_with_retry() ทุกครั้งใน _explore_buttons() — _click_with_
-     retry() เปลี่ยน parameter จาก page ตรงๆ เป็น ClickTarget (Union[Page, Frame] — ทั้งคู่มี
-     .click()/.wait_for_timeout() หน้าตาเหมือนกันเป๊ะสำหรับ use case นี้ ใช้แทนกันได้ตรงๆ ไม่
-     ต้องเขียน logic แยก 2 ชุด)
-
-*** ขอบเขตที่ตั้งใจไม่แตะ: auto_login.py ยังกรอกฟอร์มผ่าน page ตรงๆ เหมือนเดิม ไม่รองรับฟอร์ม
-login ที่อยู่ใน iframe (นอกขอบเขตที่ user รายงานรอบนี้ — ปัญหาที่รายงานเป็นเรื่องปุ่มเท่านั้น)
-ฟอร์มใน iframe ตอนนี้แค่ "มองเห็นได้"/บันทึกลง SiteManual ถูกต้อง (มีประโยชน์ต่อ manual) ไม่ได้
-แก้ auto-fill ให้ทำงานข้าม frame ได้จริง — เช่นเดียวกัน main BFS loop/after_url comparison
-logic ใน _explore_buttons() ยังอ้างอิง page.url (main frame) เหมือนเดิมทุกประการ ไม่แก้ให้ตาม
-ติด navigation ที่เกิด "ภายใน" iframe เอง (เช่น iframe เปลี่ยน src โดยไม่กระทบ top-level URL)
-เพราะกรณีนี้จะถูกจัดการเหมือน "modal/panel เปิดในหน้าเดิม" อยู่แล้วโดยธรรมชาติ (re-extract
-ทุก frame ใหม่ทั้งหมด รวม frame ที่เพิ่งเปลี่ยนไปด้วย แล้ว merge เข้า base_page_info) ซึ่งเพียง
-พอสำหรับเป้าหมายที่ user ระบุ (ให้ "เห็น"/"กด" ปุ่มใน iframe ได้ ไม่ใช่ให้ iframe navigation
-กลายเป็นหน้าใหม่แยกต่างหากใน manual)
+W15: ข้อยกเว้น "ห้ามกด Submit" — login bootstrap (auto_login.attempt_login) เพราะหน้า login ไม่มี nav link ให้เดินต่อ;
+     เฉพาะเมื่อ caller ส่ง credential มาเองและเจอ password field จริง; ไม่บันทึก/log credential ที่ไหนเลย
+W16: ไล่กดปุ่มปลอดภัย (is_crawl_safe) แบบ DFS ไม่จำกัดความลึก แล้ว go_back()/goto() กลับก่อนปุ่มถัดไป; จบได้ด้วย
+     visited-set + site_learning_max_pages + site_learning_max_buttons_per_page
+W24: contract ของ "เรียนรู้เว็บ" บังคับในโค้ด (ไม่ใช่ prompt): queue BFS; _wait_for_dom_stable() สำหรับ SPA routing
+     ที่ไม่ยิง network; เมนูที่ไม่ใช่ <a> (is_nav_menu_item) default-allow; _goto/_click_with_retry + SiteManual.errors
+     + event page_error/button_click_failed แทนการกลืนเงียบ; ตรวจ session หลัง login (login_result); retry/scroll
+     ย้ายเป็น settings.site_learning_*; _reveal_dynamic_content() สำหรับ lazy/infinite scroll; newly-revealed pass
+     1 ชั้น (_MAX_REVEAL_DEPTH) สำหรับ dropdown/accordion ที่ซ่อนด้วย display:none ตอน extract แรก
+W25: <a href> สแกนทั้งเอกสาร (เดิมแค่ NAV_CONTAINERS) — ยัง goto()-BFS ไม่ใช่ click+go_back (ผลเหมือนกันแต่เร็วกว่า)
+W28/W29: ลูปกดปุ่มเดิมข้าม URL ไม่รู้จบ (YouTube Shorts "Next video") — explored_button_signatures นับต่อ crawl
+     จำกัดด้วย settings.site_learning_max_repeat_button_clicks (ดู _button_signature)
+W33: feed ลิงก์ไปคลิปคนละ URL แต่ UI เหมือนกัน — _page_template()/known_page_templates ข้ามหน้าโครงสร้างซ้ำใน
+     _record_page() (ไม่ต้องมี logic "กด back" แยก — caller กลับเองอยู่แล้ว)
+W34: บั๊กจริง — DFS-click ที่หลุดนอกโดเมนเคยตกไป branch "modal" แล้ว merge โครงสร้างเว็บอื่นเข้า manual และไม่กลับมา;
+     แยก branch off-domain (event off_domain_navigation + goto กลับ) + guard redirect นอกโดเมนใน BFS (ข้าม URL)
+W35: ชื่อหน้าซ้ำติดกัน > 2 ครั้ง -> หยุดไล่ปุ่ม/ต่อคิวจากหน้านั้น (template ไม่ตรงเป๊ะแต่ LLM ตั้งชื่อเหมือน)
+W36: tier filter — ตัด "decorative" ก่อน _is_explorable() + เพดาน core ต่อหน้า (top-K ตาม button_core_priority);
+     ไม่ใช่ safety gate. "nav" ยังผ่าน _explore_buttons() เพราะเมนู SPA ไม่มี href (W24) — user ยืนยันแล้ว
+W37/W38: ไม่เข้าหน้าวีดีโอ/แฮชแท็กเลย (_excluded_content_reason) ใน 3 จุด: nav_links loop, classify_button_tier,
+     post-click URL check (event f"{reason}_content_skipped")
+W39: ปุ่มใน <iframe> — extractor แปะ frame_index; _resolve_click_target() คืน Frame ที่ถูก (index ไม่ใช่ url เพราะ
+     srcdoc iframe ได้ "about:srcdoc" เหมือนกันหมด). ขอบเขต: auto_login ยังไม่รองรับฟอร์มใน iframe และ navigation
+     ภายใน iframe ถูกจัดการเหมือน modal (re-extract ทุก frame แล้ว merge)
 """
 
 import json
@@ -273,9 +54,7 @@ from backend.app.site_learning.safety import (
 from backend.app.site_learning.schema import PageInfo, SiteManual
 
 OnProgressFunc = Callable[[dict], Awaitable[None]]
-# W23: เรียกตอนเจอหน้าที่มี password field จริง แต่ยังไม่มี username/password ให้ใช้เลย
-# (ไม่ได้ส่งมาตอนเริ่ม crawl) — รับ domain (ของเว็บที่กำลัง crawl อยู่นี้เท่านั้น) คืน
-# {"username":..., "password":...} ถ้า user กรอกจริง หรือ None ถ้า user เลือกข้าม/หมดเวลา
+# W23: เรียกเมื่อเจอหน้า login แต่ไม่มี credential — รับ domain ของเว็บนี้ คืน {"username","password"} หรือ None (ข้าม/หมดเวลา)
 OnCredentialsNeededFunc = Callable[[str], Awaitable[Optional[dict]]]
 
 _DESCRIBE_PROMPT_TEMPLATE = (
@@ -292,10 +71,7 @@ _DESCRIBE_PROMPT_TEMPLATE = (
 
 
 async def describe_page(client, model: str, provider: str, page_info: PageInfo) -> tuple[str, str]:
-    """เรียก LLM ครั้งเดียวต่อหน้าเพื่อตั้งชื่อ+เขียนคำอธิบายจากโครงสร้างที่สกัดมาแล้ว —
-    ไม่เคยใช้ LLM ตัดสินใจ navigate เลย ถ้า parse ผลลัพธ์ไม่ได้ (โมเดลตอบนอกรูปแบบ JSON)
-    fallback เป็นชื่อจาก URL path เฉยๆ ไม่ throw ออกไปกลางการ crawl (1 หน้าพังไม่ควรทำ
-    ทั้ง crawl ล้มเหลวไปด้วย)"""
+    """คืน (name, description) จาก LLM ครั้งเดียวต่อหน้า; parse ไม่ได้ -> ชื่อจาก URL path, "". ไม่ throw"""
     buttons = ", ".join(
         (b.text or b.aria_label or b.icon_hint) for b in page_info.buttons[:15]
         if (b.text or b.aria_label or b.icon_hint)
@@ -337,14 +113,8 @@ _SITE_SUMMARY_PROMPT_TEMPLATE = (
 
 
 async def describe_site(client, model: str, provider: str, website: str, pages: list[PageInfo]) -> str:
-    """W26: เรียก LLM อีกครั้งเดียว (แยกจาก describe_page ที่เรียกต่อหน้า) หลัง crawl จบทั้ง
-    เว็บแล้ว เพื่อสรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ให้ user อ่านทันทีที่เรียนรู้เสร็จ ไม่
-    ต้องไล่เปิดดูทุกหน้าเอง — ใช้แค่ name/description ของแต่ละหน้าที่มีอยู่แล้วจาก
-    describe_page() (ไม่ส่ง buttons/forms/tables ดิบๆ ซ้ำ กันกิน token เกินจำเป็น สรุประดับ
-    "ภาพรวมเว็บไซต์" ไม่ต้องมีรายละเอียดลึกขนาดนั้น)
-
-    fallback ถ้า LLM ล้มเหลว/ตอบว่างเปล่า: เรียงชื่อหน้าดิบๆ แทน (ไม่ throw ออกไปกลาง crawl —
-    กฎเดียวกับ describe_page()) คืนสตริงว่างเปล่าถ้าไม่มีหน้าไหนมีชื่อเลย (crawl ไม่เจออะไร)"""
+    """W26: สรุปภาพรวมเว็บหลัง crawl จบ (LLM ครั้งเดียว ใช้แค่ name/description กัน token). LLM ล้ม -> รายชื่อหน้า;
+    "" ถ้าไม่มีหน้าที่มีชื่อ. ไม่ throw"""
     named_pages = [p for p in pages if p.name]
     fallback = (
         f"เว็บไซต์นี้มีทั้งหมด {len(pages)} หน้า: " + ", ".join(p.name for p in named_pages[:15])
@@ -366,11 +136,8 @@ async def describe_site(client, model: str, provider: str, website: str, pages: 
 
 
 def _merge_page_info(base: PageInfo, extra: PageInfo) -> None:
-    """รวมโครงสร้างที่เพิ่งโผล่มาใหม่ (เช่น modal/panel/tab ที่เปิดจากปุ่มที่เพิ่งกด แต่ URL
-    ไม่เปลี่ยน — ดู _explore_buttons) เข้ากับ PageInfo เดิมของหน้านี้ — dedup ด้วย selector
-    (buttons/forms) และด้วยค่าตรงๆ (modals/tabs/tables) กันซ้ำกับที่เจอไปแล้วตอน extract
-    ครั้งแรก ไม่สร้าง PageInfo/entry ใหม่แยกต่างหาก เพราะยังเป็น URL เดียวกัน (ไม่ใช่หน้า
-    ใหม่จริงๆ) — เป้าหมายคือให้ manual จับโครงสร้างที่ซ่อนอยู่หลังปุ่มได้ครบถ้วนกว่าเดิม"""
+    """merge โครงสร้างที่โผล่จาก modal/panel/tab (URL เดิม) เข้า base — dedup ด้วย selector (buttons/forms)
+    และค่าตรงๆ (tables/modals/tabs)"""
     known_button_selectors = {b.selector for b in base.buttons if b.selector}
     base.buttons.extend(b for b in extra.buttons if b.selector and b.selector not in known_button_selectors)
     known_form_selectors = {f.selector for f in base.forms if f.selector}
@@ -387,15 +154,8 @@ def _merge_page_info(base: PageInfo, extra: PageInfo) -> None:
 
 
 def _button_label(button) -> str:
-    """label ที่ดีที่สุดเท่าที่มีของปุ่มนี้ — text > aria_label > title > icon_hint (ลำดับ
-    เดิมตามที่ ButtonInfo.icon_hint กำหนดไว้) เพิ่ม data_testid (humanized) เป็น fallback
-    สุดท้ายอีกชั้น: เว็บที่ทำ QA อัตโนมัติ (เช่น saucedemo) มักใส่ data-test/data-testid ไว้
-    บนปุ่ม icon-only ที่ไม่มี text/aria-label/title/svg-title/icon-font class เลยสักอย่าง
-    (เช่น ปุ่มตะกร้าสินค้ามุมขวาบนที่เป็นแค่ svg ไม่มี label ให้ inferIconHint() เดาได้ —
-    ดู extractor.py) ทำให้ label ออกมาว่างเปล่า แล้ว is_crawl_safe() เห็นว่า "ไม่แน่ใจ"
-    ปฏิเสธไม่กดตลอดไป (ดู safety.py) ทั้งที่ data-test บอกไว้ชัดเจนอยู่แล้วว่าปุ่มนี้คืออะไร
-    เช่น "shopping-cart-link" -> "shopping cart link" — ไม่กระทบ selector ที่ใช้ dispatch
-    จริง (ยังคง button.selector เดิมเป๊ะ) แค่ทำให้ตัดสินใจ "ควรกดไหม" ได้แม่นขึ้นเท่านั้น"""
+    """text > aria_label > title > icon_hint > data_testid (humanized). data_testid: เว็บ QA (saucedemo) มีปุ่ม
+    icon-only ที่ไม่มี label อื่น -> is_crawl_safe() ปฏิเสธตลอด ทั้งที่ "shopping-cart-link" บอกชัด. ไม่กระทบ selector"""
     return (
         button.text or button.aria_label or button.title or button.icon_hint
         or button.data_testid.replace("-", " ").replace("_", " ").strip()
@@ -403,24 +163,9 @@ def _button_label(button) -> str:
 
 
 def _button_signature(button) -> str:
-    """W28/W29: ลายเซ็นของปุ่มที่ถือว่า "เหมือนกันจริง" ข้ามหลายหน้า — W29 เปลี่ยนจากใช้
-    label เต็ม (_button_label: text > aria_label > title > icon_hint > data_testid) มาใช้
-    แค่ text ที่เห็นจริงบนปุ่ม (มักคงที่ เช่น "Search"/"Subscribe") ตกมาถึง data_testid แล้ว
-    icon_hint แทน — ***ตัด aria_label/title ออกไปเลย ไม่ใช้เป็น identity อีกต่อไป*** เพราะ
-    สองฟิลด์นี้เป็น "description" ที่เว็บจำนวนมาก (เช่น YouTube) generate มาแบบมีเนื้อหาต่อ
-    ท้ายที่เปลี่ยนทุก instance (เช่น aria-label="Next video: <ชื่อคลิป>", "ผลการค้นหาสำหรับ
-    <คำค้น>") — ตอน W28 ยังใช้ label เต็มที่รวม aria_label/title เข้าไปด้วย ทำให้ปุ่มที่จริงๆ
-    เป็นปุ่มเดียวกันทุกประการ (icon/role/ตำแหน่งในหน้าเหมือนกันเป๊ะ เช่นปุ่ม "Next video" บน
-    player ของทุกคลิป Shorts) ได้ signature ไม่ตรงกันสักครั้งเพราะส่วนท้ายของ aria_label
-    เปลี่ยนไปเรื่อยๆ ตามคลิป — เพดาน settings.site_learning_max_repeat_button_clicks เลยไม่มี
-    ผลจริง (ไม่เคยนับว่าเป็นปุ่ม "เดิม" สักที ยังคงไล่กด "Next video"/"Search" ซ้ำข้ามหน้าได้
-    ไม่รู้จบเหมือน W28 ตั้งใจแก้แต่แก้ไม่หมด) — W29 หันไปอ้างอิง "องค์ประกอบ" ของปุ่มแทน
-    (role, has_icon, icon_hint, data_testid, is_nav_menu_item) ซึ่งคงที่ข้ามหน้าจริงสำหรับ
-    ปุ่ม chrome/pagination ประเภทนี้ ตามที่ user ยืนยัน: "อ้างอิงจากองค์ประกอบปุ่ม แบบไม่สนใจ
-    description" — แลกกับ false-positive ที่เป็นไปได้: ปุ่ม text ธรรมดาที่ไม่มี icon/
-    data-testid เลยและข้อความบนปุ่มดันซ้ำกันโดยบังเอิญระหว่างปุ่มที่ทำหน้าที่ต่างกันจริง (เช่น
-    "View" ในตาราง Products กับตาราง Orders) จะถูกมองว่าเป็นปุ่มเดียวกัน — ยอมรับ trade-off
-    นี้เพราะเป้าหมายหลักคือกัน loop ไม่รู้จบก่อน"""
+    """W28/W29: identity ของปุ่มข้ามหน้า = text > data_testid > icon_hint + role/has_icon/is_nav_menu_item.
+    W29 ตัด aria_label/title ออก — YouTube ใส่ "Next video: <ชื่อคลิป>" ทำให้ signature ไม่เคยซ้ำ เพดาน W28 ไร้ผล.
+    trade-off: ปุ่ม text เหมือนกันคนละหน้าที่ (เช่น "View" คนละตาราง) ถูกนับเป็นปุ่มเดียว — ยอมเพื่อกันลูป"""
     identity = (
         (button.text or "").strip().lower()
         or (button.data_testid or "").strip().lower()
@@ -435,21 +180,8 @@ def _button_signature(button) -> str:
 
 
 def _page_template(page_info: PageInfo) -> frozenset[str]:
-    """W33: ลายนิ้วมือของ "โครงสร้าง" หน้านี้ (ไม่ใช่เนื้อหา) — ใช้เทียบว่าหน้าใหม่ที่เพิ่ง
-    เจอ "หน้าตาเหมือนหน้าที่เคยบันทึกไปแล้วไหม ต่างแค่รายละเอียด" (ตามที่ user ระบุ — ตัวอย่าง
-    ที่เจอบ่อยคือหน้า Shorts/Reels: แต่ละคลิปเป็นคนละ URL จริง แต่ UI ทั้งหมด (ปุ่ม
-    Like/Comment/Share/Next ฯลฯ) เหมือนกันเป๊ะทุกคลิป) — ต่างจาก _button_signature() ที่
-    เทียบ "ปุ่มเดียว" ข้ามหน้า ตัวนี้เทียบ "ทั้งหน้า" โดยรวม signature ของทุกปุ่มบนหน้าเป็น
-    set เดียว (ไม่สนลำดับ/ตำแหน่งเป๊ะ — แค่ "มีปุ่มหน้าตาแบบนี้ครบชุดไหม") บวกกับสัญญาณหยาบๆ
-    ว่ามีฟอร์ม/ตารางอยู่ไหม (เฉพาะมี/ไม่มี ไม่สนจำนวนเป๊ะ กัน noise จาก UI pattern ที่
-    item_count ไม่เท่ากันเพราะโหลดเนื้อหามาไม่พร้อมกัน)
-
-    exact match เท่านั้น (frozenset ทั้งก้อนต้องเท่ากันเป๊ะ) — ยอมรับ false-negative ได้
-    (หน้าที่ต่างกันจริงเล็กน้อย เช่น มีปุ่ม "Pinned Comment" เพิ่มมาบางคลิป จะไม่ถูกมองว่า
-    "template เดียวกัน" ทั้งที่โดยรวมก็คล้ายกันมาก) ดีกว่าเสี่ยง false-positive (มองว่าเป็น
-    หน้าเดียวกันทั้งที่จริงๆ ต่างกัน แล้วข้ามไปไม่บันทึกหน้าที่ควรบันทึก) — เป้าหมายหลักคือกัน
-    การไล่บันทึก/สำรวจหน้าที่ซ้ำซ้อนกันจริงชัดๆ (เช่น feed ที่มีลิงก์ไปคลิปคนละอันนับสิบๆ
-    รายการ) ไม่ใช่การจัดกลุ่มหน้าเว็บแบบสมบูรณ์แบบ"""
+    """W33: ลายนิ้วมือโครงสร้างหน้า = set ของ _button_signature + ui_pattern + มี/ไม่มี form/table (ไม่สนลำดับ/จำนวน).
+    เทียบ exact เท่านั้น — ยอม false-negative ดีกว่า false-positive ที่ข้ามหน้าที่ควรบันทึก"""
     button_sigs = frozenset(_button_signature(b) for b in page_info.buttons if b.selector)
     pattern_sigs = frozenset(f"pattern:{p.ui_type}:{p.selector}" for p in page_info.ui_patterns)
     coarse = frozenset({
@@ -460,13 +192,8 @@ def _page_template(page_info: PageInfo) -> frozenset[str]:
 
 
 def _excluded_content_reason(url: str, label: str = "") -> Optional[str]:
-    """W37/W38: คืนเหตุผลที่ควร "ข้าม" ไม่สำรวจ URL/label นี้เลย ("video"/"hashtag") หรือ
-    None ถ้าไม่เข้าเงื่อนไขไหนเลย — รวม logic การเช็คของทั้ง W37 (วีดีโอ) และ W38 (แฮชแท็ก)
-    ไว้จุดเดียว ใช้ทั้งใน nav_links loop (_record_page) และ post-click safety net
-    (_explore_buttons) กันเช็คซ้ำ 2 เงื่อนไข x 2 จุด แบบแยกกัน (classify_button_tier ใน
-    safety.py เรียก is_video_content_label/is_hashtag_label ตรงๆ เอง ไม่ผ่านฟังก์ชันนี้
-    เพราะอยู่คนละไฟล์ และไม่ต้องการ "reason" มาแยกแยะ แค่ต้องการ True/False ว่า decorative
-    ไหมเฉยๆ)"""
+    """W37/W38: "video" | "hashtag" | None — จุดเดียวสำหรับ nav_links loop และ post-click check
+    (classify_button_tier เรียก is_*_label ตรงๆ เพราะต้องการแค่ bool)"""
     if is_video_content_url(url) or is_video_content_label(label):
         return "video"
     if is_hashtag_url(url) or is_hashtag_label(label):
@@ -475,27 +202,21 @@ def _excluded_content_reason(url: str, label: str = "") -> Optional[str]:
 
 
 def _normalize_url(url: str) -> str:
-    """ตัด fragment ออกกันนับซ้ำ (URL ต่างกันแค่ #section ไม่ควรถือว่าเป็นคนละหน้า) และ
-    ตัด trailing slash ให้เหมือนกันเสมอ"""
+    """ตัด fragment และ trailing slash กันนับหน้าเดิมซ้ำ"""
     parsed = urllib.parse.urlparse(url)
     path = parsed.path.rstrip("/") or "/"
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
 
 
-# W24: ไล่กดปุ่มที่เพิ่งโผล่มาจาก modal/dropdown/accordion อีกแค่ 1 ชั้นเท่านั้น (ไม่
-# recurse ไม่จำกัด) กันเปิด/ปิด dropdown ซ้อนกันไม่รู้จบ — ดู _explore_buttons()
+# W24: ไล่กดปุ่มที่โผล่จาก modal/dropdown/accordion แค่ 1 ชั้น กันเปิด/ปิดซ้อนไม่รู้จบ
 _MAX_REVEAL_DEPTH = 1
 
 
 async def _wait_for_dom_stable(
     page: Page, checks: int = 3, interval_ms: Optional[int] = None, max_iterations: int = 12,
 ) -> None:
-    """W24: SPA (React/Vue/Next.js/Angular) ที่ navigate ด้วย client-side routing มักไม่
-    ยิง network request ใหม่เลย (ข้อมูล prefetch/cache ไว้แล้ว) ทำให้
-    wait_for_load_state("networkidle") อย่างเดียวผ่านเร็วเกินไปทั้งที่ DOM ยังเรนเดอร์ไม่
-    เสร็จ — poll ความยาวของ document.body.innerHTML จนนิ่ง (เท่ากัน `checks` ครั้งติดกัน)
-    หรือครบ max_iterations ก่อน ไม่ throw ออกไปเลย (best-effort — หน้าที่ evaluate ไม่ได้/
-    ปิดไปแล้วก็แค่ข้าม ไม่ควรทำทั้ง crawl ล้มเพราะจุดนี้จุดเดียว)"""
+    """W24: SPA client-side routing อาจไม่ยิง network -> networkidle ผ่านเร็วเกิน; poll innerHTML.length จนเท่ากัน
+    `checks` ครั้งติดหรือครบ max_iterations. best-effort ไม่ throw"""
     interval = settings.site_learning_retry_backoff_ms // 3 if interval_ms is None else interval_ms
     interval = max(interval, 50)
     try:
@@ -516,18 +237,8 @@ async def _wait_for_dom_stable(
 
 
 async def _settle_url(page: Page, max_iterations: int = 8, interval_ms: int = 200) -> None:
-    """W34: หลัง click/goto บางครั้งเกิด "cascading redirect" ต่อกันหลายชั้น (เช่น หน้า A มี
-    <script> สั่ง window.location.href ไปหน้า B ที่ redirect ต่อไป C อีกที — พบเคสนี้จาก
-    ลิงก์ nav ที่พาไปหน้า "bounce" ก่อนเด้งออกนอกโดเมนจริง) ซึ่ง wait_for_load_state
-    ("networkidle")/_wait_for_dom_stable() ที่เรียกไปก่อนหน้านี้อาจ "ผ่าน" เร็วเกินไป —
-    ตอน execution context ของ frame เพิ่งถูกทำลายกลางคัน redirect ชั้นแรก page.evaluate()
-    ภายใน _wait_for_dom_stable() เจอ exception แล้ว except-ผ่านออกจาก wait เงียบๆ ทันที
-    (ก่อนที่ redirect ชั้นถัดไปจะเริ่ม/จบด้วยซ้ำ) ทำให้โค้ดที่เรียกต่อไปอ่าน page.url เจอ URL
-    หน้ากลางทาง ไม่ใช่ปลายทางจริง — จุดนี้สำคัญมากสำหรับการตัดสินใจ same-domain vs
-    off-domain (ดู _explore_buttons()/main BFS loop) เพราะอ่านผิดจังหวะแล้วจะเข้าใจผิดว่า
-    ยังอยู่โดเมนเดิม ทั้งที่กำลังจะเด้งออกนอกโดเมนในอีกไม่กี่ร้อย ms ถัดไป — poll page.url
-    (sync property อ่านได้ทันทีไม่ throw) จนนิ่ง (เท่ากัน 2 รอบติดกัน) หรือครบ
-    max_iterations ก่อน"""
+    """W34: cascading redirect (A -> B -> นอกโดเมน) ทำให้ _wait_for_dom_stable() exit เร็วตอน context ถูกทำลาย แล้ว
+    อ่าน page.url กลางทาง -> ตัดสิน same/off-domain ผิด. poll page.url จนนิ่ง 2 รอบหรือครบ max_iterations"""
     last_url = page.url
     stable = 0
     for _ in range(max_iterations):
@@ -543,12 +254,8 @@ async def _settle_url(page: Page, max_iterations: int = 8, interval_ms: int = 20
 
 
 async def _reveal_dynamic_content(page: Page) -> None:
-    """W24: เลื่อนจอลงมาเรื่อยๆ จนความสูงของหน้า (scrollHeight) ไม่ขยับอีกแล้ว หรือครบ
-    settings.site_learning_max_scroll_attempts ก่อน — เพื่อให้ extract_page() เห็นเนื้อหา
-    ที่โหลดแบบ lazy/infinite-scroll (เช่น product grid ที่โหลดสินค้าเพิ่มตอน scroll ถึง
-    ล่างสุด) ซึ่งเดิมไม่มีการ scroll เลยระหว่าง crawl เห็นแค่เนื้อหาที่โหลดมาตั้งแต่แรก —
-    best-effort ล้วนๆ ไม่ throw ออกไปแม้ evaluate ล้มเหลว กลับขึ้นบนสุดก่อนจบเสมอ (เผื่อ
-    fixed header/lazy image ที่ผูกกับ scroll position ตอน extract จริง)"""
+    """W24: scroll จน scrollHeight นิ่งหรือครบ site_learning_max_scroll_attempts (lazy/infinite scroll) แล้วกลับบนสุด.
+    best-effort ไม่ throw"""
     try:
         previous_height = await page.evaluate("document.body.scrollHeight")
         for _ in range(settings.site_learning_max_scroll_attempts):
@@ -572,11 +279,7 @@ async def _reveal_dynamic_content(page: Page) -> None:
 
 
 async def _goto_with_retry(page: Page, url: str, retries: int) -> Optional[str]:
-    """W24: retry page.goto()+networkidle สูงสุด `retries` ครั้ง (รวมครั้งแรกทั้งหมด
-    retries+1 ครั้ง) ก่อนยอมแพ้ — คืน None ถ้าสำเร็จ, คืนข้อความ error ตัวสุดท้ายถ้าล้มเหลว
-    ครบทุกครั้ง (ไม่ throw ออกไปให้ caller เอง — แค่หน้าเดียวพังไม่ควรทำทั้ง crawl ล้มไปด้วย
-    เหมือนพฤติกรรมเดิม แค่ตอนนี้ retry ก่อนค่อยยอมแพ้ + บอกเหตุผลที่แท้จริงกลับไปแทนที่จะ
-    เงียบข้ามไปเฉยๆ)"""
+    """W24: goto+networkidle สูงสุด retries+1 ครั้ง — คืน None ถ้าสำเร็จ หรือ error ตัวสุดท้าย. ไม่ throw"""
     last_error = ""
     for attempt in range(retries + 1):
         try:
@@ -590,24 +293,13 @@ async def _goto_with_retry(page: Page, url: str, retries: int) -> Optional[str]:
     return last_error
 
 
-# W39: ปุ่มที่ extract มาอาจอยู่ใน <iframe> — ButtonInfo.frame_index บอกว่าต้องกดผ่าน
-# frame ไหน (0 = main frame = page เอง) ClickTarget/​_resolve_click_target ด้านล่างจับคู่กับ
-# frame_index นั้น Page และ Frame ของ Playwright มี .click()/.evaluate() หน้าตาเหมือนกันเป๊ะ
-# สำหรับ use case นี้ (แค่ต้องมี element ให้กดในเอกสารของตัวเอง) ใช้แทนกันได้ตรงๆ
+# W39: Page และ Frame มี .click()/.wait_for_timeout() หน้าตาเดียวกัน ใช้แทนกันได้ (frame_index 0 = page)
 ClickTarget = Union[Page, Frame]
 
 
 def _resolve_click_target(page: Page, frame_index: int) -> ClickTarget:
-    """W39: คืน Frame object ที่ตรงกับ frame_index (ตำแหน่งใน page.frames ตอน extract_page()
-    เรียก — ดู extractor.py) หรือคืน page เอง (main frame) ถ้า frame_index เป็น 0 (default
-    ของปุ่มทั่วไปที่ไม่ได้อยู่ใน iframe — ไม่ต้องเสียเวลาเรียก page.frames เลยด้วยซ้ำ ทางลัด
-    สำหรับกรณีส่วนใหญ่) — ปุ่มที่ selector ถูก compute มาจาก document ของ frame หนึ่งๆ
-    page.click(selector) ธรรมดา (query แค่ document หลัก) จะหา element ไม่เจอเลย ต้องเรียก
-    frame.click(selector) ตรงๆ กับ Frame object ที่ถูกต้องแทน — ถ้า index เกินขอบเขต
-    page.frames ตอนนี้แล้ว (โครงสร้าง frame ของหน้าเปลี่ยนไปหลัง extract เช่น iframe ถูกลบ/
-    เพิ่มแบบ dynamic) fallback กลับไปที่ page เฉยๆ ดีกว่าโยน exception ออกไปเลย (ให้
-    _click_with_retry ไปเจอ error จากการหา selector ไม่เจอตามปกติ จัดการเหมือนปุ่มอื่นที่
-    กดไม่ได้ทั่วไป)"""
+    """W39: Frame ที่ page.frames[frame_index] (page.click หา element ข้าม frame ไม่เจอ); 0 หรือ index เกินขอบเขต
+    (frame เปลี่ยนหลัง extract) -> page ให้ click ล้มตามปกติ"""
     if not frame_index:
         return page
     frames = page.frames
@@ -617,19 +309,9 @@ def _resolve_click_target(page: Page, frame_index: int) -> ClickTarget:
 
 
 async def _click_with_retry(target: ClickTarget, selector: str, retries: int) -> Optional[str]:
-    """W24: เหมือน _goto_with_retry() แค่สำหรับ click() ระหว่างไล่สำรวจปุ่ม — คืน
-    None ถ้าสำเร็จ, ข้อความ error ตัวสุดท้ายถ้าล้มเหลวครบทุกครั้ง (W39: target เป็น Page
-    หรือ Frame ก็ได้ — ดู _resolve_click_target ด้านบน)
-
-    W34: ปุ่มที่ onclick สั่ง navigate ทันที (เช่น window.location.href=...) บางครั้งทำให้
-    click() รอบแรก "ดูเหมือน fail" (execution context ของ frame ถูกทำลายกลางคันตอน
-    หน้าเริ่ม navigate ระหว่างที่ click() กำลังรอ post-click stability ตาม default) ทั้งที่
-    คลิกสำเร็จและ navigate ไปแล้วจริง แล้ว retry รอบถัดไปหา selector เดิมบนหน้าใหม่ (ที่ไม่มี
-    element นั้นแล้ว) ไม่เจอ กลายเป็น timeout ซ้อนอีกที (ลองแก้ด้วย no_wait_after=True แล้ว
-    แต่กลับแย่กว่าเดิม — โค้ดฝั่งเรียกไม่มีทางรู้ว่า navigate เริ่มหรือยังตอนเช็ค page.url
-    ทันทีหลัง click() คืนค่า race กับ event loop ของ browser เอง สู้ปล่อยให้ click() รอ
-    default ต่อไป แล้วให้ผู้เรียก (_explore_buttons) เช็ค page.url ก่อนตัดสินใจว่า click_error
-    ที่ได้กลับมาเป็น fail จริงหรือแค่ retry ไปเจอหน้าที่เปลี่ยนไปแล้วดีกว่า)"""
+    """W24: click สูงสุด retries+1 ครั้ง — None ถ้าสำเร็จ หรือ error ตัวสุดท้าย (W39: target เป็น Page/Frame).
+    W34: ปุ่มที่ navigate ทันทีอาจ "ดูเหมือน fail" (context ถูกทำลาย แล้ว retry หา selector บนหน้าใหม่ไม่เจอ);
+    no_wait_after=True ลองแล้วแย่กว่า — caller ต้องเช็ค page.url ก่อนถือว่า fail จริง"""
     last_error = ""
     for attempt in range(retries + 1):
         try:
@@ -652,34 +334,14 @@ async def crawl_site(
     password: Optional[str] = None,
     on_credentials_needed: Optional[OnCredentialsNeededFunc] = None,
 ) -> SiteManual:
-    """BFS deterministic crawl เริ่มจาก start_url — เดินเฉพาะลิงก์ same-origin ที่เจอใน
-    nav/menu (ดู extractor.py::extract_page) ทีละหน้า กรองด้วย
-    safety.is_safe_nav_link() ก่อนเสมอ (ห้ามเดินตามลิงก์ที่ label เข้าข่ายทำลาย/
-    เปลี่ยนแปลงข้อมูล เช่น "Logout") คืน SiteManual ที่ยังไม่ได้ save ลงดิสก์ (caller เป็น
-    คนเรียก storage.save_manual() เอง — ดู routes.py) เปิด BrowserContext ของตัวเองแยก
-    ต่างหาก (ไม่แตะ context/page อื่นของ browser ที่ยืมมา) ปิดให้เสมอก่อน return
+    """BFS crawl จาก start_url (same-origin, กรองด้วย is_safe_nav_link) — คืน SiteManual ที่ยังไม่ save
+    (caller เรียก storage.save_manual()). ใช้ BrowserContext ของตัวเองและปิดเสมอ.
 
-    username/password (W15, optional): ถ้าให้มาทั้งคู่ และหน้าแรกที่เจอมี password
-    field จริง จะลองกรอก+กด sign in ครั้งเดียว (ดู auto_login.py::attempt_login()) ก่อนสำรวจต่อ —
-    จำเป็นเพราะเว็บส่วนใหญ่ไม่มี nav link ให้เดินต่อเลยจนกว่าจะ login (หน้า login มีแค่
-    ฟอร์ม)
-
-    on_credentials_needed (W23, optional): ถ้าไม่ได้ให้ username/password มาเลยตอนเริ่ม
-    crawl (ทั้งคู่ None) แต่ crawler เจอหน้าที่มี password field จริง (find_login_fields()
-    เจอครบทั้งคู่) ระหว่างทาง จะเรียก callback นี้ (ส่ง domain ของเว็บนี้ไปด้วย) แล้ว "หยุด
-    รอ" (await) จน user ตอบกลับผ่าน UI จริง (ดู routes.py::learn_site() ที่ผูก callback นี้
-    เข้ากับ LearnManager.request_credentials()) — ได้ dict {username, password} กลับมา =
-    ใช้ login bootstrap ต่อทันที, ได้ None กลับมา (user เลือกข้าม/หมดเวลา) = บันทึกหน้านี้
-    ตามปกติแล้วสำรวจต่อโดยไม่ login (เหมือนไม่เคยมี callback นี้เลย) ถามแค่ครั้งเดียวตลอด
-    ทั้ง crawl เท่ากับ username/password (login_attempted ตัวเดียวกัน) ไม่ระบุอะไรเลย (ทั้ง
-    username/password และ callback นี้เป็น None หมด) = พฤติกรรมเดิมทุกประการ ไม่แตะฟอร์ม
-    ใดๆ เลย ไม่ถามใคร
-
-    W16: นอกจากเดิน nav link แล้ว ทุกหน้าที่บันทึก (ผ่าน _record_page) จะถูกไล่กดปุ่ม
-    "ปลอดภัย" ด้วย (ดู _explore_buttons/is_crawl_safe) เพื่อสำรวจ path ที่ nav link เดิน
-    ไม่ถึง — ไม่จำกัดความลึก (DFS กดไปเรื่อยๆ จนตัน แล้วถอยกลับไปลองปุ่มอื่น) จำกัดแค่
-    จำนวนปุ่มต่อหน้าไว้ที่ settings.site_learning_max_buttons_per_page และเพดานรวมทั้ง
-    crawl ที่ settings.site_learning_max_pages (ตัวเดียวกับที่คุม nav-link BFS)"""
+    username/password (W15): login bootstrap ครั้งเดียวบนหน้าแรกที่ถึง.
+    on_credentials_needed (W23): ไม่มี credential แต่เจอหน้า login -> await callback (LearnManager.request_credentials);
+        dict = login ต่อ, None = บันทึกหน้าแล้วสำรวจต่อโดยไม่ login. ถามครั้งเดียวต่อ crawl (login_attempted เดียวกัน).
+        ไม่ส่งอะไรเลย = ไม่แตะฟอร์มใดๆ.
+    W16: ทุกหน้าที่บันทึกถูกไล่กดปุ่มปลอดภัยแบบ DFS (จำกัดด้วย max_buttons_per_page และ max_pages)"""
     domain = extract_domain(start_url)
     resolved_provider = provider or settings.llm_provider
     client, model, _, _, _ = Orchestrator._llm_backend(resolved_provider)
@@ -689,52 +351,27 @@ async def crawl_site(
     await install_ssrf_guard(context)
     page = await context.new_page()
     pages: list[PageInfo] = []
-    # W24: เก็บ error ที่เกิดจริง (goto/click ที่ retry ครบแล้วยังล้ม, login ที่ดูเหมือน
-    # ไม่ผ่าน) ติดไปกับ SiteManual แทนที่จะกลืนเงียบๆ แล้วสรุปว่า "เรียนรู้เสร็จ" (ดู
-    # docstring หัวไฟล์ ข้อ 6)
+    # W24: error จริง (goto/click ล้มครบ retry, login ไม่ผ่าน) ติดไปกับ SiteManual แทนการกลืนเงียบ
     manual_errors: list[dict] = []
     try:
         visited: set[str] = set()
-        # W66[A] ("Fast-Path Navigation"): queue เดิมพก URL เฉยๆ ไม่มีทางรู้เลยว่าเดินมาจาก
-        # หน้าไหน/คลิกอะไร — เปลี่ยนเป็นพก (url, parent_url, arrived_via_descriptor) ไปด้วย
-        # เพื่อให้ตอน extract หน้าที่ dequeue มา เซ็ต PageInfo.parent_url/arrived_via ได้ทันที
-        # (ดู schema.py::PageInfo สำหรับความหมายเต็มของสอง field นี้) — start_url คือ root
-        # ของ crawl เสมอ (parent_url="", arrived_via={}) *** จำกัดขอบเขตเฉพาะเส้นทาง BFS
-        # หลักนี้เท่านั้น (v1) — หน้าที่เจอผ่าน _explore_buttons() (DFS click) หรือ login flow
-        # ยังไม่ได้ thread parent/arrived_via ให้ (ยังคง default ว่างเปล่าจาก PageInfo เดิม)
-        # เพราะเป็นเส้นทาง secondary ที่ซับซ้อนกว่า ปลอดภัยเพราะแค่แปลว่า "ไม่มีข้อมูล
-        # navigation ให้หน้านี้" — nav-step builder (fastpath_executor.py) จะ fail-safe คืน
-        # None ให้เอง ไม่ throw ***
+        # W66[A]: queue พก (url, parent_url, arrived_via_descriptor) ให้ตั้ง PageInfo.parent_url/arrived_via ตอน dequeue;
+        # root = ("", {}). v1 เฉพาะ BFS — หน้าจาก DFS-click/login ยังว่าง (fastpath_executor fail-safe คืน None เอง)
         queue: list[tuple[str, str, dict]] = [(start_url, "", {})]
         queued: set[str] = {_normalize_url(start_url)}
         estimated_total = 1
         login_attempted = False
-        # W28: กันไล่กด "ปุ่มเดิม" (label+role เดียวกัน) ซ้ำไม่รู้จบข้าม URL ที่ต่างกัน — ดู
-        # docstring หัวไฟล์ ข้อ W28 และ _button_signature ด้านบน
+        # W28: นับการกดปุ่ม signature เดียวกันข้ามทุก URL (_button_signature)
         explored_button_signatures: dict[str, int] = {}
-        # W33: template ของหน้าที่เคยบันทึกไปแล้ว (ดู _page_template()) — หน้าใหม่ที่โครงสร้าง
-        # ตรงกับ template ที่เคยเจอ (เช่น คลิป Shorts/Reels อื่นที่ UI เหมือนกันทุกอย่าง ต่าง
-        # แค่เนื้อหา) จะถูกข้ามไม่บันทึก/ไม่ไล่กดปุ่มต่อ (ดู _record_page())
+        # W33: template ของหน้าที่บันทึกแล้ว (_page_template) — หน้าโครงสร้างซ้ำถูกข้ามใน _record_page()
         known_page_templates: set[frozenset[str]] = set()
-        # W35: user รายงานว่ายัง "วนลูป" อยู่แม้มี W33 template-dedup แล้ว — เพราะหน้าประเภท
-        # เดียวกันบางเว็บ (เช่น Shorts/Reels ที่แต่ละคลิปมี element ปลีกย่อยต่างกันเล็กน้อย
-        # เช่น จำนวนปุ่ม like/comment ไม่เท่ากัน) ได้ _page_template() ที่ต่างกันจริง (ไม่ตรง
-        # เงื่อนไข exact-match ของ W33) ทั้งที่ LLM (describe_page) ตั้งชื่อ (page_info.name)
-        # คล้ายกันหรือเหมือนกันเป๊ะทุกครั้ง — เพิ่มเซฟตี้เน็ตอีกชั้นจากมุมชื่อหน้าแทน: ถ้าชื่อ
-        # หน้าที่เพิ่งบันทึกซ้ำกับหน้าก่อนหน้าติดต่อกันเกิน 2 ครั้ง (บันทึกไปแล้วจริง user เห็น
-        # tag นี้ในหน้าจอแล้ว 3 ครั้งติดกัน) ให้หยุดไล่กดปุ่ม/ต่อคิว nav link จากหน้านั้นทันที
-        # (ดู _record_page()) ตัดวงจร "เจอหน้าคล้ายเดิม -> ไล่กดปุ่มในนั้น -> เจอหน้าคล้ายเดิม
-        # อีก -> ..." ที่ลึกไม่รู้จบ โดยไม่ต้องพึ่ง structural template ให้ตรงเป๊ะเหมือน W33
+        # W35: ยังวนลูปแม้มี W33 — คลิป Shorts/Reels ต่างกันเล็กน้อย template ไม่ตรงเป๊ะ แต่ LLM ตั้งชื่อเหมือนเดิม;
+        # ชื่อซ้ำติดกัน > 2 ครั้ง -> หยุดไล่ปุ่ม/ต่อคิวจากหน้านั้น (_record_page)
         last_recorded_page_name = ""
         consecutive_same_name_count = 0
 
         def _is_explorable(button) -> bool:
-            """W24: เมนู/nav item (is_nav_menu_item — ดู extractor.py::isNavMenuItem)
-            ตัดสินใจแบบ default-allow เหมือน safety.is_safe_nav_link() ที่ใช้กับ <a> nav
-            link ปกติ (บล็อกเฉพาะคำที่ชัดเจนว่าทำลาย/เปลี่ยนแปลงข้อมูล เช่น "Logout") —
-            ปุ่มอื่นๆ ทั้งหมดยังต้องผ่าน safety.is_crawl_safe() แบบ default-deny เข้มเหมือน
-            เดิมทุกประการ (ไม่ลดความเข้มงวดของ Safety Rule เดิมลงเลย แค่ให้เมนูที่ไม่ใช่
-            <a> ได้สิทธิ์เดียวกับเมนูที่เป็น <a>)"""
+            """W24: nav menu item -> default-allow (is_safe_nav_link) เหมือน <a> nav; ปุ่มอื่น -> is_crawl_safe() default-deny"""
             label = _button_label(button)
             if getattr(button, "is_nav_menu_item", False) and is_safe_nav_link(label):
                 return True
@@ -744,34 +381,13 @@ async def crawl_site(
             page_info: PageInfo, nav_links: list[dict], check_page_template: bool = True,
             explore_buttons: bool = True,
         ) -> None:
-            """describe + เก็บเข้า pages + ยิง progress event + ไล่กดปุ่มปลอดภัย + ต่อคิว
-            nav link ที่ปลอดภัย — logic ร่วมที่ใช้ทั้งกับหน้าที่เจอจาก BFS ปกติ, หน้าหลัง
-            login bootstrap, และหน้าที่เจอจากการไล่กดปุ่ม (ดู docstring หัวไฟล์) ไล่กดปุ่ม
-            ของทุกหน้าที่บันทึกเสมอ ไม่ว่าจะเจอหน้านั้นจากทางไหน (nav link/ปุ่ม/login) —
-            ไม่มี depth cap แล้ว (W16) การันตีว่าจบได้จริงด้วย visited-set +
-            effective_max_pages เท่านั้น
+            """describe + เก็บเข้า pages + event page_done + ไล่กดปุ่ม + ต่อคิว nav link — ใช้ร่วมโดย BFS, หลัง login,
+            และ DFS-click.
 
-            W33: หน้าที่โครงสร้างตรงกับ template ที่เคยบันทึกไปแล้ว (ดู _page_template()) —
-            เช่น เจอ feed ที่มีลิงก์ไปคลิป Shorts/Reels คนละอันสิบๆ รายการ แต่ละคลิปเป็น URL
-            จริงต่างกัน (ไม่ถูกกันโดย visited-set) แต่ UI เหมือนกันทุกอย่าง — บันทึกแค่ตัวแทน
-            ตัวแรกที่เจอ (ถือว่า "กดเข้าดูแล้ว 1 รอบ") ตัวถัดๆ ไปข้ามไปเลย ไม่ describe (ประหยัด
-            LLM call) ไม่ไล่กดปุ่มต่อ (ผู้เรียก — ทั้ง main BFS loop และ _explore_buttons — จะ
-            ไปทำ item ถัดไปเองตามปกติอยู่แล้ว ไม่ต้องมี logic "กด back" แยกต่างหากตรงนี้เลย
-            เพราะ _explore_buttons() go_back()/goto(before_url) เสมอหลัง _record_page() คืน
-            ไม่ว่าจะทำอะไรข้างในก็ตาม)
-
-            *** เจอ false-positive จริงระหว่างทดสอบ 2 จุด แก้แล้ว: (1) หน้าที่ไม่มีปุ่ม/
-            ui_pattern เลยสักตัว (เช่นหน้าเปล่าๆ ที่มีแค่ข้อความ) ได้ template ที่ "เหมือนกัน
-            โดยบังเอิญ" กับหน้าเปล่าอื่นๆ ทั้งที่เนื้อหา/ความหมายต่างกันจริง (เช่น "Dashboard"
-            vs "Article Detail") — ไม่ใช่เคส Shorts/Reels ที่ UI ซับซ้อนพอจะเป็นสัญญาณจริง —
-            ต้องมีอย่างน้อย 1 ปุ่มหรือ 1 ui_pattern ถึงจะเอามาเทียบ dedup เลย (ดู has_signal)
-            (2) เส้นทาง _explore_buttons() (DFS-click) มีกลไก signature-cap ของตัวเองอยู่แล้ว
-            (W28/W29 — settings.site_learning_max_repeat_button_clicks ปรับได้) ถ้าให้
-            page-template dedup ทำงานที่นั่นด้วยจะไปทับ/ขัดกับเพดานที่ user ปรับตั้งใจไว้ (เช่น
-            ตั้งเพดานไว้ 2 ครั้ง แต่ template dedup ตัดจบไปตั้งแต่ครั้งที่ 1) — พารามิเตอร์
-            check_page_template=False ให้ _explore_buttons() ปิด layer นี้เฉพาะเส้นทางของ
-            ตัวเอง (ยังคงบันทึก template นี้ไว้ให้เส้นทาง BFS ใช้เทียบต่อได้ปกติ แค่ไม่ตัดสินใจ
-            ข้ามด้วยตัวเอง) ***"""
+            W33: ข้ามหน้าที่ template ซ้ำ (ไม่ describe/ไล่ปุ่ม). false-positive จริง 2 จุดที่แก้แล้ว: (1) หน้าไม่มีปุ่ม/
+            ui_pattern ได้ template ว่างตรงกันโดยบังเอิญ -> ต้องมี signal ก่อน dedup (has_template_signal);
+            (2) DFS-click มี signature-cap ของตัวเอง (W28/W29) — check_page_template=False กัน template dedup ทับเพดาน
+            ที่ user ตั้ง (ยังจำ template ไว้ให้ BFS)"""
             nonlocal estimated_total, last_recorded_page_name, consecutive_same_name_count
             template = _page_template(page_info)
             has_template_signal = bool(page_info.buttons) or bool(page_info.ui_patterns)
@@ -797,11 +413,7 @@ async def crawl_site(
                     "total": max(estimated_total, len(pages)),
                 })
 
-            # W35: ชื่อหน้าเดิมซ้ำติดกันเกิน 2 ครั้ง (ดู docstring ตัวแปร
-            # consecutive_same_name_count ด้านบน) — บันทึกหน้านี้ไว้แล้วตามปกติ (ผู้ใช้เห็น
-            # tag นี้จริง ไม่ได้ข้ามไม่บันทึก) แค่หยุดไล่กดปุ่ม/ต่อคิว nav link จากหน้านี้ต่อ
-            # ทันที ให้ตัวเรียก (BFS loop/_explore_buttons ที่เรียก _record_page นี้) ไปทำ
-            # item ถัดไปในคิว/DFS stack แทน ตัดวงจรที่ลึกไม่รู้จบจากหน้าประเภทเดิมซ้ำๆ
+            # W35: หน้านี้บันทึกแล้ว แค่หยุดไล่ปุ่ม/ต่อคิวจากหน้านี้ ตัดวงจรหน้าประเภทเดิมซ้ำๆ
             if page_info.name and page_info.name == last_recorded_page_name:
                 consecutive_same_name_count += 1
             else:
@@ -830,20 +442,14 @@ async def crawl_site(
                 absolute = urllib.parse.urljoin(page.url, href)
                 if extract_domain(absolute) != domain:
                     continue  # ข้าม cross-origin เด็ดขาด — นอกขอบเขตการเรียนรู้เว็บนี้
-                # W37/W38: ลิงก์ไปหน้า "ดูวีดีโอ"/"แฮชแท็ก" ไม่ต่อคิว BFS เลย — เป็นเนื้อหา ไม่
-                # ใช่โครงสร้างเว็บที่ user ต้องการเรียนรู้ + แนะนำเนื้อหาถัดไปต่อเรื่อยๆ ไม่รู้จบ
-                # ถ้าเดินเข้าไป (ดู _excluded_content_reason)
+                # W37/W38: ลิงก์ไปหน้าวีดีโอ/แฮชแท็กไม่ต่อคิว (เนื้อหาไม่ใช่โครงสร้าง + แนะนำต่อไม่รู้จบ)
                 if _excluded_content_reason(absolute, link.get("text", "")):
                     continue
                 normalized_link = _normalize_url(absolute)
                 if normalized_link in visited or normalized_link in queued:
                     continue
-                # W66[A]: คำนวณ locator descriptor ของลิงก์นี้สดๆ ตอนนี้ (page ยังอยู่บนหน้า
-                # ที่ nav_links ถูก extract มาจริง — ดู urljoin(page.url, href) ด้านบนที่ใช้
-                # premise เดียวกันอยู่แล้ว) ให้ arrived_via ของหน้าที่กำลังจะถูก queue นี้ —
-                # link["selector"] มาจาก extractor.py::computeSelector() (ใหม่, W66[A])
-                # compute_locator_descriptor() ไม่ throw เองอยู่แล้ว (คืน {} ถ้าหา element
-                # ไม่เจอ/frame detach) ไม่ต้องมี try/except เพิ่มที่นี่
+                # W66[A]: คำนวณ descriptor ตอนนี้ขณะ page ยังอยู่บนหน้าที่ extract nav_links มา;
+                # compute_locator_descriptor() ไม่ throw (คืน {} ถ้าหาไม่เจอ)
                 arrived_via_descriptor = {}
                 link_selector = link.get("selector", "")
                 if link_selector:
@@ -853,54 +459,24 @@ async def crawl_site(
                 estimated_total = max(estimated_total, len(pages) + len(queue))
 
         async def _explore_buttons(base_page_info: PageInfo, depth: int = 0) -> None:
-            """ไล่กดปุ่มที่ _is_explorable() อนุญาตทีละปุ่มบนหน้านี้ (base_page_info.url) —
-            กดแล้วเช็คว่า URL เปลี่ยนไหม: เปลี่ยน = เจอหน้าใหม่ (บันทึกผ่าน _record_page ถ้า
-            ยังไม่เคยเจอ — ซึ่งจะไล่กดปุ่มของหน้าใหม่นั้นต่อทันที เป็น DFS แบบไม่จำกัดความลึก
-            — แล้ว go_back()/goto() กลับมาหน้าตั้งต้นก่อนลองปุ่มถัดไปเสมอ, ถ้าเคยเจอแล้ว
-            (visited/queued) ก็แค่กลับมาเฉยๆ ไม่สำรวจซ้ำ นี่คือจุดที่ทำให้ DFS "ตัน" แล้ว
-            ถอยกลับไปลองปุ่มอื่นของหน้าก่อนหน้าโดยธรรมชาติ) ไม่เปลี่ยน = แค่ modal/panel/tab/
-            dropdown/accordion เปิดในหน้าเดิม (re-extract แล้ว merge เข้า base_page_info
-            ผ่าน _merge_page_info แทนที่จะสร้างหน้าใหม่ — W24: แล้วไล่กด element ที่ "เพิ่ง
-            โผล่มาจริง" ต่ออีก 1 ชั้น ดู depth/_MAX_REVEAL_DEPTH ด้านล่าง — เพราะ element ที่
-            ถูกซ่อนด้วย display:none ตอน extract ครั้งแรกไม่เคยถูกมองเห็น/กดเลยมาก่อน + กด
-            Escape ปิดแบบ best-effort ก่อนไปปุ่มถัดไป) ไม่ throw ออกไปแม้ปุ่มไหนกด/กลับไม่ได้
-            — ข้ามไปปุ่มถัดไปเงียบๆ เว้นแต่ "กลับหน้าตั้งต้นไม่ได้เลย" ซึ่งเลิกไล่ปุ่มที่
-            เหลือของหน้านี้ทันที (state ของหน้าพังไปแล้ว ไล่ต่อไม่มีประโยชน์)
-
-            W24: click/goto ที่ล้มเหลวตอนนี้ retry ก่อน (settings.site_learning_
-            click_retries) แล้วค่อยบันทึกลง manual_errors + ยิง "button_click_failed"
-            แทนการกลืนเงียบๆ เหมือนเดิม — depth=0 คือปุ่มระดับหน้าโดยตรง, depth=1 คือปุ่มที่
-            เพิ่งโผล่มาจาก modal/dropdown/accordion (ไม่ recurse ลึกกว่านี้)"""
+            """ไล่กดปุ่มที่ _is_explorable() อนุญาตบนหน้านี้ทีละปุ่ม:
+            - URL เปลี่ยนในโดเมน -> _record_page ถ้ายังไม่เคยเจอ (DFS ไม่จำกัดความลึก) แล้ว go_back()/goto() กลับ
+            - URL เปลี่ยนนอกโดเมน (W34) -> บันทึก error แล้ว goto กลับ
+            - URL ไม่เปลี่ยน -> modal/panel: re-extract + _merge_page_info, ไล่ปุ่มที่เพิ่งโผล่อีก depth < _MAX_REVEAL_DEPTH,
+              กด Escape
+            ไม่ throw; กลับหน้าตั้งต้นไม่ได้ -> เลิกไล่ปุ่มที่เหลือของหน้านี้. depth=1 = ปุ่มที่โผล่จาก modal"""
             before_url = _normalize_url(page.url)
-            # W18: รวมปุ่มระดับหน้า + ปุ่ม "ตัวแทน" ของ UI pattern แต่ละแบบ (ดู
-            # extractor.py::UIPatternInfo — เช่น ปุ่ม "View" ใน product card ที่ซ้ำกัน 100
-            # ใบ ตอนนี้เหลือ instance เดียวให้ลองกด) เข้าลิสต์เดียวกัน กรองด้วย
-            # _is_explorable() (W24: เมนู/nav item default-allow, ปุ่มอื่น default-deny
-            # เหมือนเดิม — ดู docstring ของ _is_explorable) — label ใช้ text > aria_label >
-            # title > icon_hint (เผื่อเป็นปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย)
+            # W18: ปุ่มระดับหน้า + ปุ่มของ instance ตัวแทนของแต่ละ UI pattern
             candidate_buttons = list(base_page_info.buttons)
             for pattern in base_page_info.ui_patterns:
                 candidate_buttons.extend(pattern.buttons)
 
-            # W36: tier="decorative" (share/like/notification/theme switch/pagination
-            # page>1 ฯลฯ — ดู safety.classify_button_tier) ข้ามตั้งแต่ต้นเลย ไม่ต้องเช็ค
-            # is_crawl_safe()/selector อะไรทั้งสิ้น เหลือแค่ tier="nav"/"core" ให้ผ่าน
-            # _is_explorable() ตามเดิมทุกประการ (ไม่ได้ลด/เพิ่มความเข้มงวดของ is_crawl_safe
-            # เลย — แค่ตัดปุ่มรอง/ตกแต่งออกจากการพิจารณาไปก่อนที่จะถึงขั้นตอนนั้น) — nav ยัง
-            # ต้องผ่านชั้นนี้ด้วย (ไม่ใช่แค่ core) เพราะเมนู/tab แบบ SPA ที่ไม่มี href จริง
-            # (เช่น <div role=menuitem>) พึ่งพา _explore_buttons() (DFS-click) เป็นเส้นทาง
-            # เดียวที่สำรวจได้ (ดู W24 — BFS queue เดินตาม href เท่านั้น ไม่มี href ให้เดิน)
+            # W36: ตัด decorative ก่อนถึง _is_explorable(); nav ยังผ่านเพราะเมนู SPA ไม่มี href ให้ BFS (W24)
             tier_filtered = [b for b in candidate_buttons if b.tier != "decorative"]
             safe_buttons = [b for b in tier_filtered if b.selector and _is_explorable(b)]
 
-            # W36: ปุ่ม tier="core" เกินเพดานต่อหน้าไหม (settings.
-            # site_learning_max_core_buttons_per_page) — นับเฉพาะ core ไม่รวม nav (nav ไม่มี
-            # เพดานนี้ ยังไล่กดครบตาม site_learning_max_buttons_per_page เดิมด้านล่างเหมือน
-            # ไม่มีฟีเจอร์นี้) ถ้าเกิน ตัดเอาแค่ top-K ตาม priority (ดู
-            # safety.button_core_priority — form-submit > exact keyword match > partial
-            # match > fallback) ใช้ id() เทียบ object แทน equality เพราะ ButtonInfo ไม่ได้
-            # กำหนด __eq__/__hash__ พิเศษ (dataclass default compare ด้วยค่าฟิลด์ อาจชนกันได้
-            # ถ้าปุ่ม 2 ตัวมีค่าฟิลด์เหมือนกันเป๊ะทั้งที่เป็นคนละ element จริง)
+            # W36: core เกิน site_learning_max_core_buttons_per_page -> top-K ตาม button_core_priority (nav ไม่มีเพดานนี้);
+            # เทียบด้วย id() เพราะ dataclass __eq__ เทียบค่า ปุ่มคนละ element ที่ค่าเหมือนกันจะชนกัน
             core_buttons = [b for b in safe_buttons if b.tier == "core"]
             if len(core_buttons) > settings.site_learning_max_core_buttons_per_page:
                 ranked_core = sorted(core_buttons, key=button_core_priority)
@@ -912,9 +488,7 @@ async def crawl_site(
             for button in safe_buttons:
                 if len(pages) >= effective_max_pages:
                     break
-                # W28: ปุ่มนี้ (label+role เดียวกัน) ถูกไล่กดไปแล้วครบเพดานหรือยัง (นับรวม
-                # ทั้ง crawl ข้าม URL ไม่ใช่แค่หน้านี้) — ถ้าครบแล้วข้ามไปเลย กัน DFS ไล่ตาม
-                # ปุ่ม pagination/chrome ที่โผล่ซ้ำทุกหน้า (เช่น "Next video") ไม่รู้จบ
+                # W28: signature นี้ถูกกดครบเพดานทั้ง crawl แล้ว -> ข้าม
                 signature = _button_signature(button)
                 click_count = explored_button_signatures.get(signature, 0)
                 if click_count >= settings.site_learning_max_repeat_button_clicks:
@@ -924,25 +498,12 @@ async def crawl_site(
                 if on_progress:
                     await on_progress({"kind": "button_explored", "url": before_url, "button": label})
 
-                # W39: ปุ่มนี้อาจอยู่ใน <iframe> (button.frame_index != 0) — ต้องกดผ่าน
-                # Frame object ที่ถูกต้อง ไม่ใช่ page ตรงๆ เสมอไป (ดู _resolve_click_target)
+                # W39: ปุ่มใน iframe ต้องกดผ่าน Frame ที่ถูก
                 click_target = _resolve_click_target(page, getattr(button, "frame_index", 0))
                 click_error = await _click_with_retry(click_target, button.selector, settings.site_learning_click_retries)
-                # W34: click_error ไม่ None ไม่ได้แปลว่ากดไม่สำเร็จเสมอไป — ปุ่มที่ onclick
-                # สั่ง navigate ทันที (window.location.href=...) มักทำให้ page.click() รอบ
-                # แรก "ดูเหมือน fail" เพราะ execution context ถูกทำลายกลางคันตอนหน้าเริ่ม
-                # navigate ทั้งที่คลิกสำเร็จจริงและ navigate ไปแล้ว แล้ว retry รอบถัดไปหา
-                # selector เดิมบนหน้าใหม่ (ที่ไม่มี element นั้นแล้ว) ไม่เจอ กลายเป็น timeout
-                # ซ้อนอีกที สุดท้าย error ที่ค้างไว้จึงเป็นของ retry ที่หา element ไม่เจอบนหน้า
-                # ที่เปลี่ยนไปแล้ว ไม่ใช่ของการกดจริง — เช็ค page.url ก่อนตัดสินว่า fail จริง
-                # ถ้า url เปลี่ยนไปจากตอนกดแล้ว ถือว่ากดสำเร็จ ปล่อยให้ไหลลงไปจัดการต่อตาม
-                # branch after_url ด้านล่างตามปกติ (same-domain/off-domain/modal)
+                # W34: click_error อาจมาจาก retry บนหน้าที่ navigate ไปแล้ว — URL เปลี่ยน = ถือว่ากดสำเร็จ
                 if click_error is not None and _normalize_url(page.url) == before_url:
-                    # W34: พบจากการทดสอบว่าบางครั้ง navigate จริงมาดีเลย์อีกหลายวินาทีหลัง
-                    # retry ครบ 3 รอบแล้ว (รวมกันแล้วเกิน 15 วินาที) — เผื่อเวลาสั้นๆ อีกครั้ง
-                    # (สูงสุด ~5 วินาที) รอดูว่า url เปลี่ยนไหมก่อนสรุปว่ากดไม่สำเร็จจริง ถ้า
-                    # เปลี่ยนระหว่างนี้ถือว่ากดสำเร็จ ปล่อยไหลลงไปจัดการต่อตาม branch
-                    # after_url ด้านล่างตามปกติเหมือนกรณีปกติ ไม่ต้อง treat เป็น error
+                    # W34: navigate จริงบางทีดีเลย์หลัง retry ครบ (>15s) — รออีก ~5s ก่อนสรุปว่า fail
                     for _ in range(10):
                         await page.wait_for_timeout(500)
                         if _normalize_url(page.url) != before_url:
@@ -955,9 +516,7 @@ async def crawl_site(
                         })
                     continue  # กดปุ่มนี้ไม่ได้แม้ retry ครบแล้ว (element หาย/ถูกบัง/detach ฯลฯ) ข้ามไปปุ่มถัดไป
 
-                # ปุ่มบาง element เป็น target="_blank" เปิดแท็บใหม่แทนที่จะ navigate หน้า
-                # เดิม — ปิดแท็บที่เพิ่งเปิดทิ้งทันที (ไม่ตามไปสำรวจ) กัน context สะสม page
-                # ค้างเป็นสิบๆ ตัวถ้าไล่กดหลายร้อยปุ่มตลอด crawl
+                # target="_blank" เปิดแท็บใหม่ — ปิดทิ้ง กัน page สะสมใน context
                 for extra_page in list(context.pages):
                     if extra_page != page:
                         try:
@@ -973,26 +532,12 @@ async def crawl_site(
 
                 after_url = _normalize_url(page.url)
                 if after_url != before_url:
-                    # W34: navigate ไปแล้วจริง (ไม่ใช่แค่ modal/panel เปิดในหน้าเดิม) — เช็ค
-                    # ให้แน่ใจว่า "นิ่ง" จริงก่อนตัดสินใจ same-domain/off-domain เพราะเคสที่
-                    # navigate ไปหน้าที่มี cascading redirect ต่ออีกชั้น (เช่น bounce/OAuth
-                    # ที่ redirect ไปอีกโดเมนหนึ่งต่อ) wait_for_load_state()/
-                    # _wait_for_dom_stable() ด้านบนอาจ "ผ่าน" เร็วเกินไปตอน execution
-                    # context ถูกทำลายกลางคัน redirect ชั้นแรก (ดู _settle_url() docstring)
-                    # — เรียกแค่ตอนรู้แล้วว่า navigate จริงเท่านั้น (ไม่ใช่ทุกครั้งที่กดปุ่ม)
-                    # เพราะปุ่มส่วนใหญ่ไม่ navigate เลย (แค่เปิด modal/dropdown) เรียก
-                    # unconditionally ทุกปุ่มจะกิน settings.site_learning_max_buttons_per_page
-                    # * เวลาต่อครั้งของ _settle_url() โดยเปล่าประโยชน์ ทำทั้ง suite ช้าลงมาก
+                    # W34: รอ URL นิ่งก่อนตัดสิน same/off-domain (cascading redirect); เรียกเฉพาะเมื่อ navigate จริง
+                    # เพราะเรียกทุกปุ่มจะช้าลงมาก
                     await _settle_url(page)
                     after_url = _normalize_url(page.url)
                 if after_url != before_url and extract_domain(page.url) == domain:
-                    # W37/W38: หน้า "ดูวีดีโอ"/"แฮชแท็ก" — ปุ่ม/thumbnail ที่ label ไม่มีคำใบ้
-                    # ตรงๆ (เช่น aria-label เป็นแค่ชื่อคลิป) หลุดผ่าน tier filter
-                    # (safety.classify_button_tier) มาได้ เช็ค URL ปลายทางอีกชั้นหลัง navigate
-                    # จริง (ดู _excluded_content_reason) — ไม่ extract/describe/บันทึกเป็นหน้า
-                    # เลย (เป็นเนื้อหา ไม่ใช่โครงสร้างเว็บ) ทำงานตามที่ตั้งใจ ไม่ใช่ error
-                    # (ต่างจาก off-domain ด้านล่าง) แค่ยิง event ให้เห็นแล้ว go_back()/
-                    # goto(before_url) กลับทันที (โค้ดร่วมด้านล่างเหมือนกรณีปกติ)
+                    # W37/W38: thumbnail ที่ label ไม่มีคำใบ้หลุด tier filter มาได้ — เช็ค URL ปลายทาง; ไม่บันทึก ไม่ใช่ error
                     excluded_reason = _excluded_content_reason(page.url)
                     if excluded_reason:
                         if on_progress:
@@ -1004,10 +549,7 @@ async def crawl_site(
                         visited.add(after_url)
                         await _reveal_dynamic_content(page)
                         new_page_info, new_nav_links = await extract_page(page)
-                        # W33: ปิด page-template dedup เฉพาะเส้นทางนี้ (DFS-click) — มี
-                        # explored_button_signatures (W28/W29) เป็นกลไก dedup ของตัวเอง
-                        # อยู่แล้วที่ปรับเพดานได้ผ่าน settings ไม่อยากให้ template dedup มา
-                        # ทับ/ขัดเพดานที่ user ตั้งใจไว้ (ดู docstring ของ _record_page())
+                        # W33: ปิด template dedup บนเส้นทาง DFS (มี signature-cap W28/W29 ของตัวเอง)
                         await _record_page(new_page_info, new_nav_links, check_page_template=False)
 
                     try:
@@ -1022,13 +564,8 @@ async def crawl_site(
                         except Exception:
                             break  # กลับหน้าตั้งต้นไม่ได้จริงๆ — เลิกไล่ปุ่มที่เหลือของหน้านี้
                 elif after_url != before_url:
-                    # W34: navigate ไปจริง แต่หลุดออกนอกโดเมนเป้าหมายไปเลย (เช่น <a href=
-                    # "https://external.com"> ที่ label ทั่วไปอย่าง "View"/"Continue" ผ่าน
-                    # is_crawl_safe() ได้ แต่ปลายทางจริงเป็นคนละเว็บ — nav_links ปกติกรอง
-                    # cross-origin ไว้ตั้งแต่ต้นแล้ว แต่เส้นทาง DFS-click นี้ไม่รู้ปลายทาง
-                    # ล่วงหน้า) — ห้ามสำรวจเว็บอื่นต่อเด็ดขาด กลับมาที่หน้าตั้งต้นทันที (คนละ
-                    # branch จาก "ไม่ navigate เลย" ด้านล่าง เพราะพฤติกรรมที่ถูกต้องคนละแบบ
-                    # กันคนละเรื่อง — ไม่ใช่ modal/panel ในหน้าเดิม)
+                    # W34: หลุดนอกโดเมน (ลิงก์ label "View"/"Continue" ผ่าน is_crawl_safe แต่ DFS-click ไม่รู้ปลายทางล่วงหน้า)
+                    # — ห้ามสำรวจเว็บอื่น กลับทันที
                     manual_errors.append({
                         "url": before_url, "phase": "click", "button": label,
                         "error": f"navigate ออกนอกโดเมนเป้าหมาย ({domain}): {page.url}",
@@ -1038,32 +575,20 @@ async def crawl_site(
                             "kind": "off_domain_navigation", "url": before_url,
                             "button": label, "landed_on": page.url,
                         })
-                    # W34: ใช้ goto(before_url) ตรงๆ แทน go_back() — ตอนแรกใช้ go_back()
-                    # (bfcache restore) แต่พบว่า go_back() ข้าม cross-origin จริง (เช่น
-                    # localhost -> 127.0.0.1 แม้จะชี้ loopback เดียวกัน) ทำให้หน้าที่ restore
-                    # กลับมาค้างอยู่ในสถานะที่ element ตอบสนอง click ช้าผิดปกติ (พบจากการ
-                    # ทดสอบว่าปุ่มถัดไปบนหน้าที่ restore มาแบบนี้ใช้เวลากว่า 15-20 วินาทีกว่า
-                    # click จะติดจริง ทั้งที่เป็นปุ่ม static ธรรมดา) — goto() ตรงๆ คือโหลดหน้า
-                    # ใหม่ทั้งหมด (ไม่ผ่าน bfcache) ได้ DOM ที่สดและตอบสนองปกติแน่นอนกว่า
+                    # W34: goto แทน go_back() — bfcache restore ข้าม cross-origin (localhost -> 127.0.0.1) ทำให้ปุ่มถัดไป
+                    # ใช้ 15-20s กว่า click จะติด; goto ได้ DOM สด
                     try:
                         await page.goto(before_url, timeout=15000)
                         await page.wait_for_load_state("networkidle", timeout=8000)
                     except Exception:
                         break  # กลับหน้าตั้งต้นไม่ได้จริงๆ — เลิกไล่ปุ่มที่เหลือของหน้านี้
                 else:
-                    # ไม่ navigate ไปไหนเลย (after_url == before_url) — น่าจะเป็น modal/
-                    # expand panel/tab/dropdown/accordion ที่เปิดในหน้าเดิม re-extract แล้ว
-                    # merge โครงสร้างใหม่เข้าไปในหน้านี้ (ไม่ใช่หน้าใหม่จริง)
+                    # ไม่ navigate — modal/panel/tab/dropdown ในหน้าเดิม: re-extract แล้ว merge
                     known_selectors_before = {b.selector for b in base_page_info.buttons if b.selector}
                     try:
                         revealed_info, _ = await extract_page(page)
                         _merge_page_info(base_page_info, revealed_info)
-                        # W24: element ที่ "เพิ่งโผล่มาจริง" (ไม่เคยอยู่ใน base_page_info มา
-                        # ก่อนเลย — ถูกซ่อนด้วย display:none ตอน extract ครั้งแรก มองไม่
-                        # เห็น/กดไม่ได้เลยมาก่อน) ไล่กดต่ออีกแค่ 1 ชั้น (depth < _MAX_
-                        # REVEAL_DEPTH) กันเปิด/ปิด dropdown ซ้อนกันไม่รู้จบ — ใช้ before_url
-                        # เดียวกัน (หน้ายังไม่ navigate ไปไหนเลย) รีเคิร์สผ่าน PageInfo ปลอม
-                        # ที่มีแค่ปุ่มใหม่พวกนี้ ไม่ต้องเขียน loop ซ้ำ
+                        # W24: ไล่กดเฉพาะปุ่มที่เพิ่งโผล่ (ซ่อนด้วย display:none ตอนแรก) อีก 1 ชั้น ผ่าน PageInfo ชั่วคราว
                         if depth < _MAX_REVEAL_DEPTH:
                             newly_revealed_buttons = [
                                 b for b in revealed_info.buttons
@@ -1081,34 +606,13 @@ async def crawl_site(
         async def _login_and_continue(
             login_username: str, login_password: str, page_info: PageInfo, nav_links: list[dict],
         ) -> None:
-            """บันทึกหน้า login เอง (มีประโยชน์ต่อ manual) แล้วลอง attempt_login() แล้ว
-            ตรวจสอบว่า session ใช้ได้จริงหรือไม่ (W24 — ดู docstring หัวไฟล์ ข้อ 8) ก่อนค่อย
-            extract+บันทึกหน้าถัดจาก login ต่อ ใช้ร่วมกันทั้ง 2 เส้นทางที่มี username/
-            password มาใช้ได้ (ส่งมาตั้งแต่ต้น crawl กับได้จาก on_credentials_needed
-            ระหว่างทาง — ดู docstring ของ crawl_site())
+            """บันทึกหน้า login, attempt_login(), ตรวจ session ด้วย verify_login_success() (W24: URL เปลี่ยน + ไม่มีฟอร์ม
+            login เหลือ) แล้วบันทึกหน้าหลัง login. cookie/storage token เป็นแค่ข้อมูลใน event "login_result" ไม่ใช่เงื่อนไข
+            (เว็บ token-based ไม่มี cookie; fixture ทดสอบก็ไม่มี).
 
-            W24 การตรวจ session: attempt_login() คืนแค่ "กด submit ได้จริงไหม" ไม่รู้ว่า
-            login ผ่านจริง — ใช้ auto_login.py::verify_login_success() เช็ค 2 ชั้นที่ตัดสิน
-            "session_ok" จริงๆ (ทั้งคู่ต้องผ่าน — ดู docstring ของฟังก์ชันนั้นสำหรับรายละเอียด
-            เต็ม, ย้ายมารวมจุดเดียวกับ core/orchestrator.py::_maybe_auto_login ที่ตอนนี้
-            verify แบบเดียวกันแล้ว):
-            (1) URL เปลี่ยนไปจาก URL ก่อน submit จริง (ไม่ใช่แค่ submit แล้ว reload หน้าเดิม)
-            (2) หน้าใหม่ไม่มีฟอร์ม login เหลืออยู่แล้ว (find_login_fields คืน (None, None)
-            — ถ้ายังเจอ = โดน redirect กลับมาหน้า login เดิม ถือว่า login ไม่ผ่าน)
-            ส่วนจำนวน cookie / มี localStorage-sessionStorage token ไหม เป็นแค่สัญญาณ
-            informational แนบไปกับ event "login_result" เท่านั้น *** ไม่ใช้ตัดสิน pass/fail
-            เพราะเว็บจำนวนมากใช้ token-based auth ไม่มี cookie เลย (fixture ทดสอบในโปรเจกต์
-            นี้เองก็ไม่มี server จริงตั้ง cookie ให้ — ถ้าเอา cookie เป็นเงื่อนไขบังคับจะทำให้
-            false-negative ทุกเว็บที่ไม่ใช้ cookie ทันที) ***
-
-            W40: _record_page() ของหน้า login เอง (บรรทัดถัดไป) ต้องส่ง explore_buttons=
-            False เสมอ — ปุ่ม submit จริงบนหน้า login บางเว็บใช้คำที่ไม่ตรง
-            _LOGIN_SUBMIT_KEYWORDS เป๊ะ (เช่น "Continue" ซึ่งอยู่ใน ALLOWED_CRAWL_KEYWORDS
-            ของ safety.py ด้วยเหตุผลอื่น — multi-step form/wizard) ทำให้ attempt_login()
-            คืน False ถูกต้องแล้ว (หา submit ไม่เจอ) แต่ _explore_buttons() เดิมยังไล่กดปุ่ม
-            "ปลอดภัย" ทุกตัวบนหน้า login ต่อแบบทั่วไปอยู่ดี รวมถึงปุ่ม "Continue" ตัวนี้ —
-            กลายเป็นกด submit แทนที่ผ่านเส้นทางอื่นทั้งที่ตั้งใจให้ล้มเหลวอย่างเงียบๆ ไม่สำรวจ
-            ต่อ (ดู test_crawl_site_login_bootstrap_fails_gracefully_without_submit_button)"""
+            W40: หน้า login ต้อง explore_buttons=False — ปุ่ม submit อย่าง "Continue" (อยู่ใน ALLOWED) ไม่ตรง
+            _LOGIN_SUBMIT_KEYWORDS ทำให้ attempt_login() คืน False ถูกแล้ว แต่ _explore_buttons() จะไปกด submit แทน
+            (test_crawl_site_login_bootstrap_fails_gracefully_without_submit_button)"""
             await _record_page(page_info, nav_links, explore_buttons=False)
             pre_login_url = page.url
             did_login = await attempt_login(page, page_info, login_username, login_password)
@@ -1122,10 +626,7 @@ async def crawl_site(
             else:
                 session_ok, reason = await verify_login_success(page, pre_login_url)
                 if session_ok:
-                    # ต่างจาก verify_login_success() ที่ extract_page() แค่ครั้งเดียวพอเช็ค
-                    # ฟอร์ม login เท่านั้น — ตรงนี้ยัง reveal dynamic content + รอ DOM นิ่ง +
-                    # extract_page() ซ้ำอีกรอบก่อนบันทึกจริง เพื่อให้ manual ได้โครงสร้างหน้า
-                    # ที่ครบที่สุด (ปุ่ม/ฟอร์มที่โผล่มาทีหลังจาก JS)
+                    # reveal + รอ DOM นิ่ง + extract ซ้ำ ให้ได้โครงสร้างหน้าหลัง login ครบที่สุด
                     await _reveal_dynamic_content(page)
                     await _wait_for_dom_stable(page)
                     post_page_info, post_nav_links = await extract_page(page)
@@ -1166,9 +667,7 @@ async def crawl_site(
                 continue
             visited.add(normalized)
 
-            # W24: retry ก่อนยอมแพ้ (settings.site_learning_goto_retries) — เดิมล้มครั้งเดียว
-            # = ข้ามทันที ไม่แยกว่าเป็น transient failure (network กระตุก/DOM ยังไม่นิ่ง) หรือ
-            # พังจริง (404/DNS ผิด) บันทึก error จริงลง manual_errors + ยิง event แทนกลืนเงียบๆ
+            # W24: retry ก่อนยอมแพ้ (แยก transient กับพังจริง) แล้วบันทึก error + event แทนกลืนเงียบ
             goto_error = await _goto_with_retry(page, url, settings.site_learning_goto_retries)
             if goto_error is not None:
                 manual_errors.append({"url": url, "phase": "goto", "error": goto_error})
@@ -1176,11 +675,8 @@ async def crawl_site(
                     await on_progress({"kind": "page_error", "url": url, "phase": "goto", "error": goto_error})
                 continue  # หน้านี้ไปไม่ถึงแม้ retry ครบแล้ว (404/timeout/DNS ฯลฯ) — ข้ามไปหน้าถัดไป ไม่ล้มทั้ง crawl
 
-            # W34: URL นี้เป็น same-domain ตอนถูกต่อคิว (nav_links กรอง cross-origin ไว้แล้ว
-            # — ดู _record_page()) แต่ตัวเซิร์ฟเวอร์อาจ redirect ออกนอกโดเมนเป้าหมายเองระหว่าง
-            # โหลดจริงก็ได้ (เช่น URL shortener, OAuth bounce) — ไม่ต้อง goto กลับเพราะ BFS
-            # ไม่ได้ "อยู่หน้าไหนอยู่แล้ว" ที่ต้องกลับไป (ต่างจาก DFS-click) แค่ข้าม URL นี้ไป
-            # หน้าถัดไปใน queue เฉยๆ ก็พอ ไม่ extract/บันทึกหน้าที่ไม่ใช่โดเมนเป้าหมายเด็ดขาด
+            # W34: same-domain ตอนต่อคิวแต่อาจ redirect ออกนอกโดเมน (URL shortener, OAuth bounce) — แค่ข้าม URL นี้
+            # (BFS ไม่มีหน้าเดิมให้กลับ) ไม่บันทึกหน้านอกโดเมนเด็ดขาด
             await _settle_url(page)  # W34: กัน cascading redirect ที่ยังไม่จบตอนเช็ค
             if extract_domain(page.url) != domain:
                 manual_errors.append({
@@ -1190,39 +686,26 @@ async def crawl_site(
                     await on_progress({"kind": "off_domain_navigation", "url": url, "landed_on": page.url})
                 continue
 
-            # W16: ยิงก่อน extract/describe (ซึ่งกินเวลาจาก LLM call) เพื่อให้ UI โชว์ "กำลัง
-            # เรียนรู้หน้านี้อยู่" ได้ทันทีที่หน้าโหลดเสร็จ ไม่ต้องรอ page_done — คู่กับ
-            # browser ที่เปิดแบบมองเห็นได้ (headless=False, ดู routes.py::learn_site()) ให้
-            # user เห็นจริงๆ ว่ากำลังเดินอยู่หน้าไหน
+            # W16: page_start ก่อน extract/describe ให้ UI (browser headless=False) โชว์หน้าที่กำลังเรียนทันที
             await page.bring_to_front()
             if on_progress:
                 await on_progress({"kind": "page_start", "url": page.url})
 
-            # W24: เผยเนื้อหา lazy/infinite-scroll ก่อน แล้วรอ DOM นิ่ง (SPA client routing)
-            # ก่อนสกัดโครงสร้างจริง — ดู docstring หัวไฟล์ ข้อ 3, 11
+            # W24: เผย lazy content + รอ DOM นิ่ง (SPA) ก่อน extract
             await _reveal_dynamic_content(page)
             await _wait_for_dom_stable(page)
             page_info, nav_links = await extract_page(page)
-            # W66[A]: ผูก parent/arrived_via จาก queue entry เข้ากับ page_info ที่เพิ่ง
-            # extract ทันที — ครอบคลุมทุกจุดที่เรียก _record_page(page_info, ...) ด้านล่าง
-            # ในลูปนี้โดยอัตโนมัติ (ใช้ page_info ตัวเดียวกัน ไม่ต้องแก้ที่ _record_page เอง)
+            # W66[A]: ผูก parent/arrived_via ครั้งเดียว ครอบทุก _record_page(page_info) ในลูปนี้
             page_info.parent_url = parent_url
             page_info.arrived_via = arrived_via
 
-            # W15: login bootstrap — ลองแค่ครั้งเดียวตลอดทั้ง crawl (login_attempted)
-            # ตรงหน้าแรกที่เจอ password field จริงเท่านั้น ไม่ใช่ทุกหน้าที่มี password
-            # field (เช่น หน้า "เปลี่ยนรหัสผ่าน" หลัง login ไปแล้วไม่ควรลอง submit ซ้ำ)
+            # W15: login bootstrap ครั้งเดียวต่อ crawl (หน้า "เปลี่ยนรหัสผ่าน" หลัง login ไม่ควรถูก submit)
             if not login_attempted and username and password:
                 login_attempted = True
                 await _login_and_continue(username, password, page_info, nav_links)
                 continue
 
-            # W23: ไม่มี username/password ให้มาตั้งแต่ต้นเลย แต่มี on_credentials_needed
-            # ให้ "ถามคนจริง" ได้ — เช็คว่าหน้านี้เข้าข่ายหน้า login จริงก่อน
-            # (find_login_fields เจอทั้ง username+password field ครบ) ค่อยเรียก ไม่งั้นจะ
-            # ถามทุกครั้งที่ยังไม่เคย login แม้หน้านั้นไม่ใช่หน้า login เลยก็ตาม (ถามครั้ง
-            # เดียวตลอด crawl เหมือนกับ username/password ด้านบน — login_attempted ตัว
-            # เดียวกัน กันถามซ้ำถ้า user เพิ่งเลือกข้ามไปแล้ว)
+            # W23: ถามคนจริงเฉพาะหน้าที่เป็นหน้า login จริง (find_login_fields ครบ) และถามครั้งเดียว (login_attempted)
             if (
                 not login_attempted
                 and on_credentials_needed is not None
@@ -1233,27 +716,13 @@ async def crawl_site(
                 if creds and creds.get("username") and creds.get("password"):
                     await _login_and_continue(creds["username"], creds["password"], page_info, nav_links)
                     continue
-                # user เลือกข้าม/หมดเวลา — บันทึกหน้านี้ตามปกติแล้วสำรวจต่อโดยไม่ login
-                # (เหมือนไม่เคยมี callback นี้เลย ไม่ใช่ error)
+                # user ข้าม/หมดเวลา — บันทึกหน้านี้แล้วสำรวจต่อโดยไม่ login (ไม่ใช่ error)
 
-            # W?: login_attempted เป็น True ไปแล้ว (ลองไปแล้วครั้งหนึ่งตอนต้น ไม่ว่าจะสำเร็จ/
-            # fail/user เลือกข้าม) แต่ BFS ยังเดินมาเจอหน้าที่หน้าตาเป็นฟอร์ม login อีกครั้ง —
-            # เช่น session หลุดกลางทาง หรือ login form ของ role/section อื่น ห้ามลอง submit
-            # ซ้ำเองเด็ดขาด (login ควรเกิดแค่ครั้งเดียวตอนต้น session ตามเจตนาเดิม — ดู W15
-            # ด้านบน) treat เป็น dead-end: บันทึกหน้านี้ไว้เฉยๆ (มีประโยชน์ต่อ manual — รู้ว่า
-            # มีจุดนี้อยู่) แต่ไม่ต่อคิว nav_links ของหน้านี้ (nav_links=[]) และไม่ไล่กดปุ่ม
-            # (explore_buttons=False เหมือนที่ _login_and_continue ทำกับหน้า login รอบแรก —
-            # กันปุ่ม submit ที่ใช้คำไม่ตรง _LOGIN_SUBMIT_KEYWORDS โดนไล่กดแทน) บันทึกลง
-            # manual_errors ด้วยว่า manual ส่วนนี้อาจไม่สมบูรณ์ เพราะสำรวจต่อได้ในสถานะยังไม่
-            # login เท่านั้น (ไม่ใช่เงียบแล้วสำรวจต่อเหมือนไม่มีอะไรเกิดขึ้น)
+            # W?: เจอฟอร์ม login อีกหลังลองไปแล้ว (session หลุด/login ของ section อื่น) — ห้าม submit ซ้ำ; ถือเป็น
+            # dead-end: บันทึกหน้าไว้แต่ไม่ต่อคิว nav_links ไม่ไล่ปุ่ม และบันทึก manual_errors ว่าส่วนนี้อาจไม่สมบูรณ์
             if login_attempted and find_login_fields(page_info) != (None, None):
-                # check_page_template=False: หน้า login ที่โผล่ซ้ำกลางทางมีโครงสร้างเหมือน
-                # หน้า login รอบแรกเป๊ะ (ช่อง username/password + ปุ่ม submit) — W33 จึงมองว่า
-                # เป็น template ที่บันทึกไปแล้วแล้วข้ามไปเงียบๆ ผลคือ manual มีแต่บรรทัด error
-                # ว่า "เจอ dead-end" โดยไม่มีหน้านั้นอยู่จริง ซึ่งขัดกับเจตนาที่เขียนไว้ข้างบน
-                # เองว่าให้บันทึกไว้ dedup ของ W33 มีไว้กัน feed ที่มีสิบรายการหน้าตาเหมือนกัน
-                # ไม่ใช่กันจุดที่ crawl เดินต่อไม่ได้ (พารามิเตอร์นี้มีไว้สำหรับผู้เรียกที่มี
-                # เหตุผลของตัวเองแบบนี้อยู่แล้ว — _explore_buttons() ใช้ด้วยเหตุผลคนละอย่าง)
+                # check_page_template=False: หน้า login ซ้ำมี template เหมือนรอบแรกเป๊ะ W33 จะข้ามเงียบ ทำให้ manual
+                # มีแค่ error dead-end โดยไม่มีหน้านั้น
                 await _record_page(
                     page_info, [], check_page_template=False, explore_buttons=False,
                 )
@@ -1270,15 +739,13 @@ async def crawl_site(
     finally:
         await context.close()
 
-    # W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" ครั้งเดียวหลังสำรวจครบทุกหน้าแล้ว (ดู
-    # describe_site() — ใช้ client/model เดียวกับที่ describe_page() ใช้ต่อหน้าอยู่แล้ว)
+    # W26: สรุปภาพรวมเว็บครั้งเดียวหลังสำรวจครบ
     site_summary = await describe_site(client, model, resolved_provider, domain, pages)
     manual = SiteManual(
         website=domain, pages=pages, generated_at=time.time(), errors=manual_errors, summary=site_summary,
     )
     if on_progress:
-        # W24: errors_found เพิ่มเข้ามา — สรุปว่า crawl "จบเพราะสำรวจครบจริง" หรือ "จบทั้งที่
-        # เจอปัญหาระหว่างทาง" ไม่ใช่แค่ pages_found เฉยๆ (ดู docstring หัวไฟล์ ข้อ 9)
+        # W24: errors_found บอกว่าจบเพราะครบจริง หรือจบทั้งที่เจอปัญหา
         await on_progress({
             "kind": "crawl_scan_done", "pages_found": len(pages), "errors_found": len(manual_errors),
         })

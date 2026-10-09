@@ -1,15 +1,8 @@
-"""site_learning/learn_manager.py — W14: registry ของ crawl job ที่ยิงผ่าน
-POST /api/site-manual/learn — mirror รูปแบบเดียวกับ api/task_manager.py::TaskManager
-(submit แล้วคืน learn_id ทันที ไม่รอ crawl จบ + poll/SSE ทีหลัง) แต่เป็นคลาสแยกต่างหาก
-ไม่ใช้ TaskManager ร่วมกัน เพราะ crawl job มี field/lifecycle ไม่เหมือนกัน (page-checklist
-progress ธรรมดา ไม่มี concept ของ human-in-the-loop approval/pending request เหมือน
-task ปกติเลย — ผูก field พวกนั้นเข้าไปจะเกินความจำเป็นและสับสน)
+"""site_learning/learn_manager.py — W14: registry ของ crawl job จาก POST /api/site-manual/learn.
 
-W23: เพิ่ม pending/request_credentials()/resolve_credentials() เข้ามาแล้ว — crawler.py
-เจอหน้า login ระหว่าง crawl ที่ยังไม่มี username/password ให้เลยต้อง "หยุดรอ" ถามคนจริง
-ก่อนไปต่อได้ (ดู crawler.py::crawl_site() พารามิเตอร์ on_credentials_needed) mirror
-TaskManager.request_approval()/resolve_approval() เกือบทุกประการ ต่างแค่ payload ที่ resolve
-กลับมาเป็น dict {username, password} (หรือ None ถ้าข้าม) แทน bool
+Mirror TaskManager (submit คืน learn_id ทันที แล้ว poll/SSE) แต่แยกคลาสเพราะ lifecycle ต่างกัน (ไม่มี approval).
+W23: request_credentials()/resolve_credentials() — crawler เจอหน้า login ที่ไม่มี credential ต้องหยุดถาม user
+(mirror TaskManager.request_approval()/resolve_approval() แต่ payload เป็น {username, password} หรือ None)
 """
 
 import asyncio
@@ -28,12 +21,10 @@ class LearnRecord:
     result: Optional[dict] = None  # {"version": int, "pages_found": int} ตอนจบสำเร็จ
     error: Optional[str] = None
     asyncio_task: Optional[asyncio.Task] = None
-    # ผู้บริโภคเดียวที่คาดหวังไว้คือ SSE connection เดียวต่อ crawl (เหมือน
-    # task_manager.py::TaskRecord.events) ไม่ใช่ pub-sub หลายคน
+    # ผู้บริโภคเดียว: SSE connection เดียวต่อ crawl (เหมือน TaskRecord.events) ไม่ใช่ pub-sub
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     # W23: request_id -> {"future": Future[Optional[dict]], "domain": str, "delivered": bool}
-    # ของคำขอ credential ที่ยังรอ user ตอบอยู่ — โครงสร้างเดียวกับ
-    # TaskRecord.pending ทุกประการ (ดู task_manager.py สำหรับเหตุผลเต็มๆ ของแต่ละ field)
+    # โครงสร้างเดียวกับ TaskRecord.pending (ดู task_manager.py)
     pending: dict = field(default_factory=dict)
 
 
@@ -49,9 +40,7 @@ class LearnManager:
         return str(uuid.uuid4())
 
     def submit(self, learn_id: str, url: str, coro: Coroutine[Any, Any, dict]) -> LearnRecord:
-        """สร้าง LearnRecord สถานะ "running" ทันที แล้วสั่งรัน coro (โดยทั่วไปคือ
-        crawl_site() ที่ห่อด้วย BrowserPool.acquire() — ดู routes.py) เป็น background —
-        ไม่ await ตรงนี้ คืน record กลับทันทีให้ endpoint ส่ง response 202"""
+        """สร้าง record "running" แล้วรัน coro เป็น background (ไม่ await) — คืนทันทีให้ endpoint ตอบ 202"""
         record = LearnRecord(learn_id=learn_id, url=url, status="running")
         self._records[learn_id] = record
         task = asyncio.create_task(self._run(record, coro))
@@ -70,14 +59,11 @@ class LearnManager:
         except Exception as e:
             record.error = str(e)
             record.status = "error"
-        # W23: ยกเลิก pending credential request ที่ยังค้างอยู่ (เช่น crawl ล้มเหลว/ถูก stop
-        # กลางคันระหว่างรอ user กรอก username/password) กัน Future ค้างไม่มีใครมา resolve ไป
-        # ตลอดกาล (เหมือน TaskManager._run() ทุกประการ)
+        # W23: resolve pending credential request ที่ค้าง (crawl พัง/ถูก stop ระหว่างรอ user) กัน Future ค้างตลอดกาล
         for info in record.pending.values():
             if not info["future"].done():
                 info["future"].set_result(None)
-        # sentinel เดียวที่บอก SSE consumer ว่า stream จบแล้ว (เหมือน
-        # task_manager.py::TaskManager._run() ที่ทำแบบเดียวกันทุกประการ)
+        # sentinel เดียวที่บอก SSE consumer ว่า stream จบแล้ว
         await record.events.put({
             "kind": "learn_done", "status": record.status,
             "result": record.result, "error": record.error,
@@ -91,19 +77,9 @@ class LearnManager:
     async def request_credentials(
         self, learn_id: str, domain: str, timeout: Optional[float] = None,
     ) -> Optional[dict]:
-        """เรียกจาก on_credentials_needed callback (routes.py) — push event
-        "credentials_needed" เข้า stream ของ crawl job นี้ (โชว์ฟอร์มกรอก username/
-        password บนหน้าเว็บ) แล้วรอ (block เฉพาะ crawl coroutine นี้ ไม่บล็อก event loop
-        รวม — เหมือน TaskManager.request_approval() ทุกประการ) จนกว่า resolve_credentials()
-        จะถูกเรียก (จาก POST .../credentials) คืน None ถ้าไม่มี record นี้อยู่แล้ว/หมดเวลา/
-        user เลือกข้าม — ผู้เรียก (crawl_site()) ต้องรับมือกับ None ได้เสมอ (แปลว่า "ไปต่อ
-        โดยไม่ login" ไม่ใช่ error)
-
-        domain: ต้องเป็นโดเมนของเว็บที่ crawl job นี้กำลังเรียนรู้อยู่จริงเท่านั้น (มาจาก
-        extract_domain(start_url) ใน crawl_site() ตรงๆ ไม่มีทางเป็นโดเมนอื่น เพราะ crawler
-        กรอง nav link/ปุ่มที่พาออกนอกโดเมนทิ้งไปตั้งแต่ต้นแล้ว) — ส่งไปให้ event เห็นด้วย
-        เพื่อโชว์บนหน้าเว็บว่ากำลังขอ credential ของเว็บไหน กัน user สับสนว่าจะกรอกรหัสผ่าน
-        ของเว็บไหนกันแน่ ถ้ามีหลาย tab/learn job รันพร้อมกัน"""
+        """push "credentials_needed" แล้วรอ (block แค่ crawl coroutine นี้) จน resolve_credentials().
+        คืน None ถ้าไม่มี record/หมดเวลา/user ข้าม — caller ต้องรับ None ได้ (= ไปต่อโดยไม่ login).
+        domain: โดเมนของเว็บที่ job นี้เรียนรู้ (extract_domain(start_url)) โชว์ให้ user รู้ว่ากรอกรหัสของเว็บไหน"""
         record = self._records.get(learn_id)
         if record is None:
             return None
@@ -127,10 +103,8 @@ class LearnManager:
     def resolve_credentials(
         self, learn_id: str, request_id: str, username: Optional[str], password: Optional[str],
     ) -> bool:
-        """เรียกจาก POST /api/site-manual/learn/{learn_id}/credentials — คืน False ถ้าไม่
-        พบ request_id นี้แล้ว (ตอบไปแล้ว/หมดอายุ/learn_id ผิด) ให้ endpoint คืน 404 ต่อ —
-        username/password ว่างทั้งคู่ (None) = user เลือกข้าม ส่ง None ให้ crawl_site()
-        ไปต่อโดยไม่ login แทน"""
+        """คืน False ถ้าไม่พบ request ที่รออยู่ (endpoint ตอบ 404). username/password ไม่ครบ = user ข้าม
+        (resolve เป็น None ให้ crawl ไปต่อโดยไม่ login)"""
         record = self._records.get(learn_id)
         if record is None:
             return False

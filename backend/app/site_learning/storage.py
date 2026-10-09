@@ -1,23 +1,12 @@
-"""site_learning/storage.py — W14: อ่าน/เขียน manual ที่ crawler.py สร้างลงดิสก์ — เก็บ
-เป็นไฟล์ JSON ล้วนๆ ใต้ settings.site_manuals_dir แยกโฟลเดอร์ต่อโดเมน ไม่มี ChromaDB/
-embedding เกี่ยวข้องเลย (คนละระบบกับ backend/app/rag/ ที่เก็บคู่มือที่ user อัปโหลดเอง —
-ตั้งใจไม่ใช้ path "data/manuals" เดิมเพราะชื่อนั้นถูก chroma_collection_name="manuals"
-จับจองความหมายไว้แล้ว)
+"""site_learning/storage.py — W14: อ่าน/เขียน manual ของ crawler เป็น JSON ใต้ settings.site_manuals_dir/{domain}/
+(ไม่มี ChromaDB; ไม่ใช้ "data/manuals" เพราะชื่อนั้นเป็นของ chroma_collection_name="manuals").
 
-โครงสร้างโฟลเดอร์ต่อโดเมน (settings.site_manuals_dir/{domain}/):
-    latest.json     — version ล่าสุดเสมอ, ตัวที่ orchestrator โหลดไปใช้จริง — save_manual()
-                     เขียนทับไฟล์นี้ตรงๆ ทุกครั้ง ไม่เก็บไฟล์ประวัติแยกต่อเวอร์ชัน (vN.json)
-                     อีกต่อไป (ตามที่ user ขอ — กันไฟล์สะสมไม่รู้จบบนดิสก์ที่ commit เข้า
-                     git) manual.version ยังนับเพิ่มไว้เป็น metadata ปกติ แค่ไม่มีไฟล์แยก
-    ui-map.json     — tree โครงสร้างเมนู (derive จาก menu_path ของทุกหน้า)
-    selectors.json  — flat lookup {"หน้า > ปุ่ม": {css, xpath, aria, data_testid}}
-    knowledge.json  — {page_name: description} ฉบับย่อ ไว้ยัด prompt ถูกๆ
-    llm-manual.json — W69: reshape ของ latest.json แบบเดียวกับคู่มือ QA ที่มนุษย์เขียนเอง
-                     ({page_key: {url, elements: {semantic_key: css_selector}}} แบนๆ) ไว้
-                     paste เข้า prompt LLM ตรงๆ ได้โดยไม่ต้องรู้จัก schema ภายในของระบบนี้
-                     เลย — ดู build_llm_manual() ด้านล่างสำหรับขอบเขต (ไม่มี assertions/
-                     notes/api เพราะข้อมูลพวกนั้นต้องมาจากการทดสอบจริงที่ crawler นี้ตั้งใจ
-                     ไม่ทำ)
+    latest.json     — version ล่าสุดที่ orchestrator โหลด; เขียนทับทุกครั้ง ไม่เก็บ vN.json (user ขอ กันไฟล์สะสมใน git)
+    ui-map.json     — tree เมนู (จาก menu_path)
+    selectors.json  — {"หน้า > ปุ่ม": {css, xpath, aria, data_testid}}
+    knowledge.json  — {page_name: description}
+    llm-manual.json — W69: {page_key: {url, elements: {semantic_key: css}}} แบบคู่มือ QA ที่มนุษย์เขียน (build_llm_manual)
+    credentials.json — W17/Security 1.4: credential เข้ารหัส Fernet แยกจาก manual
 """
 
 import json
@@ -61,8 +50,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def _build_ui_map(manual: SiteManual) -> dict:
-    """แปลง menu_path ของทุกหน้าเป็น tree เดียว —
-    {label: {"children": {...}, "page": page_name|None}}"""
+    """{label: {"children": {...}, "page": page_name|None}} จาก menu_path ของทุกหน้า"""
     root: dict = {}
     for page in manual.pages:
         node = root
@@ -75,34 +63,29 @@ def _build_ui_map(manual: SiteManual) -> dict:
     return root
 
 
-def _build_selectors(manual: SiteManual) -> dict:
-    """flat lookup: "{page_name} > {button_text}" -> {css, xpath, aria, data_testid} —
-    ไว้ให้ selector-repair (update_single_page) หรือ debug tooling ค้นหาเร็วๆ โดยไม่ต้อง
-    ไล่ทั้ง manual
+def _selector_entry(b: ButtonInfo) -> dict:
+    return {"css": b.selector, "xpath": b.xpath, "aria": b.aria_label, "data_testid": b.data_testid}
 
-    W18: รวม selector ของ UI pattern ด้วย (key รูปแบบ "{page_name} > [{pattern_name}]
-    {button_label}") — pattern.selector คือ selector ที่ใช้ซ้ำได้กับทุก instance ของ
-    pattern นั้น (ไม่ใช่แค่ instance ตัวแทนที่ extract มา) ส่วน button.selector ภายในยังชี้
-    ไปที่ปุ่มของ instance แรกเท่านั้น — ผู้ใช้ที่อยากกดปุ่มแบบนี้ใน instance อื่นต้องใช้
-    pattern.selector หา container แล้ว query ปุ่มที่เข้าข่ายภายในเอง"""
+
+def _build_selectors(manual: SiteManual) -> dict:
+    """flat lookup "{page_name} > {label}" -> {css, xpath, aria, data_testid} สำหรับ selector-repair/debug.
+
+    W18: รวม UI pattern ("{page} > [{pattern}]" = selector ที่ match ทุก instance; "{page} > [{pattern}] {label}"
+    = ปุ่มของ instance แรกเท่านั้น — instance อื่นต้องหา container ด้วย pattern.selector ก่อน)"""
     out = {}
     for page in manual.pages:
         for b in page.buttons:
             label = b.text or b.aria_label or b.icon_hint
-            if not label:
-                continue
-            key = f"{page.name} > {label}"
-            out[key] = {"css": b.selector, "xpath": b.xpath, "aria": b.aria_label, "data_testid": b.data_testid}
+            if label:
+                out[f"{page.name} > {label}"] = _selector_entry(b)
         for pattern in page.ui_patterns:
             out[f"{page.name} > [{pattern.name}]"] = {
                 "css": pattern.selector, "xpath": "", "aria": "", "data_testid": "",
             }
             for b in pattern.buttons:
                 label = b.text or b.aria_label or b.icon_hint
-                if not label:
-                    continue
-                key = f"{page.name} > [{pattern.name}] {label}"
-                out[key] = {"css": b.selector, "xpath": b.xpath, "aria": b.aria_label, "data_testid": b.data_testid}
+                if label:
+                    out[f"{page.name} > [{pattern.name}] {label}"] = _selector_entry(b)
     return out
 
 
@@ -110,17 +93,12 @@ def _build_knowledge(manual: SiteManual) -> dict:
     return {p.name: p.description for p in manual.pages if p.name}
 
 
-# --- W69: llm-manual.json — reshape SiteManual เป็นฟอร์แมตคู่มือ QA แบบมนุษย์เขียน (semantic
-# key -> css selector แบนๆ ต่อหน้า) ตามที่ user ขอ — เก็บ selector/label เท่านั้น (จาก crawl
-# ล้วนๆ), ไม่มี assertions/notes/api เพราะข้อมูลพวกนั้น (เช่น "submit ผิดรหัสผ่านแล้วเจอ error
-# ว่าอะไร") ต้องมาจากการทดสอบจริงที่ crawler นี้ตั้งใจไม่ทำ (deterministic, ห้ามกด Submit — ดู
-# crawler.py หัวไฟล์)
+# W69: llm-manual.json — selector/label จาก crawl ล้วน; ไม่มี assertions/notes/api เพราะต้องมาจากการทดสอบจริง
+# (เช่น submit ผิดแล้วเจอ error อะไร) ซึ่ง crawler ตั้งใจไม่ทำ (deterministic, ห้ามกด Submit)
 
 
 def _slugify(text: str) -> str:
-    """แปลง label เป็น snake_case ล้วนๆ (a-z0-9 + underscore) ไว้ใช้เป็น key ของ
-    pages/elements ใน llm-manual.json — ตัดอักขระอื่นทั้งหมดออกรวมถึงภาษาไทย/unicode อื่นๆ
-    เพราะ key ต้องเป็น ASCII อ่าน/ค้นหาได้ง่ายสำหรับ LLM หรือ tooling downstream"""
+    """snake_case ASCII ล้วน (a-z0-9_) — ตัดภาษาไทย/unicode ทิ้ง ให้ key ค้นหาง่ายสำหรับ LLM/tooling"""
     return re.sub(r"[^a-z0-9]+", "_", (text or "").strip().lower()).strip("_")
 
 
@@ -149,9 +127,8 @@ def _page_key(page: PageInfo, used: set[str]) -> str:
 
 
 def _button_label(b: ButtonInfo) -> str:
-    """ลำดับความสำคัญเดียวกับ crawler.py::_button_label — text > aria_label > title >
-    icon_hint > data_testid (humanized) เขียนแยกไว้ที่นี่แทนการ import ข้ามไฟล์ กัน circular
-    import (crawler.py import storage.py อยู่แล้วสำหรับ save_manual())"""
+    """ลำดับเดียวกับ crawler.py::_button_label (text > aria_label > title > icon_hint > data_testid) —
+    สำเนาไว้กัน circular import (crawler.py import storage.py)"""
     return (
         b.text or b.aria_label or b.title or b.icon_hint
         or b.data_testid.replace("-", " ").replace("_", " ").strip()
@@ -178,10 +155,7 @@ def _field_suffix(f: FormFieldInfo) -> str:
 
 
 def _build_page_elements(page: PageInfo) -> dict[str, str]:
-    """semantic_key -> css selector ของหน้าเดียว — รวมปุ่ม/ช่องฟอร์มระดับหน้าปกติ บวก
-    container selector + ปุ่มของ ui_patterns (การ์ด/แถวตารางที่ซ้ำกันหลาย instance — ใช้
-    selector ที่ match ได้กับทุก instance ไม่ใช่แค่ตัวแทนตัวแรก) ข้าม element ที่ไม่มี
-    label หรือไม่มี selector เลย (ไม่มีประโยชน์ให้ LLM อ้างอิง)"""
+    """semantic_key -> css ของหน้าเดียว: ปุ่ม, ช่องฟอร์ม, container + ปุ่มของ ui_patterns; ข้ามที่ไม่มี label/selector"""
     elements: dict[str, str] = {}
     used: set[str] = set()
     for b in page.buttons:
@@ -222,19 +196,13 @@ def _detect_scheme(manual: SiteManual) -> str:
     return "https"
 
 
-# ต้องเจอ selector เดียวกันเป๊ะบนหน้าต่างกันอย่างน้อยเท่านี้ก่อนถือว่าเป็น "component ที่ใช้
-# ร่วมกันทั้งเว็บ" (nav/toast/spinner ฯลฯ) แทนที่จะเป็น element เฉพาะหน้าใดหน้าหนึ่งที่บังเอิญ
-# ซ้ำกัน — เลข 3 เลือกแบบ heuristic กันเว็บที่มีแค่ 1-2 หน้าโดนดันทุก element เข้า shared
-# หมดทั้งที่ยังไม่เห็นรูปแบบซ้ำจริงๆ
+# selector เดียวกันเป๊ะบน >= N หน้า = component ร่วมทั้งเว็บ (nav/toast); 3 กันเว็บ 1-2 หน้าโดนดันเข้า shared หมด
 _SHARED_SELECTOR_MIN_PAGES = 3
 
 
 def _build_shared_selectors(pages_elements: dict[str, dict[str, str]]) -> dict[str, str]:
-    """selector ที่ปรากฏ (string ตรงกันเป๊ะ) บนหน้าต่างกันตั้งแต่ _SHARED_SELECTOR_MIN_PAGES
-    หน้าขึ้นไป น่าจะเป็น component ที่ใช้ร่วมกันทั้งเว็บ — ยกออกมาไว้ต่างหากให้อ้างอิงได้โดยไม่
-    ต้องเจาะจงหน้า (ยังคงอยู่ในแต่ละหน้าใน pages[].elements ตามเดิมด้วย ไม่ตัดออก — เก็บซ้ำได้
-    ไม่เสียหาย) ทำงานแบบ best-effort จากข้อมูล crawl ที่มีอยู่แล้วล้วนๆ ไม่เดา/เติมความรู้จาก
-    ภายนอก คืน {} เฉยๆ ถ้าไม่มี selector ไหนถึงเกณฑ์ (เว็บที่ crawl ได้น้อยหน้า)"""
+    """selector ที่อยู่บน >= _SHARED_SELECTOR_MIN_PAGES หน้า -> {label ที่พบบ่อยสุด: selector} (ยังคงอยู่ใน
+    pages[].elements ด้วย). คืน {} ถ้าไม่มีตัวไหนถึงเกณฑ์"""
     selector_pages: dict[str, set[str]] = {}
     selector_labels: dict[str, list[str]] = {}
     for page_key, elements in pages_elements.items():
@@ -253,14 +221,8 @@ def _build_shared_selectors(pages_elements: dict[str, dict[str, str]]) -> dict[s
 
 
 def build_llm_manual(manual: SiteManual) -> dict:
-    """W69: reshape SiteManual (schema.py — โครงสร้างภายในที่ orchestrator ใช้จริง) เป็น
-    ฟอร์แมต {app, base_url, pages: {page_key: {url, elements}}, shared_selectors} แบบเดียว
-    กับคู่มือ QA ที่มนุษย์เขียนเอง (ดู scratchpad ตัวอย่างที่ user ส่งมา) — page_key/
-    semantic_key ได้จาก _slugify() ของ name/label ที่ crawl มา ไม่มี LLM call เพิ่ม (ข้อมูล
-    ทุกอย่างมีอยู่แล้วใน manual จาก describe_page()/extract_page() ตอน crawl) ตั้งใจไม่ใส่
-    assertions/notes/instance_notes/api ตามที่ user ยืนยัน — ฟิลด์พวกนั้นต้องมาจากการทดสอบ
-    จริง (submit ฟอร์มผิดดูข้อความ error, สังเกต network request) ซึ่งขัดกับกติกาเดิมของ
-    crawler นี้ (deterministic, ห้ามกด Submit)"""
+    """W69: SiteManual -> {app, base_url, version, generated_at, summary, pages: {page_key: {url, name?,
+    description?, elements}}, shared_selectors} แบบคู่มือ QA ที่มนุษย์เขียน. ไม่มี LLM call (key จาก _slugify())"""
     used_page_keys: set[str] = set()
     pages: dict[str, dict] = {}
     pages_elements: dict[str, dict[str, str]] = {}
@@ -289,12 +251,8 @@ def build_llm_manual(manual: SiteManual) -> dict:
 
 
 def save_manual(manual: SiteManual) -> int:
-    """บันทึก manual ใหม่ทั้งก้อน ทับ latest.json ตัวเดิมตรงๆ ไม่เก็บไฟล์ประวัติ vN.json
-    แยกต่างหากอีกต่อไป (เดิมเขียน v{N}.json ทุกครั้งที่ save ไม่เคยลบ — ไฟล์สะสมไม่รู้จบ
-    บนดิสก์ที่ commit เข้า git ตามที่ user ขอให้เปลี่ยน) bump version ต่อจาก version
-    ล่าสุดที่มีอยู่จริงบนดิสก์เสมอ (ไม่ใช่แค่ manual.version ที่ caller ส่งมา กันลืม
-    อัปเดต) — ยังคงเลขเวอร์ชันไว้เป็น metadata (ใช้แสดงผล/comparison เท่านั้น ไม่มีไฟล์
-    ต่อเวอร์ชันให้ย้อนดูอีกแล้ว) คืน version number ใหม่"""
+    """เขียนทับ latest.json + ไฟล์ derive ทั้งหมด. version = version บนดิสก์ + 1 (ไม่เชื่อ manual.version ของ caller)
+    — เป็นแค่ metadata ไม่มีไฟล์ vN.json แล้ว. คืน version ใหม่"""
     domain_dir = _domain_dir(manual.website)
     existing = load_manual(manual.website)
     new_version = (existing.version + 1) if existing else 1
@@ -311,10 +269,8 @@ def save_manual(manual: SiteManual) -> int:
 
 
 def update_single_page(domain: str, page_info: PageInfo) -> Optional[int]:
-    """selector-repair path (สเปค: "หาก Selector ใช้งานไม่ได้ ให้สำรวจเฉพาะหน้านั้น
-    อัปเดต Version ไม่ต้องสร้าง Manual ใหม่ทั้งหมด") — แทนที่หน้าเดียว (จับคู่ด้วย url)
-    ใน manual ที่มีอยู่แล้ว แล้ว re-derive ui-map/selectors/knowledge + bump version คืน
-    None ถ้าโดเมนนี้ยังไม่มี manual เลย (ต้อง crawl เต็มรูปแบบก่อนครั้งแรกเสมอ)"""
+    """selector-repair: แทนที่ (จับคู่ด้วย url) หรือเพิ่มหน้าเดียว แล้ว save_manual() (bump version).
+    คืน None ถ้ายังไม่มี manual (ต้อง crawl เต็มก่อน)"""
     manual = load_manual(domain)
     if manual is None:
         return None
@@ -332,14 +288,8 @@ def _credentials_path(domain: str) -> Path:
 
 
 def save_credentials(domain: str, username: str, password: str) -> None:
-    """W17: เก็บ username/password สำหรับโดเมนนี้ไว้ให้ orchestrator ดึงไปใช้ auto-login
-    ตอนรัน task จริง (ดู core/orchestrator.py::_maybe_auto_login, site_learning/
-    auto_login.py) — เขียนคนละไฟล์ (credentials.json) แยกจาก latest.json ของ manual โดย
-    เจตนา ไม่ปนกับ manual ที่ save_manual() เขียนทับ (กันหลุดปนไปด้วยความไม่ตั้งใจถ้ามีคน
-    แก้ save_manual()/schema ในอนาคต) — ไฟล์นี้เขียนทับตัวเดิมเสมอ ไม่มีประวัติเวอร์ชัน
-
-    Security 1.4: username/password เข้ารหัสด้วย Fernet ก่อนเขียนลงดิสก์เสมอ (marker
-    "encrypted": true ให้ load_credentials() แยกจากไฟล์เก่าที่ยังเป็น plaintext ได้)"""
+    """W17: credential สำหรับ auto-login (orchestrator._maybe_auto_login) — แยกไฟล์จาก latest.json โดยเจตนา
+    กันหลุดปนกับ manual. Security 1.4: เข้ารหัส Fernet เสมอ + marker "encrypted": true แยกจากไฟล์ plaintext เก่า"""
     fernet = get_fernet()
     encrypted = {
         "encrypted": True,
@@ -350,13 +300,8 @@ def save_credentials(domain: str, username: str, password: str) -> None:
 
 
 def load_credentials(domain: str) -> Optional[dict]:
-    """คืน {"username":..., "password":...} หรือ None ถ้ายังไม่เคยเก็บไว้/อ่านไม่ได้ (ไม่
-    throw — โดเมนที่ไม่มี credential เก็บไว้เป็นเรื่องปกติ ไม่ใช่ error)
-
-    Security 1.4: ไฟล์ที่มี marker "encrypted": true ถอดรหัสก่อนคืนค่า — ไฟล์เก่าที่ยังเป็น
-    plaintext (ไม่มี marker นี้เลย จาก storage.py เวอร์ชันก่อนหน้า) อ่านตรงๆ แบบเดิมเพื่อ
-    backward-compat แล้ว re-save แบบเข้ารหัสทันที (migration แบบเนียน ไม่ต้องมี script
-    แยกต่างหาก ไม่ต้องให้ user ทำอะไรเอง)"""
+    """คืน {"username", "password"} หรือ None ถ้าไม่มี/อ่านไม่ได้/ถอดรหัสไม่ได้. ไม่ throw.
+    Security 1.4: ไฟล์ plaintext เก่า (ไม่มี marker "encrypted") อ่านตรงๆ แล้ว re-save แบบเข้ารหัสทันที (migration เงียบ)"""
     path = _credentials_path(domain)
     if not path.exists():
         return None
@@ -369,8 +314,7 @@ def load_credentials(domain: str) -> Optional[dict]:
     if not username or not password:
         return None
     if not data.get("encrypted"):
-        # legacy plaintext — migrate เงียบๆ (ไม่ throw ถ้า migrate ไม่สำเร็จ เพราะยังคืนค่า
-        # ที่อ่านได้แล้วอยู่ดี ไม่ควรทำให้ caller เห็น error จากการ migrate ที่ไม่ใช่ requirement)
+        # legacy plaintext — migrate ล้มก็ไม่ throw (ยังคืนค่าที่อ่านได้อยู่ดี)
         try:
             save_credentials(domain, username, password)
         except OSError:
@@ -398,22 +342,11 @@ def delete_credentials(domain: str) -> bool:
 
 
 def find_matching_page(manual: SiteManual, goal: str, min_score: int = 1) -> Optional[PageInfo]:
-    """W21 ("Self-Learned Site Manual Integration"): หาแค่ "หน้าเดียวที่น่าจะตรงกับ goal
-    ที่สุด" จาก manual ที่ crawl มาแล้ว ให้ routes.py ใช้ตัดสินใจว่าจะฉีด Strict Guided Plan
-    context (ดู llm.py::build_strict_manual_context) หรือไม่ — matching แบบ keyword overlap
-    ล้วนๆ (นับจำนวนคำใน goal ที่ยาว >= 3 ตัวอักษรที่ปรากฏใน name/description/breadcrumb ของ
-    แต่ละหน้า) ไม่ใช้ embedding/ChromaDB เลย เพราะ manual นี้เป็น JSON แบนบนดิสก์อยู่แล้ว (ดู
-    docstring หัวไฟล์) มีจำนวนหน้าต่อเว็บไซต์น้อยพอที่ keyword scoring ตรงไปตรงมาก็เพียงพอ ไม่
-    คุ้มเพิ่ม dependency ใหม่ — คืน None ถ้าไม่มีหน้าไหนได้คะแนนถึง min_score (default 1 =
-    พฤติกรรมเดิมทุกประการ ไม่กระทบ caller เดิม) ให้ caller fallback ไป dynamic planner ตามปกติ
-    W67: เพิ่ม min_score ให้ caller ที่ต้องการความมั่นใจสูงกว่า (เช่น nav-fastpath auto-decide
-    ที่ลงมือคลิกจริงตาม match ไม่ใช่แค่โชว์ context ให้ LLM อ่านเฉยๆ) ปรับ threshold เข้มขึ้นได้
-    โดยไม่กระทบ caller เดิมที่ยังใช้ default 1"""
-    # T2: ภาษาไทยไม่มีเว้นวรรค การตัดคำด้วย [^\w]+ จึงได้ token ก้อนเดียวยาวๆ ต่อประโยค ซึ่ง
-    # ไม่มีทางตรงกับชื่อหน้า/breadcrumb ของคู่มือเลย = หา page ไม่เจอสำหรับ goal ภาษาไทยทุกอัน
-    # goal_intent.matching_tokens() เติม token ที่เป็น ASCII จากคู่ field=value เข้ามาให้ ซึ่ง
-    # เป็นส่วนที่เป็นภาษาอังกฤษเสมอแม้ประโยครอบๆ จะเป็นภาษาไทย — union ไม่ใช่แทนที่ เพื่อไม่ให้
-    # พฤติกรรมของ goal ภาษาอังกฤษเดิมเปลี่ยนแม้แต่นิดเดียว
+    """W21: หน้าเดียวที่ตรง goal ที่สุดด้วย keyword overlap (token >= 3 ตัวอักษรใน name/description/breadcrumb/
+    menu_path) — ไม่ใช้ embedding เพราะ manual เป็น JSON เล็ก. คืน None ถ้าคะแนนสูงสุด < min_score.
+    W67: min_score ให้ caller ที่ลงมือคลิกจริง (nav-fastpath auto-decide) ตั้ง threshold เข้มขึ้นได้; default 1 = เดิม"""
+    # T2: ภาษาไทยไม่มีเว้นวรรค split ได้ token ก้อนเดียวไม่ตรงอะไรเลย — union token ASCII จาก field=value
+    # (goal_intent.matching_tokens) ไม่ใช่แทนที่ เพื่อไม่เปลี่ยนพฤติกรรม goal ภาษาอังกฤษ
     goal_tokens = {t for t in re.split(r"[^\w]+", (goal or "").lower()) if len(t) >= 3}
     goal_tokens |= goal_intent.matching_tokens(goal or "")
     if not goal_tokens:
@@ -433,36 +366,22 @@ def find_matching_page(manual: SiteManual, goal: str, min_score: int = 1) -> Opt
 
 
 def _page_flow_steps(page: PageInfo) -> list[str]:
-    """W21: ลำดับหน้า/เมนูที่ต้องผ่านเพื่อไปถึง page นี้ — breadcrumb (ลำดับที่ crawler
-    เห็นจริงตอนสำรวจ เช่น "Home > Admin > User Management") น่าเชื่อถือกว่า menu_path
-    (แค่ตำแหน่งในเมนู sidebar เฉยๆ ไม่รับประกันว่าตรงกับลำดับ navigation จริง) ให้ breadcrumb
-    ชนะถ้ามี ตกไป menu_path ถ้าไม่มี breadcrumb เลย ตกไปแค่ชื่อหน้าเดี่ยวๆ ถ้าไม่มีทั้งคู่"""
+    """W21: breadcrumb (ลำดับ navigation จริง) > menu_path (แค่ตำแหน่งใน sidebar) > [page.name]"""
     return list(page.breadcrumb) or list(page.menu_path) or ([page.name] if page.name else [])
 
 
 def build_learned_page_flow_text(page: PageInfo) -> str:
-    """W21 ("Self-Learned Site Manual Integration" ข้อ 1, Manual Lookup & Context
-    Injection): ประกอบ block "📍 Learned Page Flow Sequence" ตามฟอร์แมตที่สเปคกำหนดตายตัว
-    (Task/W21.txt Task5) — ใช้ทั้งใน /context (llm.py::context_inspection_reply) และแปะ
-    ไว้เป็นส่วนหัวของ build_strict_manual_context() ด้านล่าง เขียนแยกจาก build_strict_
-    manual_context เพราะ /context ต้องการแค่ block นี้เฉยๆ (โหมด inspection ไม่ลงมือทำจริง)
-    ในขณะที่ planner ต้องการรายละเอียด selector เพิ่มเติมด้วย"""
+    """W21: block "📍 Learned Page Flow Sequence" (ฟอร์แมตตายตัวตามสเปค W21 Task5) — ใช้ใน /context
+    (llm.py::context_inspection_reply) และเป็นหัวของ build_strict_manual_context()"""
     steps = _page_flow_steps(page)
     flow = " ➔ ".join(f"[{s}]" for s in steps) if steps else f"[{page.name or 'หน้าเป้าหมาย'}]"
     return f"📍 **Learned Page Flow Sequence:**\n`{flow}`"
 
 
 def build_strict_manual_context(page: PageInfo) -> str:
-    """W21 ("Self-Learned Site Manual Integration" ข้อ 2, Strict Guided Planner
-    Generation): ประกอบข้อความที่ฉีดเข้า site_manual_context (ช่องทางเดียวกับที่
-    load_knowledge_text() ใช้อยู่แล้ว — ดู orchestrator.py::generate_plan()) แต่ขึ้นต้นด้วย
-    marker "[PRE_LEARNED_MANUAL]" ตรงตามที่ SYSTEM_PROMPT (llm.py, กติกา W21 "PRE_LEARNED_
-    MANUAL Strict Mode") ตรวจหา — ต่างจาก load_knowledge_text() เดิม (แค่ name: description
-    สั้นๆ ของทุกหน้า ใช้เป็นข้อมูลอ้างอิงกว้างๆ) block นี้ scope แคบลงเหลือ "หน้าเดียวที่
-    ตรงกับ goal" พร้อมรายละเอียด route/ปุ่ม/selector ที่บันทึกไว้จริงจาก crawl ให้ planner
-    ยึดเป็นหลักแทนการเดา — selector/xpath ที่แนบมาเป็นข้อมูลอ้างอิงให้ LLM ใช้ตัดสินใจว่า
-    element ไหนใน indexed elements ตรงกับที่คู่มือพูดถึง (สถาปัตยกรรมนี้ยังคง index-based
-    เดิมทั้งหมด ไม่มีการยิง selector ตรงๆ ข้าม perception layer)"""
+    """W21: site_manual_context ของหน้าเดียวที่ตรง goal (route/ปุ่ม/selector จาก crawl) ขึ้นต้นด้วย marker
+    "[PRE_LEARNED_MANUAL]" ที่ SYSTEM_PROMPT (llm.py, Strict Mode) ตรวจหา. selector เป็นแค่ข้อมูลอ้างอิงให้ LLM
+    จับคู่กับ indexed elements — การกดยังเป็น index-based ไม่ยิง selector ข้าม perception"""
     flow_block = build_learned_page_flow_text(page)
     lines = [
         "[PRE_LEARNED_MANUAL]",
@@ -477,11 +396,8 @@ def build_strict_manual_context(page: PageInfo) -> str:
             label = b.text or b.aria_label or b.title or b.icon_hint or "(ไม่มี label)"
             selector_hint = b.selector or b.xpath or "(ไม่มี selector บันทึกไว้)"
             lines.append(f"  - {label} — {selector_hint}")
-    # W65[1] ("Required-Field Validation"): FormFieldInfo.required ถูก crawl เก็บไว้ตั้งแต่
-    # extractor.py::_EXTRACT_JS แล้ว (form field's HTML `required`/`aria-required`) แต่ก่อน
-    # หน้านี้ไม่เคยมีใครอ่านเลย (dead data) — เพิ่ม block เดียวกับ buttons ด้านบนให้ planner
-    # เห็นล่วงหน้าว่าหน้านี้มีฟิลด์อะไรบ้าง/ฟิลด์ไหนบังคับ ก่อนจะร่างแผน (ดู _PLAN_PROMPT_
-    # TEMPLATE ใน llm.py ที่ใช้ข้อมูลนี้ตัดสินใจว่าต้องถาม user หาค่าที่ขาดก่อนไหม)
+    # W65[1]: FormFieldInfo.required เคยเป็น dead data — แสดงให้ planner เห็นฟิลด์บังคับก่อนร่างแผน
+    # (_PLAN_PROMPT_TEMPLATE ใน llm.py ใช้ตัดสินใจว่าต้องถามค่าที่ขาดจาก user ไหม)
     if page.forms:
         lines.append("Recorded form fields on this page (label — required?):")
         for f in page.forms[:20]:
@@ -492,9 +408,7 @@ def build_strict_manual_context(page: PageInfo) -> str:
 
 
 def load_knowledge_text(domain: str) -> str:
-    """ข้อความสั้นๆ (page_name: description ต่อบรรทัด) ไว้ฉีดเข้า prompt ตรงๆ ผ่าน
-    site_manual_context (ดู llm.py::_build_user_turn_text) — คืนสตริงว่างเปล่าถ้ายังไม่มี
-    manual สำหรับโดเมนนี้ (ไม่ throw)"""
+    """บรรทัดละ "- page_name: description" สำหรับ site_manual_context; "" ถ้ายังไม่มี manual. ไม่ throw"""
     manual = load_manual(domain)
     if manual is None:
         return ""

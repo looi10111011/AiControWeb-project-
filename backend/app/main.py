@@ -8,22 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-# แก้ปัญหา UnicodeEncodeError เวลา print ข้อความไทย/emoji (orchestrator.py, llm.py, ฯลฯ
-# มี print() debug log หลายจุดที่ไม่ได้ gate ด้วย verbose) บน Windows console (cp1252/
-# charmap default) — run.py มี fix เดียวกันนี้อยู่แล้วสำหรับตอนรันผ่าน CLI แต่ตอนรัน
-# uvicorn ตรงๆ (ไม่ผ่าน run.py) ไม่เคยผ่านโค้ดนั้นเลย ต้อง reconfigure ที่นี่ด้วยเพราะนี่
-# คือ entrypoint จริงที่ uvicorn import
+# กัน UnicodeEncodeError ตอน print ไทย/emoji บน Windows console (cp1252) — run.py แก้แล้วฝั่ง CLI
+# แต่ uvicorn ที่ import ไฟล์นี้ตรงๆ ไม่เคยผ่านโค้ดนั้น
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
-# หมายเหตุ: เคยลองแก้ NotImplementedError ของ Playwright บน Windows (ดู
-# run.py::run_server() สำหรับ root cause จริง — uvicorn --reload บังคับ
-# WindowsSelectorEventLoopPolicy) ด้วยการตั้ง asyncio.set_event_loop_policy(...) ตรงนี้
-# แต่ไม่ได้ผล เพราะ uvicorn.Server.run() เรียก config.setup_event_loop() (ซึ่งตั้ง
-# policy เป็น Selector ตอน --reload) แล้วค่อย asyncio.run(...) สร้าง event loop จริง
-# ก่อนที่ backend.app.main จะถูก import ด้วยซ้ำ (import เกิดทีหลังสุดตอน Config.load())
-# — ตั้ง policy ในไฟล์นี้จึงสายเกินไปเสมอ ไม่มีผลอะไรกับ loop ที่สร้างไปแล้ว ต้องแก้ที่
-# run.py (ไม่ยิง --reload) แทน ไม่ใช่ที่นี่
+# หมายเหตุ: ตั้ง asyncio event loop policy ที่นี่ไม่ได้ผล — uvicorn สร้าง loop (Selector ตอน --reload)
+# ก่อน import ไฟล์นี้เสมอ ต้องแก้ที่ run.py (ห้ามใช้ --reload) แทน
 
 from backend.app.api.routes import limiter as api_limiter
 from backend.app.api.routes import router as api_router
@@ -34,39 +25,25 @@ from backend.app.core.browser_pool import BrowserPool
 from backend.app.core.session_registry import SessionRegistry
 from backend.app.site_learning.learn_manager import LearnManager
 
-# W20: หน้าเว็บ (index.html) ย้ายจาก backend/app/static/ ไปอยู่ที่ frontend/ (repo root)
-# แทน — แยก frontend ออกจาก backend package ให้ชัดเจนขึ้น ยังคง serve ผ่าน StaticFiles
-# ตัวเดิมทุกประการ (vanilla HTML/JS/CSS ไฟล์เดียว ไม่มี build step เพิ่ม)
+# W20: หน้าเว็บย้ายจาก backend/app/static/ ไป frontend/ (repo root) — vanilla ไม่มี build step
 STATIC_DIR = Path(__file__).parent.parent.parent / "frontend"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # W10[A]: เปิด browser pool ล่วงหน้าตอน server startup (ไม่ใช่ตอน request แรกเข้ามา)
-    # เพื่อให้ task แรกที่เข้ามาไม่ต้องรอ Chromium process launch เหมือนกับ task ถัดๆ ไป
+    # W10[A]: เปิด pool ตอน startup ให้ task แรกไม่ต้องรอ Chromium launch
     app.state.browser_pool = BrowserPool(size=settings.browser_pool_size)
     await app.state.browser_pool.start()
     app.state.task_manager = TaskManager()
-    # W12: session ที่ยังเปิดค้างอยู่ (ดู core/session_registry.py) อาจถือ browser ที่ยืม
-    # มาจาก pool อยู่ — ปิด session ทั้งหมดก่อนเสมอ (คืน browser กลับ pool /ตัด CDP
-    # connection /ปิด browser ที่ launch เอง) ก่อนที่ pool.shutdown() จะปิด browser ทุกตัว
-    # ทิ้ง ไม่งั้น session ที่เหลืออยู่จะพยายามคืน browser ที่ปิดไปแล้ว
+    # W12: session อาจถือ browser ที่ยืมจาก pool — ต้อง close_all() ก่อน pool.shutdown() เสมอ
     app.state.session_registry = SessionRegistry()
-    # W14: registry ของ crawl job ที่ POST /api/site-manual/learn สร้าง — ไม่มี
-    # browser/session ผูกไว้ยาว (crawl ยืม/คืน browser จาก pool เองใน routes.py, ปิดทันที
-    # ที่ crawl จบ) เลยไม่ต้องปิดอะไรตอน shutdown เหมือน session_registry ด้านบน
+    # W14: crawl job ยืม/คืน browser เองใน routes.py ไม่ต้อง cleanup ตอน shutdown
     app.state.learn_manager = LearnManager()
-    # pdf/xlsx: session_id -> {"filename", "text"} ของไฟล์ล่าสุดที่ user แนบมาใน session
-    # นี้ (ดู routes.py::_file_query_result/_file_chat_memory_reply) — ให้เทิร์นถัดไปที่ไม่ได้
-    # แนบไฟล์ใหม่มาแต่ถามต่อยอดจากไฟล์เดิมได้ (เช่น "แต่ละวันทำอะไรบ้าง") ตอบจากความจำนี้ตรงๆ
-    # โดยไม่ตกไปเปิด browser จริงทั้งที่ url ว่างเปล่า — เป็น plain dict ธรรมดา ไม่มี
-    # browser/process resource ผูกอยู่เลย ไม่ต้องปิด/cleanup ตอน shutdown เหมือน
-    # session_registry ด้านบน (แค่ text ในหน่วยความจำ)
+    # pdf/xlsx: session_id -> {"filename", "text"} ของไฟล์ล่าสุด ให้เทิร์นถัดไปถามต่อจากไฟล์ได้
+    # โดยไม่ตกไปเปิด browser (routes.py::_file_chat_memory_reply) — text ล้วน ไม่ต้อง cleanup
     app.state.file_chat_memory = {}
-    # W_retry_value_has_no_home: session_id -> {"labels": [...]} ของช่องที่รอค่าใหม่จาก user
-    # หลัง task จบด้วย TASK_FAILED_USER_INPUT_ERROR (เว็บปฏิเสธค่าที่กรอกไป) ข้อความที่ส่งให้
-    # user บอกไว้เองว่า "ตอบค่าใหม่มา ระบบจะกรอกแทนที่ในช่องเดิมให้ทันที" — dict นี้คือสิ่งที่
-    # ทำให้คำสัญญานั้นเป็นจริง ไม่มี resource ผูกอยู่ ไม่ต้อง cleanup ตอน shutdown
+    # W_retry_value_has_no_home: session_id -> {"labels": [...]} ของช่องที่รอค่าใหม่หลัง
+    # TASK_FAILED_USER_INPUT_ERROR — ทำให้คำสัญญา "ตอบค่าใหม่มา จะกรอกช่องเดิมให้" เป็นจริง
     app.state.pending_value_request = {}
     yield
     await app.state.session_registry.close_all()
@@ -74,21 +51,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Browser Agent", lifespan=lifespan)
-# benchmark_target's Target Surface (port 8100) embeds a same-page "AI bar" widget that
-# calls this API directly from the browser (fetch + EventSource) — different origin, so
-# without CORS the browser blocks it outright regardless of auth. Origins are the two
-# fixed localhost ports this repo actually serves (benchmark_target/app/config.py
-# TARGET_HOST/TARGET_PORT) — not "*", since allow_credentials isn't needed here (no
-# cookies cross the origin boundary; the widget only ever calls JSON/SSE endpoints).
+# benchmark_target (port 8100) ฝัง "AI bar" widget ที่เรียก API นี้ข้าม origin — อนุญาตเฉพาะ
+# 2 origin นั้น (ไม่ใช่ "*"; ไม่ต้อง allow_credentials เพราะไม่มี cookie ข้าม origin)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:8100", "http://localhost:8100"],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
-# Security 1.5: ผูก limiter เข้ากับ app.state (จุดที่ @limiter.limit() ใน routes.py คาดหวังไว้)
-# — เฉพาะ endpoint ที่แปะ decorator เองเท่านั้นที่โดนจำกัด (POST /tasks, POST
-# /api/site-manual/learn) ไม่กระทบ endpoint อื่นเลย
+# Security 1.5: @limiter.limit() ใน routes.py หา limiter จาก app.state — จำกัดเฉพาะ endpoint ที่แปะ decorator
 app.state.limiter = api_limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.include_router(api_router)
@@ -104,9 +75,7 @@ async def config_check():
     return {
         "primary_llm_provider": settings.primary_llm_provider,
         "fallback_llm_provider": settings.fallback_llm_provider,
-        # Console UI แสดง model/provider ที่ task ถัดไปจะใช้จริงไว้ท้ายแถบข้าง — ส่งทั้ง
-        # provider ที่เป็นค่าตั้งต้นและตารางชื่อ model ของทุก provider ไปเลย เพราะผู้ใช้
-        # สลับ provider ได้เองใน Settings และหน้าเว็บต้องอัปเดตชื่อ model ตามโดยไม่ต้องถามซ้ำ
+        # UI โชว์ model ของ provider ที่เลือก — ส่งตาราง model ทุก provider เพราะสลับได้ใน Settings
         "llm_provider": settings.llm_provider,
         "models": {
             "anthropic": settings.anthropic_model,
@@ -120,6 +89,5 @@ async def config_check():
     }
 
 
-# Mounted last so it never shadows the API routes above — serves the single-page
-# console UI (index.html) at "/" and any other files under backend/app/static/.
+# Mounted last so it never shadows the API routes above — serves the console UI from frontend/.
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

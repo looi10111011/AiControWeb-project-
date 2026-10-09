@@ -1,7 +1,5 @@
-"""site_learning/schema.py — W14: โครงสร้างข้อมูล manual ที่เกิดจากการ crawl เว็บไซต์
-อัตโนมัติ (deterministic — ดู crawler.py) ระบบนี้แยกต่างหากสมบูรณ์จาก backend/app/rag/
-ที่เก็บคู่มือที่ user อัปโหลดเอง (PDF/DOCX/TXT) ลง ChromaDB — อันนี้เก็บเป็นไฟล์ JSON บน
-ดิสก์ล้วนๆ (ดู storage.py) ไม่มี ChromaDB/embedding เกี่ยวข้องเลย
+"""site_learning/schema.py — W14: โครงสร้าง manual จากการ crawl เว็บ (deterministic, ดู crawler.py).
+เก็บเป็น JSON บนดิสก์ (storage.py) แยกจาก backend/app/rag/ (คู่มือ user ใน ChromaDB) โดยสมบูรณ์
 """
 
 from dataclasses import asdict, dataclass, field
@@ -11,82 +9,45 @@ from typing import Any, Literal
 @dataclass
 class ButtonInfo:
     text: str = ""
-    # เขียนโดย LLM ครั้งเดียวต่อหน้า (ไม่ใช่ต่อปุ่ม — ดู crawler.py) อธิบายว่าปุ่มนี้ทำ
-    # อะไร ไม่ส่งมาก็ได้ (ว่างเปล่า) ถ้า LLM ไม่ได้ระบุถึงปุ่มนี้ตรงๆ
+    # เขียนโดย LLM ครั้งเดียวต่อหน้า (ไม่ใช่ต่อปุ่ม) ว่างได้
     description: str = ""
     has_icon: bool = False
     aria_label: str = ""
     title: str = ""
     role: str = ""
     data_testid: str = ""
-    # W18: ความหมายที่เดามาจากปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย (ดู
-    # extractor.py::inferIconHint — เดาจาก <svg><title>, data-icon, ชื่อ class ของ icon
-    # font/library ทั่วไป (fa-*, icon-*, lucide-*, material-icons ฯลฯ), หรือ aria-label
-    # ของ ancestor ที่ใกล้ที่สุด) ใช้เป็น fallback ตัวสุดท้ายในลำดับ text > aria_label >
-    # title > icon_hint ทุกจุดที่ต้องอ่าน "ปุ่มนี้ทำอะไร" (safety filter, description)
+    # W18: ความหมายที่เดาจากปุ่ม icon-only (extractor.py::inferIconHint) — fallback สุดท้ายในลำดับ
+    # text > aria_label > title > icon_hint
     icon_hint: str = ""
-    # CSS selector ที่ compute แบบ stable ตอน extract (ดู extractor.py — ลำดับ
-    # ความสำคัญ: data-testid > id ที่ unique > class combo ที่ unique > nth-child path)
+    # CSS selector แบบ stable (extractor.py: data-testid > unique id > unique class combo > nth-child path)
     selector: str = ""
     xpath: str = ""
-    # W24: True ถ้า element นี้อยู่ในคอนเทนเนอร์เมนู/นำทาง (nav/[role=navigation]/aside/
-    # header/footer/[role=tablist]/[role=menu]) หรือมี role="menuitem"/"tab" หรือเป็น
-    # <router-link>/มี class ที่มีคำว่า router-link เอง (ดู extractor.py::isNavMenuItem)
-    # — ใช้แยกว่า element นี้ "น่าจะเป็นเมนู" ควรเดินตามแบบ default-allow
-    # (safety.is_safe_nav_link) แม้ label จะไม่ใช่คำ action ทั่วไป ต่างจากปุ่มอื่นบนหน้าที่
-    # ยังต้องผ่าน safety.is_crawl_safe แบบ default-deny เหมือนเดิม (ดู
-    # crawler.py::_is_explorable)
+    # W24: อยู่ในคอนเทนเนอร์เมนู/นำทาง หรือ role menuitem/tab หรือ router-link (extractor.py::isNavMenuItem)
+    # -> เดินตามแบบ default-allow (safety.is_safe_nav_link); ปุ่มอื่นยัง default-deny (is_crawl_safe)
     is_nav_menu_item: bool = False
-    # W36: True ถ้า element นี้อยู่ใน <form> จริง และเป็นปุ่ม submit ของฟอร์มนั้นตาม HTML
-    # semantics (input[type=submit], button[type=submit], หรือ <button> ที่ไม่มี attribute
-    # type เลยภายใน form ซึ่งเป็น type=submit โดย default ตามสเปค HTML) — คำนวณตอน extract
-    # (ดู extractor.py::isFormSubmit) ใช้เป็นสัญญาณ DOM หนึ่งใน
-    # safety.classify_button_tier()/button_core_priority() เท่านั้น ไม่ได้บอกว่า "กดได้ไหม"
-    # เลย (ยังต้องผ่าน safety.is_crawl_safe() แบบเดิมทุกประการก่อนกดจริง — ปุ่ม submit ส่วน
-    # ใหญ่ยังถูกบล็อกอยู่ดีเพราะ "submit" อยู่ใน BLOCKED_CRAWL_KEYWORDS)
+    # W36: ปุ่ม submit ของ <form> ตาม HTML semantics (extractor.py::isFormSubmit) — แค่สัญญาณให้
+    # classify_button_tier()/button_core_priority() ไม่ได้อนุญาตให้กด (ยังต้องผ่าน is_crawl_safe())
     is_form_submit: bool = False
-    # W36: ชั้นของปุ่มนี้ (ดู safety.classify_button_tier) — "nav" (เมนู/nav item, ตรงกับ
-    # is_nav_menu_item เสมอ), "core" (ฟังก์ชันหลักของหน้า เช่น search/filter/sort/ปุ่ม
-    # submit ในฟอร์ม — default fallback ของปุ่มที่ไม่เข้าเงื่อนไข nav/decorative ชัดเจนด้วย
-    # ตั้งใจ เพื่อไม่ให้ปุ่มสำคัญเดิมอย่าง "View"/"Expand"/"Next" ที่ W16 พึ่งพาอยู่หายไป),
-    # "decorative" (ปุ่มรอง/ตกแต่ง เช่น share/like/notification bell/theme switch — ไม่ไล่
-    # กดเลยไม่ว่า is_crawl_safe() จะอนุญาตหรือไม่ก็ตาม ดู crawler.py::_explore_buttons) —
-    # คำนวณตอน extract_page() เรียก safety.classify_button_tier() ทันทีหลังสร้าง ButtonInfo
-    # แต่ละตัว (ดู extractor.py) ไม่ใช่ตอน JS extraction เพราะ classify_button_tier() เป็น
-    # ฟังก์ชัน Python ล้วนๆ (heuristic, ไม่เรียก LLM ตามแนว W14/W24) เรียกจาก JS ตรงๆ ไม่ได้
+    # W36: safety.classify_button_tier() — "nav" | "core" (default กันปุ่ม View/Expand/Next ที่ W16 พึ่งหาย)
+    # | "decorative" (share/like/bell/theme — ไม่กดเลย). คำนวณใน Python หลังสร้าง ButtonInfo ไม่ใช่ใน JS
     tier: Literal["nav", "core", "decorative"] = "core"
-    # W39: index ของ frame ที่เจอปุ่มนี้ใน page.frames (Playwright) — 0 = main frame (default,
-    # ปุ่มทั่วไปที่ไม่ได้อยู่ใน <iframe> เลย ตรงกับพฤติกรรมเดิมทุกประการ) มากกว่า 0 = ปุ่มนี้อยู่
-    # ใน <iframe> ที่ document.querySelectorAll() ของ main frame มองไม่เห็นเลย (คนละ document
-    # แม้ same-origin ก็ตาม) selector ที่ compute มาถูก scope กับ document ของ frame นั้นๆ
-    # ต้องกดผ่าน frame object ที่ถูกต้องเท่านั้น (page.click() เดิมหา element ข้าม frame
-    # boundary ไม่เจอ) ดู crawler.py::_resolve_click_target — ตั้งใจใช้ index แทน frame.url
-    # ตรงๆ เพราะ <iframe srcdoc="..."> (พบได้ในเว็บ demo/testing บางเว็บ) ทุกตัวได้ url
-    # "about:srcdoc" เหมือนกันหมด ไม่ unique พอให้แยกแยะ frame ที่ต่างกันจริงได้ — ยอมรับความ
-    # เสี่ยงที่ index อาจไม่ตรงแล้วถ้าโครงสร้าง frame ของหน้าเปลี่ยนไประหว่าง extract กับตอนกด
-    # จริง (เช่น หน้าที่เพิ่ม/ลบ iframe แบบ dynamic) — มี fallback กลับไปที่ page เฉยๆ ถ้า index
-    # เกินขอบเขตแล้ว (ดู _resolve_click_target)
+    # W39: index ใน page.frames (0 = main frame); selector scope กับ document ของ frame นั้น ต้องกดผ่าน
+    # frame ที่ถูก (crawler.py::_resolve_click_target). ใช้ index ไม่ใช่ url เพราะ srcdoc iframe ได้ "about:srcdoc"
+    # เหมือนกันหมด; index เกินขอบเขต -> fallback ไป page
     frame_index: int = 0
 
 
-# W18: Pattern ของ UI ที่ซ้ำกันหลาย instance บนหน้าเดียว (เช่น product card 100 ใบ, แถว
-# ตาราง, การ์ดวิดีโอ) — แทนที่จะบันทึกทุก instance (ข้อมูลเปลี่ยนทุกครั้งที่ refresh ไม่มี
-# ประโยชน์กับ agent ในอนาคต) extractor.py ตรวจจับกลุ่ม element โครงสร้างเดียวกันที่ซ้ำกัน
-# ตั้งแต่ 3 ตัวขึ้นไป แล้วบันทึกเป็น UIPatternInfo ตัวเดียว (template) พร้อม selector ที่
-# ใช้ซ้ำกับทุก instance ได้จริง — ปุ่ม/ฟอร์มที่อยู่ใน element ที่ถูกจัดเป็น pattern แล้วจะ
-# ไม่ถูกเก็บซ้ำในลิสต์ buttons/forms ระดับหน้าอีก (ดู extractor.py::_EXTRACT_JS)
+# W18: UI ที่ซ้ำกัน >=3 instance (card/แถวตาราง) เก็บเป็น template เดียวพร้อม selector ที่ match ทุก instance;
+# ปุ่ม/ฟอร์มภายใน pattern จะไม่ถูกเก็บซ้ำใน buttons/forms ระดับหน้า (extractor.py::_EXTRACT_JS)
 @dataclass
 class UIPatternInfo:
     name: str = ""
-    # "Card" | "Table Row" | "List Item" | "Grid Item" — เดาจาก tag/โครงสร้างของ
-    # representative instance (ดู extractor.py::inferUiType)
+    # "Card" | "Table Row" | "List Item" | "Grid Item" (extractor.py::inferUiType)
     ui_type: str = ""
-    # รายชื่อ component ที่พบภายใน instance หนึ่งๆ (เช่น "Image", "Title", "Price",
-    # "Rating") — บอกแค่ "มี component ประเภทนี้อยู่" ไม่ใช่ค่าจริงของ instance ไหนเลย
+    # ประเภท component ที่พบ (เช่น "Image", "Price") ไม่ใช่ค่าจริง
     components: list[str] = field(default_factory=list)
     buttons: list[ButtonInfo] = field(default_factory=list)
-    # selector ที่ match ได้กับทุก instance ของ pattern นี้ (ไม่ใช่แค่ตัวแรก) — ปกติเป็น
-    # class selector ร่วม เช่น "div.product-card"
+    # selector ที่ match ทุก instance เช่น "div.product-card"
     selector: str = ""
     item_count: int = 0
 
@@ -99,15 +60,10 @@ class FormFieldInfo:
     required: bool = False
     input_type: str = "text"
     validation: str = ""  # pattern/maxlength/min/max ฯลฯ ถ้ามี attribute ที่บอกไว้
-    # W15: CSS selector ที่ compute แบบ stable (เหมือน ButtonInfo.selector — ดู
-    # extractor.py::computeSelector) ใช้เติมค่าลงช่องจริงได้ (เช่น crawler.py กรอก
-    # username/password ตอน login bootstrap) ไม่ใช่แค่ไว้อ่านโครงสร้างเฉยๆ
+    # W15: stable CSS selector (extractor.py::computeSelector) ใช้กรอกค่าได้จริง (login bootstrap)
     selector: str = ""
-    # W39: เหมือน ButtonInfo.frame_index เป๊ะ — ดูที่นั่นสำหรับเหตุผลเต็ม (ช่องกรอกที่อยู่ใน
-    # <iframe> ก็ selector ถูก scope กับ document ของ frame นั้นเหมือนกัน) *** หมายเหตุ:
-    # auto_login.py ยังไม่รองรับกรอกฟอร์มข้าม frame ในงานนี้ (นอกขอบเขตที่ user ขอ — ปัญหาที่
-    # รายงานเป็นเรื่องปุ่มเท่านั้น) ฟิลด์นี้แค่ทำให้ฟอร์มใน iframe "มองเห็นได้" ใน manual
-    # (บันทึกลง SiteManual ถูกต้อง) ไม่ได้แก้ auto-fill ให้ทำงานข้าม frame ได้จริง ***
+    # W39: เหมือน ButtonInfo.frame_index — ทำให้ฟอร์มใน iframe มองเห็นใน manual เท่านั้น;
+    # auto_login.py ยังไม่รองรับกรอกข้าม frame
     frame_index: int = 0
 
 
@@ -130,23 +86,15 @@ class PageInfo:
     buttons: list[ButtonInfo] = field(default_factory=list)
     forms: list[FormFieldInfo] = field(default_factory=list)
     tables: list[TableInfo] = field(default_factory=list)
-    # W18: pattern ของ UI ที่ซ้ำกันหลาย instance (ดู UIPatternInfo ด้านบน) — element ที่
-    # ถูกจัดเป็นส่วนหนึ่งของ pattern แล้วจะไม่ปรากฏซ้ำใน buttons/forms ด้านบนอีก
+    # W18: element ใน pattern จะไม่ปรากฏซ้ำใน buttons/forms
     ui_patterns: list[UIPatternInfo] = field(default_factory=list)
     filters: list[str] = field(default_factory=list)
     search_box: bool = False
     modals: list[str] = field(default_factory=list)
     tabs: list[str] = field(default_factory=list)
-    # W66[A] ("Fast-Path Navigation"): parent_url/arrived_via ผูกเป็น parent-pointer tree
-    # (BFS crawl ค้นพบแต่ละหน้าครั้งแรกจากหน้าเดียวเสมอตามธรรมชาติ ไม่ต้องเก็บ graph เต็ม
-    # รูปแบบ) — parent_url ว่างเปล่าสำหรับหน้าเริ่มต้นของ crawl (root) เท่านั้น ทุกหน้าอื่น
-    # ต้องมี URL ของหน้าที่ถูกค้นพบมาจาก — arrived_via คือ locator descriptor (shape เดียว
-    # กับที่ dom_locator.py::compute_locator_descriptor() คืน: tag/explicit_role/
-    # implicit_role/accessible_name/data_testid/css_fallback) ของปุ่ม/ลิงก์บนหน้า parent_url
-    # ที่ crawler คลิกจริงเพื่อมาถึงหน้านี้ — เดินย้อนจาก parent_url ของหน้าเป้าหมายกลับไปถึง
-    # root แล้วกลับด้าน ได้ลำดับ click ที่พา agent จาก root ไปถึงหน้านั้นได้จริง (ดู
-    # fastpath_executor.py::build_navigation_steps()) ว่างเปล่าทั้งคู่ = ไม่มีข้อมูล
-    # navigation ให้ใช้ (เว็บ/หน้านี้ยังไม่เคย crawl มาก่อน หรือ crawl ก่อน W66)
+    # W66[A] Fast-Path Navigation: parent-pointer tree จาก BFS — parent_url ว่างเฉพาะ root; arrived_via =
+    # locator descriptor (shape ของ dom_locator.compute_locator_descriptor()) ของ element บน parent ที่คลิกมาถึง.
+    # fastpath_executor.build_navigation_steps() เดินย้อนถึง root ได้ลำดับ click; ว่างทั้งคู่ = ไม่มีข้อมูล (crawl ก่อน W66)
     parent_url: str = ""
     arrived_via: dict = field(default_factory=dict)
 
@@ -157,16 +105,10 @@ class SiteManual:
     version: int = 1
     generated_at: float = 0.0
     pages: list[PageInfo] = field(default_factory=list)
-    # W24: รายการปัญหาที่เจอระหว่าง crawl (goto/click ที่ล้มเหลวครบทุกครั้งที่ retry แล้ว,
-    # login ที่ดูเหมือนไม่ผ่าน) — ก่อนหน้านี้ error พวกนี้ถูก catch แล้วข้ามเงียบๆ ไม่มี
-    # ร่องรอยเหลือให้เห็นเลยว่า crawl "จบ" เพราะสำรวจครบจริง หรือเพราะพังกลางทางแล้วไม่มี
-    # ใครรู้ (ดู crawler.py หัวไฟล์ W24) แต่ละ entry: {"url","phase","error"} หรือ
-    # {"url","phase","button","error"} — ว่างเปล่า = ไม่เจอปัญหาอะไรเลยตลอด crawl
+    # W24: ปัญหาระหว่าง crawl (goto/click ล้มครบ retry, login ไม่ผ่าน) — เดิมถูกกลืนเงียบ แยกไม่ออกว่าจบเพราะครบ
+    # หรือพัง. entry: {"url","phase","error"} หรือ +"button"
     errors: list[dict] = field(default_factory=list)
-    # W26: สรุปภาพรวม "เว็บไซต์นี้ทำอะไรได้บ้าง" เป็นภาษาธรรมชาติ 2-4 ประโยค — เขียนโดย LLM
-    # ครั้งเดียวหลัง crawl จบทั้งเว็บ (ดู crawler.py::describe_site()) จาก name/description
-    # ของทุกหน้าที่สะสมมา ให้ user อ่านทันทีที่เรียนรู้เว็บไซต์เสร็จโดยไม่ต้องไล่เปิดดูเองทุก
-    # หน้า — ว่างเปล่าได้ถ้า crawl ไม่เจอหน้าไหนเลย (ไม่ throw)
+    # W26: สรุป 2-4 ประโยคว่าเว็บทำอะไรได้ (LLM ครั้งเดียวหลัง crawl — crawler.py::describe_site()) ว่างได้
     summary: str = ""
 
     def to_dict(self) -> dict:

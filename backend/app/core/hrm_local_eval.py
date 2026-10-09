@@ -1,18 +1,10 @@
-"""core/hrm_local_eval.py — W_gate_local_hrm: suite ของ release gate ที่รันบน benchmark_target/
-(HRM ที่รันในเครื่องเอง) แทน OrangeHRM public demo (core/orangehrm_eval.py)
+"""core/hrm_local_eval.py — W_gate_local_hrm: suite ของ release gate บน benchmark_target/ (HRM ในเครื่อง)
+แทน OrangeHRM public demo — เดโมสาธารณะ multi-tenant + success จากคำพูด agent ทำให้ commit เดียวกัน
+ได้ 12/15 แล้ว 15/15 ที่นี่ทุก attempt เริ่มจาก fixture เดิม และ **success ตัดสินจาก DB**
 
-ทำไมต้องเปลี่ยน: demo สาธารณะเป็น multi-tenant คนอื่นเพิ่ม/ลบข้อมูลระหว่างรัน และผลตัดสินจาก
-finish_task() ที่ agent รายงานเอง — commit เดียวกันได้ 12/15 แล้ว 15/15 โดยไม่แก้โค้ด (ดู
-CLAUDE.md หัวข้อ "The benchmark is noisy") ที่นี่ทุก attempt เริ่มจาก fixture เดิมเสมอและ
-**success ตัดสินจากสถานะใน DB ไม่ใช่คำพูดของ agent** (benchmark_target/runner/attempt_runner.py)
-
-เลือกเฉพาะ task ที่แก้ข้อมูลจริงและตรวจจาก DB ได้ — ห้ามใส่ task read-only แบบ PIM-SEARCH-*
-เพราะ verifier ของมันเป็นจริงเสมอ agent ไม่ทำอะไรเลยก็ผ่าน (เทสต์ใน test_hrm_local_eval.py
-กันไว้ด้วยการรัน stub agent ที่ไม่ทำอะไร แล้วยืนยันว่าทั้ง 6 ตัวต้อง fail)
-
-Control Plane รันในโปรเซสนี้ผ่าน TestClient (run_attempt รับ client แบบนี้อยู่แล้ว) ไม่ต้องเปิด
-port 8101 ส่วน Target Surface (port 8100) ต้องเปิดจริงเพราะ browser เข้าผ่าน HTTP — เปิดให้เองถ้า
-ยังไม่มีใครรันอยู่ (ไม่ใช้ --reload เด็ดขาด ตาม CLAUDE.md)
+ห้ามใส่ task read-only แบบ PIM-SEARCH-* (verifier จริงเสมอ agent ไม่ทำอะไรก็ผ่าน — เทสต์รัน stub
+agent ที่ไม่ทำอะไรแล้วยืนยันว่าทั้ง 6 ตัวต้อง fail) Control Plane รันในโปรเซสผ่าน TestClient ส่วน
+Target Surface (port 8100) เปิดให้เองถ้ายังไม่มีใครรัน (ไม่ใช้ --reload ตาม CLAUDE.md)
 """
 
 import asyncio
@@ -118,10 +110,8 @@ def attempt_to_eval_result(task: dict, attempt, agent_result) -> TaskEvalResult:
     tokens = attempt.tokens or {}
     total_tokens = sum(int(tokens.get(key, 0) or 0) for key in ("input", "output", "cache_read", "cache_creation"))
     infra = attempt.is_infra_failure()
-    # W_gate_local_hrm: attempt.detail ของ FUNCTIONAL_FAIL มีแค่ข้อความ verifier — ถ้าไม่ต่อ
-    # ข้อความของ agent เข้าไป provider ที่ล่มกลางรัน (run_task คืน steps=0 + "429 quota ...")
-    # จะไม่มี marker ให้ task_failed_on_infrastructure() เห็น แล้วถูกนับเป็นความล้มเหลวของ agent
-    # verifier detail อยู่ก่อนเสมอ เพราะ _result_row ตัดที่ 400 ตัวอักษร
+    # W_gate_local_hrm: ต่อข้อความ agent ท้าย verifier detail ไม่งั้น provider ล่มกลางรัน ("429 quota")
+    # ไม่มี marker ให้ task_failed_on_infrastructure() เห็น verifier อยู่ก่อนเพราะ _result_row ตัดที่ 400
     message = attempt.detail
     agent_message = getattr(agent_result, "message", "") if agent_result else ""
     if agent_message:
@@ -154,10 +144,8 @@ def _run_sync(provider: Optional[str], run_id: str, adapter=None) -> EvaluationR
     )
     report = EvaluationReport()
 
-    # SSRF guard บล็อก navigation ไป localhost เป็นค่าเริ่มต้น (permission/rules.py) — เปิดผ่าน
-    # ContextVar จึงมีผลเฉพาะ thread นี้และ browser ที่ HermesAgentAdapter start ขึ้นภายในนั้น
-    # (asyncio.run ข้างใน adapter คัดลอก context ตอนสร้าง) task อื่นใน process เดียวกันยังโดนบล็อก
-    # ตามปกติ ขอบเขตของ agent เองถูกจำกัดอีกชั้นด้วย allowed_domains={"localhost"}
+    # SSRF guard บล็อก localhost เป็นค่าเริ่มต้น — เปิดผ่าน ContextVar จึงมีผลแค่ thread นี้ (asyncio.run
+    # ใน adapter คัดลอก context) task อื่นยังโดนบล็อก agent ถูกจำกัดอีกชั้นด้วย allowed_domains={"localhost"}
     with allow_internal_navigation_here(), TestClient(control_app) as control_client:
         for index, task in enumerate(tasks):
             if index and settings.eval_task_delay_seconds > 0:

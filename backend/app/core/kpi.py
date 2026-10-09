@@ -1,16 +1,8 @@
-"""core/kpi.py — W_production_kpi: สรุป telemetry ของ *งานจริง* ให้ตอบได้ว่า "ดีขึ้นจริงไหม"
+"""core/kpi.py — W_production_kpi: ตัวอ่านเดียวของ data/token_usage.jsonl + step_trace.jsonl
+ตอบว่า "งานจริงของ user ดีขึ้นไหม" (release_gate ตอบได้แค่ benchmark)
 
-ทำไมต้องมี: telemetry เขียนครบมาตั้งแต่ W78/W83 (`data/token_usage.jsonl` 1 บรรทัดต่อ task,
-`data/step_trace.jsonl` 1 บรรทัดต่อ step พร้อม failure_class/timing) แต่ **ไม่มีอะไรอ่านมันเพื่อ
-สรุปผลเลย** — `grep` หาผู้ใช้ path ทั้งสองเจอแต่ตัวเขียนกับเทสต์ ส่วน release_gate อ่านเฉพาะ
-`data/eval_results/*.json` จึงตอบได้แค่ "benchmark ดีขึ้นไหม" ไม่ใช่ "งานจริงของ user ดีขึ้นไหม"
-
-หลักการที่ยกมาจาก W91 โดยตรง (gate รันซ้ำบน commit เดิมยังแกว่งเกินเกณฑ์ 10% ด้วยตัวมันเอง):
-**ห้ามโชว์ค่าเฉลี่ยเดี่ยวๆ แล้วสรุปว่าดีขึ้น** ทุกตัวเลขต้องมาพร้อม median + p95 + จำนวนตัวอย่าง
-เพื่อให้คนอ่านตัดสินเองได้ว่าความต่างที่เห็นใหญ่กว่า noise หรือยัง
-
-อ่านอย่างเดียว ไม่แตะ agent loop และไม่ throw ออกไปทำให้ผู้เรียกพัง (ไฟล์ยังไม่มี/บรรทัดเสีย =
-ข้ามเงียบๆ เหมือนหลักการของ telemetry.py เอง)
+W91: gate รันซ้ำบน commit เดิมยังแกว่งเกิน 10% -> ห้ามโชว์ค่าเฉลี่ยเดี่ยวๆ ทุกตัวเลขมาพร้อม
+median + p95 + n — อ่านอย่างเดียว ไม่ throw (ไฟล์ไม่มี/บรรทัดเสีย = ข้ามเงียบๆ)
 """
 
 from __future__ import annotations
@@ -26,18 +18,13 @@ from backend.app.config import settings
 
 SECONDS_PER_DAY = 86400
 
-# W_production_kpi: แถวที่ไม่มี field "source" คือของเก่าก่อน W83 (ตอนนั้นยังไม่มีการแยก
-# งานจริงออกจาก benchmark) — นับแยกไว้ให้เห็น ไม่เอามาปนกับสถิติของงานจริง เพราะเราไม่รู้ว่า
-# มันคืออะไร การเดาแล้วเอามารวมจะทำให้ตัวเลขดูเยอะขึ้นโดยไม่มีความหมาย
+# W_production_kpi: แถวไม่มี "source" = ของก่อน W83 — นับแยกไว้ ไม่ปนกับงานจริงเพราะไม่รู้ว่าคืออะไร
 _SOURCE_UNKNOWN = "(legacy — ก่อนมี field source)"
 
-# W_production_kpi: `source="api"` อย่างเดียวแยกงานจริงออกจาก fixture ของเทสต์ไม่ได้ — วัดจริง
-# แล้วพบว่า 564 จาก 642 แถวที่ source=api ชี้ไป example.com (เทสต์รุ่นเก่าที่เขียนลงไฟล์จริง)
-# ทำให้รายงานออกมาเป็น success 99% / duration 0.0s / 10 tokens ซึ่งไม่ใช่ความจริงของงานจริงเลย
-#
-# ใช้กฎที่ไม่ต้องเดา: RFC 2606 + RFC 6761 สงวนโดเมนกลุ่มนี้ไว้สำหรับเอกสาร/ทดสอบโดยเฉพาะ
-# "ไม่มีงานจริงของ user ที่ไหนวิ่งไปโดเมนพวกนี้ได้" — ต่างจากการเดาว่า "แถวที่ duration=0
-# น่าจะเป็นของปลอม" ซึ่งจะไปตัดงานจริงที่จบเร็วทิ้งด้วย
+# W_production_kpi: source="api" อย่างเดียวแยกงานจริงจาก fixture ไม่ได้ — วัดแล้ว 564/642 แถว
+# source=api ชี้ example.com (เทสต์เก่าเขียนลงไฟล์จริง) ได้ success 99% / 0.0s / 10 tokens ปลอม
+# ใช้ RFC 2606 + 6761 (โดเมนสงวนสำหรับทดสอบ งานจริงไปไม่ได้) แทนการเดาจาก duration=0 ที่จะ
+# ตัดงานจริงที่จบเร็วทิ้งด้วย
 _RESERVED_TEST_HOST_SUFFIXES = (
     "example.com", "example.net", "example.org",
     ".test", ".example", ".invalid", ".localhost",
@@ -76,8 +63,7 @@ def _read_jsonl(path: str) -> list[dict]:
 
 
 def _percentile(values: list[float], fraction: float) -> Optional[float]:
-    """p50/p95 แบบ nearest-rank — ตั้งใจไม่ interpolate เพราะกลุ่มตัวอย่างเล็ก (หลักสิบ)
-    การ interpolate จะสร้างตัวเลขที่ไม่เคยเกิดขึ้นจริงสักครั้ง"""
+    """nearest-rank — ไม่ interpolate เพราะตัวอย่างหลักสิบ จะได้ตัวเลขที่ไม่เคยเกิดขึ้นจริง"""
     if not values:
         return None
     ordered = sorted(values)
@@ -86,7 +72,7 @@ def _percentile(values: list[float], fraction: float) -> Optional[float]:
 
 
 def _stat_block(values: list[float]) -> dict[str, Any]:
-    """ทุกตัวเลขมาพร้อม n เสมอ — n น้อยแปลว่ายังสรุปอะไรไม่ได้ ต้องเห็นคู่กันตลอด"""
+    """median/p95 มาพร้อม n เสมอ — n น้อยแปลว่ายังสรุปไม่ได้"""
     clean = [v for v in values if isinstance(v, (int, float))]
     return {
         "n": len(clean),
@@ -95,14 +81,17 @@ def _stat_block(values: list[float]) -> dict[str, Any]:
     }
 
 
+def _total(rows: list[dict], key: str):
+    return sum(r.get(key) or 0 for r in rows)
+
+
 def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
     """สรุปแถวของ token_usage.jsonl ที่กรองมาแล้ว
 
-    W_production_kpi: แยก "task ที่ใช้เบราว์เซอร์จริง" ออกจาก "task ที่ตอบแบบแชท" เสมอ —
-    routes.py มีทางลัด 4 ทางที่คืนผลโดยไม่แตะเบราว์เซอร์เลย (คำสั่ง /context, ไฟล์แนบ,
-    general chat, follow-up จากไฟล์ที่จำไว้) ทุกทางคืน steps=0 ตามออกแบบ
-    ถ้าเอามารวมกัน median ของ steps/duration จะกลายเป็น 0 ทันทีที่ traffic ส่วนใหญ่เป็นแชท
-    (วัดจริงแล้วเป็นแบบนั้น) ซึ่งอ่านแล้วเข้าใจผิดว่า agent ทำงานเสร็จใน 0 step"""
+    W_production_kpi: แยก task ที่ steps == 0 (ทางลัด 4 ทางของ routes.py: /context, ไฟล์แนบ,
+    general chat, follow-up จากไฟล์ — ตอบแบบแชทตามออกแบบ) ออกจากงานเบราว์เซอร์เสมอ ไม่งั้น
+    median steps/duration เป็น 0 เมื่อ traffic ส่วนใหญ่เป็นแชท (วัดแล้วเป็นแบบนั้น)
+    สถิติ median/p95 คิดจากงานเบราว์เซอร์เท่านั้น"""
     if not rows:
         return {"n": 0}
     done = [r for r in rows if r.get("status") == "done"]
@@ -111,8 +100,7 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
     browser_done = [r for r in browser if r.get("status") == "done"]
     browser_success = [r for r in browser_done if r.get("success") is True]
 
-    # W_token_cut W1: llm_calls vs steps — ส่วนต่างคือเทิร์นที่ยิง LLM แล้วไม่ได้ลงมือทำ
-    # (guard ปฏิเสธ / finish_task ที่ถูกตีกลับ / no-tool retry) ตัวเลขที่ W3 ใช้เล็งเป้า
+    # W_token_cut W1: llm_calls - steps = เทิร์นที่ยิง LLM แล้วไม่ได้ลงมือ (guard/finish ถูกตีกลับ/no-tool)
     def _guard_total(r: dict) -> int:
         gr = r.get("guard_rejections") or {}
         return sum(v for v in gr.values() if isinstance(v, (int, float)))
@@ -122,13 +110,8 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         for name, count in (r.get("guard_rejections") or {}).items():
             if isinstance(count, (int, float)):
                 guard_by_name[name] += count
-    cache_hits = sum(r.get("cache_hit_turns") or 0 for r in browser)
-    cache_misses = sum(r.get("cache_miss_turns") or 0 for r in browser)
-    finish_loops_prevented = sum(r.get("finish_loop_prevented") or 0 for r in browser)  # W3
-    history_events = sum(r.get("history_compaction_events") or 0 for r in browser)  # W5
-    history_tokens_saved = sum(r.get("history_tokens_saved") or 0 for r in browser)  # W5
-    gated_deref_events = sum(r.get("gated_deref_events") or 0 for r in browser)  # W7
-    gated_tokens_saved = sum(r.get("gated_tokens_saved") or 0 for r in browser)  # W7
+    cache_hits = _total(browser, "cache_hit_turns")
+    cache_misses = _total(browser, "cache_miss_turns")
     return {
         "n": len(rows),
         "n_done": len(done),
@@ -139,7 +122,6 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
             (len(browser_success) / len(browser_done)) if browser_done else None
         ),
         "status": dict(Counter(str(r.get("status")) for r in rows).most_common()),
-        # สถิติด้านล่างคิดจาก task ที่ใช้เบราว์เซอร์เท่านั้น (ดู docstring)
         "steps": _stat_block([r.get("steps") for r in browser]),
         "duration_seconds": _stat_block([r.get("duration_seconds") for r in browser]),
         "input_tokens": _stat_block([(r.get("tokens") or {}).get("input") for r in browser]),
@@ -148,11 +130,11 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
         "action_calls": _stat_block([r.get("action_calls") for r in browser]),
         "guard_rejections_total": _stat_block([_guard_total(r) for r in browser]),
         "repeated_guard_count": _stat_block([r.get("repeated_guard_count") for r in browser]),
-        "finish_loops_prevented": finish_loops_prevented,  # W_token_cut W3
-        "history_compaction_events": history_events,  # W_token_cut W5
-        "history_tokens_saved": history_tokens_saved,  # W_token_cut W5
-        "gated_deref_events": gated_deref_events,  # W_token_cut W7
-        "gated_tokens_saved": gated_tokens_saved,  # W_token_cut W7
+        "finish_loops_prevented": _total(browser, "finish_loop_prevented"),  # W_token_cut W3
+        "history_compaction_events": _total(browser, "history_compaction_events"),  # W5
+        "history_tokens_saved": _total(browser, "history_tokens_saved"),  # W_token_cut W5
+        "gated_deref_events": _total(browser, "gated_deref_events"),  # W_token_cut W7
+        "gated_tokens_saved": _total(browser, "gated_tokens_saved"),  # W_token_cut W7
         "assistant_history_tokens": _stat_block(
             [r.get("assistant_history_tokens") for r in browser]
         ),
@@ -175,8 +157,7 @@ def summarise_tasks(rows: list[dict]) -> dict[str, Any]:
 
 
 def summarise_steps(rows: list[dict]) -> dict[str, Any]:
-    """สรุปแถวของ step_trace.jsonl — failure_class คือของที่ตอบได้ว่า "ล้มเพราะอะไร"
-    ซึ่ง token_usage บอกไม่ได้ และ timing แยก phase ตอบว่าเวลาหมดไปกับอะไร"""
+    """สรุปแถวของ step_trace.jsonl — failure_class (ล้มเพราะอะไร) + เวลารวมแยก phase"""
     if not rows:
         return {"n": 0}
     phases = ("snapshot", "llm", "action", "pacing", "wait")
@@ -205,10 +186,7 @@ def build_kpi_report(
     now: Optional[float] = None,
 ) -> dict[str, Any]:
     """รายงาน KPI ของงานจริง + เทียบกับช่วงก่อนหน้าที่ยาวเท่ากัน
-
-    source="api" คือค่าเริ่มต้นโดยเจตนา — คำถามที่ต้องตอบคือ "งานจริงของ user ดีขึ้นไหม"
-    ไม่ใช่ผลของ benchmark (ซึ่ง release_gate ตอบอยู่แล้ว)
-    """
+    source="api" โดยเจตนา — benchmark เป็นหน้าที่ของ release_gate"""
     now = time.time() if now is None else now
     usage = _read_jsonl(token_usage_path or settings.token_usage_log_path)
     steps = _read_jsonl(step_trace_path or settings.step_trace_log_path)
@@ -232,12 +210,10 @@ def build_kpi_report(
         "source": source,
         "window_days": window_days,
         "rows_by_source": dict(source_counts.most_common()),
-        # โชว์ให้เห็นเสมอว่าตัดอะไรออกไปเท่าไร — การกรองเงียบๆ ทำให้คนอ่านเชื่อตัวเลขผิด
+        # โชว์เสมอว่าตัดออกเท่าไร — กรองเงียบๆ ทำให้คนอ่านเชื่อตัวเลขผิด
         "excluded_reserved_test_urls": excluded_reserved,
-        # T1: แยกตามภาษาของ goal — คำถามที่ตอบไม่ได้เลยก่อนหน้านี้คือ "งานภาษาไทยสำเร็จ/แพง
-        # ต่างจากภาษาอังกฤษไหม" ซึ่งสำคัญกับโปรเจกต์นี้เป็นพิเศษ เพราะกลไกจำ goal ทุกตัวถูก
-        # ออกแบบมาสำหรับภาษาอังกฤษ (ดู goal_intent.py) แถวเก่าที่ยังไม่มี field นี้จะไปอยู่
-        # กลุ่ม "unknown" ตามความจริง ไม่เดาย้อนหลังให้
+        # T1: แยกตามภาษาของ goal — กลไกจำ goal ออกแบบมาสำหรับอังกฤษ (goal_intent.py) จึงต้องดู
+        # ว่างานไทยต่างไหม แถวเก่าที่ไม่มี field นี้ -> "unknown" ไม่เดาย้อนหลัง
         "by_goal_script": {
             script: summarise_tasks([r for r in scoped if (r.get("goal_script") or "unknown") == script])
             for script in sorted({(r.get("goal_script") or "unknown") for r in scoped})
@@ -257,8 +233,7 @@ def _fmt(value: Optional[float], digits: int = 1) -> str:
 
 
 def format_kpi_report(report: dict[str, Any]) -> str:
-    """ข้อความสำหรับ terminal — จงใจโชว์ n ติดกับทุกตัวเลข และไม่สรุปให้ว่า "ดีขึ้น/แย่ลง"
-    เพราะ noise ของ metric พวกนี้สูงพอที่การสรุปอัตโนมัติจะหลอกคนอ่านได้ (ดู W91)"""
+    """ข้อความสำหรับ terminal — โชว์ n ทุกตัวเลข และไม่สรุป "ดีขึ้น/แย่ลง" ให้ (noise สูง, W91)"""
     lines = [
         f"=== KPI ของงานจริง (source={report['source']}) ===",
         "แถวทั้งหมดในไฟล์แยกตาม source: "
@@ -292,7 +267,6 @@ def format_kpi_report(report: dict[str, Any]) -> str:
                               ("in tok/call", "avg_input_tokens_per_call"),
                               ("cached tok/call", "avg_cached_tokens_per_call"),
                               ("out tok/call", "avg_output_tokens_per_call")):
-            # ทุกตัวคิดจากงานเบราว์เซอร์เท่านั้น
             stat = block.get(metric) or {"median": None, "p95": None, "n": 0}
             lines.append(
                 f"    {label:<16} median={_fmt(stat['median'])}  p95={_fmt(stat['p95'])}  n={stat['n']}"

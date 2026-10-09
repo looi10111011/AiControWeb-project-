@@ -1,40 +1,12 @@
-"""LLM planning: หน้าเว็บ (indexed elements) + goal -> action ถัดไป
+"""LLM planning: หน้าเว็บ (indexed elements) + goal -> action ถัดไป ผ่าน tool-use/function calling
 
-W4: ใช้ tool-use / function calling แทนการให้ LLM ตอบ JSON เป็น text แล้วมาพาร์สเอง
-    — response กลับมาเป็น tool call ที่ schema ถูกบังคับโดย API เลย ไม่ต้องกังวลเรื่อง
-    markdown fence / คำอธิบายแถม / JSON ผิดรูปแบบ
+provider: Anthropic / Gemini / Groq / OpenAI (ChatGPT OAuth) — ทุกตัวคืน (tool_name, tool_input,
+tool_use_id, messages, usage) รูปเดียวกัน; tool "browser_action" คือ cmd dict ของ actions.execute()
+ส่วน "finish_task" คือสัญญาณหยุด loop
 
-ผูกกับ actions.execute()'s cmd dict โดยตรง: tool "browser_action" คืน dict ที่ยิงเข้า
-execute(page, cmd) ได้ทันที ส่วน tool "finish_task" คือสัญญาณให้ orchestrator หยุด loop
-
-รองรับ 3 provider:
-  - Anthropic (Claude) — ตัวหลักตาม roadmap
-  - Gemini (Google) — provider สำรอง มี free tier กว้างกว่า Anthropic
-  - Groq — ใช้ทดสอบ agent loop ชั่วคราวตอนยังไม่มี Anthropic key จริง (มี free tier)
-ทั้งหมดคืนค่ารูปแบบเดียวกัน (tool_name, tool_input, tool_use_id, messages, usage) ให้
-orchestrator.py เรียกใช้แบบไม่ต้องรู้ว่าข้างในเป็น provider ไหน — usage คือจำนวน token
-ที่ใช้ไปในการเรียก LLM รอบนี้ (รวมทุก retry ถ้ามี) ไว้ให้ orchestrator log/สรุปได้
-
-Anthropic path เปิด prompt caching ไว้ (system + tools มี cache_control) เพราะสอง
-ก้อนนี้เหมือนเดิมทุก step ของ loop เดียวกัน ต่างแค่ messages ที่ยาวขึ้นเรื่อยๆ — Groq
-ไม่ได้ทำตรงนี้ (ไม่รองรับ cache_control แบบเดียวกันผ่าน chat.completions)
-
-W43: user ขอ real-time checkbox ในหน้า plan (Test Console UI) — ติ๊กทีละ step ตอน agent
-ทำ step นั้นสำเร็จจริงระหว่างรัน task (ไม่ใช่แค่ตอนจบ task ทั้งหมด) เพิ่ม 2 อย่างที่นี่:
-  1. _BROWSER_ACTION_PARAMS ได้ property "completed_plan_step" ใหม่ (optional เสมอ ไม่
-     required เด็ดขาด — ad-hoc task ที่ไม่มีแผนต้องยังทำงานเหมือนเดิมทุกประการ) ให้ LLM
-     ใส่เลขข้อ (1-based) ถ้า action ที่เพิ่งเรียกทำให้ step นั้นของแผนเสร็จสมบูรณ์แล้ว —
-     orchestrator.py อ่านค่านี้แล้วยิง SSE event "plan_step_done" เฉพาะตอน execute()
-     สำเร็จจริงเท่านั้น (ดู orchestrator.py สำหรับ logic เต็ม)
-  2. _build_user_turn_text()/next_action()/next_action_groq()/next_action_gemini() ทั้ง 3
-     provider ได้ parameter ใหม่ plan_context — แนบแผนที่ user ยืนยันแล้วเป็น section แยก
-     "แพลนปัจจุบัน" ให้ LLM เห็นเลขข้อจริงก่อนตัดสินใจว่า action นี้ทำให้ step ไหนเสร็จ (ว่าง
-     เปล่าเสมอสำหรับ ad-hoc task — ไม่มี section นี้โผล่มาปนเลย)
-  3. _PLAN_PROMPT_TEMPLATE เปลี่ยนจากขอ "bullet สั้นๆ" (ไม่บังคับ format จริงจัง) เป็น
-     บังคับ format เลขข้อ "1. ... \n2. ..." ตรงๆ เพราะ frontend (index.html) ต้อง parse
-     แต่ละบรรทัดเป็น step แยกเพื่อ render checklist ที่ index ตรงกับที่ LLM อ้างอิงใน
-     completed_plan_step ได้แน่นอน (เดิมโมเดลบังเอิญมักตอบแบบเลขข้ออยู่แล้วในทางปฏิบัติ
-     แต่ไม่ใช่สัญญาที่บังคับได้ — ต้องบังคับชัดเจนไม่งั้น parsing ฝั่ง frontend จะพลาด)
+W4: ใช้ tool-use แทนให้ LLM ตอบ JSON เป็น text — schema ถูกบังคับโดย API ไม่ต้องพาร์ส fence/คำอธิบายแถม
+W43: plan checklist real-time — property "completed_plan_step" (optional เสมอ) + plan_context ใน user turn
+     + _PLAN_PROMPT_TEMPLATE บังคับ format เลขข้อ "1. ... 2. ..." ให้ frontend parse เป็น step ได้
 """
 
 import asyncio
@@ -62,15 +34,10 @@ from backend.app.core import openai_oauth
 
 @dataclass
 class TokenUsage:
-    """จำนวน token ที่ใช้ไปในการเรียก LLM หนึ่งรอบ (รวมทุก retry ถ้ามี)
+    """token ของการเรียก LLM หนึ่งรอบ (รวมทุก retry) — cache_* มีค่าเฉพาะ provider ที่รายงาน
 
-    cache_creation_tokens/cache_read_tokens มีความหมายเฉพาะฝั่ง Anthropic (prompt
-    caching) — Groq ไม่ได้ extract ค่านี้ เลยเป็น 0 เสมอในฝั่งนั้น
-
-    W_token_cut W1: notool_retries = จำนวนครั้งที่ provider ตอบกลับมาโดยไม่เรียก tool
-    ในการเรียก next_action รอบนี้ แล้ว _NO_TOOL_CALL_RETRIES loop ต้องเตือนแล้วยิงซ้ำ
-    (0 = ได้ tool call ตั้งแต่ครั้งแรก) — token ของทุก retry ถูกนับรวมใน input/output
-    อยู่แล้ว ตัวนี้แยกออกมาเพื่อให้ W4 ตัดสินได้ว่า retry ชุดนี้ยังคุ้มไหม
+    W_token_cut W1: notool_retries = จำนวนรอบที่ provider ไม่เรียก tool แล้วต้องเตือนยิงซ้ำ
+    (0 = ได้ tool call ครั้งแรก) แยกออกมาให้ตัดสินได้ว่า retry ยังคุ้มไหม
     """
 
     input_tokens: int = 0
@@ -78,12 +45,8 @@ class TokenUsage:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     notool_retries: int = 0
-    # W_prompt_audit: จำนวน "ตัวอักษร" ของ request สุดท้ายแยกตามหมวด (system / tool schema /
-    # snapshot / history / plan / tool_result / ...) — เก็บ char ไม่ใช่ token เพราะไม่มี
-    # tokenizer ในโปรเจกต์; orchestrator แปลงเป็น token โดยเทียบสัดส่วนกับ input_tokens
-    # จริงของ call นั้น (self-calibrating) — compare=False: เป็น diagnostic metadata ไม่ใช่
-    # ส่วนหนึ่งของ identity ของ usage (เทสต์เทียบ usage == TokenUsage(...) ต้องไม่พังเพราะมัน)
-    # และไม่รวมใน __add__ (เป็นค่าต่อ call ไม่ใช่ผลรวม)
+    # W_prompt_audit: char ของ request สุดท้ายแยกตามหมวด (ไม่มี tokenizer — orchestrator เทียบ
+    # สัดส่วนกับ input_tokens เอง) compare=False และไม่รวมใน __add__ เพราะเป็น metadata ต่อ call
     payload_chars: Optional[dict] = field(default=None, compare=False)
 
     @property
@@ -99,25 +62,16 @@ class TokenUsage:
             self.notool_retries + other.notool_retries,
         )
 
-# บาง Llama model บน Groq บางครั้ง generate tool call ผิดรูปแบบ (เช่น
-# "<function=...>" แทน JSON ที่ API คาดหวัง) ทำให้ได้ 400 tool_use_failed —
-# ส่วนใหญ่เป็นเรื่อง sampling แบบสุ่ม ลองยิงซ้ำมักผ่าน ไม่ใช่บั๊กโค้ดเรา
+# Llama บน Groq บางครั้ง generate tool call ผิดรูป ("<function=...>") ได้ 400 tool_use_failed
+# — เป็นเรื่อง sampling ยิงซ้ำมักผ่าน
 _GROQ_TOOL_CALL_RETRIES = 3
 
-# บางครั้ง Llama ตอบเป็นข้อความเฉยๆ โดยไม่เรียก tool เลย แม้ tool_choice="required"
-# จะบังคับไว้แล้ว — แทนที่จะยอมแพ้แล้ว finish_task ทันที ให้เตือนแล้วลองใหม่ก่อน
+# Llama บางครั้งตอบข้อความเฉยๆ แม้ tool_choice="required" — เตือนแล้วลองใหม่ก่อนยอมแพ้
 _GROQ_NO_TOOL_CALL_RETRIES = 3
 
-# W_notoolcall (บั๊กจริงจาก log การรันจริง 2026-08-24/25 — openai สำเร็จแค่ 33% (5/15) โดย
-# หลายครั้งจบที่ 2 step ทั้งที่เผา input token ไป 140k-202k): Anthropic/Gemini/OpenAI เดิม
-# "ไม่ควรเกิดขึ้นเพราะ tool_choice บังคับไว้แล้ว" เลยสังเคราะห์ finish_task(success=False)
-# คืนทันทีถ้าไม่มี tool call — แต่เกิดขึ้นจริง และเลวร้ายกว่านั้นคือ tool_use_id ที่คืนมา
-# เป็น "" ทำให้ guard กัน premature-false-finish ทุกตัวใน orchestrator.py (ที่เช็ค
-# `and tool_use_id` เป็นเงื่อนไข) ถูกข้ามหมด → โมเดลตอบเป็นข้อความธรรมดาครั้งเดียว = จบ
-# task ทันทีโดยไม่มีการเตือน/ลองใหม่เลยสักครั้ง
-#
-# Groq มี pattern แก้เรื่องนี้อยู่แล้วตั้งแต่แรก (_GROQ_NO_TOOL_CALL_RETRIES ด้านบน) —
-# ยกมาใช้กับอีก 3 provider ให้เหมือนกัน แทนที่จะเขียนกลไกใหม่
+# W_notoolcall (log จริง 2026-08-24/25 — openai สำเร็จ 5/15): provider อื่นเคยสังเคราะห์
+# finish_task(false) ทันทีเมื่อไม่มี tool call และ tool_use_id="" ทำให้ guard premature-finish ใน
+# orchestrator ถูกข้ามหมด — ยก pattern เตือน+ลองใหม่ของ Groq มาใช้กับทุก provider
 _NO_TOOL_CALL_RETRIES = 3
 _NO_TOOL_CALL_NUDGE = (
     "You must call a tool (browser_action or finish_task) — never reply with plain text "
@@ -126,16 +80,10 @@ _NO_TOOL_CALL_NUDGE = (
 
 
 def _loads_tool_arguments(raw: str, tool_name: str) -> dict[str, Any]:
-    """แปลง arguments ที่โมเดลส่งมา (JSON string) เป็น dict — คืน {} ถ้า parse ไม่ได้
+    """แปลง arguments (JSON string) เป็น dict — คืน {} ถ้า parse ไม่ได้ ไม่ raise
 
-    W_notoolcall (ญาติกับด้านบน): เดิม json.loads() ตรงจุดนี้ทั้ง Groq และ OpenAI ไม่มี
-    try/except เลย — arguments ที่พังแม้ครั้งเดียว (JSONDecodeError) จะทะลุออกจาก
-    next_action() ไปฆ่า run_task() ทั้ง task ทิ้ง (run_task ไม่มี except ครอบลูป ดู
-    orchestrator.py) พร้อม history/token ที่สะสมมาทั้งหมด
-
-    คืน {} แทนการ raise: dict ว่างจะไหลต่อไปถึง actions.execute() ซึ่งคืน "missing
-    parameter" กลับเข้า loop เป็นข้อความปกติ ให้โมเดลเห็นแล้วแก้เองในรอบถัดไป — เสีย 1 step
-    แทนที่จะเสียทั้ง task"""
+    W_notoolcall: เดิม json.loads() ไม่มี try — arguments พังครั้งเดียวฆ่า run_task() ทั้ง task;
+    {} ไหลไปถึง actions.execute() ที่ตอบ "missing parameter" ให้โมเดลแก้เอง (เสีย 1 step แทนทั้ง task)"""
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -144,28 +92,18 @@ def _loads_tool_arguments(raw: str, tool_name: str) -> dict[str, Any]:
 
 
 def _no_tool_call_fallback_message(retries: int) -> str:
-    """ข้อความของ finish_task(success=False) ที่สังเคราะห์ขึ้นเมื่อ provider ไม่ยอมเรียก tool
-    เลยแม้เตือนครบโควตาแล้ว — รวมไว้ที่เดียวเพื่อให้ทุก provider รายงานเหมือนกัน (และให้
-    telemetry/การไล่บั๊กแยกสาเหตุนี้ออกจาก finish_task(false) ที่โมเดลตั้งใจเรียกเองได้)"""
+    """ข้อความ finish_task(false) สังเคราะห์เมื่อเตือนครบแล้วยังไม่เรียก tool — ที่เดียวทุก provider
+    ให้ telemetry แยกจาก finish_task(false) ที่โมเดลเรียกเองได้"""
     return f"The LLM returned no tool call even after being reminded {retries} time(s)"
 
-# Gemini free tier มี quota เป็นนาที (RPM) — ยิงถี่เกินจะได้ 429 ResourceExhausted
-# กลับมา ถ้าไม่ดักไว้ agent loop จะ crash ทั้ง process กลางคันแทนที่จะแค่หน่วงแล้วลองใหม่
-# (quota มักรีเซ็ตในหลักนาที ไม่ใช่วินาที เลย backoff แบบ exponential เริ่มจากค่าเยอะพอ)
+# Gemini free tier มี quota ต่อนาที — 429 ResourceExhausted ที่ไม่ดักจะ crash loop กลางคัน
+# (quota รีเซ็ตหลักนาที เลย backoff เริ่มจากค่าเยอะพอ)
 _GEMINI_RATE_LIMIT_RETRIES = 3
 _GEMINI_RATE_LIMIT_BACKOFF_SECONDS = 20
 
-# W_gemini_backoff_everywhere (2026-09-10): ลูป retry ด้านบนเคยมีอยู่ที่เดียวคือ
-# next_action_gemini() ส่วนอีก 15 จุดที่ยิง generate_content_async() (classify_intent,
-# generate_plan, abstractor, repair-step, vision, chat/file/image ฯลฯ) ไม่มีเลย — 429 หนึ่งครั้ง
-# ที่ตกใส่จุดใดจุดหนึ่งในนั้นจึงฆ่า task ทั้ง task ทั้งที่ quota คืนใน 29 วินาที
-#
-# เห็นในรัน release gate จริงของวันนี้: classify_intent โดน 429 แล้วรอดมาได้เพราะบังเอิญมี
-# try/except ของตัวเองที่ fallback เป็น "action_task" — ไม่ใช่เพราะมีใครรอ quota ให้
-#
-# ต่างจากฝั่ง openai (ดู _openai_create_with_backoff) ตรงที่ Gemini บอกมาตรงๆ ว่าให้รอกี่วินาที
-# ("retry_delay { seconds: 29 }") จึงรอตามที่ API สั่งได้เลย แม่นกว่าการเดาแบบเท่าตัว
-# เพดาน quota ของ free tier คือ 15 request/นาที/โมเดล (quota_value ในข้อความ 429 เอง)
+# W_gemini_backoff_everywhere (release gate 2026-09-10): เดิม retry มีแค่ใน next_action_gemini()
+# อีก 15 จุดที่ยิง generate_content_async() โดน 429 ครั้งเดียวก็ตายทั้ง task — ทุก call จึงผ่าน
+# _gemini_generate_with_backoff() ที่รอตาม "retry_delay { seconds: N }" ที่ API บอกมาเอง
 _GEMINI_RETRY_DELAY_RE = re.compile(r"retry_delay\s*{[^}]*seconds:\s*(\d+)", re.DOTALL)
 # กันกรณี API ส่งค่ามาผิดปกติจนรอนานเกิน llm_step_timeout_seconds แล้วโดนตัดทิ้งก่อนได้ผล
 _GEMINI_MAX_BACKOFF_SECONDS = 60
@@ -183,8 +121,7 @@ def _gemini_backoff_seconds(error: Exception, attempt: int) -> float:
 
 
 async def _gemini_generate_with_backoff(gemini_model, **kwargs):
-    """generate_content_async() ที่รอแล้วลองใหม่เมื่อโดน 429 — จุดเดียวที่ทุก call ของ
-    provider gemini ผ่าน ดัก ResourceExhausted อย่างเดียว error อื่นต้องพังทันทีให้เห็น"""
+    """generate_content_async() + retry เมื่อ 429 — ดักแค่ ResourceExhausted, error อื่น raise ทันที"""
     for attempt in range(_GEMINI_RATE_LIMIT_RETRIES):
         try:
             return await gemini_model.generate_content_async(**kwargs)
@@ -200,23 +137,60 @@ async def _gemini_generate_with_backoff(gemini_model, **kwargs):
             await asyncio.sleep(wait)
 
 
-# W_prompt_sections (P4.1): SYSTEM_PROMPT เดิมยาว 44,487 ตัวอักษร (~11k token) และถูกส่ง
-# "ทั้งก้อน" ทุก step ของทุก task — วัดจาก step trace ของ release gate จริง: step แรกของ
-# ทุก task เริ่มที่ ~11.4k input token ทั้งที่หน้า saucedemo/MiniWoB มี element ไม่กี่ตัว
-# แปลว่าเกือบทั้งหมดคือ prompt ไม่ใช่เนื้อหาหน้าเว็บ รวมทั้ง gate run (15 task) prompt กิน
-# ไปราว 80% ของ input token ทั้งหมด 2.06M
-#
-# ประโยชน์สองชั้นของการฉีดตามบริบท (ไม่ใช่แค่ประหยัดเงิน): กฎ 86 ข้อพร้อมกันทำให้โมเดลเล็ก
-# อย่าง gpt-5.4-mini (default ของโปรเจกต์นี้) ทำตามได้ไม่ครบ — P0 เป็นหลักฐานเชิงประจักษ์
-# แล้วว่ากฎ W21/W50/W63/W64 เขียนถูกครบทุกข้อ แต่โมเดลก็ยังทำไม่ครบอยู่ดี
-#
-# *** เกณฑ์การเลือกว่าอะไร gate ได้ ***: gate เฉพาะบล็อกที่มี "สัญญาณ deterministic ที่โค้ด
-# คำนวณอยู่แล้ว" เท่านั้น (goal intent predicate, plan_text, allow_fill_secret, tag ของ
-# element ใน snapshot) — ห้าม gate ด้วย heuristic ใหม่ที่เดาเอา เพราะ gate ผิด = โมเดลไม่เห็น
-# กฎที่ต้องใช้ ซึ่งเป็น failure mode ที่แย่กว่าการเปลืองt oken มาก กฎที่เหลือทั้งหมดอยู่ใน
-# core ส่งทุก step เหมือนเดิม
-#
-# ผู้เรียกที่ไม่ส่ง sections มา (เทสต์เดิม/โค้ดเก่า) ได้ prompt เต็มเหมือนเดิมทุกประการ
+async def _forced_tool_call(
+    client, model: str, provider: str, *, tool: dict, system: str, prompt: str,
+    max_tokens: int, anthropic_system: Any = None, openai: bool = False,
+) -> Optional[dict]:
+    """Single-shot call ที่บังคับเรียก `tool` (รูป Anthropic) ข้าม provider — คืน args dict หรือ None
+    ถ้า provider ไม่รู้จัก/ไม่มี tool call; ไม่จับ exception: ผู้เรียกแปลงเป็น safe default เอง
+
+    openai=False = call site ที่ยังไม่ port ไป codex endpoint ตกเป็น None (ดู W_openai_multiturn)"""
+    name, description, params = tool["name"], tool["description"], tool["input_schema"]
+    if provider == "anthropic":
+        response = await client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=anthropic_system if anthropic_system is not None else system,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": name},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+        return tool_use.input if tool_use is not None else None
+    if provider == "groq":
+        response = await client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            tools=[{"type": "function", "function": {"name": name, "description": description, "parameters": params}}],
+            tool_choice={"type": "function", "function": {"name": name}},
+        )
+        tool_calls = response.choices[0].message.tool_calls or []
+        return json.loads(tool_calls[0].function.arguments) if tool_calls else None
+    if provider == "gemini":
+        gemini_model = client.GenerativeModel(
+            model_name=model,
+            tools=[{"function_declarations": [{"name": name, "description": description, "parameters": params}]}],
+            tool_config={"function_calling_config": {"mode": "ANY"}},
+            system_instruction=system,
+        )
+        response = await _gemini_generate_with_backoff(
+            gemini_model, contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        )
+        for part in response.candidates[0].content.parts:
+            fc = getattr(part, "function_call", None)
+            if fc and fc.name == name:
+                return _gemini_struct_to_plain_python(fc.args)
+        return None
+    if provider == "openai" and openai:
+        return await _openai_forced_tool_call(client, model, system, prompt, name, description, params)
+    return None
+
+
+# W_prompt_sections (P4.1): SYSTEM_PROMPT เต็ม ~11k tok ถูกส่งทุก step = ~80% ของ input token
+# ใน gate run และกฎ 86 ข้อพร้อมกันทำให้โมเดลเล็กทำตามไม่ครบ — แยก core + บล็อกที่ gate ตามบริบท
+# gate เฉพาะด้วยสัญญาณ deterministic ที่โค้ดคำนวณอยู่แล้วเท่านั้น (gate ผิด = โมเดลไม่เห็นกฎที่ต้องใช้)
+# ผู้เรียกที่ไม่ส่ง sections ได้ prompt เต็มเหมือนเดิม
 _PROMPT_CORE = """You are an AI agent that controls a web page through a browser to accomplish the goal the user gives you.
 
 Every turn you receive the "indexed elements" of the current page, e.g.:
@@ -305,16 +279,9 @@ _PROMPT_PASSWORD = """- W20 ("Account Security & Password Actions", HIGHEST PRIO
 - W65[3] ("Vault Expansion — Current Password Auto-fill"): for a "[required]"-marked field whose label indicates "Current Password" in a change-password form (NOT the Login form), always try type: "fill_secret", secret: "current_password" on that index first, before asking the user — the system fills the password saved at login time, with no way for you to see the value. If it fails (no credential saved), fall back to W65[1] (call request_user_input). NEVER use fill_secret on any field other than Current Password in a change-password form (the only supported secret)."""
 
 
-# W_core_carries_situational_rules (วัดจากงานจริง 2026-09-04): core ที่ส่งทุก call คือ
-# 25,146 ตัวอักษร ~6,286 tok ซึ่งเป็นก้อนใหญ่ที่สุดของ payload ต่อเทิร์น (สแนปช็อตหน้าเว็บ
-# ~275 tok เท่านั้น) วัดแยกแล้วพบว่า 36% ของ core เป็นกฎที่ใช้ได้เฉพาะสถานการณ์ ไม่ใช่กฎทั่วไป
-#
-# บล็อกด้านล่างย้ายออกจาก core มาเป็น gated section — ทุกอันมีทริกเกอร์ที่ "ตรวจจาก DOM ได้
-# ตรงตัว" คือ marker ที่กฎนั้นพูดถึงเอง จึงไม่มีทางส่งไม่ทันเวลาที่ต้องใช้ (ต่างจากกฎอย่าง
-# request_user_input ที่ตัดสินจากหน้าเว็บไม่ได้ จึงจงใจคงไว้ใน core)
-#
-# ห้ามแก้ข้อความในบล็อกเหล่านี้ — W_token_trim P4/M2 เคยบีบข้อความใน core แล้วต้อง revert
-# งานนี้คือ "ย้ายที่" ไม่ใช่ "เขียนใหม่ให้สั้น"
+# W_core_carries_situational_rules (วัด 2026-09-04): 36% ของ core (~6.3k tok/เทิร์น) เป็นกฎเฉพาะ
+# สถานการณ์ — ย้ายมาเป็น gated section ที่ทริกเกอร์จาก marker ใน DOM ที่กฎนั้นพูดถึงเอง
+# (request_user_input ตัดสินจาก DOM ไม่ได้ จึงคงไว้ใน core) ห้ามแก้ข้อความ: W_token_trim P4/M2 เคยบีบแล้วต้อง revert
 _PROMPT_MANUAL = """- W21 ("PRE_LEARNED_MANUAL Strict Mode", an exception to the rule above): if the attached text begins with the marker "[PRE_LEARNED_MANUAL]" (different from the general "Reference information from the relevant manual" above — this marker means the system found a manual matching THIS goal specifically, not just broad context), your plan must strictly follow the route/page order/buttons recorded in that [PRE_LEARNED_MANUAL]. Never invent or guess a different selector or path (no hallucinating alternatives) unless following the recorded one produces a real error (the specified element is absent from the current indexed elements / clicking it doesn't do what was expected) — only then may you look for an alternative. You must still pick an index from the real indexed elements of the current page as always (this architecture never lets you fire a raw selector, bypassing the index); the recorded label/selector in [PRE_LEARNED_MANUAL] is only there to help you decide which indexed element best matches what the manual describes, instead of guessing from the label alone with no reference."""
 
 _PROMPT_MARKER_ACTIVE = """- W19 ("Log Cleanliness"): an element with the marker "[already active]" appended to its label (a menu/tab that is already selected/active) must NEVER be clicked again, because some frameworks trigger no change at all when you click the already-active item (the page structure stays byte-for-byte identical), wasting a step waiting for a change that will never come. Move straight on to the next goal-related action on the current page (this element is already in the state you wanted; no need to click it again) — unless the goal explicitly says to "refresh"/"reopen", in which case clicking again is allowed."""
@@ -327,12 +294,8 @@ _PROMPT_SAVE_TOAST = """- W63[7.1] ("Save Confirmation & Toast Wait", ticket Iss
 _PROMPT_MARKER_REQUIRED = """- W65[1] ("Required-Field Validation"): for an element you need to fill/select/check, if it has the marker "[required]" appended to its label (attached by perception.py from the real HTML `required`/`aria-required` attribute — see the other markers in this file for the same pattern) and there is genuinely no value for that field in the goal or the earlier conversation, NEVER guess it or leave it blank and press submit — call request_user_input (see W_resume below for full details), stating clearly in the prompt which value is missing, before touching that field, then continue the SAME task with the answer. *** NEVER use finish_task(success=false) for this case *** (finish_task ends the whole task and discards the existing plan/browser state, so when the user supplies the value on the next turn the work has to restart from scratch — request_user_input simply pauses and then continues the same task immediately). This generalises the earlier rule that was hardcoded for the Change Password form only (see W20 "Current Password ≠ New Password" above) to every field carrying this marker, not just passwords. Exceptions: (1) the field has a usable "fill_secret" action (see W65[3] below — always try before asking), or (2) the value can genuinely be inferred from clear context (e.g. you just entered/saw it in this very conversation)."""
 
 
-# W_core_carries_situational_rules (รอบสอง): กฎอีก 4 กลุ่มที่ทริกเกอร์อ่านจาก DOM ได้ตรงตัว
-# เหมือนรอบแรก — กฎค้นหา/ส่งฟอร์ม (ต้องมีปุ่มหรือช่องค้นหาอยู่จริง), กฎ label ซ้ำ (ต้องมี label
-# ซ้ำจริงในหน้า), marker hover ของแถวตาราง และกฎฟอร์ม (ต้องมีช่องกรอกอยู่จริง)
-#
-# หมายเหตุตามความจริง: สองกลุ่มแรกทริกเกอร์บนหน้าเว็บทั่วไปเกือบทุกหน้า ที่ประหยัดได้จริงจึง
-# น้อยกว่าขนาดของบล็อกมาก — วัดแล้วรายงานไว้ใน commit ไม่ได้เคลมจากขนาดบล็อก
+# W_core_carries_situational_rules (รอบสอง): ค้นหา/ส่งฟอร์ม, label ซ้ำ, hover marker, กฎฟอร์ม —
+# สองกลุ่มแรกทริกเกอร์เกือบทุกหน้า ที่ประหยัดจริงจึงน้อยกว่าขนาดบล็อก (ตัวเลขวัดจริงอยู่ใน commit)
 _PROMPT_SEARCH_SUBMIT = """  (1) If a Submit/OK/Go/Search/Confirm button is genuinely visible on the page (whether you just filled a text field, or just picked one value from a list/dropdown with type: "click"/"select"). Checkboxes are the exception: whenever the page shows a group of several checkboxes, tick exactly the boxes the instruction names — no others, never tick a box just to make the group look complete — and press the button on its own later turn. The system refuses a button press chained onto a tick inside such a group, because pressing Submit partway through submits the wrong set and cannot be undone, always pass "then_click_index" set to that button's index in the same command — this is more reliable than "key":"Enter", because some sites never bind Enter to submission at all (no real <form>, no listener), so Enter does nothing even though the value was entered correctly and the system cannot detect success. (2) Use "key": "Enter" together with type: "fill" ONLY when there is no separate submit button visible anywhere on the page (e.g. a search box with no search button). If you are unsure what the second element is or where it is, or unsure whether a submit button even exists, just fill (omit key/then_click_index), look at the result, and decide the next step then. Never guess the index of an element that isn't in the current list.
 - W20 ("No Redundant Search Submission"): to submit a search/filter term typed into a field, choose exactly ONE of (a) type: "press_key" key: "Enter" on that input's index, or (b) type: "click" on the "Search" button. NEVER do both back to back for the same query (firing Enter and then also clicking Search is a redundant double submit that may re-run the search or reset the previous results). After firing press_key Enter, go straight to reading the changed results on the page and automatically skip any previously planned "click the Search button" step.
 - W63[3.1] ("Search Mandatory Trigger", following on from W20 "No Redundant Search Submission" above, ticket Issue 3.1): after setting a filter/dropdown/typing a search term, you must always press the "Search" button (or press_key Enter per W20 — exactly one of the two) before reading, counting, or deciding anything from the table results. NEVER read the table or count rows immediately after only choosing a dropdown value/typing a query without pressing Search (the table you see then is still the OLD result from before the new filter). After pressing Search/Enter you must perceive the new page (wait for the next round of indexed elements/data, which the system already waits for network/DOM quiet before returning) before treating the table as updated for the new conditions."""
@@ -374,11 +337,7 @@ _PROMPT_SECTION_ORDER = (
 
 @lru_cache(maxsize=32)
 def build_system_prompt(sections: Optional[frozenset] = None) -> str:
-    """ประกอบ SYSTEM_PROMPT จาก core + บล็อกที่บริบทนี้ต้องใช้จริง (ดูคอมเมนต์ด้านบน)
-
-    sections=None = เอาทุกบล็อก (พฤติกรรมเดิมเป๊ะ) — ค่า default ของทุก next_action_* ด้วย
-    cache ไว้เพราะจำนวนชุดที่เป็นไปได้มีแค่ 16 แบบ และ string concat ก้อน 44k ทุก step เปล่าๆ
-    ไม่มีเหตุผล"""
+    """core + บล็อกที่ขอ (เรียงตาม _PROMPT_SECTION_ORDER) — sections=None = ทุกบล็อก (prompt เต็ม)"""
     wanted = _PROMPT_SECTION_ORDER if sections is None else tuple(
         name for name in _PROMPT_SECTION_ORDER if name in sections
     )
@@ -393,70 +352,26 @@ ALL_PROMPT_SECTIONS = frozenset(_PROMPT_SECTION_ORDER)
 
 
 def gated_sections_text(sections: Optional[frozenset]) -> str:
-    """W_token_cut W2: ข้อความของบล็อก prompt ที่ gate ตามบริบท (plan/table/widget/password)
+    """W_token_cut W2: ข้อความบล็อกที่ gate ตามบริบท เรียงตาม _PROMPT_SECTION_ORDER; ว่าง/None -> ""
 
-    agent loop ย้ายบล็อกพวกนี้จาก system prompt มาต่อ *ท้าย* user turn แทน เพื่อให้ system
-    prefix (_PROMPT_CORE) เท่ากันทุกเทิร์นทุก task — prefix cache ของ provider จึงไม่ขาด
-    กลาง task ตอนหน้าเว็บมีตาราง/widget โผล่ (เดิม sections เปลี่ยน -> build_system_prompt
-    คืนคนละ string -> cache miss ทันที) การ gate ยังใช้ _resolve_prompt_sections เดิม
-    ทุกประการ ไม่เสียประโยชน์ของ W_prompt_sections
-
-    sections ว่าง/None -> "" (ไม่ต่อบล็อกไหนเลย); เรียงตาม _PROMPT_SECTION_ORDER เสมอ"""
+    agent loop ต่อบล็อกนี้ท้าย user turn แทน system prompt ให้ prefix (_PROMPT_CORE) คงที่ทุกเทิร์น
+    — เดิม sections เปลี่ยนกลาง task = system string เปลี่ยน = prefix cache miss"""
     if not sections:
         return ""
     names = tuple(n for n in _PROMPT_SECTION_ORDER if n in sections)
     return "\n".join(_PROMPT_SECTIONS[n] for n in names)
 
-# W6[B]: ต่อ user turn เดียวกันนี้ใช้ร่วมกันทั้ง 3 provider (Anthropic/Groq ใช้ตรงๆ เป็น
-# plain string content, Gemini เอาไปห่อเป็น parts[0]["text"] — สุดท้ายเป็น plain text
-# เหมือนกันหมด) — ต่อ section คู่มือ (จาก retriever.retrieve() ที่ orchestrator เรียกให้
-# ทุก step) เฉพาะตอนมีผลลัพธ์จริง กัน prompt รกด้วย section เปล่าๆ ทุก step ที่หาไม่เจอ
-# ในคู่มือ (retrieve() คืน [] เงียบๆ เสมอ ไม่ throw)
-#
-# W7[A]: เพิ่ม memory_context เดียวกัน — สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
-# ShortTermMemory.failed_actions_summary() ที่ orchestrator เรียกให้ทุก step) ต่อกัน
-# ท้ายสุด เฉพาะตอนมีผลลัพธ์จริงเหมือนกัน (ว่างเปล่าถ้ายังไม่เคย fail อะไรเลย)
-#
-# W7[A] (long-term): เพิ่ม long_term_context — เหมือน manual_context ทุกประการแค่มา
-# จาก long_term_memory.recall() (จาก task run อื่นที่เคยทำมาก่อน) แทนคู่มือที่ user
-# ป้อน — คนละ section กับ memory_context (ตัวนั้นจำได้แค่ภายใน task ปัจจุบันเดียวเท่านั้น
-# ตัวนี้จำข้ามหลาย task run)
-#
-# W9[A] (vision fallback): เพิ่ม vision_context — คำอธิบายจาก Gemini vision (ดู
-# describe_screenshot() ด้านล่าง) ตอน action ที่ต้องพึ่ง element visibility (click/
-# fill/select/check) ล้มเหลวซ้ำแม้ retry ครบแล้ว ทั้งที่ index มีอยู่จริงใน DOM — สงสัย
-# ว่ามี popup/overlay บัง element ที่ perception (DOM-based ล้วนๆ) มองไม่เห็นครบ (ดู
-# marker "[ถูกบังอยู่]" ใน perception.py ที่เป็นสัญญาณเสริมอีกชั้นแบบไม่ต้องพึ่ง vision)
-# — ว่างเปล่าถ้าไม่มี action ล้มเหลวแบบนี้เกิดขึ้น หรือ provider ไม่ใช่ Gemini
-# (orchestrator.py คุมการเรียก vision ไว้ที่ Gemini เท่านั้นตอนนี้ ดูเหตุผล scope ที่นั่น)
-
 
 def _current_bangkok_time_text() -> str:
-    """เวลาจริงจากเซิร์ฟเวอร์ ณ ขณะเรียก (Asia/Bangkok) — เรียกสดทุกครั้งที่
-    _build_user_turn_text() ถูกเรียก (ทุก step ของ loop) ไม่ cache ค่าไว้ข้ามรอบ เพราะ LLM
-    เองไม่มีการรับรู้เวลาจริง ต้องฉีดเข้า context ทุก turn ไม่งั้นจะเดา/อ้างอิงวันที่จาก
-    training data ผิดๆ (ดู SYSTEM_PROMPT ข้อสุดท้ายที่สั่งให้ยึดบรรทัดนี้เป็นความจริงเสมอ)"""
+    """เวลาจริง Asia/Bangkok อ่านสดทุกครั้ง (ไม่ cache) — LLM ไม่รู้เวลาจริง ต้องฉีดทุก turn"""
     now = datetime.now(tz=ZoneInfo("Asia/Bangkok"))
-    # W_prompt_en: Gregorian year in English, not the Buddhist Era year the Thai version
-    # used — the model reasons about dates far more reliably in the calendar its training
-    # data actually uses, and the SYSTEM_PROMPT rule that pins "current date" to this line
-    # only works if the line itself is unambiguous.
+    # W_prompt_en: ปี ค.ศ. ภาษาอังกฤษ ไม่ใช่ พ.ศ. — โมเดลคิดเรื่องวันที่แม่นกว่าในปฏิทินของ training data
     return now.strftime("%A, %d %B %Y at %H:%M")
 
 
-# W_token_trim (P3/M3): the learned site manual is constant for the whole task but was
-# re-emitted verbatim under a ~50-word header every single step (~0.8k–2k tok × N steps).
-# Send the full text once — on the first loop turn, and again on the first kept turn after
-# each history compaction (see orchestrator.py force_full_site_manual) — then reference it
-# by a stable content-hash id plus a 1–2 line "what it covers" summary. The full text is
-# always still reachable earlier in the same conversation (or is re-injected right after a
-# compaction that would have spliced it out), so nothing is actually lost.
-#
-# site_manual_blocks() returns (full_block, ref_block); the orchestrator picks one per step
-# and passes it as site_manual_context. _render_site_manual() below turns whichever marker
-# it sees back into prose and strips the marker so the model never sees it. A plain string
-# with neither marker (tests, generate_plan, any caller not using this scheme) renders
-# exactly as before — byte-for-byte the old header.
+# W_token_trim (P3/M3): site manual คงที่ทั้ง task แต่เคยถูกส่งซ้ำเต็มทุก step (~0.8k–2k tok/step)
+# — ส่งเต็มครั้งแรก (และหลัง history compaction ดู orchestrator force_full_site_manual) แล้วอ้างด้วย
+# id (content hash) + สรุป 1-2 บรรทัด; string ที่ไม่มี marker render เหมือน header เดิมเป๊ะ
 _SITE_MANUAL_FULL_MARK = "\x00SITE_MANUAL_FULL\x00"
 _SITE_MANUAL_REF_MARK = "\x00SITE_MANUAL_REF\x00"
 _SITE_MANUAL_BODY_SEP = "\x00BODY\x00"
@@ -528,47 +443,27 @@ def _build_user_turn_text(
     prompt_sections: Optional[frozenset] = None,
     _parts: Optional[dict] = None,
 ) -> str:
-    # W_prompt_audit: ถ้าส่ง _parts (dict ว่าง) มา จะบันทึกข้อความของแต่ละหมวดลงไปด้วย
-    # (คีย์: scaffolding / plan / snapshot / action_history / other) — ผู้เรียกเอาไปนับ
-    # token ต่อหมวดได้ โดยไม่กระทบข้อความที่ประกอบออกมาเลย (ต่อกันลำดับเดิมเป๊ะ)
+    """user turn เดียวที่ทุก provider ใช้ (Gemini ห่อเป็น parts) — section ว่างไม่ถูกต่อเลย
+
+    _parts (W_prompt_audit): ถ้าส่ง dict มา จะบันทึกข้อความแต่ละหมวดไว้ให้นับ token โดยไม่กระทบผลลัพธ์"""
     def _rec(_cat: str, _chunk: str) -> str:
         if _parts is not None and _chunk:
             _parts[_cat] = _parts.get(_cat, "") + _chunk
         return _chunk
 
     text = _rec("scaffolding", f"Goal: {goal}")
-    # แนบเวลาจริงของเซิร์ฟเวอร์ทุก turn (ไม่ใช่แค่ตอนเริ่ม session) — LLM ไม่มีการรับรู้
-    # เวลาจริงในตัวเอง ต้องฉีดเข้า context ทุกครั้งที่เรียก _build_user_turn_text() (ดู
-    # _current_bangkok_time_text() ด้านบน — อ่านเวลาสดทุกครั้ง ไม่ cache ค่าเดิมค้างไว้)
     text += _rec("scaffolding", f"\n\nCurrent time (Asia/Bangkok): {_current_bangkok_time_text()}")
-    # W43: plan_context มีค่าเฉพาะ task ที่ผ่าน Confirm plan (confirm_plan=True/
-    # approved_plan) มาก่อนเท่านั้น — ad-hoc task (ไม่มีแพลนเลย) ได้ "" เสมอ ไม่มี section
-    # นี้โผล่มาปนเลย (backward compatible ทุกประการกับ prompt เดิม) วางไว้ก่อน "หน้าเว็บ
-    # ปัจจุบัน" เพราะเป็นบริบทระดับ task (เหมือน Goal) ไม่ใช่ข้อมูลเฉพาะ step นี้แบบ
-    # manual_context/memory_context ด้านล่าง — ให้ LLM เห็นเลขข้อของแผนก่อนตัดสินใจว่า action
-    # ที่กำลังจะทำ "ทำให้ step ไหนเสร็จ" (ดู completed_plan_step ใน _BROWSER_ACTION_PARAMS)
+    # W43: plan_context มีค่าเฉพาะ task ที่ผ่าน Confirm plan — วางก่อนหน้าเว็บเพราะเป็นบริบทระดับ task
     if plan_context:
         text += _rec("plan", f"\n\nCurrent plan confirmed by the user (each line is one numbered step):\n{plan_context}")
-    # W30 (recovered from an earlier exploratory branch — ดู roadmap.txt): เพิ่มหลัง user
-    # รายงานว่า agent บางครั้งดูเหมือนตัดสินใจจาก state เก่า (เช่นหน้าเว็บเปลี่ยนไปเองระหว่าง
-    # ทาง แต่ยังพูดถึงหน้าเดิม) — get_snapshot() ที่ orchestrator.py เรียกทุก step อยู่แล้ว
-    # เป็นการอ่านสด (live) จาก page จริงเสมออยู่แล้ว ไม่มี cache ทางโค้ด แต่ก่อนหน้านี้
-    # page.url ไม่เคยถูกโชว์เป็นข้อความชัดๆ ให้ LLM เห็นเลย (มีแค่ indexed elements list) —
-    # โมเดลเลยต้องเดาว่า "นี่หน้าเดิมหรือหน้าใหม่" จาก element ที่หน้าตาอาจคล้ายกันได้ ใส่
-    # URL ปัจจุบันจริงตรงๆ ทุก step (อ่านจาก page.url สดๆ ไม่ใช่ค่าที่จำมาจาก step ก่อน) ให้
-    # หลักฐานชัดเจนกว่าการเดาจาก element เพียงอย่างเดียว
+    # W30: โมเดลเคยตัดสินจาก state เก่าเพราะเห็นแค่ element list ไม่เคยเห็น page.url — ใส่ URL สดทุก step
     if current_url:
         text += _rec("scaffolding", f"\n\nReal current page URL (read live from the browser every step): {current_url}")
     text += _rec("snapshot", f"\n\nCurrent page:\n{page_text}")
-    # W14: site_manual_context มาจากคู่มือที่ crawl มาอัตโนมัติ (backend/app/site_learning/
-    # — คนละระบบสมบูรณ์จาก manual_context ด้านล่างที่มาจากคู่มือที่ user อัปโหลดเอง/ingest
-    # เข้า ChromaDB) แยก section ให้ชัดเจนไม่ปนกัน เพื่อให้ debug ง่ายว่าข้อมูลมาจากไหน —
-    # วางก่อน manual_context เพราะเป็นความรู้พื้นฐานเกี่ยวกับ "เว็บนี้คืออะไร มีหน้าไหนบ้าง"
-    # ที่ตัวเว็บเองมีมาก่อนคู่มือเชิงนโยบายของ user เสียอีก
+    # W14: คู่มือที่ crawl อัตโนมัติ (site_learning/) แยก section จาก manual_context (RAG ที่ user ingest)
     if site_manual_context:
-        # W_token_trim (P3/M3): full text once, then a stable id + summary — see
-        # site_manual_blocks() / _render_site_manual() above
         text += _rec("site_manual", _render_site_manual(site_manual_context))
+    # W6[B]: chunk คู่มือ RAG; W7[A]: action ที่ fail ใน task นี้ — ต่อเฉพาะตอนมีผล
     if manual_context:
         text += _rec("rag_manual", (
             "\n\nReference information from the relevant manual (supporting information "
@@ -584,10 +479,7 @@ def _build_user_turn_text(
             "differently as usual):\n"
             f"{memory_context}"
         ))
-    # W32: action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) แยกจาก memory_context ด้านบนที่
-    # กรองเฉพาะ fail — ให้เห็นชัดๆ ว่า "ตัวเองเพิ่งทำอะไรไปบ้าง" กันเลือก action เดิมซ้ำ
-    # (เช่น กดปุ่มเดิมสำเร็จซ้ำหลายครั้งแต่ไม่มีความคืบหน้าจริงต่อ goal — memory_context
-    # เปล่าๆ เพราะไม่มี action ไหน fail เลยสักครั้ง)
+    # W32: action ล่าสุดทั้งสำเร็จ/ล้มเหลว — กันกดปุ่มเดิมสำเร็จซ้ำๆ โดยไม่คืบหน้า (memory_context เห็นแค่ fail)
     if action_history_context:
         text += _rec("action_history", (
             "\n\nThe most recent actions you just performed (in order, successful or not) — "
@@ -595,12 +487,10 @@ def _build_user_turn_text(
             "with no genuine new progress toward the goal, choose a different one instead:\n"
             f"{action_history_context}"
         ))
-    # W50: client-side action verification — สัญญาณเสริมจากโค้ด (ไม่ต้องพึ่ง LLM สังเกต
-    # เอง) ว่า action ก่อนหน้าที่คืน [OK] จริงๆ แล้วอาจไม่มีผลอะไรกับหน้าเว็บเลย (ดู
-    # orchestrator.py::run_task() จุดคำนวณ verification_context — เทียบ element
-    # count/เนื้อหาหน้าก่อน-หลัง action) ว่างเปล่าถ้าไม่มีสัญญาณผิดปกติ
+    # W50: สัญญาณจากโค้ดว่า action ที่คืน [OK] อาจไม่มีผลกับหน้าเว็บ (orchestrator เทียบก่อน-หลัง)
     if verification_context:
         text += _rec("verification", f"\n\n{verification_context}")
+    # W7[A] long-term: recall จาก task run ก่อนๆ; W9[A]: คำอธิบาย screenshot เมื่อ action fail ซ้ำทั้งที่ element อยู่ใน DOM
     if long_term_context:
         text += _rec("long_term", (
             "\n\nMemory from previous task runs (may contain values found before, e.g. a "
@@ -616,20 +506,16 @@ def _build_user_turn_text(
             "be covering it):\n"
             f"{vision_context}"
         ))
-    # W_token_cut W2: บล็อกกฎที่ gate ตามบริบท ต่อท้ายสุด (หลังทั้ง page state + history)
-    # เพื่อให้ system prefix คงที่ ดู gated_sections_text() — agent loop เท่านั้นที่ส่ง
-    # prompt_sections มา; ผู้เรียกอื่น (เทสต์/generate_plan) ได้ "" เหมือนเดิม
+    # W_token_cut W2: บล็อกกฎที่ gate ต่อท้ายสุดเสมอ (ให้ system prefix คงที่); W7: header ให้
+    # _dedupe_stale_gated ใน orchestrator หาจุดเริ่มบล็อกใน turn เก่าได้
     gated = gated_sections_text(prompt_sections)
     if gated:
-        # W_token_cut W7: header line ทำให้ dedup ของ turn เก่าหา "จุดเริ่มบล็อกกฎ" ได้ชัด
-        # (ดู _dedupe_stale_gated ใน orchestrator) บล็อกนี้อยู่ท้ายสุดของ user turn เสมอ
         text += _rec("gated_prompt", f"\n\n{GATED_BLOCK_HEADER}\n{gated}")
     return text
 
 
-# W_token_cut W7: บล็อกกฎที่ gate (plan/table/widget/password) ~3.9k tok ต่อ turn บนหน้า
-# ที่มีตาราง และ W2 ย้ายมันจาก system prompt (cache ได้) มาไว้ user turn (cache ไม่ได้)
-# เนื้อกฎเหมือนเดิมทุก turn — turn ปัจจุบันส่งเต็มเสมอ, turn เก่าใน history แทนด้วย 1 บรรทัด
+# W_token_cut W7: บล็อก gate ~3.9k tok/turn อยู่ใน user turn (cache ไม่ได้) — turn ปัจจุบันส่งเต็ม
+# turn เก่าใน history แทนด้วย _GATED_BLOCK_DEREF บรรทัดเดียว
 GATED_BLOCK_HEADER = "[[Context-specific rules for this page — apply these]]"
 _GATED_BLOCK_DEREF = (
     "[[Context-specific rules were given in the latest turn below — they are still in effect.]]"
@@ -641,9 +527,7 @@ _TOOL_RESULT_MARKERS = ('"tool_result"', '"function_call_output"', '"functionRes
 
 
 def _message_text_len(m) -> int:
-    """W_prompt_audit: ประมาณขนาด (ตัวอักษร) ของ message หนึ่งใน history — รองรับทั้ง 4
-    รูปแบบ provider (Anthropic blocks / Groq chat / OpenAI Responses items / Gemini parts)
-    แบบทนพัง: content เป็น str ก็ใช้ตรงๆ ไม่งั้น dump เป็น str แล้ววัดความยาว"""
+    """W_prompt_audit: ขนาด (char) ของ message หนึ่งใน history ทุก shape ของ provider — ไม่ raise"""
     try:
         if isinstance(m, str):
             return len(m)
@@ -670,11 +554,9 @@ def _is_tool_result_message(m) -> bool:
 
 def _char_payload_audit(*, prior_messages: list, user_parts: dict,
                         system_text: str, tools_obj) -> dict:
-    """W_prompt_audit: char count ของ request สุดท้ายแยกตามหมวด (ดู TokenUsage.payload_chars)
+    """W_prompt_audit: char ของ request แยกตามหมวด (TokenUsage.payload_chars) — ไม่ raise, พังคืน {}
 
-    prior_messages = history ก่อนต่อ user turn ใหม่ (assistant tool_use + tool_result สะสม)
-    user_parts = dict ที่ _build_user_turn_text(_parts=) เติมให้ (หมวดของ user turn ปัจจุบัน)
-    ไม่ throw — พังเมื่อไรคืน {} แล้วผู้เรียกข้าม audit ของ call นั้น"""
+    prior_messages = history ก่อนต่อ user turn ใหม่; user_parts = dict จาก _build_user_turn_text(_parts=)"""
     try:
         tool_result_chars = 0
         assistant_hist_chars = 0
@@ -718,8 +600,8 @@ def _char_payload_audit(*, prior_messages: list, user_parts: dict,
     except Exception:
         return {}
 
-# --- schema ของ tool ทั้ง 2 ตัว ใช้ร่วมกันระหว่าง Anthropic/Groq/Gemini (แค่ห่อ format ต่างกัน) ---
 
+# schema ของ tool ใช้ร่วมทุก provider (แค่ห่อ format ต่างกัน)
 _BROWSER_ACTION_PARAMS = {
     "type": "object",
     "properties": {
@@ -728,32 +610,17 @@ _BROWSER_ACTION_PARAMS = {
             "enum": [
                 "click", "fill", "select", "check",
                 "scroll", "goto", "go_back", "switch_tab", "wait",
-                # W?: permission layer (classify_action) รู้จัก type เหล่านี้เป็น
-                # NEEDS_CONFIRMATION มาตั้งแต่ W4/W5 แต่ก่อนหน้านี้ไม่เคยอยู่ใน enum
-                # ที่ LLM เรียกได้จริงเลย — human-in-the-loop เลย unreachable ผ่าน
-                # agent loop จริง (trigger ได้แค่ตอนยิง execute() ตรงๆ ใน demo/test)
-                # เพิ่มเข้ามาให้เป็น alias ของ click ที่มีความหมายชัดเจนกว่า (index
-                # เหมือนเดิม) — actions.py::execute() dispatch ให้แล้ว (เห็นได้จาก
-                # DEFAULT_NEEDS_CONFIRMATION check)
+                # W?: alias ของ click ที่ classify_action ถือเป็น NEEDS_CONFIRMATION — เดิมไม่อยู่ใน
+                # enum เลย human-in-the-loop จึง unreachable ผ่าน agent loop จริง
                 "submit", "delete", "purchase", "pay",
-                # W45: อ่านเนื้อหาบนหน้าเว็บ (นับจำนวน/อ่านตาราง/สรุปข้อมูล) — ต่างจาก
-                # click/fill/select ตรงที่ไม่ได้กด/แก้ไข element ใดๆ เลย แค่ query
-                # เนื้อหาที่มองเห็นอยู่แล้วกลับมาตอบ ดู "query"/"target_hint" ด้านล่าง
+                # W45: อ่าน/นับเนื้อหาบนหน้า ไม่แตะ element (ดู query/target_hint)
                 "read_page_data",
-                # W47: เลื่อนเมาส์ไปวางไว้บน element (ไม่คลิก) — ใช้ trigger CSS :hover
-                # ของ element/บรรพบุรุษก่อนกด element ที่ซ่อนอยู่จนกว่าจะ hover แถวแม่
-                # (ดู label marker "[ซ่อนอยู่ — อาจต้อง hover แถวก่อน]" ด้านล่าง) — ปกติ
-                # ไม่ต้องเรียกเองเพราะ click retry รอบ 2 เป็นต้นไปจะ hover ให้อัตโนมัติ
-                # อยู่แล้ว เรียกเองได้ถ้าต้องการ get_snapshot ใหม่หลัง hover ก่อนตัดสินใจ
+                # W47: trigger CSS :hover ให้ปุ่มที่ซ่อนจนกว่าจะ hover แถว (click retry รอบ 2+ hover ให้เองอยู่แล้ว)
                 "hover",
-                # W50: ส่ง key ไปยัง element ตาม index — ใช้กับ custom dropdown/menu ที่
-                # ไม่ใช่ <select><option> จริง (ดู "key" parameter ด้านล่าง + กติกาการใช้
-                # ใน SYSTEM_PROMPT)
+                # W50: ส่ง key ให้ custom dropdown/menu ที่ไม่ใช่ <select> จริง
                 "press_key",
-                # W65[3] ("Vault Expansion"): กรอกค่าลับที่บันทึกไว้ (ดู "secret" parameter
-                # ด้านล่าง) — LLM ไม่มีทางเห็น/ระบุค่าจริงเลย ส่งแค่ index + secret key ที่เป็น
-                # ชื่อ symbolic เท่านั้น ระบบ resolve+กรอกค่าจริงให้เองฝั่ง backend (ดู
-                # actions.py::fill_secret) กันไม่ให้ credential หลุดเข้า prompt/context
+                # W65[3] ("Vault Expansion"): LLM ส่งแค่ชื่อ secret symbolic — backend กรอกค่าจริงเอง
+                # (actions.py::fill_secret) credential ไม่เข้า prompt
                 "fill_secret",
             ],
             "description": "Action type",
@@ -778,22 +645,9 @@ _BROWSER_ACTION_PARAMS = {
                 "Key to press. (press_key) for a custom dropdown/menu that is not a real <select><option>: ArrowDown/ArrowUp to move the highlight, then Enter to confirm. (fill, optional) press this key right after typing — use ONLY when no Submit/OK/Go/Search button is visible anywhere (e.g. a bare search box); if a submit button IS visible, use then_click_index instead. If unsure, fill alone and check the result"
             ),
         },
-        # W_chain ("Compound Actions" — ลด step ของ form/list task เช่น เลือกจากลิสต์แล้วกด
-        # Submit): optional เสมอ ใช้ได้กับ type="fill"/"click"/"select"/"check" — คลิก
-        # element ที่สองนี้ทันทีในคำสั่งเดียวกัน ถ้า action หลักสำเร็จ (ดู
-        # actions.py::_maybe_chain_click) ยังผ่าน permission check เต็มรูปแบบเหมือน action
-        # เดี่ยวๆ ทุกประการ (ไม่ auto-approve) — ใช้เฉพาะตอนเห็น element ที่สองอยู่แล้วใน
-        # indexed elements ปัจจุบัน (ไม่ต้องรอ perceive ใหม่ก่อนถึงจะเห็น เช่น ปุ่ม
-        # Submit/OK/Confirm ที่อยู่ในหน้าเดียวกับ dropdown/checkbox/list/ช่องกรอกที่เพิ่ง
-        # ทำ) ห้ามเดา index ของ element ที่ยังไม่เห็นในรายการปัจจุบันเด็ดขาด
-        #
-        # W_chain follow-up (edge case ที่พบจริง): ทดสอบแล้วพบว่า fill+"key":"Enter" ทำให้
-        # เข้าใจผิดว่า submit สำเร็จได้ ถ้าหน้านั้นไม่มี Enter-to-submit จริง (ไม่มี <form>/
-        # keypress listener) ทั้งที่ค่าที่กรอกไปถูกต้องตลอด — ปุ่ม Submit ก็ไม่เคยถูกคลิก
-        # เลย ระบบตรวจไม่เจอความสำเร็จ ถ้าเห็นปุ่ม Submit/OK/Go/Search จริงอยู่ในหน้า ให้ใช้
-        # then_click_index คลิกปุ่มนั้นแทน "key":"Enter" เสมอ (เชื่อถือได้กว่า ใช้ได้กับทุก
-        # ฟอร์มไม่ว่าจะมี Enter-to-submit หรือไม่) — สงวน "key":"Enter" ไว้เฉพาะตอนไม่เห็น
-        # ปุ่ม submit แยกต่างหากในหน้าเลยจริงๆ (เช่น ช่องค้นหาที่ไม่มีปุ่มค้นหาให้กด)
+        # W_chain ("Compound Actions"): คลิก element ที่สองทันทีถ้า action หลักสำเร็จ (actions.py::
+        # _maybe_chain_click) ยังผ่าน permission check เต็มรูปแบบ; follow-up: fill+Enter เงียบๆ ไม่ submit
+        # บนหน้าที่ไม่มี Enter-to-submit — ถ้าเห็นปุ่ม submit ให้ใช้ then_click_index แทน
         "then_click_index": {
             "type": "integer",
             "description": (
@@ -815,11 +669,7 @@ _BROWSER_ACTION_PARAMS = {
                 "A CSS selector expected to match the element/table rows/list holding the data you need (read_page_data only), e.g. '.inventory_item' or 'table tbody tr'"
             ),
         },
-        # W43: optional เสมอ (ไม่อยู่ใน "required" ด้านล่าง) — ไม่ส่งมาก็ได้ถ้า action นี้ไม่
-        # เกี่ยวกับ plan step ไหนเลย/ยังไม่มี plan ให้ทำตาม (ad-hoc task ที่ไม่ผ่าน Confirm
-        # plan) เห็นได้จาก orchestrator.py ที่ตอนนี้อ่านค่านี้ผ่าน tool_input.get(...) เฉยๆ
-        # (คืน None ถ้าไม่มี ไม่ throw) — ห้าม LLM ทำเป็น required เด็ดขาด กันพัง backward
-        # compat กับ task ที่ไม่มีแพลนเลย
+        # W43: ห้ามใส่ใน required — ad-hoc task ไม่มีแผน (orchestrator อ่านผ่าน .get())
         "completed_plan_step": {
             "type": "integer",
             "description": (
@@ -839,11 +689,8 @@ _FINISH_TASK_PARAMS = {
     "properties": {
         "success": {"type": "boolean", "description": "Did the goal succeed?"},
         "message": {"type": "string", "description": "A short summary of what you did / why you stopped. Any names or data you extracted must be copied with the exact original spelling — never guess or 'correct' a spelling. Sort single-field lists A-Z before answering; NEVER re-sort a table with multiple fields per row (preserve DOM order), and never split the fields of one row apart (see W_listformat in the system prompt)"},
-        # W63[7.2] ("Strict Table Assertion & Truth Reporting", ticket Issue 7.2): optional —
-        # ใส่เฉพาะตอน goal คือสร้าง/บันทึกรายการที่ควรไปโผล่ในตารางผลลัพธ์ ให้ orchestrator
-        # ตรวจ DOM จริงซ้ำก่อนยอมรับ success=true (ดู orchestrator.py::
-        # _scan_created_item_in_table) แทนที่จะเชื่อคำยืนยันของ LLM เฉยๆ — เว้นว่างไว้ถ้า goal
-        # ไม่เกี่ยวกับการยืนยันว่ารายการโผล่ในตาราง (ไม่บังคับกรอก)
+        # W63[7.2] ("Strict Table Assertion"): optional — orchestrator ตรวจ DOM ตารางจริงก่อนยอมรับ
+        # success=true (_scan_created_item_in_table) แทนเชื่อคำของ LLM
         "verify_text": {
             "type": "string",
             "description": "Text that must genuinely be visible in the results table if success=true (e.g. the username/entry name just created) — set it only when the goal is to create/save an entry expected to appear in a table; leave it empty otherwise",
@@ -853,16 +700,9 @@ _FINISH_TASK_PARAMS = {
 }
 _FINISH_TASK_DESC = "Call when the goal has succeeded, or when it is clear you cannot continue — ends the loop"
 
-# W_resume ("Mid-Task Input Request" — บั๊กจริงที่ user รายงาน: ขอรหัสผ่านใหม่จาก user
-# กลางทาง แต่ agent ไม่มีทางทำอะไรได้นอกจาก finish_task(success=false) ซึ่งจบ task ทั้งหมด
-# ทิ้ง plan/messages/browser state เดิม — พอ user ตอบรหัสผ่านมาในเทิร์นถัดไป กลายเป็น
-# POST /tasks ใหม่ที่ไม่มีบริบทของ plan เดิมเลย ทำให้ agent ร่างแผนใหม่/เริ่มงานใหม่ทั้งหมด
-# แทนที่จะทำต่อจากที่ค้างไว้) — tool ใหม่แยกจาก finish_task โดยเจตนา: เรียกแล้ว
-# orchestrator.py จะ "หยุดรอ" คำตอบจาก human ผ่านกลไกเดียวกับ permission prompt
-# (ask_user_func -> TaskManager.request_approval()/resolve_approval() — ดู
-# task_manager.py) แล้ว "ทำ loop เดิมต่อ" ด้วยคำตอบที่ได้ (ป้อนกลับเป็น tool_result ของ
-# tool_use นี้) ไม่ใช่จบ task/เริ่มแผนใหม่เลย — สงวน finish_task(success=false) ไว้เฉพาะ
-# ทางตันจริงๆ ที่ถามคำถามต่อก็ช่วยไม่ได้เท่านั้น
+# W_resume ("Mid-Task Input Request", บั๊กจริง): ขอรหัสผ่านกลางทางได้แค่ finish_task(false) ซึ่งทิ้ง
+# plan/browser state — tool นี้หยุดรอคำตอบผ่านกลไกเดียวกับ permission prompt (TaskManager.
+# request_approval) แล้วทำ loop เดิมต่อด้วยคำตอบเป็น tool_result
 _REQUEST_USER_INPUT_PARAMS = {
     "type": "object",
     "properties": {
@@ -890,40 +730,37 @@ _REQUEST_USER_INPUT_DESC = (
     "not a genuine dead end."
 )
 
-# --- Anthropic tool format ---
+# Anthropic tool format
 BROWSER_ACTION_TOOL = {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "input_schema": _BROWSER_ACTION_PARAMS}
 REQUEST_USER_INPUT_TOOL = {
     "name": "request_user_input",
     "description": _REQUEST_USER_INPUT_DESC,
     "input_schema": _REQUEST_USER_INPUT_PARAMS,
 }
-# cache_control อยู่บน tool ตัวสุดท้าย -> Anthropic cache ทั้ง prefix (tools + system
-# ที่ตามมา) เป็นก้อนเดียว เพราะ tools/system เหมือนเดิมทุก step ของ loop เดียวกัน
+# cache_control บน tool ตัวสุดท้าย -> Anthropic cache prefix tools+system เป็นก้อนเดียว
 FINISH_TASK_TOOL = {
     "name": "finish_task",
     "description": _FINISH_TASK_DESC,
     "input_schema": _FINISH_TASK_PARAMS,
-    # W_token_cut W7: ttl "1h" ยืดอายุ prefix cache จาก default 5 นาที -> 1 ชม.
-    # กัน cache-miss ตอน user เว้นช่วงระหว่าง task (system+tools ~7.6k tok คงที่)
+    # W_token_cut W7: ttl 1h (default 5 นาที) กัน cache-miss ตอน user เว้นช่วงระหว่าง task
     "cache_control": {"type": "ephemeral", "ttl": "1h"},
 }
 
-# --- OpenAI-compatible (Groq) tool format ---
+# OpenAI-compatible (Groq) tool format
 _GROQ_TOOLS = [
     {"type": "function", "function": {"name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS}},
     {"type": "function", "function": {"name": "request_user_input", "description": _REQUEST_USER_INPUT_DESC, "parameters": _REQUEST_USER_INPUT_PARAMS}},
     {"type": "function", "function": {"name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS}},
 ]
 
-# --- OpenAI Responses API tool format (chatgpt.com/backend-api/codex OAuth path — flat,
-# ไม่ nested ใต้ "function" key) ---
+# OpenAI Responses API tool format (codex OAuth path — flat ไม่ nested ใต้ "function")
 _OPENAI_TOOLS = [
     {"type": "function", "name": "browser_action", "description": _BROWSER_ACTION_DESC, "parameters": _BROWSER_ACTION_PARAMS},
     {"type": "function", "name": "request_user_input", "description": _REQUEST_USER_INPUT_DESC, "parameters": _REQUEST_USER_INPUT_PARAMS},
     {"type": "function", "name": "finish_task", "description": _FINISH_TASK_DESC, "parameters": _FINISH_TASK_PARAMS},
 ]
 
-# --- Gemini (google-generativeai) tool format ---
+# Gemini (google-generativeai) tool format
 _GEMINI_TOOLS = [
     {
         "function_declarations": [
@@ -934,32 +771,11 @@ _GEMINI_TOOLS = [
     }
 ]
 
-# W_fill_secret_schema_gate (บั๊กจริง live-reproduce 2026-08-26 ด้วย LLM call เดียวโดยไม่มี
-# agent loop เข้ามาเกี่ยวเลย — ยืนยันว่าเป็นเรื่อง schema ไม่ใช่เรื่องลูป/ขนาด prompt):
-# gpt-5.4-mini บน endpoint chatgpt.com/backend-api/codex "กรอกทุก property ในสคีมาทุกครั้ง"
-# ไม่ว่า action ชนิดนั้นจะใช้ property นั้นหรือไม่ (พฤติกรรมเดียวกับที่ _normalize_openai_args
-# ด้านล่างเคยบันทึกไว้เรื่อง then_click_index=0 ติดมา 18/22 action) — พอ "secret" มี enum
-# ค่าเดียว ("current_password") มันจึงส่ง secret="current_password" มาทุกครั้ง แล้วลากให้
-# type="fill_secret" ตามไปด้วยบ่อยมาก ผลจริงที่วัดได้บน saucedemo หน้า inventory:
-#
-#   goal "click the Login button"          -> fill_secret(index=1)   ❌
-#   goal "login as standard_user ..."      -> fill_secret(index=1)   ❌
-#   goal "sort by Price (low to high)"     -> fill_secret(index=2)   ❌
-#
-# ทั้งสามเคสกลายเป็นคำตอบที่ถูกต้องทันที (click(2) / fill(0,"standard_user") /
-# select(2,"Price (low to high)")) เมื่อตัด fill_secret ออกจาก enum และตัด property "secret"
-# ทิ้ง โดยไม่แตะ prompt สักตัวอักษร — เทียบกับ Gemini ที่ตอบถูกตั้งแต่แรกด้วยสคีมาเดิมเป๊ะ
-#
-# แก้ที่ต้นเหตุ: เสนอ fill_secret ให้โมเดล *เฉพาะตอนที่มันใช้ได้จริง* เท่านั้น (หน้าเปลี่ยน
-# รหัสผ่านจริง — เงื่อนไขเดียวกับ guard ใน orchestrator.py ที่ปฏิเสธ action นี้อยู่แล้ว) แทน
-# ที่จะเสนอตลอดเวลาแล้วค่อยไล่ปฏิเสธทีหลัง ซึ่งเสีย step/token และจบด้วย loop-detected ทุกครั้ง
-#
-# ตัดที่ระดับ schema ให้ทุก provider ไม่ใช่เฉพาะ openai: การเสนอ action ที่ใช้ไม่ได้ในบริบท
-# ปัจจุบันไม่มีข้อดีกับ provider ไหนเลย และทำให้ schema กับ guard พูดตรงกันเสมอ
+# W_fill_secret_schema_gate (live-reproduce 2026-08-26 saucedemo): gpt-5.4-mini บน codex เติมทุก
+# property ในสคีมา — enum "secret" ค่าเดียวลากให้ตอบ fill_secret แทน click/fill/select บ่อยมาก;
+# ตัด fill_secret ออกจาก schema (ทุก provider) เว้นแต่หน้าเปลี่ยนรหัสผ่านจริง (เงื่อนไขเดียวกับ guard ใน orchestrator)
 def _params_without_fill_secret(params: dict) -> dict:
-    """คืนสำเนาของ _BROWSER_ACTION_PARAMS ที่เอา fill_secret ออกจาก enum ของ "type" และเอา
-    property "secret" ออกทั้งตัว — deep copy เพื่อไม่ให้ไปแก้ dict ต้นฉบับที่ provider อื่น
-    ใช้ร่วมกันอยู่"""
+    """deep copy ของ params ที่ไม่มี fill_secret ใน enum และไม่มี property "secret" (ต้นฉบับไม่ถูกแก้)"""
     trimmed = copy.deepcopy(params)
     props = trimmed["properties"]
     props["type"]["enum"] = [t for t in props["type"]["enum"] if t != "fill_secret"]
@@ -969,7 +785,6 @@ def _params_without_fill_secret(params: dict) -> dict:
 
 _BROWSER_ACTION_PARAMS_NO_SECRET = _params_without_fill_secret(_BROWSER_ACTION_PARAMS)
 
-# คำนวณล่วงหน้าครั้งเดียวตอน import (ไม่ deepcopy ใหม่ทุก step ของ loop)
 BROWSER_ACTION_TOOL_NO_SECRET = {
     "name": "browser_action",
     "description": _BROWSER_ACTION_DESC,
@@ -996,14 +811,8 @@ _GEMINI_TOOLS_NO_SECRET = [
 ]
 
 
-# --- W_procmem: Abstractor tool (llm.abstract_trajectory()) — single-shot call ต่างหาก
-# ไม่ใช่ tool ที่อยู่ใน agent loop หลัก (browser_action/finish_task ด้านบน) เรียกแค่ครั้ง
-# เดียวแบบ fire-and-forget หลัง task สำเร็จ (ดู orchestrator.py) เพื่อกลั่น trajectory
-# เป็น template ให้ core/procedural_memory.py เก็บไว้ — "target" ของแต่ละ step ต้องมี
-# shape เดียวกับ locator descriptor ที่ core/dom_locator.py::compute_locator_descriptor()
-# คำนวณไว้แล้วในแต่ละ step ของ trajectory (ดู _format_trajectory_for_abstractor()
-# ด้านล่าง) เพื่อให้ fastpath_executor.py เอาไป resolve_locator() ต่อได้ตรงๆ ไม่ต้องแปลง
-# รูปแบบอีกชั้น
+# W_procmem: Abstractor (abstract_trajectory) — single-shot หลัง task สำเร็จ กลั่น trajectory เป็น
+# template; "target" มี shape เดียวกับ dom_locator.compute_locator_descriptor() ให้ resolve_locator() ใช้ตรงๆ
 _ABSTRACTOR_TARGET_SCHEMA = {
     "type": "object",
     "description": (
@@ -1018,9 +827,7 @@ _ABSTRACTOR_TARGET_SCHEMA = {
         "css_fallback": {"type": "string"},
     },
 }
-# W_procmem: step schema เดียวที่ใช้ร่วมกันทั้ง ABSTRACTOR_TOOL (steps ทั้งชุด) และ
-# PROCEDURAL_PLANNER_TOOL (แค่ตอน decision="adapt" ต้องส่ง patch step เดี่ยวๆ กลับมา) —
-# กันไม่ให้ schema สอง tool เพี้ยนไปคนละแบบทั้งที่ต้อง resolve_locator() ด้วยตรรกะเดียวกัน
+# W_procmem: step schema เดียวของ ABSTRACTOR_TOOL และ patch ของ PROCEDURAL_PLANNER_TOOL — กันเพี้ยนคนละแบบ
 _TEMPLATE_STEP_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1073,12 +880,6 @@ _ABSTRACTOR_DESC = (
     "template (steps + locator + {{slot}} placeholders always replacing real values)"
 )
 ABSTRACTOR_TOOL = {"name": "emit_template", "description": _ABSTRACTOR_DESC, "input_schema": _ABSTRACTOR_PARAMS}
-_GROQ_ABSTRACTOR_TOOLS = [
-    {"type": "function", "function": {"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}},
-]
-_GEMINI_ABSTRACTOR_TOOLS = [
-    {"function_declarations": [{"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}]},
-]
 
 _ABSTRACTOR_SYSTEM_PROMPT = (
     "You are a Workflow Abstractor for a browser-automation agent.\n"
@@ -1112,12 +913,7 @@ _ABSTRACTOR_SYSTEM_PROMPT = (
 
 
 def _format_trajectory_for_abstractor(trajectory: list[dict]) -> str:
-    """แปลง self.memory.all() (orchestrator.py) เป็นข้อความสั้นๆ ให้ Abstractor อ่าน —
-    เอาเฉพาะ action ที่กระทำ element จริงและสำเร็จเท่านั้น (ข้าม read_page_data/
-    finish_task/action ที่ fail — ไม่มี locator_descriptor ให้อ้างอิงอยู่แล้วเพราะ
-    actions.py คำนวณแค่ตอนสำเร็จ ดู core/actions.py) แต่ละบรรทัดเป็น JSON ก้อนเดียว
-    (action + locator_descriptor + ค่าที่กรอก/เลือกจริง) ให้ LLM คัดลอก target ตรงๆ ได้
-    ไม่ต้องตีความจาก prose"""
+    """trajectory -> บรรทัด JSON ต่อ action ที่กระทำ element และสำเร็จ (มี locator_descriptor ให้คัดลอกตรงๆ)"""
     lines = []
     for entry in trajectory:
         if not entry.get("success"):
@@ -1143,74 +939,24 @@ def _format_trajectory_for_abstractor(trajectory: list[dict]) -> str:
 async def abstract_trajectory(
     client, model: str, goal: str, url: str, trajectory: list[dict], provider: str,
 ) -> Optional[dict]:
-    """W_procmem: กลั่น trajectory ของ task ที่สำเร็จแล้ว (self.memory.all() จาก
-    orchestrator.py) ให้เป็น template ที่มีโครงสร้าง (ดู core/procedural_memory.py) —
-    เรียกครั้งเดียวแบบ fire-and-forget หลัง finish_task(success=True) เท่านั้น (ดู
-    orchestrator.py) ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด (provider error/parse ผิดพลาด/
-    ไม่เรียก tool กลับมา) — คืน None แทนเสมอ ให้ผู้เรียก skip การบันทึกเงียบๆ (เหมือน
-    fallback pattern อื่นๆ ทั้งระบบ — ดู plan_memory.py/long_term_memory.py)"""
+    """W_procmem: กลั่น trajectory ที่สำเร็จเป็น template (procedural_memory) — ไม่ raise, error คืน None"""
     trajectory_text = _format_trajectory_for_abstractor(trajectory)
     prompt = (
         f"GOAL: {goal}\nURL: {url}\nTRAJECTORY:\n{trajectory_text}\n\n"
         "Call emit_template now with the distilled reusable template."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=_ABSTRACTOR_SYSTEM_PROMPT,
-                tools=[ABSTRACTOR_TOOL],
-                tool_choice={"type": "tool", "name": "emit_template"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            return tool_use.input if tool_use is not None else None
-
-        if provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=2048,
-                messages=[
-                    {"role": "system", "content": _ABSTRACTOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_ABSTRACTOR_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_template"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            if not tool_calls:
-                return None
-            return json.loads(tool_calls[0].function.arguments)
-
-        if provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_ABSTRACTOR_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_ABSTRACTOR_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_template":
-                    return _gemini_struct_to_plain_python(fc.args)
-            return None
-
-        return None
+        return await _forced_tool_call(
+            client, model, provider, tool=ABSTRACTOR_TOOL, system=_ABSTRACTOR_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=2048,
+        )
     except Exception as e:
         print(f"⚠️ abstract_trajectory error: {e}", flush=True)
         return None
 
 
-# --- W_procmem: Memory-augmented Planner tool (llm.plan_with_procedural_memory()) —
-# single-shot call ต่างหาก เรียกจาก routes.py::generate_plan ก่อน plan_memory/LLM
-# ร่างใหม่เสมอ (ดู module docstring ของ core/procedural_memory.py สำหรับลำดับความ
-# สำคัญเต็มๆ) ตัดสินใจว่าจะ reuse/adapt/plan_fresh จาก candidate template ที่
-# core/procedural_memory.py::find_candidate_templates() ดึงมาให้แล้ว
+# W_procmem: Memory-augmented Planner (plan_with_procedural_memory) — reuse/adapt/plan_fresh จาก
+# candidate ของ procedural_memory.find_candidate_templates() เรียกจาก routes.py::generate_plan
 _PROCEDURAL_PLANNER_PARAMS = {
     "type": "object",
     "properties": {
@@ -1248,12 +994,6 @@ _PROCEDURAL_PLANNER_DESC = (
 PROCEDURAL_PLANNER_TOOL = {
     "name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "input_schema": _PROCEDURAL_PLANNER_PARAMS,
 }
-_GROQ_PROCEDURAL_PLANNER_TOOLS = [
-    {"type": "function", "function": {"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}},
-]
-_GEMINI_PROCEDURAL_PLANNER_TOOLS = [
-    {"function_declarations": [{"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}]},
-]
 
 _PROCEDURAL_PLANNER_SYSTEM_PROMPT = (
     "You are the Planner of a browser agent with PROCEDURAL MEMORY.\n"
@@ -1295,17 +1035,10 @@ _PROCEDURAL_PLANNER_SAFE_DEFAULT: dict[str, Any] = {
 
 
 def _format_candidates_for_planner(candidates: list[dict]) -> str:
-    """สรุป candidate ให้ Planner อ่าน — ตัดรายละเอียด locator/target ของแต่ละ step
-    ออก (เหลือแค่ลำดับ action type) กันไม่ให้ prompt บวมโดยไม่จำเป็น เพราะ Planner
-    แค่ต้อง "ตัดสินใจ" ว่า candidate ไหนตรงกับ task class เท่านั้น — steps เต็มๆ พร้อม
-    locator จริง ผู้เรียก (routes.py) ค่อยไปดึงจาก candidates list เดิม (ที่
-    find_candidate_templates() คืนมาให้ตั้งแต่แรก) มาประกอบเป็น template สุดท้ายเอง
-    หลัง Planner ตัดสินใจแล้ว ไม่ต้องให้ LLM คัดลอก locator กลับมาเองให้เสี่ยงพิมพ์ผิด
+    """สรุป candidate ให้ Planner — ตัด locator ทิ้ง (เหลือลำดับ action) เพราะ Planner แค่ตัดสินใจ
+    steps จริงผู้เรียกดึงจาก candidates เดิมเอง ไม่ให้ LLM คัดลอก locator กลับมาเสี่ยงพิมพ์ผิด
 
-    ACC-1 (accuracy audit follow-up): เพิ่ม success_count/failure_count เข้าไปในสรุปด้วย
-    (ก่อนหน้านี้ตัดออกไปเหมือน locator ทั้งที่เป็นสัญญาณคนละแบบกัน — locator ไม่จำเป็นต้อง
-    ให้ LLM เห็นเพราะไม่ได้ช่วยตัดสินใจ ส่วน track record ควรมีผลต่อ confidence โดยตรง) —
-    ดู _PROCEDURAL_PLANNER_SYSTEM_PROMPT RULES ข้อใหม่สำหรับวิธีที่ Planner ควรใช้ค่านี้"""
+    ACC-1: คง success_count/failure_count ไว้ — track record ควรมีผลต่อ confidence โดยตรง"""
     lines = []
     for c in candidates:
         step_sequence = "/".join(str(s.get("action", "")) for s in c.get("steps", []))
@@ -1326,27 +1059,12 @@ async def plan_with_procedural_memory(
     client, model: str, goal: str, url: str, page_fingerprint: str, candidates: list[dict], provider: str,
     *, has_auto_login: bool = False,
 ) -> dict:
-    """W_procmem: ตัดสินใจ reuse/adapt/plan_fresh จาก candidate template ที่
-    core/procedural_memory.py::find_candidate_templates() ดึงมาให้ — เรียกจาก
-    routes.py::generate_plan ก่อน plan_memory/LLM ร่างใหม่เสมอ (ดู module docstring
-    ของ core/procedural_memory.py) ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด — คืน
-    _PROCEDURAL_PLANNER_SAFE_DEFAULT (decision=plan_fresh, confidence=0.0) แทนเสมอถ้า
-    provider error/parse ผิดพลาด/ไม่เรียก tool กลับมา ให้ caller fallback ไปทาง
-    plan_memory/LLM ร่างใหม่ตามปกติ (เหมือนไม่มี procedural memory เลย)
+    """W_procmem: ตัดสินใจ reuse/adapt/plan_fresh — ไม่ raise; error/ไม่มี tool call คืน
+    _PROCEDURAL_PLANNER_SAFE_DEFAULT (plan_fresh) ให้ผู้เรียก fallback ทางเดิม
 
-    page_fingerprint: label/role ของ element บนหน้าปัจจุบัน (จาก
-    perception.get_snapshot() text_repr) ถ้า session มี page เปิดค้างอยู่แล้ว — ว่างเปล่า
-    ถ้าเป็น task ใหม่ที่ยังไม่เคยเปิดหน้าเลย ใช้ช่วยยืนยันว่า candidate ที่ดูตรงกันจาก
-    goal text เพียวๆ ยังตรงกับสภาพหน้าเว็บจริงตอนนี้ด้วยหรือไม่ (ป้องกันกรณีเว็บถูก
-    redesign ไปแล้วทั้งที่ goal ยังพิมพ์เหมือนเดิม)
-
-    has_auto_login (W_procmem, แก้ปัญหาจริงที่เจอตอน Phase 4 validation): True ถ้า
-    โดเมนนี้มี credential เก็บไว้แล้ว (ดู site_learning/storage.py::credentials_exist —
-    ผู้เรียก routes.py เป็นคนเช็คให้) — auto_login.py จะ login ให้อัตโนมัติ "นอก" LLM
-    loop เสมอไม่ว่าทางไหน (ดู orchestrator.py::_maybe_auto_login) ทำให้ template ที่ไม่มี
-    step login เลยยังถือว่า "ครบ" สำหรับ task ที่ implies ว่าต้อง login ก่อน — ถ้าไม่บอก
-    Planner เรื่องนี้ มันจะเดา (ผิด) ว่า template ขาด step login ไปแล้วปฏิเสธ reuse ทั้งที่
-    จริงๆ ใช้ได้ปกติ (เจอบั๊กนี้จริงกับ OrangeHRM ระหว่างทดสอบ)"""
+    page_fingerprint: snapshot ของหน้าที่เปิดอยู่ (ว่างถ้ายังไม่มี) กัน match template ของเว็บที่ redesign แล้ว
+    has_auto_login (W_procmem, บั๊กจริง OrangeHRM): โดเมนมี credential — login เกิดนอก loop เสมอ
+    ถ้าไม่บอก Planner จะปฏิเสธ template ที่ไม่มี step login ทั้งที่ใช้ได้"""
     candidates_text = _format_candidates_for_planner(candidates)
     auto_login_note = (
         "AUTO_LOGIN: this domain has stored credentials — login happens automatically "
@@ -1365,67 +1083,22 @@ async def plan_with_procedural_memory(
         "Call plan_decision now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=1024,
-                system=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
-                tools=[PROCEDURAL_PLANNER_TOOL],
-                tool_choice={"type": "tool", "name": "plan_decision"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            decision = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": _PROCEDURAL_PLANNER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_PROCEDURAL_PLANNER_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "plan_decision"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            decision = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_PROCEDURAL_PLANNER_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            decision = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "plan_decision":
-                    decision = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            decision = None
-
+        decision = await _forced_tool_call(
+            client, model, provider, tool=PROCEDURAL_PLANNER_TOOL,
+            system=_PROCEDURAL_PLANNER_SYSTEM_PROMPT, prompt=prompt, max_tokens=1024,
+        )
         if decision is None:
             return dict(_PROCEDURAL_PLANNER_SAFE_DEFAULT)
 
-        # W_procmem defense-in-depth: ไม่เชื่อ confidence/decision ของ LLM ตรงๆ 100% —
-        # บังคับ plan_fresh เองถ้า confidence ต่ำกว่าเกณฑ์ แม้ LLM จะเผลอตอบ
-        # decision="reuse"/"adapt" มาก็ตาม (กันโมเดลมั่นใจเกินจริง)
+        # W_procmem defense-in-depth: confidence ต่ำกว่าเกณฑ์ = plan_fresh แม้ LLM ตอบ reuse/adapt
         confidence = float(decision.get("confidence", 0.0) or 0.0)
         if confidence < settings.procedural_memory_min_confidence:
             return {**_PROCEDURAL_PLANNER_SAFE_DEFAULT, "confidence": confidence, "reason": decision.get("reason", "")}
 
         chosen_decision = decision.get("decision", "plan_fresh")
         template_id = decision.get("template_id")
-        # W_procmem: "template_id" ไม่ได้อยู่ใน required ของ schema (ไม่มีทางบังคับแบบ
-        # "required เฉพาะตอน decision=reuse/adapt" ข้าม provider ได้เนียนพอ) — เจอจริง
-        # ตอนทดสอบว่า LLM ตอบ decision="reuse" มาแต่ลืมใส่ template_id มาด้วย ถ้ามี
-        # candidate แค่ตัวเดียวไม่มีความกำกวม เดาแทนให้ได้อย่างปลอดภัย แต่ถ้ามีหลายตัวและ
-        # ไม่ระบุมาเลย ไม่มีทางรู้ว่าหมายถึงตัวไหน ปลอดภัยกว่าที่จะ plan_fresh แทนการเดา
+        # W_procmem (เจอจริง): LLM ตอบ reuse แต่ลืม template_id (schema บังคับแบบมีเงื่อนไขไม่ได้)
+        # — candidate เดียวเดาได้ปลอดภัย, หลายตัว = plan_fresh
         if chosen_decision in ("reuse", "adapt") and not template_id:
             if len(candidates) == 1:
                 template_id = candidates[0].get("template_id")
@@ -1448,11 +1121,8 @@ async def plan_with_procedural_memory(
         return dict(_PROCEDURAL_PLANNER_SAFE_DEFAULT)
 
 
-# --- W_procmem: Repair tool (llm.repair_step()) — single-shot call ต่างหาก เรียกจาก
-# core/fastpath_executor.py เฉพาะตอน step ของ template ที่กำลัง replay ล้มเหลว (resolve
-# locator ไม่ได้/dispatch พัง/verify ไม่ผ่าน) — เป้าหมายคือแก้ step "เดียว" ให้ยังทำ
-# sub-goal เดิมสำเร็จบนหน้าเว็บปัจจุบัน ไม่ใช่ plan ใหม่ทั้งชุด (นั่นคือหน้าที่ของ
-# "replan" — escalate กลับไปให้ orchestrator.run_task() เต็มรูปแบบแทน)
+# W_procmem: Repair (repair_step) — fastpath_executor เรียกเมื่อ step ที่ replay ล้มเหลว แก้ step
+# เดียวบนหน้าปัจจุบัน; ทำไม่ได้ = "replan" escalate กลับ run_task() เต็มรูปแบบ
 _REPAIR_STEP_PARAMS = {
     "type": "object",
     "properties": {
@@ -1479,12 +1149,6 @@ _REPAIR_STEP_PARAMS = {
 }
 _REPAIR_STEP_DESC = "Repair one template step that failed during replay so it still achieves the same sub-goal on the current page, or signal replan if that is genuinely impossible"
 REPAIR_STEP_TOOL = {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "input_schema": _REPAIR_STEP_PARAMS}
-_GROQ_REPAIR_STEP_TOOLS = [
-    {"type": "function", "function": {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}},
-]
-_GEMINI_REPAIR_STEP_TOOLS = [
-    {"function_declarations": [{"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}]},
-]
 
 _REPAIR_STEP_SYSTEM_PROMPT = (
     "You are the Repair module. One template step failed during execution.\n"
@@ -1508,19 +1172,10 @@ REPLAN_SIGNAL: dict = {"action": "replan"}
 async def repair_step(
     client, model: str, failed_step: dict, error: str, current_page_text: str, provider: str,
 ) -> dict:
-    """W_procmem: แก้ template step เดียวที่ล้มเหลวระหว่าง fast-path replay (ดู
-    core/fastpath_executor.py) — เรียกเฉพาะตอน resolve_locator()/dispatch/verify ของ
-    step นั้นไม่ผ่าน ไม่ใช่ทุก step
+    """W_procmem: แก้ template step เดียวที่ล้มเหลวระหว่าง fast-path replay — ไม่ raise;
+    error/ไม่มี tool call คืน REPLAN_SIGNAL (escalate กลับ slow path)
 
-    **สำคัญ**: ผู้เรียก (fastpath_executor.py) ต้อง mask ค่าจริงของ step ที่
-    sensitive=True ออกจาก failed_step ก่อนส่งเข้าฟังก์ชันนี้เสมอ (เช่นแทนด้วย
-    "••••••") — ฟังก์ชันนี้เองไม่ mask ให้ ป้องกันไม่ให้ raw secret (รหัสผ่าน) เข้าไปใน
-    LLM prompt โดยไม่จำเป็น
-
-    ห้าม throw ออกไปเด็ดขาดไม่ว่ากรณีใด (provider error/parse ผิดพลาด/ไม่เรียก tool
-    กลับมา) — คืน REPLAN_SIGNAL ({"action": "replan"}) แทนเสมอ ซึ่งเป็นค่าที่ปลอดภัย
-    ที่สุดอยู่แล้ว (escalate กลับไปให้ slow-path loop เต็มรูปแบบจัดการต่อ แทนที่จะเสี่ยง
-    ทำ action ผิดๆ ต่อ)"""
+    **ผู้เรียกต้อง mask ค่าจริงของ step sensitive=True เอง** — ฟังก์ชันนี้ไม่ mask ให้"""
     prompt = (
         f"FAILED_STEP: {json.dumps(failed_step, ensure_ascii=False)}\n"
         f"ERROR: {error}\n"
@@ -1528,68 +1183,19 @@ async def repair_step(
         "Call emit_repaired_step now with the corrected step (or replan)."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=1024,
-                system=_REPAIR_STEP_SYSTEM_PROMPT,
-                tools=[REPAIR_STEP_TOOL],
-                tool_choice={"type": "tool", "name": "emit_repaired_step"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": _REPAIR_STEP_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_REPAIR_STEP_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_repaired_step"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_REPAIR_STEP_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_REPAIR_STEP_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_repaired_step":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=REPAIR_STEP_TOOL, system=_REPAIR_STEP_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=1024,
+        )
         return result if result is not None else dict(REPLAN_SIGNAL)
     except Exception as e:
         print(f"⚠️ repair_step error: {e}", flush=True)
         return dict(REPLAN_SIGNAL)
 
 
-# --- W19 (ดู W19.txt ข้อ 8 "Semantic Redundancy Evaluator"): single-shot call ต่างหาก
-# ประเมินว่า proposed action ที่ next_action() เพิ่งเลือก "มีประโยชน์จริง" ต่อ goal ไหม
-# หรือเป็นแค่ side-step ที่ไม่จำเป็น (เช่น scroll/อ่านข้อมูลที่ไม่เกี่ยว ทั้งที่ปุ่มที่ต้อง
-# กดอยู่ตรงหน้าแล้ว) — เรียกจาก orchestrator.py ก่อน dispatch จริงทุก step **เฉพาะตอน
-# settings.enable_semantic_redundancy_check เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือน
-# enable_procedural_memory — เพิ่ม LLM call ต่อ step 1 time(s) มีต้นทุน latency/token จริง
-# ต้อง validate คุณภาพก่อนเปิดเป็น default)
-#
-# ต่างจาก state_filter.py (W19 ข้อ 6) ตรงที่ตัวนั้นเช็ค "สถานะ DOM" แบบ deterministic
-# (ไม่พึ่ง LLM เลย, เร็ว, แม่นยำ 100% แต่ตอบได้แค่คำถามแคบๆ เช่น "ค่าซ้ำไหม") ส่วนตัวนี้เช็ค
-# "เจตนา" เทียบกับ goal ทั้ง task (ต้องใช้ LLM ตัดสิน ไม่มีทาง deterministic ได้จริง) — สอง
-# ชั้นทำงานคนละจุด ไม่ทับซ้อนกัน
+# W19 ข้อ 8 ("Semantic Redundancy Evaluator"): ตัดสินว่า proposed action ช่วย goal จริงไหม — เรียกก่อน
+# dispatch ทุก step เฉพาะเมื่อ settings.enable_semantic_redundancy_check (ปิด default: +1 LLM call/step)
+# ต่างจาก state_filter.py (W19 ข้อ 6) ที่เช็คสถานะ DOM แบบ deterministic — ตัวนี้เช็ค "เจตนา"
 _SEMANTIC_REDUNDANCY_PARAMS = {
     "type": "object",
     "properties": {
@@ -1616,12 +1222,6 @@ _SEMANTIC_REDUNDANCY_DESC = "Judge whether the proposed action genuinely advance
 SEMANTIC_REDUNDANCY_TOOL = {
     "name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "input_schema": _SEMANTIC_REDUNDANCY_PARAMS,
 }
-_GROQ_SEMANTIC_REDUNDANCY_TOOLS = [
-    {"type": "function", "function": {"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}},
-]
-_GEMINI_SEMANTIC_REDUNDANCY_TOOLS = [
-    {"function_declarations": [{"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}]},
-]
 
 _SEMANTIC_REDUNDANCY_SYSTEM_PROMPT = (
     "You are a Semantic Redundancy Evaluator for a browser automation agent.\n"
@@ -1653,14 +1253,7 @@ async def evaluate_semantic_redundancy(
     client, model: str, goal: str, step_summary: str, page_title: str, target_context: str,
     tool_name: str, tool_input: dict, provider: str,
 ) -> dict:
-    """เรียก 1 time(s)ต่อ step (เฉพาะตอน settings.enable_semantic_redundancy_check เปิด) —
-    ประเมิน proposed action (tool_name/tool_input ที่ next_action() เพิ่งเลือกมา) เทียบ
-    กับ goal ทั้ง task
-
-    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาดไม่ว่ากรณีใด (provider error/parse
-    ผิดพลาด/ไม่เรียก tool กลับมา) — คืน _SEMANTIC_REDUNDANCY_SAFE_DEFAULT (action_decision
-    PASS) แทนเสมอ เป็นค่าที่ปลอดภัยที่สุด (ปล่อยให้ dispatch ตามปกติเหมือนไม่มี evaluator
-    นี้อยู่เลย ดีกว่าเสี่ยง block action ที่จริงๆ มีประโยชน์เพราะ evaluator เองพัง)"""
+    """ประเมิน proposed action เทียบ goal — ไม่ raise; error คืน _SEMANTIC_REDUNDANCY_SAFE_DEFAULT (PASS, fail-open)"""
     prompt = (
         f"USER_GOAL: {goal}\n"
         f"STEP_SUMMARY: {step_summary}\n"
@@ -1670,74 +1263,19 @@ async def evaluate_semantic_redundancy(
         "Call evaluate_action_value now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
-                tools=[SEMANTIC_REDUNDANCY_TOOL],
-                tool_choice={"type": "tool", "name": "evaluate_action_value"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _SEMANTIC_REDUNDANCY_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_SEMANTIC_REDUNDANCY_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "evaluate_action_value"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_SEMANTIC_REDUNDANCY_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "evaluate_action_value":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=SEMANTIC_REDUNDANCY_TOOL,
+            system=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_SEMANTIC_REDUNDANCY_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ evaluate_semantic_redundancy error: {e}", flush=True)
         return dict(_SEMANTIC_REDUNDANCY_SAFE_DEFAULT)
 
 
-# --- W19-2: "Safety & Performance Middleware" — single-shot call ที่รวม redundancy check
-# (เหมือน evaluate_semantic_redundancy ด้านบน) กับ permission check (เหมือน
-# permission/rules.py::classify_action) เข้าเป็น 1 LLM call เดียว ประหยัด round-trip กว่า
-# เรียกแยก 2 time(s) — เรียกจาก orchestrator.py ก่อน dispatch จริง **เฉพาะตอน
-# settings.enable_middleware_evaluator เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือนโมดูล LLM
-# ตัวอื่นๆ ในไฟล์นี้ — ต้อง validate คุณภาพก่อนเปิดเป็น default)
-#
-# *** สำคัญ: เป็น "โมดูลที่ 4" แบบ additive ล้วนๆ ไม่ได้แทนที่/ลดทอนระบบความปลอดภัยเดิมเลย
-# แม้แต่น้อย — permission/rules.py::classify_action() ยังคงเป็นผู้ตัดสินสุดท้ายเสมอ
-# (final say) ต่อทุก action เหมือนเดิมทุกประการ ตัวนี้ทำได้แค่ "เพิ่มความระมัดระวัง"
-# (escalate-only): ผลลัพธ์ risk_level=REQUIRES_CONSENT/BLOCKED จากตัวนี้ถูกส่งต่อเข้า
-# classify_action() ผ่าน manual_guidance string เดียวกับที่ RAG คู่มือ (W7[B]) ใช้อยู่แล้ว
-# (ต่อท้ายวลีที่ตรงกับ MANUAL_CONFIRMATION_KEYWORDS) ทำให้ classify_action() escalate เป็น
-# NEEDS_CONFIRMATION ตามกลไกเดิมที่มีอยู่แล้ว/เทสต์ไว้แล้ว — ไม่มีทาง "ลดระดับ" ความเสี่ยงที่
-# classify_action() ตัดสินไปแล้วได้เลย (risk_level=AUTO_APPROVE ของตัวนี้ = ไม่ต่อท้ายอะไร
-# เข้า manual_guidance เลย = พฤติกรรมเดิมเป๊ะ) และไม่เรียก ask_user_func เองตรงๆ ด้วย —
-# ปล่อยให้ execute()'s classify_action()/_confirm_action() (ที่ทดสอบไว้แล้ว) เป็นคนถามจริง
-# กันการถามซ้ำสองครั้งสำหรับ action เดียวกัน
+# W19-2 ("Safety & Performance Middleware"): redundancy + permission ใน LLM call เดียว — เฉพาะเมื่อ
+# settings.enable_middleware_evaluator (ปิด default) *** escalate-only: classify_action() ยังตัดสินสุดท้าย
+# REQUIRES_CONSENT/BLOCKED ส่งต่อผ่าน manual_guidance เหมือน RAG คู่มือ (W7[B]) ลดระดับไม่ได้ และไม่ถามผู้ใช้เอง ***
 _MIDDLEWARE_PARAMS = {
     "type": "object",
     "properties": {
@@ -1775,12 +1313,6 @@ _MIDDLEWARE_DESC = (
 MIDDLEWARE_EVALUATOR_TOOL = {
     "name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "input_schema": _MIDDLEWARE_PARAMS,
 }
-_GROQ_MIDDLEWARE_TOOLS = [
-    {"type": "function", "function": {"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}},
-]
-_GEMINI_MIDDLEWARE_TOOLS = [
-    {"function_declarations": [{"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}]},
-]
 
 _MIDDLEWARE_SYSTEM_PROMPT = (
     "You are the Safety & Performance Middleware for a Universal AI Browser Automation\n"
@@ -1811,11 +1343,7 @@ _MIDDLEWARE_SYSTEM_PROMPT = (
     "Output ONLY the middleware_evaluate tool call. No prose."
 )
 
-# Speed 2.3: เหมือน _SYSTEM_BLOCKS ด้านล่าง (ดู comment ตรงนั้นสำหรับเหตุผลเต็ม) — system
-# prompt นี้เหมือนกันทุก step ของ loop เดียวกัน (evaluate_safety_and_performance เรียก 1
-# time(s)ต่อ step เฉพาะตอน settings.enable_middleware_evaluator เปิด) จึง cache ได้ประโยชน์
-# เหมือนกัน ใช้แค่ branch anthropic เท่านั้น (groq/gemini ไม่มี cache_control mechanism
-# แบบนี้ — ดู module comment บนสุดของไฟล์)
+# Speed 2.3: system prompt นี้เหมือนกันทุก step — cache ฝั่ง anthropic (provider อื่นไม่มี cache_control)
 _MIDDLEWARE_SYSTEM_BLOCKS = [
     {"type": "text", "text": _MIDDLEWARE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
 ]
@@ -1834,16 +1362,8 @@ async def evaluate_safety_and_performance(
     client, model: str, goal: str, current_domain: str, action_type: str, element_description: str,
     action_value: str, provider: str,
 ) -> dict:
-    """เรียก 1 time(s)ต่อ step (เฉพาะตอน settings.enable_middleware_evaluator เปิด) — รวม
-    redundancy check + permission check เป็น LLM call เดียว (ดู module comment ด้านบน
-    สำหรับเหตุผลที่เป็น "โมดูลที่ 4" แบบ additive ไม่แทนที่ classify_action())
-
-    current_domain: โดเมนของเว็บปัจจุบัน (extract_domain(page.url)) — ใช้แค่บอกบริบทเว็บ
-    ปัจจุบันให้ LLM เห็น ไม่ได้ผูก logic เฉพาะเว็บไหนเว็บหนึ่งเลย (generic ข้าม platform)
-
-    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาดไม่ว่ากรณีใด — คืน
-    _MIDDLEWARE_SAFE_DEFAULT (EXECUTE/AUTO_APPROVE) แทนเสมอ เป็นค่าที่ปลอดภัยที่สุด
-    (เหมือนไม่มี middleware นี้อยู่เลย — classify_action() ที่ dispatch จริงยังทำงานตามปกติ)"""
+    """redundancy + permission check ใน call เดียว — ไม่ raise; error คืน _MIDDLEWARE_SAFE_DEFAULT
+    (EXECUTE/AUTO_APPROVE = เหมือนไม่มี middleware, classify_action() ยังทำงานตามปกติ)"""
     prompt = (
         f"OVERALL_GOAL: {goal}\n"
         f"ACTIVE_SITE_DOMAIN: {current_domain}\n"
@@ -1851,73 +1371,19 @@ async def evaluate_safety_and_performance(
         "Call middleware_evaluate now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_MIDDLEWARE_SYSTEM_BLOCKS,
-                tools=[MIDDLEWARE_EVALUATOR_TOOL],
-                tool_choice={"type": "tool", "name": "middleware_evaluate"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _MIDDLEWARE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_MIDDLEWARE_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "middleware_evaluate"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_MIDDLEWARE_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_MIDDLEWARE_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "middleware_evaluate":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=MIDDLEWARE_EVALUATOR_TOOL, system=_MIDDLEWARE_SYSTEM_PROMPT,
+            anthropic_system=_MIDDLEWARE_SYSTEM_BLOCKS, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_MIDDLEWARE_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ evaluate_safety_and_performance error: {e}", flush=True)
         return dict(_MIDDLEWARE_SAFE_DEFAULT)
 
 
-# --- W19-3: "Voice & Persona Interface" — แปลงสถานะ agent (ดิบๆ เช่น "[OK] click ->
-# สำเร็จ") ให้เป็นข้อความไทยธรรมชาติแบบผู้ช่วยส่วนตัว ให้ Test Console UI โชว์แทน raw log
-# (ดู module comment: ห้ามพูดแบบ system log "Status: Executing command click on selector
-# #search-btn" ต้องพูดธรรมชาติแบบคนคุยกัน) — เรียกจาก orchestrator.py **เฉพาะตอน
-# settings.enable_persona_voice เปิดอยู่เท่านั้น** (ปิดไว้ default เหมือนโมดูล LLM ตัวอื่น)
-#
-# ต่างจาก 3 โมดูลก่อนหน้า (state_filter/semantic_redundancy/middleware) ตรงที่ตัวนี้ไม่มีผล
-# ต่อ control flow ของ agent loop เลยแม้แต่น้อย (ไม่ skip/ไม่ block/ไม่ replan อะไรทั้งสิ้น) —
-# เป็นแค่ "ชั้นการสื่อสาร" (presentation layer) ล้วนๆ คืนข้อความเสริมให้ UI แสดงคู่กับ raw
-# log เดิม (ไม่ได้แทนที่ — raw log/history ยังคงส่งครบเหมือนเดิมทุกประการ เผื่อ debug จริง)
-#
-# ความถี่การเรียก: ไม่ได้เรียกทุก step ของ browser action (จะแพงเกินไปโดยไม่จำเป็น เพราะเป็น
-# แค่ข้อความคุย ไม่ใช่การตัดสินใจที่กระทบผลลัพธ์) — เรียกเฉพาะจังหวะสำคัญที่ user จะได้เห็น/
-# สนใจจริงๆ ตามที่ RULES ระบุ: PROGRESS (เริ่ม task), PERMISSION (ขออนุมัติ), ERROR (action
-# ล้มเหลว), COMPLETION (จบ task) — ดู orchestrator.py สำหรับจุดที่เรียกจริง (ปัจจุบันต่อสาย
-# แค่ COMPLETION/ERROR ตอนจบ task เท่านั้น เป็นจุดที่คุ้มค่าที่สุด/ความถี่ต่ำสุด — PROGRESS/
-# PERMISSION ยังไม่ต่อสาย รอ validate ของจริงก่อน)
+# W19-3 ("Voice & Persona Interface"): แปลงสถานะ agent เป็นข้อความผู้ช่วยธรรมชาติให้ UI แสดงคู่ raw log
+# — เฉพาะเมื่อ settings.enable_persona_voice (ปิด default) presentation layer ล้วน ไม่กระทบ control flow
+# ปัจจุบันต่อสายแค่ COMPLETION/ERROR ตอนจบ task (PROGRESS/PERMISSION รอ validate)
 _PERSONA_PARAMS = {
     "type": "object",
     "properties": {
@@ -1930,18 +1396,9 @@ _PERSONA_PARAMS = {
 }
 _PERSONA_DESC = "Turn raw agent state into a natural personal-assistant message for display in the UI"
 PERSONA_VOICE_TOOL = {"name": "speak_to_user", "description": _PERSONA_DESC, "input_schema": _PERSONA_PARAMS}
-_GROQ_PERSONA_TOOLS = [
-    {"type": "function", "function": {"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}},
-]
-_GEMINI_PERSONA_TOOLS = [
-    {"function_declarations": [{"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}]},
-]
 
-# W20 (follow-up "reply in the user's own language"): this used to hard-require Thai output
-# regardless of what language USER_GOAL was actually written in — real bug, same root cause as
-# the other response prompts (see _LANGUAGE_MIRROR_RULE above, this one's just English-authored
-# so it needs its own English-worded version of the same rule). The Thai example lines below
-# are now explicitly framed as tone reference, not a required output language.
+# W20 ("reply in the user's own language", real bug): เคยบังคับตอบไทยเสมอ — ตอนนี้ mirror ภาษา
+# USER_GOAL (เหมือน _LANGUAGE_MIRROR_RULE) ตัวอย่างภาษาไทยเป็นแค่ตัวอย่างโทน
 _PERSONA_SYSTEM_PROMPT = (
     "You are the Voice & Persona Interface for a Universal AI Browser Agent.\n"
     "Communicate with the user in natural, polite, friendly, human-like language —\n"
@@ -1980,16 +1437,10 @@ _PERSONA_SAFE_DEFAULT: dict[str, Any] = {"user_message": "", "action_status": "I
 async def generate_persona_message(
     client, model: str, domain_name: str, user_goal: str, agent_status: str, status_detail: str, provider: str,
 ) -> dict:
-    """agent_status (input): "starting"/"waiting_approval"/"failed"/"completed" — สถานะ
-    ดิบที่ orchestrator รู้อยู่แล้ว ใช้บอกบริบทให้ LLM เลือกโทนที่เหมาะสม (ดู RULES ด้านบน)
-    status_detail: รายละเอียดเสริมเฉพาะจังหวะนั้น (เช่น final_message ตอน COMPLETED, error
-    text ตอน FAILED, ชื่อ action ตอน WAITING_APPROVAL) — เว้นว่างได้ถ้าไม่มี
+    """คืน {user_message, action_status} เสมอ — user_message="" = ไม่มีข้อความ ให้ผู้เรียกโชว์ raw log
+    ไม่ raise; error คืน _PERSONA_SAFE_DEFAULT
 
-    คืน {user_message, action_status} เสมอ — user_message="" หมายถึง "ไม่มีข้อความ persona
-    ให้แสดง" (ผู้เรียกควร fallback ไปโชว์ raw log/message เดิมแทน ไม่ใช่โชว์อะไรว่างเปล่า)
-
-    ห้าม throw ออกไปให้ orchestrator loop พังเด็ดขาด เป็นแค่ presentation layer เสริม
-    ไม่กระทบผลลัพธ์จริงของ task เลยไม่ว่าจะพังแค่ไหน — error ใดๆ คืน _PERSONA_SAFE_DEFAULT"""
+    agent_status: "starting"/"waiting_approval"/"failed"/"completed"; status_detail: รายละเอียดเสริม (ว่างได้)"""
     prompt = (
         f"CURRENT_DOMAIN: {domain_name}\n"
         f"USER_GOAL: {user_goal}\n"
@@ -1998,81 +1449,27 @@ async def generate_persona_message(
         "Call speak_to_user now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=256,
-                system=_PERSONA_SYSTEM_PROMPT,
-                tools=[PERSONA_VOICE_TOOL],
-                tool_choice={"type": "tool", "name": "speak_to_user"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=256,
-                messages=[
-                    {"role": "system", "content": _PERSONA_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_PERSONA_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "speak_to_user"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_PERSONA_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_PERSONA_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "speak_to_user":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=PERSONA_VOICE_TOOL, system=_PERSONA_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=256,
+        )
         return result if result is not None else dict(_PERSONA_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ generate_persona_message error: {e}", flush=True)
         return dict(_PERSONA_SAFE_DEFAULT)
 
 
-# --- W19-4: "Orchestrator & Planner Agent for Multi-Turn Conversations" — decides how a
-# NEW user instruction (turn N ของ conversation เดียวกัน) ควรถูกจัดการ โดยไม่เสียบริบทเดิม
-# (ไม่ navigate กลับหน้าแรก/ค้นหาใหม่ทั้งที่ user อ้างถึงของที่เจอไปแล้ว)
-#
-# *** สถานะปัจจุบัน: ต่อสายจริงแล้วใน routes.py (ดู _run_with_resolved_browser, W19-6
-# MODULE 3 "Ordinal Selection") — SessionRegistry.BrowserSession.extracted_memory (list[dict],
-# ดู session_registry.py) เป็น buffer ที่ persist ข้าม turn ตามที่ comment เดิมรอไว้ ก่อนเรียก
-# orchestrator.run_task() เลยด้วยซ้ำ (REPLY_FROM_MEMORY ข้าม run_task()/การเปิด browser
-# ไปทั้งหมดจริงตามที่ออกแบบไว้)
+# W19-4 ("Multi-Turn Orchestrator"): ตัดสินว่า instruction turn N ควร REPLY_FROM_MEMORY/IN_PAGE_ACTION/
+# NEW_NAVIGATION โดยไม่เสียบริบท — ต่อสายใน routes.py (W19-6 MODULE 3) ก่อน run_task() ด้วย
+# BrowserSession.extracted_memory เป็น buffer ข้าม turn
 async def route_multi_turn_strategy(
     client, model: str, overall_goal: str, current_user_instruction: str, current_domain: str,
     current_url: str, extracted_memory_buffer: str, recent_action_history: str, provider: str,
 ) -> dict:
-    """extracted_memory_buffer: สรุปข้อมูลที่เคย extract ไว้จาก turn ก่อนๆ ของ conversation
-    เดียวกัน (เช่น ผลลัพธ์จาก extract_structured_items() ด้านล่าง) — ส่งเป็น string
-    (caller เป็นคนตัดสินใจ format เอง เช่น JSON dump ของ list รายการ) ว่างเปล่าได้ถ้ายังไม่
-    เคย extract อะไรมาก่อนในเทิร์นก่อนหน้า
+    """extracted_memory_buffer: ข้อมูลที่ extract ไว้จาก turn ก่อน (string, ว่างได้)
+    recent_action_history: action ล่าสุด 3 step (ว่างได้)
 
-    recent_action_history: สรุป action 3 time(s)ล่าสุด (เช่น จาก ShortTermMemory.recent(3))
-    ว่างเปล่าได้ถ้าเพิ่งเริ่ม session
-
-    ห้าม throw ออกไปพังเด็ดขาดไม่ว่ากรณีใด — คืน _MULTI_TURN_SAFE_DEFAULT
-    (chosen_strategy=NEW_NAVIGATION) แทนเสมอ ซึ่งเท่ากับ "พฤติกรรมเดิมของระบบทุกวันนี้"
-    (ทุก turn ทำ task ใหม่อิสระ ไม่มี strategy router เลย) — ไม่ใช่ค่าที่สุ่มเดา แต่เป็นค่าที่
-    ปลอดภัยที่สุดเพราะเท่ากับปิด feature นี้ไปเฉยๆ เมื่อตัดสินใจไม่ได้จริง"""
+    ไม่ raise; error คืน _MULTI_TURN_SAFE_DEFAULT (NEW_NAVIGATION = เหมือนไม่มี router นี้)"""
     prompt = (
         f"OVERALL_CONVERSATION_GOAL: {overall_goal}\n"
         f"CURRENT_USER_INSTRUCTION_TURN_N: {current_user_instruction}\n"
@@ -2083,55 +1480,10 @@ async def route_multi_turn_strategy(
         "Call route_strategy now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=768,
-                system=_MULTI_TURN_SYSTEM_PROMPT,
-                tools=[MULTI_TURN_STRATEGY_TOOL],
-                tool_choice={"type": "tool", "name": "route_strategy"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=768,
-                messages=[
-                    {"role": "system", "content": _MULTI_TURN_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_MULTI_TURN_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "route_strategy"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_MULTI_TURN_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_MULTI_TURN_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "route_strategy":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        elif provider == "openai":
-            result = await _openai_forced_tool_call(
-                client, model, _MULTI_TURN_SYSTEM_PROMPT, prompt,
-                "route_strategy", _MULTI_TURN_DESC, _MULTI_TURN_PARAMS,
-            )
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=MULTI_TURN_STRATEGY_TOOL, system=_MULTI_TURN_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=768, openai=True,
+        )
         return result if result is not None else dict(_MULTI_TURN_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ route_multi_turn_strategy error: {e}", flush=True)
@@ -2176,12 +1528,6 @@ _MULTI_TURN_DESC = "Decide whether a new user instruction (turn N) should be han
 MULTI_TURN_STRATEGY_TOOL = {
     "name": "route_strategy", "description": _MULTI_TURN_DESC, "input_schema": _MULTI_TURN_PARAMS,
 }
-_GROQ_MULTI_TURN_TOOLS = [
-    {"type": "function", "function": {"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}},
-]
-_GEMINI_MULTI_TURN_TOOLS = [
-    {"function_declarations": [{"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}]},
-]
 
 _MULTI_TURN_SYSTEM_PROMPT = (
     "You are the Orchestrator & Planner Agent for a Universal Multi-Turn AI Browser\n"
@@ -2224,12 +1570,8 @@ _MULTI_TURN_SAFE_DEFAULT: dict[str, Any] = {
 }
 
 
-# --- W19-4 (ต่อ): "Structured Data Extractor" — คู่กับ route_multi_turn_strategy() ด้านบน:
-# แปลง raw page content (เช่น ผลลัพธ์ดิบจาก perception.extract_table_data()) ให้เป็น list
-# ของ "complete package" ต่อรายการ (title+price+status+url+attributes เสริม) แทนที่จะเป็น
-# text/list ของ field เดียวโดดๆ — ใช้เป็น input ของ extracted_memory_buffer ที่
-# route_multi_turn_strategy() ด้านบนอ่าน ต่อสายจริงแล้วใน routes.py::_update_extracted_memory
-# (เก็บผลลัพธ์ลง SessionRegistry.BrowserSession.extracted_memory)
+# W19-4 (ต่อ) ("Structured Data Extractor"): raw page content -> list ของรายการครบชุด ป้อน
+# extracted_memory ให้ route_multi_turn_strategy() (ต่อสายใน routes.py::_update_extracted_memory)
 _STRUCTURED_EXTRACT_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -2256,12 +1598,6 @@ _STRUCTURED_EXTRACT_DESC = "Convert raw page content into a structured item arra
 STRUCTURED_EXTRACTOR_TOOL = {
     "name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "input_schema": _STRUCTURED_EXTRACT_PARAMS,
 }
-_GROQ_STRUCTURED_EXTRACT_TOOLS = [
-    {"type": "function", "function": {"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}},
-]
-_GEMINI_STRUCTURED_EXTRACT_TOOLS = [
-    {"function_declarations": [{"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}]},
-]
 
 _STRUCTURED_EXTRACT_SYSTEM_PROMPT = (
     "You are the Structured Data Extractor. When extracting data from ANY web page:\n"
@@ -2285,13 +1621,8 @@ _STRUCTURED_EXTRACT_SYSTEM_PROMPT = (
 
 
 async def extract_structured_items(client, model: str, page_content: str, extraction_hint: str, provider: str) -> list[dict]:
-    """page_content: raw text/markdown ที่ได้จาก perception.extract_table_data() หรือ
-    เนื้อหาดิบอื่นที่ต้องการให้จัดโครงสร้าง — extraction_hint: บริบทเสริมสั้นๆ ว่ากำลังมองหา
-    อะไร (เช่น "รายการสินค้าในผลค้นหา") ว่างเปล่าได้
-
-    คืน list ของ dict เสมอ (ไม่ใช่ dict ห่อ "items" — unwrap ให้ผู้เรียกใช้ตรงๆ) — ห้าม throw
-    ออกไปพังเด็ดขาดไม่ว่ากรณีใด คืน [] เปล่าๆ แทนเสมอตอน error (ผู้เรียก fallback ไปใช้
-    page_content ดิบต่อได้ตามปกติ เหมือนไม่มีตัวจัดโครงสร้างนี้อยู่เลย)"""
+    """คืน list ของ item dict (unwrap "items" แล้ว) — ไม่ raise; error/เนื้อหาว่างคืน []
+    extraction_hint: สิ่งที่กำลังมองหา (ว่างได้)"""
     if not (page_content or "").strip():
         return []
     prompt = (
@@ -2300,55 +1631,10 @@ async def extract_structured_items(client, model: str, page_content: str, extrac
         "Call emit_structured_items now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
-                tools=[STRUCTURED_EXTRACTOR_TOOL],
-                tool_choice={"type": "tool", "name": "emit_structured_items"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=2048,
-                messages=[
-                    {"role": "system", "content": _STRUCTURED_EXTRACT_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_STRUCTURED_EXTRACT_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_structured_items"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_STRUCTURED_EXTRACT_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_structured_items":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        elif provider == "openai":
-            result = await _openai_forced_tool_call(
-                client, model, _STRUCTURED_EXTRACT_SYSTEM_PROMPT, prompt,
-                "emit_structured_items", _STRUCTURED_EXTRACT_DESC, _STRUCTURED_EXTRACT_PARAMS,
-            )
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=STRUCTURED_EXTRACTOR_TOOL,
+            system=_STRUCTURED_EXTRACT_SYSTEM_PROMPT, prompt=prompt, max_tokens=2048, openai=True,
+        )
         if result is None:
             return []
         items = result.get("items")
@@ -2358,18 +1644,8 @@ async def extract_structured_items(client, model: str, page_content: str, extrac
         return []
 
 
-# --- W19-5: "Structured Data Extractor Engine" (Query Normalizer) — ต่างจาก
-# extract_structured_items() ด้านบน (แปลง raw page CONTENT ที่ดึงมาแล้วให้เป็น item
-# array) ตัวนี้ทำงาน "ก่อน" การดึงข้อมูลเลย: แปลงคำถามภาษาธรรมชาติยาวๆ ของ user (เช่น
-# "อ่านรายชื่อผู้ใช้งานระบบในหน้าแอดมินทั้งหมด") ให้เป็น target scope/fields ที่เจาะจง
-# พอจะใช้เป็น input ของ perception.extract_table_data()/actions.read_page_data() ได้ตรงๆ
-# แทนที่จะให้ LLM หลักเดา CSS selector ดิบๆ เองจาก query ยาวๆ
-#
-# *** สถานะปัจจุบัน: standalone + tested เท่านั้น "ยังไม่ต่อสาย" เข้า actions.py::
-# read_page_data()/orchestrator.py loop เลย (ต่างจาก route_multi_turn_strategy/
-# extract_structured_items ด้านบนที่ต่อสายจริงแล้วใน routes.py — ตัวนี้ยังไม่มีจุดต่อสาย
-# เพราะเพิ่ม LLM call แยกก่อน read_page_data ทุกครั้งมีต้นทุน latency จริง ต้องตัดสินใจจุด
-# ต่อสายที่เหมาะสมก่อน ไม่ใช่แค่เพิ่ม if-branch เข้า loop เดิม) ***
+# W19-5 ("Query Normalizer"): แปลงคำถามยาวของ user เป็น target scope/fields ก่อนดึงข้อมูล
+# *** ยังไม่ต่อสายเข้า read_page_data/loop — +1 LLM call ต่อครั้งมีต้นทุน latency ต้องเลือกจุดต่อก่อน ***
 _EXTRACTION_QUERY_PARAMS = {
     "type": "object",
     "properties": {
@@ -2393,12 +1669,6 @@ _EXTRACTION_QUERY_DESC = "Turn a long natural-language question into a specific 
 EXTRACTION_QUERY_NORMALIZER_TOOL = {
     "name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "input_schema": _EXTRACTION_QUERY_PARAMS,
 }
-_GROQ_EXTRACTION_QUERY_TOOLS = [
-    {"type": "function", "function": {"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}},
-]
-_GEMINI_EXTRACTION_QUERY_TOOLS = [
-    {"function_declarations": [{"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}]},
-]
 
 _EXTRACTION_QUERY_SYSTEM_PROMPT = (
     "You are the Structured Data Extractor Engine. Convert long natural language read\n"
@@ -2426,14 +1696,8 @@ _EXTRACTION_QUERY_SAFE_DEFAULT: dict[str, Any] = {
 async def normalize_extraction_query(
     client, model: str, raw_user_query: str, main_content_container: str, provider: str,
 ) -> dict:
-    """raw_user_query: คำถามภาษาธรรมชาติดิบๆ จาก user (เช่น "อ่านรายชื่อผู้ใช้งานระบบใน
-    หน้าแอดมินทั้งหมด") — main_content_container: hint ของ container หลักที่ข้อมูลน่าจะ
-    อยู่ (เช่น จาก region="main" ใน perception.py, ดู "Scoped Search Context") ว่างเปล่า
-    ได้ถ้าไม่รู้
-
-    ห้าม throw ออกไปพังเด็ดขาดไม่ว่ากรณีใด — คืน _EXTRACTION_QUERY_SAFE_DEFAULT แทนเสมอ
-    (normalized_target_scope="" = ให้ผู้เรียก fallback ไปใช้ target_hint/query เดิมที่มี
-    อยู่แล้วตรงๆ เหมือนไม่มีตัว normalize นี้อยู่เลย)"""
+    """main_content_container: hint ของ container หลัก (ว่างได้) — ไม่ raise; error คืน
+    _EXTRACTION_QUERY_SAFE_DEFAULT (scope "" = ผู้เรียกใช้ target_hint/query เดิม)"""
     if not (raw_user_query or "").strip():
         return dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
     prompt = (
@@ -2442,69 +1706,20 @@ async def normalize_extraction_query(
         "Call emit_normalized_query now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_EXTRACTION_QUERY_SYSTEM_PROMPT,
-                tools=[EXTRACTION_QUERY_NORMALIZER_TOOL],
-                tool_choice={"type": "tool", "name": "emit_normalized_query"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _EXTRACTION_QUERY_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_EXTRACTION_QUERY_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_normalized_query"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_EXTRACTION_QUERY_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_EXTRACTION_QUERY_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_normalized_query":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=EXTRACTION_QUERY_NORMALIZER_TOOL,
+            system=_EXTRACTION_QUERY_SYSTEM_PROMPT, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ normalize_extraction_query error: {e}", flush=True)
         return dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
 
 
-# system ส่งเป็น content block (ไม่ใช่ string เฉยๆ) พร้อม cache_control -> Anthropic
-# cache ทั้ง tools+system prefix ไว้ (เหมือนกันทุก step ของ loop เดียวกัน ต่างแค่
-# messages ที่ยาวขึ้นเรื่อยๆ) ลด input token cost ของทุก step หลังจากตัวแรก
-# หมายเหตุ: ต้อง prompt ยาวพอถึง minimum cacheable length ของโมเดลนั้นๆ ไม่งั้น API
-# จะเมิน cache_control เงียบๆ (ไม่ error) — เช็คได้จาก usage.cache_read/creation_tokens
-_SYSTEM_BLOCKS = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
-
-
 @lru_cache(maxsize=32)
 def _system_blocks() -> list:
-    """W_token_cut W2 (เดิม W_prompt_sections): system block ของ Anthropic — ตอนนี้เป็น
-    _PROMPT_CORE คงที่ทุกเทิร์นทุก task เสมอ บล็อกที่ gate ตามบริบทย้ายไปต่อท้าย user turn
-    (ดู gated_sections_text) prefix cache ของ provider จึงไม่ขาดกลาง task"""
+    """W_token_cut W2: system block ของ Anthropic = _PROMPT_CORE คงที่ + cache_control (บล็อก gate
+    อยู่ท้าย user turn) หมายเหตุ: prompt สั้นกว่า minimum cacheable length = API เมิน cache เงียบๆ"""
     return [{
         "type": "text",
         "text": _PROMPT_CORE,
@@ -2514,6 +1729,33 @@ def _system_blocks() -> list:
 
 def build_client(api_key: str) -> AsyncAnthropic:
     return AsyncAnthropic(api_key=api_key)
+
+
+def _user_turn_with_audit(
+    prior_messages: list, tools_obj, turn_args: tuple, prompt_sections: Optional[frozenset],
+) -> tuple[str, dict]:
+    """(user turn text, payload_chars) ที่ทุก next_action_* ใช้ — turn_args = positional args ของ
+    _build_user_turn_text ตั้งแต่ goal ถึง verification_context"""
+    parts: dict = {}
+    text = _build_user_turn_text(*turn_args, prompt_sections=prompt_sections, _parts=parts)
+    payload_chars = _char_payload_audit(
+        prior_messages=list(prior_messages), user_parts=parts,
+        system_text=_PROMPT_CORE, tools_obj=tools_obj,
+    )
+    return text, payload_chars
+
+
+def _no_tool_call_finish(messages: list, usage: TokenUsage, payload_chars: dict, retries: int):
+    """ผลลัพธ์ finish_task(false) สังเคราะห์เมื่อเตือนครบ `retries` รอบแล้วยังไม่ได้ tool call"""
+    usage.notool_retries = retries - 1  # W_token_cut W1
+    usage.payload_chars = payload_chars  # W_prompt_audit
+    return (
+        "finish_task",
+        {"success": False, "message": _no_tool_call_fallback_message(retries)},
+        "",
+        messages,
+        usage,
+    )
 
 
 async def next_action(
@@ -2535,76 +1777,30 @@ async def next_action(
     allow_fill_secret: bool = True,
     prompt_sections: Optional[frozenset] = None,
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
-    """ส่ง page state ปัจจุบันเข้าไปในบทสนทนา แล้วขอ action ถัดไปจาก Claude
+    """ส่ง page state ปัจจุบันเข้าบทสนทนาแล้วขอ action ถัดไปจาก Claude
 
-    คืนค่า (tool_name, tool_input, tool_use_id, messages_ใหม่, usage) — tool_use_id ต้อง
-    ส่งเข้า append_tool_result() หลังทำ action เสร็จ, messages_ใหม่ต้องส่งกลับเข้า
-    next_action() รอบถัดไป เพื่อให้ Claude เห็นบทสนทนา/ผลลัพธ์ action ก่อนหน้าต่อเนื่องกัน
-
-    manual_context (W6[B]): chunk คู่มือที่เกี่ยวข้อง (จาก retriever.retrieve()) ที่
-    orchestrator ดึงมาให้ทุก step — ว่างเปล่าได้ตามปกติถ้าไม่มีคู่มือ ingest ไว้/ไม่เจอ
-    อะไรตรงกับหน้านี้
-
-    memory_context (W7[A]): สรุป action ที่ล้มเหลวไปแล้วใน task นี้ (จาก
-    ShortTermMemory.failed_actions_summary() ที่ orchestrator ดึงมาให้ทุก step) —
-    ว่างเปล่าได้ตามปกติถ้ายังไม่เคย fail อะไรเลย
-
-    long_term_context (W7[A] long-term): เหมือน manual_context แต่มาจาก
-    long_term_memory.recall() (ประวัติ task run อื่นก่อนหน้า) แทนคู่มือ
-
-    vision_context (W9[A]): คำอธิบายจาก Gemini vision ตอน action ก่อนหน้าล้มเหลวซ้ำ —
-    ดู _build_user_turn_text() ด้านบน (ปัจจุบัน orchestrator.py ยิง vision fallback
-    เฉพาะ provider=gemini เท่านั้น เลย path นี้ (Anthropic) จะได้ "" เสมอในทางปฏิบัติ
-    แต่รับ parameter ไว้เผื่อขยาย provider อื่นทีหลัง)
-
-    site_manual_context (W14): เนื้อหาย่อจากคู่มือเว็บไซต์ที่ crawl มาอัตโนมัติ (ดู
-    backend/app/site_learning/) — orchestrator ดึงมาครั้งเดียวตอนเริ่ม task (ไม่ใช่ทุก
-    step แบบ manual_context เพราะไม่ได้ผูกกับ page state ปัจจุบัน) ว่างเปล่าถ้าโดเมนนี้
-    ยังไม่เคยถูกเรียนรู้/สร้าง manual ไว้
-
-    current_url (W30): page.url จริงตอน perceive step นี้ (orchestrator.py ดึงมาให้ทุก
-    step เหมือน page_text — ดู _build_user_turn_text() สำหรับเหตุผลที่เพิ่ม)
-
-    action_history_context (W32): action ล่าสุดไม่กี่ step (ทั้งสำเร็จและล้มเหลว) จาก
-    ShortTermMemory.recent_actions_summary() — ต่างจาก memory_context ที่กรองเฉพาะ fail
-
-    plan_context (W43): แผนที่ user ยืนยันแล้ว (เลขข้อ "1. ... 2. ...") ถ้า task นี้ผ่าน
-    Confirm plan มา — ว่างเปล่าถ้าเป็น ad-hoc task ไม่มีแผนเลย ดู _build_user_turn_text()
-
-    verification_context (W50): สัญญาณเสริมจากโค้ดว่า action ก่อนหน้าอาจไม่มีผลจริงกับ
-    หน้าเว็บแม้จะคืน [OK] — orchestrator.py คำนวณให้ทุก step ดู _build_user_turn_text()
-    """
-    _audit_parts: dict = {}
-    _audit_prior = list(messages)
-    messages = messages + [
-        {
-            "role": "user",
-            "content": _build_user_turn_text(
-                goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
-            ),
-        }
-    ]
+    คืน (tool_name, tool_input, tool_use_id, messages_ใหม่, usage) — tool_use_id ต้องส่งเข้า
+    append_tool_result() และ messages_ใหม่ต้องส่งกลับมารอบถัดไป; context ต่างๆ (manual/memory/
+    long_term/vision/site_manual/current_url/action_history/plan/verification) ว่างได้ทั้งหมด
+    ความหมายดูที่ _build_user_turn_text()"""
     _anthropic_tools = (
         [BROWSER_ACTION_TOOL, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL] if allow_fill_secret
         else [BROWSER_ACTION_TOOL_NO_SECRET, REQUEST_USER_INPUT_TOOL, FINISH_TASK_TOOL]
     )
-    _payload_chars = _char_payload_audit(
-        prior_messages=_audit_prior, user_parts=_audit_parts,
-        system_text=_PROMPT_CORE, tools_obj=_anthropic_tools,
+    turn_text, _payload_chars = _user_turn_with_audit(
+        messages, _anthropic_tools,
+        (goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+         site_manual_context, current_url, action_history_context, plan_context, verification_context),
+        prompt_sections,
     )
+    messages = messages + [{"role": "user", "content": turn_text}]
 
     total_usage = TokenUsage()
 
-    # W_notoolcall: วนเตือนแล้วลองใหม่ถ้าโมเดลไม่ยอมเรียก tool (ดูค่าคงที่หัวไฟล์) แทนที่จะ
-    # ยอมแพ้ทันทีเหมือนเดิม — request_messages ต้องคำนวณใหม่ทุกรอบเพราะ messages โตขึ้น
+    # W_notoolcall: เตือนแล้วลองใหม่ถ้าไม่เรียก tool — request_messages คำนวณใหม่ทุกรอบเพราะ messages โตขึ้น
     for attempt in range(_NO_TOOL_CALL_RETRIES):
-        # W_cache2 (SPD-1): breakpoint ที่สอง (breakpoint แรกคือ system+tools ด้านบน) —
-        # cache ทับ conversation history ทั้งก้อนที่โตขึ้นทุก step ของ loop เดียวกันด้วย ไม่ใช่
-        # แค่ system+tools ที่นิ่งอยู่แล้ว มาร์คแค่ตอนส่ง request (request_messages) เท่านั้น
-        # ห้ามมาร์คลงใน messages ตัวจริงที่ return กลับไปให้ loop ต่อ ไม่งั้น cache_control
-        # จะค้างสะสมทุก step จนเกิน 4 breakpoints ที่ Anthropic อนุญาตต่อ request
+        # W_cache2 (SPD-1): cache breakpoint ที่สองทับ history ทั้งก้อน — มาร์คเฉพาะใน request ห้ามลง
+        # messages ที่คืนกลับ ไม่งั้น cache_control สะสมจนเกิน 4 breakpoints ต่อ request
         request_messages = messages[:-1] + [
             {
                 "role": "user",
@@ -2633,23 +1829,15 @@ async def next_action(
 
         tool_use = next((b for b in response.content if b.type == "tool_use"), None)
         if tool_use is not None:
-            # W_int_args: ฝั่งนี้ไม่เคยมี normaliser เลย (ต่างจาก Gemini/OpenAI) ดูฟังก์ชันหัวไฟล์
             total_usage.notool_retries = attempt  # W_token_cut W1
             total_usage.payload_chars = _payload_chars  # W_prompt_audit
+            # W_int_args: Anthropic ไม่มี normaliser ของตัวเอง (ดู _coerce_integer_args)
             return tool_use.name, _coerce_integer_args(tool_use.input), tool_use.id, messages, total_usage
 
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
-    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
-    total_usage.payload_chars = _payload_chars  # W_prompt_audit
-    return (
-        "finish_task",
-        {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
-        "",
-        messages,
-        total_usage,
-    )
+    return _no_tool_call_finish(messages, total_usage, _payload_chars, _NO_TOOL_CALL_RETRIES)
 
 
 def append_tool_result(messages: list[dict], tool_use_id: str, result_text: str) -> list[dict]:
@@ -2687,41 +1875,21 @@ async def next_action_groq(
     allow_fill_secret: bool = True,
     prompt_sections: Optional[frozenset] = None,
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
-    """เหมือน next_action() แต่ยิงผ่าน Groq (OpenAI-compatible chat.completions + function calling)
-    ใช้ทดสอบ agent loop ตอนยังไม่มี Anthropic key จริง
+    """เหมือน next_action() แต่ยิงผ่าน Groq (chat.completions + function calling)
 
-    Llama บางครั้งตอบเป็นข้อความเฉยๆ โดยไม่เรียก tool เลย แม้ tool_choice="required" —
-    กรณีนี้ไม่ finish_task ทันที แต่เตือนให้เรียก tool แล้วลองใหม่สูงสุด
-    _GROQ_NO_TOOL_CALL_RETRIES time(s) ก่อนจะ fallback เป็น finish_task(success=False)
-
-    usage ที่คืนกลับ คือผลรวม token ของทุก request ที่ยิงจริง (รวม retry ที่สำเร็จด้วย)
-    ไม่นับ request ที่ throw ก่อนได้ response กลับมา (เช่น tool_use_failed)
-
-    manual_context/memory_context/long_term_context/vision_context/current_url/
-    action_history_context/plan_context: ดู next_action() — เหมือนกัน (vision_context
-    จะเป็น "" เสมอในทางปฏิบัติ เพราะ vision fallback ปัจจุบัน scope แค่ provider=gemini)
-    """
+    usage = ผลรวมทุก request ที่ได้ response (ไม่นับที่ throw tool_use_failed ก่อนได้ response)"""
     if not messages:
         # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
         messages = [{"role": "system", "content": _PROMPT_CORE}]
 
-    _audit_parts: dict = {}
-    _audit_prior = list(messages)
-    messages = messages + [
-        {
-            "role": "user",
-            "content": _build_user_turn_text(
-                goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
-            ),
-        }
-    ]
     _groq_tools = _GROQ_TOOLS if allow_fill_secret else _GROQ_TOOLS_NO_SECRET
-    _payload_chars = _char_payload_audit(
-        prior_messages=_audit_prior, user_parts=_audit_parts,
-        system_text=_PROMPT_CORE, tools_obj=_groq_tools,
+    turn_text, _payload_chars = _user_turn_with_audit(
+        messages, _groq_tools,
+        (goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+         site_manual_context, current_url, action_history_context, plan_context, verification_context),
+        prompt_sections,
     )
+    messages = messages + [{"role": "user", "content": turn_text}]
 
     total_usage = TokenUsage()
 
@@ -2755,7 +1923,7 @@ async def next_action_groq(
         tool_calls = message.tool_calls or []
         if tool_calls:
             tool_call = tool_calls[0]
-            # W_int_args: ฝั่งนี้ไม่เคยมี normaliser เลย (ต่างจาก Gemini/OpenAI) ดูฟังก์ชันหัวไฟล์
+            # W_int_args: Groq ไม่มี normaliser ของตัวเอง (ดู _coerce_integer_args)
             tool_input = _coerce_integer_args(
                 _loads_tool_arguments(tool_call.function.arguments, tool_call.function.name)
             )
@@ -2766,15 +1934,7 @@ async def next_action_groq(
         if attempt < _GROQ_NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
-    total_usage.notool_retries = _GROQ_NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
-    total_usage.payload_chars = _payload_chars  # W_prompt_audit
-    return (
-        "finish_task",
-        {"success": False, "message": _no_tool_call_fallback_message(_GROQ_NO_TOOL_CALL_RETRIES)},
-        "",
-        messages,
-        total_usage,
-    )
+    return _no_tool_call_finish(messages, total_usage, _payload_chars, _GROQ_NO_TOOL_CALL_RETRIES)
 
 
 def append_tool_result_groq(messages: list[dict], tool_use_id: str, result_text: str) -> list[dict]:
@@ -2783,26 +1943,15 @@ def append_tool_result_groq(messages: list[dict], tool_use_id: str, result_text:
 
 
 def build_openai_client() -> AsyncOpenAI:
-    """W_openai_oauth: ต่างจาก build_client() อื่นๆ — ไม่รับ api_key เลย
-    เพราะ auth ผ่าน OAuth access_token ที่ต้อง refresh ได้ (ดู core/openai_oauth.py::
-    get_valid_access_token()) ไม่ใช่ static key คงที่ตลอด process lifetime เหมือน provider
-    อื่น — client object ตัวนี้แค่โครง ยังไม่มี token จริงตอนสร้าง (ไม่มี network call เหมือน
-    build_gemini_client()/build_client() อื่นๆ) next_action_openai() ด้านล่างเป็นคนขอ token
-    จริงต่อ request แล้วใส่ผ่าน extra_headers เอง (api_key ที่ใส่ตรงนี้เป็นแค่ placeholder ให้
-    SDK constructor พอใจ ไม่เคยถูกใช้จริง)
-
-    base_url ชี้ไป chatgpt.com/backend-api/codex (Responses API เฉพาะ OAuth path — ดู
-    openai_oauth.RESPONSES_BASE_URL) ไม่ใช่ api.openai.com/v1 ปกติ"""
+    """W_openai_oauth: ไม่รับ api_key — auth เป็น OAuth access_token ที่ refresh ได้ ขอใหม่ต่อ request
+    ผ่าน _openai_oauth_headers() (api_key ตรงนี้เป็น placeholder ให้ SDK พอใจ ไม่เคยถูกใช้)
+    base_url = openai_oauth.RESPONSES_BASE_URL (chatgpt.com/backend-api/codex) ไม่ใช่ api.openai.com"""
     return AsyncOpenAI(api_key="oauth-token-supplied-per-request-see-next_action_openai", base_url=openai_oauth.RESPONSES_BASE_URL)
 
 
 async def _openai_oauth_headers() -> dict:
-    """W_openai_oauth: header ชุดเดียวกันที่ทุกจุดเรียก client.responses.create() ต้องแนบ
-    (Authorization/chatgpt-account-id/originator) — แยกออกมากันซ้ำโค้ด 3 บรรทัดในหลายจุด
-    (next_action_openai, generate_text, chat_response, answer_file_query, answer_image_query)
-    เรียก get_valid_access_token() ใหม่ทุกครั้ง (cheap — แค่ timestamp check ถ้ายังไม่ถึงรอบ
-    refresh จริง ดู openai_oauth.py::_refresh_if_needed) ให้ refresh cadence ทำงานทุก call
-    ไม่ใช่แค่ตอนสร้าง client"""
+    """W_openai_oauth: header ที่ทุก responses.create() ต้องแนบ — เรียก get_valid_access_token() ทุกครั้ง
+    (แค่ timestamp check ถ้ายังไม่ถึงรอบ) ให้ task ยาวข้ามรอบ refresh ได้เอง"""
     access_token, account_id = await openai_oauth.get_valid_access_token()
     return {
         "Authorization": f"Bearer {access_token}",
@@ -2811,19 +1960,15 @@ async def _openai_oauth_headers() -> dict:
     }
 
 
-# W_openai_plain_text_cap: เพดาน output ของเส้นทางตอบข้อความล้วน — ค่าเดียวกับ max_tokens ที่
-# provider อื่นใช้อยู่แล้วทุกจุด (1024) ไม่ใช่ตัวเลขที่ตั้งขึ้นใหม่
+# W_openai_plain_text_cap: เพดาน output ของเส้นทางข้อความล้วน = max_tokens ที่ provider อื่นใช้ (1024)
 _OPENAI_PLAIN_TEXT_MAX_OUTPUT_TOKENS = 1024
-# endpoint นี้เคยปฏิเสธ store=True และ prompt_cache_retention มาแล้ว — ถ้ามันไม่รับ
-# max_output_tokens ด้วย ให้เลิกส่งตลอด process แทนที่จะเสีย round-trip ซ้ำทุกครั้ง
+# endpoint นี้เคยปฏิเสธ store=True และ prompt_cache_retention — ถ้าไม่รับ max_output_tokens ด้วย
+# ให้เลิกส่งตลอด process แทนเสีย round-trip ซ้ำทุกครั้ง
 _openai_accepts_max_output_tokens = True
 
 
-# W_openai_throttle_backoff (2026-09-10): codex endpoint รายงาน "โดน rate limit" ด้วยรูป
-# ที่อ่านแล้วเข้าใจผิดได้ง่ายที่สุดเท่าที่จะเป็นไปได้ — 404 "The model `gpt-5.5` does not
-# exist or you do not have access to it." สำหรับโมเดลตัวเดิมที่เพิ่งเรียกสำเร็จเมื่อ 10
-# วินาทีก่อน (ไม่ใช่ 429 ตามที่ควรจะเป็น) ตัวชี้ขาดว่าเป็น rate limit ไม่ใช่ชื่อโมเดลผิด คือ
-# มันเปลี่ยนกลางรันแล้วหายเองเมื่อรอ — ถ้าชื่อโมเดลผิดจริงจะพังตั้งแต่ call แรกและไม่มีวันหาย
+# W_openai_throttle_backoff (2026-09-10): codex endpoint รายงาน rate limit เป็น 404 "model does not
+# exist" ของโมเดลที่เพิ่งเรียกสำเร็จ — ตัวชี้ขาดคือมันหายเองเมื่อรอ (ชื่อโมเดลผิดจริงพังตั้งแต่ call แรก)
 _OPENAI_THROTTLE_MARKERS = (
     "model_not_found", "does not exist or you do not have", "429",
     "rate limit", "too many requests", "quota",
@@ -2836,14 +1981,10 @@ def _looks_like_openai_throttle(error: Exception) -> bool:
 
 
 async def _openai_create_with_backoff(client: AsyncOpenAI, **kwargs):
-    """responses.create() ที่รอแล้วลองใหม่เมื่อโดน throttle — จุดเดียวที่ทุก call ของ
-    provider openai ผ่าน (tool loop / plain text / forced tool call)
+    """responses.create() + retry เมื่อ throttle — จุดเดียวที่ทุก call ของ provider openai ผ่าน
 
-    รอแบบเพิ่มเป็นเท่าตัว (15 -> 30 -> 60) เพราะ cooldown ที่วัดได้จริงอยู่ราว 1-2 นาที
-    การลองใหม่ทันทีจึงไม่มีประโยชน์ นอกจากเผา call ให้โดนตัดต่อไปอีก
-
-    ไม่ retry error ชนิดอื่นเลย — ชื่อโมเดลที่ผิดจริง/token หมดอายุ ต้องพังเร็วให้เห็น
-    ไม่ใช่เงียบไป 105 วินาทีแล้วค่อยพัง"""
+    รอแบบเท่าตัว (cooldown จริงราว 1-2 นาที) และไม่ retry error อื่น — ชื่อโมเดลผิด/token หมดอายุ
+    ต้องพังเร็วให้เห็น"""
     last_error: Optional[Exception] = None
     for attempt in range(settings.openai_throttle_max_retries + 1):
         try:
@@ -2863,9 +2004,8 @@ async def _openai_create_with_backoff(client: AsyncOpenAI, **kwargs):
 
 
 async def _openai_plain_text_reply(client, model: str, instructions: str, prompt: str) -> str:
-    """ยิง responses.create แบบข้อความล้วน + เก็บผลจาก stream — จุดเดียวที่ทุก branch openai
-    ที่ไม่ใช่ tool-calling ใช้ร่วมกัน (chat/ไฟล์/รูป//context) เพื่อให้เพดาน output และ
-    header/store ตั้งที่เดียว ไม่ต้องไล่แก้ทีละจุดเวลาข้อจำกัดของ endpoint เปลี่ยน"""
+    """responses.create แบบข้อความล้วน (stream) — จุดเดียวของ branch openai ที่ไม่ใช่ tool-calling
+    (chat/ไฟล์//context) ให้เพดาน output และ header/store ตั้งที่เดียว"""
     global _openai_accepts_max_output_tokens
 
     async def _create(with_cap: bool):
@@ -2895,29 +2035,52 @@ async def _openai_plain_text_reply(client, model: str, instructions: str, prompt
     return await _consume_openai_text_stream(await _create(False))
 
 
-async def _consume_openai_text_stream(stream) -> str:
-    """W_openai_oauth (follow-up fix 2026-08-17i, ยืนยันจริงจาก live call): primitive ใช้
-    ร่วมกันทุกจุดที่ยิง client.responses.create(stream=True) แบบ plain-text ล้วนๆ (ไม่ใช่
-    tool-calling — next_action_openai() มี logic แยกของตัวเองสำหรับดึง function_call จาก
-    "response.output_item.done" event) — ประกอบ text จาก "response.output_text.delta" event
-    ระหว่าง stream เอง เพราะ endpoint นี้คืน final_response.output_text ว่างเปล่าเสมอแม้
-    token/ข้อความจริงถูกสร้างแล้วก็ตาม (ยืนยันแล้ว: usage.output_tokens > 0 แต่ output_text
-    ว่าง) — raise RuntimeError ถ้า stream fail/ไม่มี response.completed event เลย"""
-    final_response = None
-    text_parts: list = []
+async def _openai_stream_events(stream):
+    """yield (event_type, event) ของ Responses stream — raise RuntimeError ทันทีที่เจอ
+    response.failed / error event (ใช้ร่วมทุกจุดที่อ่าน stream ของ codex endpoint)"""
     async for event in stream:
         event_type = getattr(event, "type", "")
+        if event_type == "response.failed":
+            error = getattr(event.response, "error", None)
+            raise RuntimeError(f"OpenAI Responses API (chatgpt.com/backend-api/codex) failed: {error}")
+        if event_type == "error":
+            raise RuntimeError(f"OpenAI Responses API stream returned an error event: {getattr(event, 'message', event)}")
+        yield event_type, event
+
+
+async def _collect_openai_output_items(stream) -> tuple[list, Any]:
+    """(output items, final_response หรือ None) จาก stream
+
+    W_openai_oauth (2026-08-17i, live call): final_response.output ของ endpoint นี้เป็น [] เสมอ
+    ต้องเก็บ item จาก "response.output_item.done" ระหว่าง stream เอง"""
+    completed_items: list = []
+    final_response = None
+    async for event_type, event in _openai_stream_events(stream):
+        if event_type == "response.output_item.done":
+            completed_items.append(event.item)
+        elif event_type == "response.completed":
+            final_response = event.response
+    return completed_items, final_response
+
+
+def _first_function_call(items: list):
+    return next((item for item in items if getattr(item, "type", None) == "function_call"), None)
+
+
+async def _consume_openai_text_stream(stream) -> str:
+    """ข้อความจาก stream แบบ plain-text — raise RuntimeError ถ้า stream fail/ไม่มี response.completed
+
+    W_openai_oauth (2026-08-17i, live call): final_response.output_text ว่างเสมอแม้ output_tokens > 0
+    ต้องประกอบจาก "response.output_text.delta" เอง"""
+    final_response = None
+    text_parts: list = []
+    async for event_type, event in _openai_stream_events(stream):
         if event_type == "response.output_text.delta":
             delta = getattr(event, "delta", None)
             if delta:
                 text_parts.append(delta)
         elif event_type == "response.completed":
             final_response = event.response
-        elif event_type == "response.failed":
-            error = getattr(event.response, "error", None)
-            raise RuntimeError(f"OpenAI Responses API (chatgpt.com/backend-api/codex) failed: {error}")
-        elif event_type == "error":
-            raise RuntimeError(f"OpenAI Responses API stream returned an error event: {getattr(event, 'message', event)}")
     if final_response is None:
         raise RuntimeError("OpenAI Responses API stream ended without any response.completed event")
     return "".join(text_parts).strip()
@@ -2927,33 +2090,12 @@ async def _openai_forced_tool_call(
     client: AsyncOpenAI, model: str, system_prompt: str, prompt: str,
     tool_name: str, tool_description: str, tool_params: dict,
 ) -> Optional[dict]:
-    """W_procmem (OpenAI provider gap fix): primitive ใช้ร่วมกันทุกจุดที่ต้องบังคับเรียก tool
-    ตัวเดียวเจาะจงผ่าน chatgpt.com/backend-api/codex OAuth path — mirror
-    _consume_openai_text_stream() ด้านบน (แยก primitive กันซ้ำโค้ด) แต่สำหรับ
-    tool-calling แทน plain text (เหมือน next_action_openai() ที่ tool_choice="required"
-    ยอมรับ tool ไหนก็ได้ ต่างกันแค่ตรงนี้บังคับชื่อ tool เจาะจงตัวเดียว — ดู
-    next_action_openai() docstring สำหรับรายละเอียด quirk ของ endpoint นี้ที่ยืนยันจริงแล้ว:
-    final_response.output ว่างเปล่าเสมอ ต้องเก็บจาก "response.output_item.done" event เอง)
+    """บังคับเรียก tool ตัวเดียวผ่าน codex endpoint — คืน args dict หรือ None ถ้าไม่มี function_call
 
-    ก่อนหน้านี้ abstract_trajectory()/plan_with_procedural_memory()/repair_step() (และฟังก์ชัน
-    เดี่ยวๆ อื่นอีกหลายตัวในไฟล์นี้) ไม่มี branch provider=="openai" เลย ตกไป
-    else: ...=None เงียบๆ ทุกครั้ง (ไม่ throw เพราะเป็น "ไม่รู้จัก provider" ไม่ใช่ error จริง)
-    ทำให้ทั้ง procedural-memory capture (abstract_trajectory) และ reuse decision
-    (plan_with_procedural_memory) เป็น no-op เสมอเมื่อใช้ provider="openai" — เจอบั๊กนี้จริง
-    ระหว่างทดสอบ live demo วัด token savings ก่อน/หลัง (fastpath escalate กลับ full LLM loop
-    ทุกครั้งเพราะ repair_step() ก็ตกไป None -> REPLAN_SIGNAL เหมือนกัน)
-
-    W_openai_multiturn (2026-09): callers จริงตัวแรกของ primitive นี้คือ multi-turn stack ที่
-    ต่อสายจริงใน routes.py — route_multi_turn_strategy() (route_strategy) และ
-    extract_structured_items() (emit_structured_items) ก่อนหน้านี้ primitive มีแต่ยังไม่มีใครเรียก
-    (helper ตัวอื่นที่ยังไม่มี branch openai — abstractor/procedural planner/repair_step/
-    semantic redundancy/middleware/persona — ยังปิดด้วย feature flag หรือไม่มี consumer จริง
-    เลย ยังไม่ port เพิ่ม latency+rate-limit บน codex endpoint โดยไม่มี behavior change ที่วัดได้)
-
-    คืน None (ไม่ throw) ถ้าไม่มี function_call กลับมาเลย (ไม่ควรเกิดเพราะ tool_choice บังคับ
-    tool นี้ตัวเดียว แต่กันไว้เหมือน next_action_openai()'s fallback) — ผู้เรียกแต่ละตัวมี
-    "คืนค่า safe default เมื่อ result เป็น None" อยู่แล้วเหมือนกันหมด (ดู pattern เดียวกับ
-    Anthropic/Gemini branch ของฟังก์ชันเดียวกัน)"""
+    W_procmem (OpenAI provider gap fix): เดิม single-shot helper ไม่มี branch openai เลย ตกเป็น None
+    เงียบๆ ทำให้ procedural memory capture/reuse/repair เป็น no-op บน provider นี้ (เจอตอน live demo)
+    W_openai_multiturn (2026-09): ผู้เรียกจริงตอนนี้คือ route_multi_turn_strategy/extract_structured_items
+    (openai=True ใน _forced_tool_call) ที่เหลือยังปิดด้วย flag/ไม่มี consumer จึงยังไม่ port"""
     stream = await _openai_create_with_backoff(
         client,
         model=model,
@@ -2965,36 +2107,16 @@ async def _openai_forced_tool_call(
         store=False,
         extra_headers=await _openai_oauth_headers(),
     )
-    completed_items: list = []
-    async for event in stream:
-        event_type = getattr(event, "type", "")
-        if event_type == "response.output_item.done":
-            completed_items.append(event.item)
-        elif event_type == "response.failed":
-            error = getattr(event.response, "error", None)
-            raise RuntimeError(f"OpenAI Responses API (chatgpt.com/backend-api/codex) failed: {error}")
-        elif event_type == "error":
-            raise RuntimeError(f"OpenAI Responses API stream returned an error event: {getattr(event, 'message', event)}")
-    function_call = next((item for item in completed_items if getattr(item, "type", None) == "function_call"), None)
+    completed_items, _ = await _collect_openai_output_items(stream)
+    function_call = _first_function_call(completed_items)
     if function_call is None:
         return None
     return _loads_tool_arguments(function_call.arguments, function_call.name)
 
 
-# W_openai_args (บั๊กจริง reproduce สดบน opensource-demo.orangehrmlive.com): ต่างจาก
-# Anthropic/Gemini ที่ส่งกลับมาเฉพาะ parameter ที่ action นั้นใช้จริง โมเดลผ่าน endpoint
-# chatgpt.com/backend-api/codex เติม "ทุก property ในสคีมา" กลับมาเสมอพร้อมค่า default
-# มั่วๆ ทั้งที่ schema ระบุ required=["type"] ตัวเดียว — ที่เจอจริง:
-#   {"type": "fill_secret", "index": 39, "text": "", "label": "", "key": "Enter",
-#    "then_click_index": 3, "direction": "down", "url": "", "tab_index": 0, ...}
-# ค่าขยะพวกนี้ไม่ได้แค่รกเฉยๆ แต่ "ถูก dispatch จริง": then_click_index=3 จะไปคลิก
-# element 3 ต่อทันทีแบบ compound action, key="Enter" จะกด Enter หลังกรอก, และ
-# completed_plan_step ที่ติดมาทุกครั้งจะ mark step ในแผนว่าเสร็จทั้งที่ action ล้มเหลว —
-# ทั้งหมดนี้ provider อื่นไม่มีเลย ทำให้พฤติกรรมต่างกันคนละเรื่องทั้งที่ prompt/สคีมาเดียวกัน
-#
-# แก้แบบเดียวกับ _normalize_gemini_args() (provider-quirk normaliser ที่ layer นี้):
-# ตัด parameter ที่ไม่เกี่ยวกับ action type ที่เลือกทิ้งก่อนส่งต่อให้ orchestrator เสมอ
-# ไม่แตะ path ของ provider อื่นเลย
+# W_openai_args (บั๊กจริง live บน OrangeHRM demo): โมเดลผ่าน codex endpoint เติม "ทุก property ในสคีมา"
+# พร้อมค่ามั่ว และค่าพวกนี้ถูก dispatch จริง (then_click_index คลิกต่อ, key="Enter", completed_plan_step
+# mark step ผิด) — ตัด parameter ที่ action type นั้นไม่ใช้ทิ้ง (provider-quirk normaliser แบบ Gemini)
 _OPENAI_ACTION_PARAMS = {
     "click": {"index", "then_click_index"},
     "submit": {"index", "then_click_index"},
@@ -3017,13 +2139,8 @@ _OPENAI_ACTION_PARAMS = {
 
 
 def _normalize_openai_args(tool_name: str, args: dict) -> dict[str, Any]:
-    """ดู comment เหนือฟังก์ชันนี้สำหรับบั๊กจริงที่แก้ — คืน dict ใหม่ที่เหลือเฉพาะ
-    parameter ที่ action type นั้นใช้จริง (บวก "type"/"completed_plan_step" ที่ใช้ได้ทุก type)
-
-    ใช้กับ browser_action เท่านั้น — finish_task/request_user_input มีสคีมาเล็กและทุก field
-    มีความหมายจริงอยู่แล้ว ปล่อยผ่านตรงๆ ไม่แตะ (กัน normaliser นี้ตัด field ที่จำเป็นทิ้ง
-    โดยไม่ตั้งใจถ้ามีการเพิ่ม tool ใหม่ในอนาคต) — action type ที่ไม่รู้จักก็ปล่อยผ่านเช่นกัน
-    ให้ layer ที่ตรวจ type จริง (actions.py::execute) เป็นคนปฏิเสธตามเดิม"""
+    """เหลือเฉพาะ parameter ที่ action type ใช้จริง (+ "type"/"completed_plan_step") — เฉพาะ
+    browser_action; tool อื่นและ type ที่ไม่รู้จักปล่อยผ่าน (แค่ coerce int) ให้ actions.execute ตัดสิน"""
     if tool_name != "browser_action":
         return _coerce_integer_args(args)
     args = _coerce_integer_args(args)
@@ -3032,22 +2149,9 @@ def _normalize_openai_args(tool_name: str, args: dict) -> dict[str, Any]:
         return args
     keep = allowed | {"type", "completed_plan_step"}
     cleaned = {k: v for k, v in args.items() if k in keep}
-    # W_openai_args (ต่อ): เจอจริงหลายครั้งใน live run — สองรูปแบบที่โมเดลตัวนี้ทำซ้ำๆ
-    # (1) then_click_index เท่ากับ index ตัวเดียวกับที่กำลังคลิกอยู่ ("คลิก element นี้ แล้ว
-    #     คลิก element นี้ต่อ") ไม่มีความหมายอะไรเลย แต่ทำให้คลิกซ้ำจริงและ chain พังตามมา
-    # (2) then_click_index = -1 ใช้เป็น sentinel แทน "ไม่มี chain" (เพราะโมเดลรู้สึกต้องเติม
-    #     ทุก property) — index ติดลบไม่มีทางเป็น element จริง เสีย retry 3 รอบทุกครั้งเปล่าๆ
-    # (3) then_click_index = 0 — sentinel เดียวกับ (2) แต่ใช้ค่า default ของ integer แทน
-    #     ติดลบ นับจาก live run รอบล่าสุด 18 จาก 22 action มี then_click_index=0 ติดมาด้วย
-    #     ทุกครั้ง รวมทั้ง action ที่ chain ไม่ได้ด้วยซ้ำ (คลิกเมนูแล้ว "คลิก element 0 ต่อ")
-    #     — action เดียวกันนั้นเวลาตั้งใจ chain จริงส่งเลขจริงมา (เช่น 28) จึงแยกได้ชัด
-    #     ยอมเสีย chain ที่ตั้งใจชี้ไป index 0 จริง (element แรกของ snapshot มักเป็น logo/
-    #     skip-link ไม่ค่อยเป็นเป้าหมายของ chain อยู่แล้ว) แลกกับการไม่เสีย retry 3 รอบทุก
-    #     step — และ W_chain_partial_success บอกโมเดลอยู่แล้วว่าให้แยกคลิกเป็น step ถัดไป
-    #     ได้ ถ้ามันตั้งใจจริง
-    #
-    # ทั้งสามข้อจำกัดเฉพาะ provider นี้ (ฟังก์ชันนี้ถูกเรียกจาก next_action_openai() เท่านั้น)
-    # Anthropic/Gemini ส่ง then_click_index มาเฉพาะตอนตั้งใจ chain จริงๆ ไม่เคยเจอรูปแบบนี้
+    # W_openai_args (ต่อ, live run): then_click_index ที่ (1) เท่ากับ index ตัวเอง (2) ติดลบ หรือ
+    # (3) = 0 (sentinel "ไม่มี chain" — 18/22 action ใน run เดียว) ทำให้คลิกซ้ำ/เสีย retry ทุก step
+    # ยอมเสีย chain ที่ตั้งใจชี้ index 0 จริง (มักเป็น logo/skip-link) — เฉพาะ provider นี้
     then_index = cleaned.get("then_click_index")
     if then_index is not None and (then_index == cleaned.get("index") or then_index <= 0):
         cleaned.pop("then_click_index")
@@ -3073,51 +2177,24 @@ async def next_action_openai(
     allow_fill_secret: bool = True,
     prompt_sections: Optional[frozenset] = None,
 ) -> tuple[str, dict[str, Any], str, list[dict], TokenUsage]:
-    """เหมือน next_action() แต่ยิงผ่าน OAuth "Sign in with ChatGPT" (ดู
-    core/openai_oauth.py หัวไฟล์สำหรับ risk disclosure เต็ม) — ใช้ Responses API
-    (client.responses.create, SSE streamed) ไม่ใช่ chat.completions เพราะ
-    endpoint นี้ (chatgpt.com/backend-api/codex) เป็น endpoint เดียวกับที่ Codex CLI ใช้จริง
-    ไม่ใช่ api.openai.com ปกติ — messages ที่รับ/คืนเป็น Responses API "input item" list
-    (dict ที่เป็น {"role": "user", "content": ...} สำหรับ user turn, หรือ
-    {"type": "function_call", ...}/{"type": "function_call_output", ...} สำหรับ tool
-    call/result — คนละ shape จาก chat messages: role/content แบบ Anthropic)
+    """เหมือน next_action() แต่ยิงผ่าน ChatGPT OAuth (Responses API บน codex endpoint — risk disclosure
+    ใน core/openai_oauth.py) — messages เป็น Responses "input item" list ({"role": ...} สำหรับ user
+    turn, {"type": "function_call"/"function_call_output", ...} สำหรับ tool call/result)
 
-    access_token/account_id ขอใหม่ทุกครั้งที่เรียกฟังก์ชันนี้ (ผ่าน get_valid_access_token())
-    แทนที่จะฝังไว้ตอนสร้าง client ใน _llm_backend() (orchestrator.py) — ทำให้ refresh
-    cadence check เกิดขึ้นทุก step ของ loop แทนที่จะเช็คแค่ตอนเริ่ม task เดียว (task ที่ยาว
-    ข้ามช่วง refresh ได้ self-heal เอง) เช็คนี้เป็นแค่ timestamp comparison ไม่ยิง HTTP จริง
-    ถ้ายังไม่ครบกำหนด refresh — ต้นทุนที่เพิ่มขึ้นต่อ step แทบเป็นศูนย์ — raise
-    OAuthLoginRequired ถ้ายังไม่เคย login/refresh ไม่สำเร็จจริงๆ ให้ orchestrator.py จับแล้ว
-    แปลงเป็น task failure ที่ user อ่านเข้าใจได้ (เหมือน provider error อื่นๆ)
-
-    manual_context/memory_context/long_term_context/vision_context/site_manual_context/
-    current_url/action_history_context/plan_context/verification_context: ดู next_action()
-    — ความหมายเหมือนกันทุกประการ แค่ยัดผ่าน _build_user_turn_text() แบบเดียวกัน
-
-    หมายเหตุ: field/event shape ทั้งหมดด้านล่าง (input ต้องเป็น list, store=False บังคับ,
-    final_response.output ว่างเปล่าเสมอ) ยืนยันแล้วจริงผ่าน live call ด้วย token ของ user เอง
-    (follow-up fix 2026-08-17g/h/i) ไม่ใช่แค่เดาจาก SDK type definitions เหมือนตอนแรกที่เขียน"""
-    _audit_parts: dict = {}
-    _audit_prior = list(messages)
-    messages = messages + [
-        {
-            "role": "user",
-            "content": _build_user_turn_text(
-                goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                site_manual_context, current_url, action_history_context, plan_context,
-                verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
-            ),
-        }
-    ]
-    _payload_chars = _char_payload_audit(
-        prior_messages=_audit_prior, user_parts=_audit_parts, system_text=_PROMPT_CORE,
-        tools_obj=_OPENAI_TOOLS if allow_fill_secret else _OPENAI_TOOLS_NO_SECRET,
+    raise OAuthLoginRequired ถ้ายังไม่ login/refresh ไม่สำเร็จ (orchestrator แปลงเป็น task failure)
+    shape ของ field/event ทั้งหมดยืนยันจาก live call (2026-08-17g/h/i) ไม่ใช่เดาจาก SDK types"""
+    _openai_tools = _OPENAI_TOOLS if allow_fill_secret else _OPENAI_TOOLS_NO_SECRET
+    turn_text, _payload_chars = _user_turn_with_audit(
+        messages, _openai_tools,
+        (goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+         site_manual_context, current_url, action_history_context, plan_context, verification_context),
+        prompt_sections,
     )
+    messages = messages + [{"role": "user", "content": turn_text}]
 
     total_usage = TokenUsage()
 
-    # W_notoolcall: วนเตือนแล้วลองใหม่ถ้าไม่ได้ tool call กลับมา (ดูค่าคงที่หัวไฟล์) แทนที่จะ
-    # ยอมแพ้ทันทีเหมือนเดิม
+    # W_notoolcall: เตือนแล้วลองใหม่ถ้าไม่ได้ tool call กลับมา
     for attempt in range(_NO_TOOL_CALL_RETRIES):
         usage, function_call, messages = await _openai_one_turn(
             client, model, messages, allow_fill_secret,
@@ -3142,28 +2219,15 @@ async def next_action_openai(
         if attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "content": _NO_TOOL_CALL_NUDGE}]
 
-    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
-    total_usage.payload_chars = _payload_chars  # W_prompt_audit
-    return (
-        "finish_task",
-        {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
-        "",
-        messages,
-        total_usage,
-    )
+    return _no_tool_call_finish(messages, total_usage, _payload_chars, _NO_TOOL_CALL_RETRIES)
 
 
 async def _openai_one_turn(
     client: AsyncOpenAI, model: str, messages: list[dict], allow_fill_secret: bool,
 ) -> tuple[TokenUsage, Any, list[dict]]:
-    """ยิง 1 request ไปที่ chatgpt.com/backend-api/codex แล้วคืน (usage, function_call, messages)
-    — function_call เป็น None ถ้ารอบนี้โมเดลไม่เรียก tool เลย (ให้ผู้เรียกตัดสินใจว่าจะเตือน
-    แล้วลองใหม่หรือยอมแพ้) messages คืนกลับไม่เปลี่ยนแปลง แยกออกมาเป็นฟังก์ชันเพื่อให้ลูป
-    retry ด้านบนอ่านง่าย ไม่ใช่เพราะมีผู้เรียกอื่น
+    """1 request -> (usage, function_call หรือ None, messages ไม่เปลี่ยน)
 
-    W_token_cut W2: instructions = _PROMPT_CORE คงที่ทุกเทิร์น (endpoint นี้บังคับ
-    store=False อยู่แล้ว จึงพึ่ง prefix cache ผ่าน instructions+input ที่นิ่ง) บล็อกที่ gate
-    ตามบริบทถูกต่อท้าย user turn โดย _build_user_turn_text() แทน"""
+    W_token_cut W2: instructions = _PROMPT_CORE คงที่ทุกเทิร์น (บล็อก gate อยู่ท้าย user turn)"""
     stream = await _openai_create_with_backoff(
         client,
         model=model,
@@ -3172,40 +2236,15 @@ async def _openai_one_turn(
         tools=_OPENAI_TOOLS if allow_fill_secret else _OPENAI_TOOLS_NO_SECRET,
         tool_choice="required",
         stream=True,
-        # W_openai_oauth (follow-up fix 2026-08-17h, ยืนยันจริงจาก error response): endpoint
-        # นี้บังคับ store=False เสมอ ("Store must be set to false") — ต่างจาก public
-        # Responses API ที่ default store=True (server เก็บ conversation ไว้ให้ดึงต่อทีหลัง
-        # ผ่าน previous_response_id) endpoint นี้ปฏิเสธ default นั้นตรงๆ
+        # W_openai_oauth (2026-08-17h): endpoint บังคับ store=False ("Store must be set to false")
         store=False,
-        # W_token_cut W7: instructions+tools (~7.6k tok) นิ่งทุก request — prompt_cache_key
-        # คงที่ช่วยให้ทุก request route ไป cache slot เดิม (cache-miss ที่เหลือคือ call แรก
-        # ของ task + หลัง TTL หมด) หมายเหตุ: endpoint codex ปฏิเสธ prompt_cache_retention
-        # ("Unsupported parameter") — ยืด TTL ฝั่งนี้ไม่ได้ ทำได้แค่ key
+        # W_token_cut W7: key คงที่ให้ทุก request route ไป cache slot เดิม (codex ปฏิเสธ
+        # prompt_cache_retention — ยืด TTL ฝั่งนี้ไม่ได้)
         prompt_cache_key="aiagent-browser-loop-v1",
         extra_headers=await _openai_oauth_headers(),
     )
 
-    final_response = None
-    # W_openai_oauth (follow-up fix 2026-08-17i, ยืนยันจริงจาก live call): final_response.output
-    # ของ endpoint นี้เป็น [] เปล่าๆ เสมอ ไม่ว่าจะสร้าง output อะไรจริงจริงก็ตาม (ยืนยันแล้วทั้ง
-    # กรณี plain text และ function_call — ทดสอบยิงจริงผ่าน account ของ user) ต่างจาก public
-    # Responses API ที่ output list ของ final response ต้องมีข้อมูลครบ — ต้องเก็บ item จริงจาก
-    # "response.output_item.done" event ระหว่าง stream เองแทน (event นี้มี item แบบเดียวกับที่
-    # final_response.output "ควร" จะมี ยืนยันแล้วว่ามีข้อมูลครบจริง — ResponseFunctionToolCall
-    # เต็มรูปแบบพร้อม arguments/call_id/name)
-    completed_items: list = []
-    async for event in stream:
-        event_type = getattr(event, "type", "")
-        if event_type == "response.output_item.done":
-            completed_items.append(event.item)
-        elif event_type == "response.completed":
-            final_response = event.response
-        elif event_type == "response.failed":
-            error = getattr(event.response, "error", None)
-            raise RuntimeError(f"OpenAI Responses API (chatgpt.com/backend-api/codex) failed: {error}")
-        elif event_type == "error":
-            raise RuntimeError(f"OpenAI Responses API stream returned an error event: {getattr(event, 'message', event)}")
-
+    completed_items, final_response = await _collect_openai_output_items(stream)
     if final_response is None:
         raise RuntimeError("OpenAI Responses API stream ended without any response.completed event")
 
@@ -3220,39 +2259,26 @@ async def _openai_one_turn(
     else:
         usage = TokenUsage()
 
-    function_call = next((item for item in completed_items if getattr(item, "type", None) == "function_call"), None)
-    return usage, function_call, messages
+    return usage, _first_function_call(completed_items), messages
 
 
 def append_tool_result_openai(messages: list[dict], tool_use_id: str, result_text: str) -> list[dict]:
-    """ต่อผลลัพธ์ของ action ที่เพิ่งทำเข้าไปใน input item list ก่อนเรียก next_action_openai()
-    รอบถัดไป — shape "function_call_output" ของ Responses API (call_id ต้องตรงกับ call_id
-    ของ function_call item ที่ next_action_openai() คืนไป) คนละ shape จาก append_tool_result()
-    (Anthropic)'s tool_result content block เพราะ Responses API ไม่มี concept "role": "tool"
-    แบบ chat completions"""
+    """ต่อผล action เป็น "function_call_output" item (call_id ต้องตรงกับ function_call ที่คืนไป)"""
     return messages + [{"type": "function_call_output", "call_id": tool_use_id, "output": result_text}]
 
 
 def build_gemini_client(api_key: str):
-    """google-generativeai ใช้ global config (genai.configure) ไม่มี client object
-    แยกต่างหากเหมือน Anthropic/Groq — configure() time(s)เดียวแล้วคืน genai module กลับไป
-    ให้ next_action_gemini() ใช้สร้าง GenerativeModel ต่อ (tools/system_instruction
-    เหมือนเดิมทุกครั้ง แค่ constructor local object เฉยๆ ไม่มี network call)"""
+    """google-generativeai ใช้ global config — configure() แล้วคืน genai module เป็น "client"
+    (ผู้เรียกสร้าง GenerativeModel เองต่อ call ไม่มี network call)"""
     genai.configure(api_key=api_key)
     return genai
 
 
 def _gemini_struct_to_plain_python(value: Any) -> Any:
-    """W_procmem: Gemini function_call().args คืน protobuf Struct/ListValue
-    (MapComposite/RepeatedComposite จาก proto-plus) ที่มี nested composite ซ้อนอยู่ลึกๆ
-    เสมอ ไม่ใช่แค่ชั้นบนสุด — dict()/list() ตรงๆ (แบบที่ next_action_gemini() ใช้กับ
-    _BROWSER_ACTION_PARAMS ที่เป็น flat schema เดียว พอแปลงชั้นเดียว) แปลงได้แค่ชั้นบนสุด
-    ไม่พอสำหรับ ABSTRACTOR_TOOL ที่มี array ซ้อน (steps/slots) — json.dumps() ของ
-    RepeatedComposite ที่หลงเหลืออยู่ข้างในจะพัง ("Object of type RepeatedComposite is
-    not JSON serializable", เจอบั๊กจริงตอนทดสอบ) ฟังก์ชันนี้ไล่แปลงทุกชั้น recursively
-    ด้วย duck-typing (เช็ค .items() ก่อนสำหรับ mapping, แล้วค่อยเช็ค iterable สำหรับ
-    sequence) แทนที่จะ import internal type ของ proto-plus ตรงๆ (เปราะบางกว่าข้าม
-    เวอร์ชัน library)"""
+    """W_procmem: แปลง protobuf Struct/ListValue ของ Gemini args เป็น dict/list ล้วนทุกชั้น
+
+    dict() ชั้นเดียวพอสำหรับ flat schema แต่ schema ที่มี array ซ้อน (ABSTRACTOR_TOOL) เหลือ
+    RepeatedComposite ข้างในจน json.dumps พัง (บั๊กจริง) — ใช้ duck-typing ไม่ import type ภายในของ proto-plus"""
     if hasattr(value, "items"):
         return {k: _gemini_struct_to_plain_python(v) for k, v in value.items()}
     if isinstance(value, (str, bytes)):
@@ -3262,21 +2288,14 @@ def _gemini_struct_to_plain_python(value: Any) -> Any:
     return value
 
 
-# W_int_args: ชื่อ parameter ที่สคีมาประกาศเป็น "integer" และถูกใช้ประกอบ CSS selector จริง
-# ต่อใน actions.py (`[data-ai-index="{index}"]`) — ถ้าโมเดลส่งมาเป็น string ("3") หรือ float
-# (3.0) selector จะไม่ตรง element ไหนเลย แล้วเสีย retry ครบ 3 รอบทุกครั้งโดยไม่มีข้อความบอก
-# สาเหตุจริง (ดู actions.py::_ACTION_RETRIES)
+# W_int_args: parameter "integer" ที่ไปประกอบ selector `[data-ai-index="{index}"]` — "3"/3.0 ไม่ match
+# element ไหนเลยและเสีย retry ครบทุกครั้งโดยไม่บอกสาเหตุ
 _INTEGER_ARG_KEYS = ("index", "then_click_index", "tab_index", "completed_plan_step")
 
 
 def _coerce_integer_args(args: dict) -> dict[str, Any]:
-    """แปลง parameter ที่ควรเป็น int ให้เป็น int จริง — คืน dict เดิมถ้าไม่มีอะไรต้องแปลง
-
-    W_int_args: Gemini มี _normalize_gemini_args (float ทุกตัวจาก protobuf) และ OpenAI มี
-    _normalize_openai_args (ตัด key นอกสคีมา) อยู่แล้ว แต่ Anthropic/Groq ไม่มี normaliser
-    อะไรเลยสักตัว — argument ที่ผิดชนิดจึงไหลตรงไปถึง Playwright โดยไม่มีใครดักเลย
-    ค่าที่แปลงไม่ได้ (เช่น "abc") ปล่อยผ่านตามเดิม ให้ layer ที่ dispatch จริงเป็นคนรายงาน
-    error ของมันเอง — ฟังก์ชันนี้ไม่มีสิทธิ์ตัดสินว่า action ไหนถูกหรือผิด"""
+    """สำเนา args ที่แปลง _INTEGER_ARG_KEYS เป็น int — ค่าที่แปลงไม่ได้ ("abc") ปล่อยผ่านให้ layer
+    dispatch รายงานเอง (W_int_args: Anthropic/Groq ไม่มี normaliser อื่นดักเลย)"""
     cleaned = dict(args)
     for key in _INTEGER_ARG_KEYS:
         value = cleaned.get(key)
@@ -3297,9 +2316,7 @@ def _coerce_integer_args(args: dict) -> dict[str, Any]:
 
 
 def _normalize_gemini_args(args: dict) -> dict[str, Any]:
-    """Gemini คืนตัวเลขทุกตัวเป็น float ผ่าน protobuf Struct เสมอ แม้ schema จะระบุ
-    "integer" ไว้ก็ตาม (เช่น index: 0.0 แทน 0) — ถ้าไม่แปลงกลับ selector ที่ยิงเข้า
-    Playwright จะพัง ('[data-ai-index="0.0"]' ไม่ตรงกับ element จริงที่ index="0")"""
+    """Gemini คืนตัวเลขเป็น float เสมอ (index 0.0) — แปลง float จำนวนเต็มกลับเป็น int ให้ selector match"""
     return {
         key: int(value) if isinstance(value, float) and value.is_integer() else value
         for key, value in args.items()
@@ -3325,54 +2342,29 @@ async def next_action_gemini(
     allow_fill_secret: bool = True,
     prompt_sections: Optional[frozenset] = None,
 ) -> tuple[str, dict[str, Any], str, list, TokenUsage]:
-    """เหมือน next_action() แต่ยิงผ่าน Gemini (google-generativeai function calling)
-
-    messages เก็บ Content ของ Gemini เอง (dict {"role": ..., "parts": [...]} หรือ
-    Content proto ที่ SDK คืนมาตรงๆ ก็ใส่ต่อ list ได้เลย) — คนละ shape กับ
-    Anthropic/Groq แต่ orchestrator.py ไม่แคร์ เพราะแค่ถือ opaque state ส่งเข้า-ออก
-
-    tool_use_id ที่คืนกลับ คือชื่อ function ("browser_action"/"finish_task") ไม่ใช่ id
-    จริงแบบ Anthropic/Groq เพราะ Gemini SDK เวอร์ชันนี้ไม่มี call id ให้ — ใช้เป็น "name"
-    ที่ append_tool_result_gemini() ต้องผูก function_response กลับด้วย
-
-    manual_context/memory_context/long_term_context/vision_context/current_url/
-    action_history_context/plan_context: ดู next_action() — เหมือนกัน (vision_context
-    (W9[A]) จะมีค่าจริงเฉพาะ provider นี้ — orchestrator.py ยิง vision fallback
-    (llm.describe_screenshot()) scope แค่ Gemini เท่านั้นตอนนี้)
-    """
+    """เหมือน next_action() แต่ยิงผ่าน Gemini — messages เก็บ Content ของ Gemini (dict หรือ proto ที่
+    SDK คืน) orchestrator ถือเป็น opaque state; tool_use_id ที่คืนคือชื่อ function (SDK ไม่มี call id)"""
+    _gemini_tools = _GEMINI_TOOLS if allow_fill_secret else _GEMINI_TOOLS_NO_SECRET
     gemini_model = client.GenerativeModel(
         model_name=model,
-        tools=_GEMINI_TOOLS if allow_fill_secret else _GEMINI_TOOLS_NO_SECRET,
+        tools=_gemini_tools,
         tool_config={"function_calling_config": {"mode": "ANY"}},
         # W_token_cut W2: system = _PROMPT_CORE คงที่ (บล็อกที่ gate ย้ายไป user turn)
         system_instruction=_PROMPT_CORE,
     )
 
-    _audit_parts: dict = {}
-    _audit_prior = list(messages)
-    messages = messages + [
-        {
-            "role": "user",
-            "parts": [{
-                "text": _build_user_turn_text(
-                    goal, page_text, manual_context, memory_context, long_term_context, vision_context,
-                    site_manual_context, current_url, action_history_context, plan_context,
-                    verification_context, prompt_sections=prompt_sections, _parts=_audit_parts,
-                )
-            }],
-        }
-    ]
-    _payload_chars = _char_payload_audit(
-        prior_messages=_audit_prior, user_parts=_audit_parts, system_text=_PROMPT_CORE,
-        tools_obj=_GEMINI_TOOLS if allow_fill_secret else _GEMINI_TOOLS_NO_SECRET,
+    turn_text, _payload_chars = _user_turn_with_audit(
+        messages, _gemini_tools,
+        (goal, page_text, manual_context, memory_context, long_term_context, vision_context,
+         site_manual_context, current_url, action_history_context, plan_context, verification_context),
+        prompt_sections,
     )
+    messages = messages + [{"role": "user", "parts": [{"text": turn_text}]}]
 
     total_usage = TokenUsage()
 
-    # W_notoolcall: วนเตือนแล้วลองใหม่ถ้าไม่ได้ function call กลับมา (ดูค่าคงที่หัวไฟล์) —
-    # ซ้อนอยู่นอก retry ของ rate limit ด้านล่าง ซึ่งแก้คนละปัญหากัน (429 vs. ไม่เรียก tool)
+    # W_notoolcall: ซ้อนนอก retry 429 ของ _gemini_generate_with_backoff (คนละปัญหา)
     for no_tool_attempt in range(_NO_TOOL_CALL_RETRIES):
-        response = None
         response = await _gemini_generate_with_backoff(gemini_model, contents=messages)
 
         total_usage += TokenUsage(
@@ -3394,31 +2386,21 @@ async def next_action_gemini(
         if no_tool_attempt < _NO_TOOL_CALL_RETRIES - 1:
             messages = messages + [{"role": "user", "parts": [{"text": _NO_TOOL_CALL_NUDGE}]}]
 
-    total_usage.notool_retries = _NO_TOOL_CALL_RETRIES - 1  # W_token_cut W1
-    total_usage.payload_chars = _payload_chars  # W_prompt_audit
-    return (
-        "finish_task",
-        {"success": False, "message": _no_tool_call_fallback_message(_NO_TOOL_CALL_RETRIES)},
-        "",
-        messages,
-        total_usage,
-    )
+    return _no_tool_call_finish(messages, total_usage, _payload_chars, _NO_TOOL_CALL_RETRIES)
 
 
 def append_tool_result_gemini(messages: list, tool_use_id: str, result_text: str) -> list:
-    """ต่อผลลัพธ์ของ action ที่เพิ่งทำเข้าไปในบทสนทนา ก่อนเรียก next_action_gemini() รอบ
-    ถัดไป — tool_use_id ตรงนี้คือชื่อ function (ดู next_action_gemini())"""
+    """ต่อผล action เป็น function_response — tool_use_id คือชื่อ function (ดู next_action_gemini())"""
     return messages + [
         {
             "role": "user",
             "parts": [{"function_response": {"name": tool_use_id, "response": {"result": result_text}}}],
         }
     ]
-# W43: บังคับ format เลขข้อ "1. ... \n2. ..." ตรงๆ (เดิมขอแค่ "bullet สั้นๆ" ซึ่งไม่ได้
-# การันตี format นี้จริงจัง — โมเดลบังเอิญมักตอบแบบเลขข้อเองอยู่แล้วในทางปฏิบัติ แต่ไม่ใช่
-# สัญญาที่บังคับได้) จำเป็นเพราะตอนนี้ frontend (index.html) ต้อง parse plan text นี้เป็น
-# step แยกทีละข้อเพื่อ render เป็น checklist ที่ติ๊กได้ real-time ระหว่าง task รันจริง (ดู
-# orchestrator.py::completed_plan_step) ถ้า format ไม่ตรง parsing จะแมตช์ index ผิดข้อ
+
+
+# W43: บังคับ format เลขข้อ "1. ...\n2. ..." — frontend parse แต่ละบรรทัดเป็น checklist step ที่ index
+# ต้องตรงกับ completed_plan_step (เดิมขอแค่ bullet ซึ่งไม่ใช่สัญญาที่บังคับได้)
 _PLAN_PROMPT_TEMPLATE = (
     "Goal: {goal}\n\n"
     "{previous_turn_context}"
@@ -3517,11 +2499,8 @@ _PLAN_PROMPT_TEMPLATE = (
 
 
 async def generate_text(client, model: str, prompt: str, provider: str) -> str:
-    """เรียก LLM แบบ plain text call เดียว (ไม่ใช้ tool-use) — primitive ที่ใช้ร่วมกันทั้ง
-    generate_plan() ด้านล่าง (ห่อ prompt ด้วย _PLAN_PROMPT_TEMPLATE) และ
-    site_learning/crawler.py (ห่อ prompt ของตัวเองเพื่อขอ LLM เขียนชื่อ/คำอธิบายหน้า
-    สั้นๆ ตอน crawl — ไม่เกี่ยวกับ plan/goal เลย) แยกออกมาเป็น primitive กัน logic
-    per-provider ซ้ำ 2 ที่"""
+    """plain-text call เดียว ไม่มี system prompt (generate_plan/classify_intent/summarize_page/crawler)
+    — raise ValueError ถ้า provider ไม่รู้จัก; error ของ provider raise ต่อให้ผู้เรียกจัดการ"""
     if provider == "anthropic":
         response = await client.messages.create(
             model=model,
@@ -3541,21 +2520,15 @@ async def generate_text(client, model: str, prompt: str, provider: str) -> str:
     if provider == "gemini":
         gemini_model = client.GenerativeModel(model_name=model)
         response = await _gemini_generate_with_backoff(
-                gemini_model,
+            gemini_model,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
         )
         return response.text.strip()
 
     if provider == "openai":
-        # W_openai_oauth: generate_text() เป็นคนละ dispatch point จาก _llm_backend()/
-        # next_action_openai() (orchestrator.py) — ใช้เฉพาะ plain-text call
-        # (generate_plan()/classify_intent(), ไม่ผ่าน tool-calling loop หลัก) auth/endpoint
-        # เดียวกับ next_action_openai() ทุกประการ (ดู core/openai_oauth.py หัวไฟล์สำหรับ risk
-        # disclosure เต็ม) — input ต้องเป็น list เสมอ (ไม่ใช่ string เปล่าๆ) และ store=False
-        # บังคับ ยืนยันแล้วจริงจาก error response ของ endpoint เอง (ดู _consume_openai_text_
-        # stream()/_openai_oauth_headers() ด้านบนสำหรับรายละเอียดเต็ม)
+        # W_openai_oauth: endpoint บังคับ input เป็น list และ store=False (ยืนยันจาก error response)
         stream = await _openai_create_with_backoff(
-        client,
+            client,
             model=model,
             input=[{"role": "user", "content": prompt}],
             stream=True,
@@ -3571,24 +2544,11 @@ async def generate_plan(
     client, model: str, goal: str, page_text: str, provider: str, current_url: str = "",
     previous_user_goal: str = "", previous_assistant_message: str = "",
 ) -> str:
-    """ให้ LLM ร่างแผนระดับสูง (plain text, ไม่เรียก tool) ก่อนเริ่ม agent loop จริง —
-    ใช้กับ Orchestrator.run_task(..., confirm_plan=True) เพื่อโชว์ user ก่อนแล้วรอกดยืนยัน
-    ค่อยเริ่ม perceive->plan->act loop จริง (ป้องกันไม่ให้ agent ลงมือทำอะไรที่ user ไม่ได้
-    เห็นแผนมาก่อน)
+    """ร่างแผนระดับสูง (plain text) ให้ user ยืนยันก่อนเริ่ม loop (confirm_plan=True)
 
-    current_url (W19, "Navigation Deduplication"): URL จริงของหน้าปัจจุบัน ณ ตอนร่างแผน
-    (ถ้ามี — ผู้เรียกส่งมาจาก page.url จริงถ้ามี page เปิดค้างอยู่แล้ว) ใช้ให้ LLM เช็คว่า
-    "อยู่หน้าเป้าหมายอยู่แล้วหรือยัง" ก่อนร่างขั้นตอน navigate ซ้ำที่ไม่จำเป็น — ว่างเปล่าได้
-    (default "") ถ้าไม่มี page เปิดอยู่เลย (ad-hoc task ที่ยังไม่เคย perceive อะไร)
-
-    previous_user_goal/previous_assistant_message (W20, "Context-Aware Implicit Execution"):
-    เทิร์นก่อนหน้าล่าสุดในเซสชันเดียวกัน (ถ้ามี) — ให้ LLM แก้คำอ้างอิงกำกวมอย่าง "เปิดให้หน่อย"/
-    "เอาอันนี้"/"play it" โดยดึง entity (เช่น ชื่อเพลง) จากคำตอบก่อนหน้าของ Assistant มารวมเข้า
-    กับ goal ก่อนร่างแผน แล้วบังคับให้แผนสำหรับแพลตฟอร์มวิดีโอ/เพลงมีขั้นตอนค้นหา+คลิกเล่นครบ
-    ไม่ใช่แค่เปิดเว็บไซต์เฉยๆ (ดู _PLAN_PROMPT_TEMPLATE ส่วน "Context-Aware Implicit Execution"/
-    "Complete Execution on Content Platforms") — ว่างเปล่าได้ทั้งคู่ (default) ถ้าเป็นเทิร์นแรก
-    ของ session หรือไม่มีเทิร์นก่อนหน้าจริงๆ ไม่มีผลอะไรกับ prompt เลยในกรณีนั้น (behaves
-    เหมือนก่อนมี feature นี้ทุกประการ)"""
+    current_url (W19 "Navigation Deduplication"): URL ของหน้าที่เปิดอยู่ (ว่างได้) กันร่าง navigate ซ้ำ
+    previous_user_goal/previous_assistant_message (W20 "Context-Aware Implicit Execution"): เทิร์นก่อนหน้า
+    ให้แก้คำอ้างอิงกำกวม ("play it") — ว่างทั้งคู่ = prompt เหมือนไม่มี feature นี้"""
     previous_turn_context = ""
     if previous_user_goal or previous_assistant_message:
         previous_turn_context = (
@@ -3604,10 +2564,7 @@ async def generate_plan(
     return await generate_text(client, model, prompt, provider)
 
 
-# --- W9[A] vision fallback (Gemini เท่านั้นตอนนี้) ---
-# scope แค่ Gemini ตามที่ project ทำมาตลอด (ดู context compaction ของ W7[A] ที่ scope
-# เดียวกัน) — Anthropic/Groq รองรับ vision ได้เหมือนกันในทางเทคนิค แต่ยังไม่ได้ทดสอบ
-# จริง เพิ่มทีหลังได้ถ้าต้องการ ไม่ใช่ข้อจำกัดทางสถาปัตยกรรม
+# W9[A] vision fallback — scope แค่ Gemini (provider อื่นทำได้ทางเทคนิคแต่ยังไม่ได้ทดสอบจริง)
 _VISION_FALLBACK_PROMPT_TEMPLATE = (
     "The {action_type} action (index {index}) failed repeatedly even after exhausting "
     "retries, even though this element genuinely exists in the DOM at perceive time — "
@@ -3620,31 +2577,16 @@ _VISION_FALLBACK_PROMPT_TEMPLATE = (
 )
 
 
-# Token optimization (real request the user made: reduce token usage 50-80%): vision-model
-# token cost is driven by an image's pixel dimensions at decode time, not the byte size of
-# what's transmitted — just lowering JPEG quality/switching format doesn't reduce token cost
-# at all, the actual resolution has to shrink. Gemini itself internally resizes/tiles images
-# at roughly ~1024px on the long side already — sending anything larger than that only wastes
-# tokens with zero accuracy benefit.
+# Token optimization: token ของ vision คิดจาก pixel ไม่ใช่ byte — ลดคุณภาพ JPEG ไม่ช่วย ต้องลด
+# resolution (Gemini ย่อเหลือ ~1024px ด้านยาวเองอยู่แล้ว ส่งใหญ่กว่านั้นเปลือง token เปล่า)
 async def describe_screenshot(client, model: str, screenshot_png: bytes, action_type: str, index: Any) -> str:
-    """เรียกตอน action ที่ต้องพึ่ง element visibility (click/fill/select/check และ
-    alias submit/delete/purchase/pay) ล้มเหลวซ้ำแม้ retry ครบแล้ว (actions.py::
-    _dispatch_with_retry หมดโควตา) ทั้งที่ index มีอยู่จริงใน DOM ตอน perceive — สงสัยว่า
-    มี popup/overlay บัง element ที่ perception (DOM-based ล้วนๆ ไม่เช็ค z-index/overlap
-    เต็มรูปแบบ แม้จะมี marker "[ถูกบังอยู่]" เสริมแล้วก็ตาม) ตรวจไม่เจอครบ — ส่ง
-    screenshot จริงให้ Gemini vision อธิบายสิ่งที่เห็น + คำแนะนำ ไม่ใช้ tool-use (เหมือน
-    generate_plan()) แค่ตอบข้อความธรรมดา ให้ orchestrator.py เอาไปป้อนกลับเข้า prompt
-    step ถัดไปเป็น context เสริม (vision_context ใน _build_user_turn_text())
-
-    ห้าม throw ออกไปเด็ดขาด (เหมือน retriever.retrieve()/long_term_memory.recall()) —
-    ถ้า vision call พังเอง (เช่น quota/network) ต้องไม่ทำให้ agent loop หลักพังตาม คืน ""
-    เงียบๆ แทน
-    """
+    """ให้ Gemini vision อธิบาย screenshot เมื่อ action fail ซ้ำทั้งที่ element อยู่ใน DOM (สงสัย overlay)
+    — ผลกลายเป็น vision_context ของ step ถัดไป ไม่ raise; error คืน string ว่าง"""
     try:
         prompt = _VISION_FALLBACK_PROMPT_TEMPLATE.format(action_type=action_type, index=index)
         gemini_model = client.GenerativeModel(model_name=model)
         response = await _gemini_generate_with_backoff(
-                gemini_model,
+            gemini_model,
             contents=[{
                 "role": "user",
                 "parts": [{"text": prompt}, {"mime_type": "image/png", "data": screenshot_png}],
@@ -3656,31 +2598,16 @@ async def describe_screenshot(client, model: str, screenshot_png: bytes, action_
         return ""
 
 
-# --- W19-6 ("Master Controller" MODULE 1 — General QA / No-Browser Trigger): เช็คก่อน
-# classify_intent() ด้านล่างเสมอ (เร็วกว่า/ถูกกว่า — deterministic ล้วนๆ ไม่เรียก LLM เลย)
-# ว่า goal เป็นคำถามทั่วไป/ทักทาย/เวลา/คำนวณ ที่ไม่ต้องแตะ browser เลยไหม — เรียกจาก
-# routes.py::_run_with_resolved_browser() ก่อนจะ resolve session/pool ใดๆ ทั้งสิ้น (ข้าม
-# การเปิด browser ไปเลยทั้งกระบวนการ ไม่ใช่แค่ข้าม action ภายใน page ที่เปิดอยู่แล้วแบบ
-# qa_summary เดิม)
-#
-# ตั้งใจให้ "แคบ/อนุรักษ์นิยม" มาก (ผิดพลาดแบบ false negative ปลอดภัยกว่า false positive
-# เสมอ — เดาว่า "ต้องใช้ browser" ทั้งที่จริงไม่ต้องใช้ แค่เสีย browser session เปล่าๆ แต่
-# เดาว่า "ไม่ต้องใช้ browser" ทั้งที่จริงต้องใช้ = ตอบผิด/ตอบไม่ได้เลยทั้งที่ user ต้องการ
-# ให้ไปทำ action จริง) — เช็คคำที่บ่งบอกว่าเกี่ยวกับเว็บ/browser ก่อนเสมอ ถ้าเจอคืน False
-# ทันทีไม่ว่าจะดูเหมือนคำถามทั่วไปแค่ไหนก็ตาม (เช่น "hi ช่วยค้นหา iPhone ให้หน่อย" มีคำ
-# ทักทายนำหน้าแต่จริงๆ ต้องการ browser action)
+# W19-6 ("Master Controller" MODULE 1 — No-Browser Trigger): deterministic ล้วน เรียกจาก routes.py ก่อน
+# resolve browser ใดๆ — ตั้งใจแคบ (false negative แค่เปลือง browser, false positive = ไม่ทำงานที่สั่ง)
+# คำเกี่ยวกับเว็บถูกเช็คก่อนเสมอ ("hi ช่วยค้นหา iPhone" ต้องไป browser)
 _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS = (
     "http://", "https://", "www.", "เว็บ", "หน้าเว็บ", "หน้านี้", "คลิก", "click", "กด",
     "ค้นหา", "search", "กรอก", "fill", "ไปที่", "ไปยัง", "เข้าไปหน้า", "เปิดเว็บ", "goto",
     "go to", "navigate", "ล็อกอิน", "login", "สั่งซื้อ", "ซื้อ", "checkout",
 )
-# (บั๊กจริงที่ user รายงาน — session log จริง): พิมพ์ตามด้วยคำถาม date/time เต็มรูปแบบ
-# ("วันนี้วันที่เท่าไหร่") ก่อนแล้ว "เวลา" คำเดียวโดดๆ เป็น follow-up time(s)ถัดไปในบทสนทนา
-# เดียวกัน (พึ่งบริบทก่อนหน้าแทนพิมพ์เต็มซ้ำ) — pattern เดิมที่มีแต่วลียาวๆ ("เวลาเท่าไหร่")
-# ไม่ match คำเดี่ยวๆ นี้เลย ทำให้ตกไปเปิด browser ทั้งที่ควรตอบจาก chat ตรงๆ — เพิ่มคำเดี่ยว
-# เข้าไปด้วย (ปลอดภัย ไม่กระทบ false positive เพราะ _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS
-# เช็คก่อนเสมออยู่แล้ว — goal ที่มีคำว่า "เวลา"/"วันที่" ปนกับคำเกี่ยวกับเว็บ เช่น "ค้นหาเวลา
-# เปิดร้านในหน้าเว็บนี้" จะโดน exclusion keyword กรองออกไปก่อนถึงจุดนี้อยู่ดี)
+# (บั๊กจริงจาก session log): follow-up คำเดี่ยว "เวลา" ไม่ match วลียาวๆ เลยไปเปิด browser — เพิ่มคำเดี่ยว
+# (ปลอดภัยเพราะ exclusion keyword ด้านบนเช็คก่อน)
 _GENERAL_CHAT_TIME_DATE_PATTERNS = (
     "วันนี้วันที่", "วันนี้วันอะไร", "วันนี้คือวันที่", "ตอนนี้กี่โมง", "กี่โมงแล้ว",
     "เวลาเท่าไหร่", "เวลาเท่าไร", "เวลาปัจจุบัน", "วันนี้กี่", "ปีนี้ปีอะไร", "ปีนี้ พ.ศ.",
@@ -3692,46 +2619,28 @@ _GENERAL_CHAT_GREETING_EXACT_PHRASES = (
     "สวัสดี", "สวัสดีครับ", "สวัสดีค่ะ", "หวัดดี", "หวัดดีครับ", "หวัดดีค่ะ",
     "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
 )
-# (บั๊กจริงที่ user รายงาน): "อยากฟังเพลงแนวอกหักๆ หามาสัก 4-5 เพลงหน่อย" เปิด browser ทั้งที่
-# จริงๆ ตอบได้จากความรู้ทั่วไปของโมเดลเอง (แนะนำชื่อเพลง ไม่ได้ขอ "ค้นหา"/ลิงก์จริงจากเว็บไหน
-# เลย) — คำขอเชิง "แนะนำ/อยากฟัง-ดู-อ่าน" ล้วนๆ (ไม่มี exclusion keyword ที่เจาะจงเว็บ/การ
-# กระทำบนเว็บปน) นับเป็น general chat ได้เหมือน date/time/greeting — ปลอดภัยเพราะ
-# _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS เช็คก่อนเสมอ (เช่น "แนะนำสินค้าในเว็บนี้หน่อย" มีคำว่า
-# "เว็บ" อยู่แล้ว โดน exclusion กรองทิ้งไปก่อนถึงจุดนี้)
+# (บั๊กจริง): "อยากฟังเพลงแนวอกหัก หามาสัก 4-5 เพลง" เปิด browser ทั้งที่ตอบจากความรู้ทั่วไปได้ —
+# คำขอแนะนำล้วนๆ นับเป็น general chat (ปลอดภัยเพราะ exclusion keyword เช็คก่อน)
 _GENERAL_CHAT_RECOMMENDATION_PATTERNS = (
     "แนะนำ", "อยากฟัง", "อยากดู", "อยากอ่าน", "ช่วยแต่ง", "แต่งเพลง", "แต่งกลอน", "แต่งนิทาน",
     "แต่งเรื่อง", "recommend", "suggest",
 )
-# "1+1 ได้เท่าไหร่", "2*3=", "(4+5)/3 เท่ากับเท่าไหร่" — ตัวเลข/เครื่องหมายคำนวณล้วนๆ
-# (บวก ×/÷ ที่บางคนพิมพ์แทน */÷) ตามด้วยคำถามเสริมได้ (หรือไม่มีก็ได้) ไม่มีตัวอักษร
-# อื่นปนเลย — เข้มงวดตั้งใจ กัน false positive กับ goal ที่มีตัวเลขปนแต่ไม่ใช่คำนวณจริง (เช่น
-# "ไปหน้า 2" ซึ่งจะโดน exclusion keyword ด้านบนกรองออกไปก่อนอยู่ดี)
+# "1+1 ได้เท่าไหร่", "2*3=" — ตัวเลข/เครื่องหมายคำนวณล้วน + คำถามท้าย (ตั้งใจเข้มกัน false positive)
 _MATH_EXPRESSION_RE = re.compile(
     r"^[\d\s\.\+\-\*/×÷()]+(ได้เท่าไหร่|ได้เท่าไร|เท่ากับเท่าไหร่|เท่ากับเท่าไร|=\s*\??|\?)?$"
 )
 
 
 def goal_mentions_web_action(goal: str) -> bool:
-    """True ถ้า goal มีคำที่บ่งบอกว่าต้องการ browser action จริงๆ (เว็บ/คลิก/ค้นหา/นำทาง/ฯลฯ
-    — ดู _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS) — factored ออกมาจาก is_general_chat_query()
-    ด้านล่างเป็นฟังก์ชัน public แยกต่างหาก เพราะ routes.py ต้องใช้เช็คเดียวกันนี้ตรงๆ ด้วย
-    (ดู _run_with_resolved_browser()/generate_plan() ส่วน "file-chat memory follow-up":
-    เทิร์นที่ไม่ได้แนบไฟล์ใหม่มา แต่เคยแนบไว้ในเทิร์นก่อนหน้าของ session เดียวกัน ต้องเช็คคำ
-    ชุดเดียวกันนี้ก่อนตัดสินใจว่าเป็นคำถามต่อยอดจากไฟล์เดิม หรือ user ต้องการ browser action
-    ใหม่จริงๆ)"""
+    """True ถ้า goal มีคำของ browser action (_GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS) — public เพราะ
+    routes.py ใช้ตัดสิน file-chat memory follow-up ด้วยเช็คเดียวกัน"""
     lower = (goal or "").strip().lower()
     return any(kw in lower for kw in _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS)
 
 
-# W_file_followup_with_sticky_url (บั๊กจริง 2026-09-03): เทิร์น "อ่านไฟล์นี้หน่อย" ตอบจากไฟล์
-# สำเร็จ (steps=0) แต่เทิร์นถัดมา "สรุปเป็นตาราง" กลับเข้า agent loop ของเบราว์เซอร์แล้วตอบว่า
-# "มีทั้งหมด 0 รายการ" (telemetry: steps=1, llm_calls=4, 47 วินาที, url=orangehrmlive) — สาเหตุ
-# คือเงื่อนไขเส้นทาง file-follow-up บังคับว่า req.url ต้องว่าง แต่ช่อง URL บนหน้าจอ *ค้างค่าไว้*
-# จากงานก่อนหน้าในเซสชันเดียวกัน จึงไม่มีวันว่างเลยเมื่อผู้ใช้เคยสั่งงานเว็บมาก่อน
-#
-# คำที่ลิสต์ไว้คือคำที่อ้างถึง "ข้อมูลที่เพิ่งได้มา" ไม่ใช่การกระทำบนหน้าเว็บ — จงใจแคบและไม่ทับ
-# กับ _GENERAL_CHAT_WEB_EXCLUSION_KEYWORDS (ถ้า goal มีคำสั่งงานเว็บปนอยู่ goal_mentions_web_action()
-# จะตัดออกไปก่อนอยู่แล้ว) ผู้ใช้ที่ต้องการงานเว็บจริงยังพิมพ์ "เปิดเว็บ..."/"ไปที่หน้า..." ได้ตามปกติ
+# W_file_followup_with_sticky_url (บั๊กจริง 2026-09-03): "สรุปเป็นตาราง" หลังตอบจากไฟล์หลุดเข้า browser
+# loop แล้วตอบ "0 รายการ" เพราะเส้นทาง follow-up บังคับ req.url ว่าง แต่ช่อง URL ค้างค่าจากงานก่อน —
+# คำเหล่านี้อ้างถึง "ข้อมูลที่เพิ่งได้มา" จงใจแคบ (คำสั่งเว็บถูก goal_mentions_web_action() ตัดก่อน)
 _FILE_FOLLOWUP_PHRASES = (
     "สรุป", "ตาราง", "แยก", "ดึง", "จัดกลุ่ม", "เรียง", "นับ", "แปลง", "รวม", "เฉพาะ",
     "summarize", "summary", "table", "extract", "group", "sort", "count", "convert", "only",
@@ -3739,21 +2648,15 @@ _FILE_FOLLOWUP_PHRASES = (
 
 
 def is_file_followup_request(goal: str) -> bool:
-    """True ถ้า goal พูดถึง "ข้อมูลที่เพิ่งได้มา" (สรุป/แยก/ดึง/ทำเป็นตาราง) ไม่ใช่การกระทำบน
-    หน้าเว็บ — ใช้คู่กับ file_chat_memory เพื่อให้คำถามต่อยอดจากไฟล์ไม่หลุดไปเปิดเบราว์เซอร์
-    เมื่อช่อง URL ยังค้างค่าเดิมไว้ (ดู comment ด้านบน)"""
+    """True ถ้า goal พูดถึงข้อมูลที่เพิ่งได้มา (สรุป/แยก/ตาราง) — ใช้คู่ file_chat_memory"""
     lower = (goal or "").strip().lower()
     return any(p in lower for p in _FILE_FOLLOWUP_PHRASES)
 
 
 def is_general_chat_query(goal: str) -> bool:
-    """True ถ้า goal เป็นคำถามทั่วไป/ทักทาย/ถามวันเวลา/คำนวณเลข/ขอคำแนะนำจากความรู้ทั่วไป
-    ที่ตอบได้โดยไม่ต้องแตะ browser เลยแม้แต่นิดเดียว — deterministic ล้วนๆ ไม่เรียก LLM
-    (ต่างจาก classify_intent ที่มี LLM fallback สำหรับกรณีกำกวม เพราะ False Positive ของ
-    ฟังก์ชันนี้มีต้นทุนสูงกว่า classify_intent มาก — ดู module comment ด้านบน — และเรียกจาก
-    routes.py ก่อนแม้แต่จะรู้ว่าจะใช้ provider ไหน/มี client พร้อมหรือยัง เพิ่มชั้น LLM
-    fallback ตรงนี้เคยลองแล้วจริงพบว่าทำให้ทุก task (แม้ที่ไม่ใช่ general-chat เลย) ต้องเสีย
-    LLM round-trip ก่อนเริ่มเสมอ ไม่ใช่แค่กรณีกำกวมจริงๆ — ต้องคงเป็น deterministic ล้วนๆ)"""
+    """True ถ้า goal เป็นทักทาย/วันเวลา/คำนวณ/ขอคำแนะนำ ที่ตอบได้โดยไม่แตะ browser
+
+    ต้องคง deterministic ล้วน — เคยลองเพิ่ม LLM fallback แล้วทุก task เสีย round-trip ก่อนเริ่ม"""
     stripped = (goal or "").strip()
     if not stripped:
         return False
@@ -3778,19 +2681,13 @@ _CONTEXT_INSPECTION_PREFIX = "/context"
 
 
 def is_context_inspection_command(goal: str) -> bool:
-    """W20 (MODULE 0 "Special Command Interceptor"): True ถ้า goal ขึ้นต้นด้วยหรือมีคำสั่ง
-    "/context" ปน — ตรวจก่อนทุก check อื่นเสมอ (ก่อนแม้แต่ attached_file/
-    is_general_chat_query) เพราะ /context คือ debug/inspection mode ที่ user ต้องการ "ดูว่า
-    agent เข้าใจคำสั่งว่าอะไร" โดยไม่ต้องการให้ลงมือทำจริงไม่ว่ากรณีใด (ไม่เปิด browser, ไม่
-    parse ไฟล์, ไม่เรียก external API ใดๆ) — เช็คแบบ "contains" ไม่ใช่แค่ "startswith"
-    ตามสเปค (เผื่อ user พิมพ์นำหน้าด้วยคำอื่นก่อน เช่น "ช่วย /context หน่อย")"""
+    """W20 (MODULE 0 "Special Command Interceptor"): True ถ้ามี "/context" ที่ใดก็ได้ใน goal (contains
+    ตามสเปค ไม่ใช่ startswith) — routes.py เช็คก่อนทุก check อื่น: debug mode ห้ามลงมือทำจริง"""
     return _CONTEXT_INSPECTION_PREFIX in (goal or "").strip().lower()
 
 
 def strip_context_inspection_command(goal: str) -> str:
-    """ตัดคำสั่ง "/context" ออกจาก goal เหลือแค่คำสั่งจริงที่ user ต้องการให้วิเคราะห์ —
-    ใช้ก่อนส่งเข้า context_inspection_reply() กันคำว่า "/context" เองไปปนกับคำสั่งจริงตอน
-    LLM วิเคราะห์ Goal/Extracted Parameters"""
+    """ตัด "/context" (ตัวแรก) ออกจาก goal ก่อนส่งเข้า context_inspection_reply()"""
     stripped = (goal or "").strip()
     lower = stripped.lower()
     idx = lower.find(_CONTEXT_INSPECTION_PREFIX)
@@ -3799,14 +2696,8 @@ def strip_context_inspection_command(goal: str) -> str:
     return (stripped[:idx] + stripped[idx + len(_CONTEXT_INSPECTION_PREFIX):]).strip()
 
 
-# W20 (MODULE 0, follow-up "hide internal reasoning"): the previous revision showed every
-# phase/label/score in the reply (PHASE 1-7, Self Validation, Hallucination Check, Confidence,
-# SELF REVIEW) — user wants the exact same rigor applied but kept entirely internal, with only
-# the original compact "Agent Understanding / Plan" card visible. This is standard silent-CoT
-# prompting: the phases below are instructions for what the model must privately verify before
-# answering, not a template it should ever print — the OUTPUT FORMAT section is the only thing
-# allowed to reach the reply, enforced by STRICT RULES at the end forbidding every phase name/
-# label/score from appearing. No validation logic was removed, only its visibility.
+# W20 (MODULE 0, "hide internal reasoning"): 7 phase ตรวจสอบเดิมครบ แต่ทำเงียบๆ ภายใน (silent CoT) —
+# โชว์แค่การ์ด "Agent Understanding / Plan"; STRICT RULES ห้ามชื่อ phase/score หลุดออกมา
 _CONTEXT_INSPECTION_SYSTEM_PROMPT = """You are an expert Context Extraction and Validation Agent.
 
 Your responsibility is NOT to execute the user's request. Your only responsibility is to accurately understand, validate, and summarize the user's intent.
@@ -3872,23 +2763,14 @@ STRICT RULES
 - Output only the six fields above in that exact format. No extra headings, no markdown beyond the 🎯/💡 lines shown."""
 
 
-# W_context_knows_the_goal (บั๊กจริงที่ user รายงานพร้อมภาพหน้าจอ 2026-09-03): /context ตอบว่า
-# "Goal: Not specified" ทั้งที่ user พิมพ์ goal มาเต็มประโยค และการ์ดใบเดียวกันนั้นยังอ้างประโยค
-# นั้นไว้ในช่อง "Data Source" ด้วยซ้ำ — สาเหตุคือ system prompt ย้ำเรื่อง "ไม่มีหลักฐาน ->
-# Not specified" ถึง 7 ชั้น พอ goal เป็นภาษาไทย โมเดลเล็กจึงเลือกทางปลอดภัยที่สุดคือไม่ตอบเลย
-#
-# สองช่องนี้ไม่ใช่เรื่องที่ต้องถามโมเดลตั้งแต่แรก: Goal คือข้อความที่ผู้ใช้พิมพ์ (โค้ดถืออยู่ใน
-# มือ) และ Target System คือ URL ที่มากับ request — เติมจากของจริงหลังโมเดลตอบ ดีกว่าไปแก้
-# prompt ให้ "มั่นใจขึ้น" ซึ่งจะไปคลาย hallucination guard ทั้งชุดที่ตั้งใจเขียนให้เข้ม
+# W_context_knows_the_goal (บั๊กจริง 2026-09-03): /context ตอบ "Goal: Not specified" กับ goal ภาษาไทย
+# เพราะ prompt ย้ำ "ไม่มีหลักฐาน -> Not specified" 7 ชั้น — Goal/Target System โค้ดรู้อยู่แล้ว เติมหลังโมเดล
+# ตอบแทนการคลาย hallucination guard ใน prompt
 _CONTEXT_NOT_SPECIFIED = "Not specified"
 
 
 def _fill_known_context_fields(reply: str, goal: str, target_url: str = "") -> str:
-    """เติมช่องที่ระบบรู้คำตอบอยู่แล้วกลับเข้าไปในการ์ด /context
-
-    แทนที่เฉพาะบรรทัดที่โมเดลตอบว่า "Not specified" เท่านั้น — ถ้าโมเดลตอบอะไรมาแล้วถือว่าเป็น
-    คำตอบของมัน ไม่เขียนทับ และไม่แตะช่องที่เป็นการตีความ (Strategy / Expected Output) เพราะ
-    นั่นคือสิ่งที่เรียกโมเดลมาทำจริงๆ"""
+    """แทนเฉพาะบรรทัด "Not specified" ของ Goal/Target System ด้วยค่าจริง — ไม่ทับคำตอบอื่นของโมเดล"""
     known = [("Goal:", (goal or "").strip())]
     if target_url:
         known.append(("Target System:", target_url.strip()))
@@ -3905,85 +2787,71 @@ def _fill_known_context_fields(reply: str, goal: str, target_url: str = "") -> s
     return reply
 
 
+async def _system_prompt_reply(
+    client, model: str, provider: str, system: str, prompt: str, max_tokens: int,
+) -> Optional[str]:
+    """ข้อความตอบจาก system prompt + user prompt เดียว ข้าม provider — None ถ้า provider ไม่รู้จัก
+    error ของ provider raise ต่อ (ผู้เรียกแปลงเป็นข้อความขอโทษเอง)"""
+    if provider == "anthropic":
+        response = await client.messages.create(
+            model=model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return "".join(b.text for b in response.content if b.type == "text").strip()
+    if provider == "groq":
+        response = await client.chat.completions.create(
+            model=model, max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()
+    if provider == "gemini":
+        gemini_model = client.GenerativeModel(model_name=model, system_instruction=system)
+        response = await _gemini_generate_with_backoff(
+            gemini_model,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        )
+        return (response.text or "").strip()
+    if provider == "openai":
+        # W_openai_oauth (2026-08-17j): จุด dispatch พวกนี้เคยไม่มี branch openai เลย — general chat/
+        # ไฟล์//context ตอบ "ไม่รู้จัก provider" ทั้งที่ไม่ใช่ error จริงของ LLM
+        return await _openai_plain_text_reply(client, model, system, prompt)
+    return None
+
+
+_UNKNOWN_PROVIDER_REPLY = "Sorry, the system doesn't recognise this provider"
+_TEMPORARILY_UNAVAILABLE_REPLY = "Sorry, the system is temporarily unavailable. Please try again."
+
+
 async def context_inspection_reply(
     client, model: str, user_input: str, provider: str, learned_flow_text: str = "",
     target_url: str = "",
 ) -> str:
-    """W20 (MODULE 0, "Context Extraction and Validation Agent", hidden-reasoning revision):
-    วิเคราะห์คำสั่งที่ user พิมพ์ตาม /context ผ่าน 7-phase extraction/validation/hallucination-
-    check framework เดิมทุกประการ (ไม่ได้ตัด logic ไหนออกเลย) แต่ตอนนี้ system prompt สั่งให้
-    ทำ 7 phase นั้น "ภายใน" เงียบๆ แล้วโชว์แค่การ์ด "Agent Understanding / Plan" กระชับ 6 บรรทัด
-    ท้ายสุดเท่านั้น (ไม่โชว์ label/score ของแต่ละ phase อีกต่อไปเหมือน revision ก่อนหน้า) — ไม่
-    แตะ browser/session/pool/file parser เลย (เหมือน chat_response/answer_file_query ด้านบน
-    ทุกประการ แค่ system prompt/โครงสร้างคำตอบต่างกัน)
+    """W20 (MODULE 0 "Context Extraction and Validation Agent"): การ์ดสรุปว่า agent เข้าใจคำสั่งว่าอะไร
+    ไม่แตะ browser/ไฟล์เลย — ไม่ raise; error คืนข้อความขอโทษ
 
-    max_tokens กลับมา 768 (จาก 1536 ตอน revision ก่อนหน้าที่โชว์ผลทุก phase) เพราะ output ที่
-    ผู้ใช้เห็นตอนนี้กระชับกลับมาเหมือนเดิมแล้ว (การ reasoning 7 phase เกิด "ในคำตอบเดียวกัน"
-    ก่อนถึงส่วนที่โชว์จริง ไม่ใช่ turn แยก จึงยังเผื่อ buffer ไว้มากกว่า 512 เดิมเล็กน้อย กัน
-    inference ที่มีการไล่เช็คภายในหลายจุดก่อนสรุปใช้ token มากกว่าคำถามทั่วไปธรรมดา)
-
-    learned_flow_text (W21, "Self-Learned Site Manual Integration"): ข้อความ block
-    "📍 Learned Page Flow Sequence" ที่ routes.py ประกอบไว้ล่วงหน้าแล้ว (ดู
-    site_learning/storage.py::build_learned_page_flow_text — เรียกเฉพาะตอนเจอ manual ที่
-    ตรงกับ goal จริง) หรือข้อความ fallback "ไม่พบคู่มือที่เรียนรู้ไว้ล่วงหน้า" (ตอนไม่เจอ) —
-    แปะไว้เป็นย่อหน้าสุดท้ายของคำตอบเสมอด้วยโค้ด Python ตรงๆ (ไม่ผ่าน LLM เลย) เพราะ
-    format ที่สเปคกำหนด (emoji/backtick ตายตัว) เชื่อถือได้กว่าขอให้ LLM re-produce เอง
-    ทุกครั้ง (เหมือนเหตุผลเดียวกับที่ _CONTEXT_INSPECTION_SYSTEM_PROMPT ล็อก format หัวข้อ
-    หลักด้วย system prompt ตรงๆ ไม่ปล่อยให้โมเดลเดาเอง) — ว่างเปล่า (default) = ไม่แปะอะไร
-    เพิ่ม (เรียกจากที่อื่นที่ไม่เกี่ยวกับ site manual เลยก็ได้ ไม่กระทบพฤติกรรมเดิม)
-
-    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error"""
+    max_tokens 768: reasoning 7 phase เกิดในคำตอบเดียวกันก่อนส่วนที่โชว์ จึงเผื่อมากกว่า chat ปกติ
+    learned_flow_text (W21 "Self-Learned Site Manual Integration"): block ที่ routes.py ประกอบไว้ แปะท้าย
+    ด้วยโค้ดตรงๆ (format ตายตัวเชื่อถือได้กว่าให้ LLM re-produce) — ว่าง = ไม่แปะ"""
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model, max_tokens=768, system=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_input}],
-            )
-            reply = "".join(b.text for b in response.content if b.type == "text").strip()
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model, max_tokens=768,
-                messages=[
-                    {"role": "system", "content": _CONTEXT_INSPECTION_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_input},
-                ],
-            )
-            reply = (response.choices[0].message.content or "").strip()
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model, system_instruction=_CONTEXT_INSPECTION_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": user_input}]}],
-            )
-            reply = (response.text or "").strip()
-        elif provider == "openai":
-            # W_openai_oauth (follow-up: same class of bug already fixed in chat_response/
-            # answer_file_query/answer_image_query below — this function was missed in that
-            # pass, so "/context" specifically still fell through to "ขออภัยครับ ระบบไม่รู้จัก
-            # provider นี้" on provider=openai, not a real LLM error) — mirrors chat_response's
-            # openai branch exactly (Responses API via ChatGPT OAuth, not api.openai.com).
-            reply = (await _openai_plain_text_reply(
-                client, model, _CONTEXT_INSPECTION_SYSTEM_PROMPT, user_input,
-            )).strip()
-        else:
-            return "Sorry, the system doesn't recognise this provider"
-        reply = _fill_known_context_fields(reply, user_input, target_url)
+        reply = await _system_prompt_reply(
+            client, model, provider, _CONTEXT_INSPECTION_SYSTEM_PROMPT, user_input, 768,
+        )
+        if reply is None:
+            return _UNKNOWN_PROVIDER_REPLY
+        reply = _fill_known_context_fields(reply.strip(), user_input, target_url)
         if learned_flow_text:
             reply = f"{reply}\n\n{learned_flow_text}"
         return reply
     except Exception as e:
         print(f"⚠️ context_inspection_reply error: {e}", flush=True)
-        return "Sorry, the system is temporarily unavailable. Please try again."
+        return _TEMPORARILY_UNAVAILABLE_REPLY
 
 
-# W20 (follow-up "reply in the user's own language"): shared across every response-generating
-# prompt below (chat/file-QA/image-QA/page-summary) — a Thai-authored system prompt otherwise
-# biases the model toward always answering in Thai regardless of what language the user's own
-# question was actually written in (real bug user reported: asked in English, got a Thai reply
-# back). Mirror the question's language by default; an explicit user instruction to switch
-# language ("ตอบเป็นภาษาอังกฤษ"/"answer in Thai") always wins over the mirrored default.
+# W20 ("reply in the user's own language", real bug: ถามอังกฤษได้คำตอบไทย): ใช้ร่วมทุก response prompt
+# — mirror ภาษาของคำถาม เว้นแต่ user สั่งเปลี่ยนภาษาตรงๆ
 _LANGUAGE_MIRROR_RULE = (
     "Always reply in the same language the user wrote this question/instruction in (asked in Thai, answer in Thai; asked in English, answer in English; any other language likewise), unless the user explicitly instructs you to switch reply language (e.g. \"answer in English\"/\"answer in Thai\"), in which case follow that most recent instruction until they change it again."
 )
@@ -3995,57 +2863,21 @@ _CHAT_RESPONSE_SYSTEM_PROMPT = (
 
 
 async def chat_response(client, model: str, user_input: str, provider: str, current_time_text: str = "") -> str:
-    """ตอบคำถามทั่วไปแบบสนทนาตรงๆ ไม่แตะ browser/DOM เลย (ดู is_general_chat_query ด้านบน
-    สำหรับตัวตัดสินใจว่าควรเรียกฟังก์ชันนี้เมื่อไหร่) — current_time_text (optional):
-    วันเวลาจริงจากเซิร์ฟเวอร์ (เช่นจาก _current_bangkok_time_text()) ให้คำถามเกี่ยวกับ
-    วันที่/เวลาตอบถูกจริง ไม่เดาจาก training data — ว่างเปล่าได้ถ้าคำถามไม่เกี่ยวกับเวลา
-
-    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error"""
+    """ตอบคำถามทั่วไปไม่แตะ browser — current_time_text: เวลาจริงของเซิร์ฟเวอร์ (ว่างได้) ให้คำถาม
+    วันเวลาตอบถูก ไม่ raise; error คืนข้อความขอโทษ"""
     prompt = user_input
     if current_time_text:
         prompt = f"Real current time (Asia/Bangkok): {current_time_text}\n\nUser's question: {user_input}"
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model, max_tokens=512, system=_CHAT_RESPONSE_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return "".join(b.text for b in response.content if b.type == "text").strip()
-        if provider == "groq":
-            response = await client.chat.completions.create(
-                model=model, max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _CHAT_RESPONSE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            return (response.choices[0].message.content or "").strip()
-        if provider == "gemini":
-            gemini_model = client.GenerativeModel(model_name=model, system_instruction=_CHAT_RESPONSE_SYSTEM_PROMPT)
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            return (response.text or "").strip()
-        if provider == "openai":
-            # W_openai_oauth (follow-up fix 2026-08-17j): เดิมฟังก์ชันนี้ไม่มี branch "openai"
-            # เลย ทั้งที่ provider นี้เข้าถึงได้แล้ว — ทำให้ general-chat path
-            # (routes.py::_general_chat_result) พังด้วยข้อความ fallback ตรงนี้เอง ("Sorry,
-            # the system doesn't recognize this provider") ไม่ใช่ error จริงจาก LLM เลย
-            return await _openai_plain_text_reply(
-                client, model, _CHAT_RESPONSE_SYSTEM_PROMPT, prompt,
-            )
-        return "Sorry, the system doesn't recognise this provider"
+        reply = await _system_prompt_reply(client, model, provider, _CHAT_RESPONSE_SYSTEM_PROMPT, prompt, 512)
+        return reply if reply is not None else _UNKNOWN_PROVIDER_REPLY
     except Exception as e:
         print(f"⚠️ chat_response error: {e}", flush=True)
-        return "Sorry, the system is temporarily unavailable. Please try again."
+        return _TEMPORARILY_UNAVAILABLE_REPLY
 
 
-# --- pdf/xlsx: "Attached File Query" — user แนบไฟล์ PDF/XLSX เข้ามาตรงๆ ผ่าน composer
-# (ต่างจาก rag/ingestion.py::ingest_manual ที่เป็นการอัปโหลด manual ไว้ล่วงหน้าเพื่อ
-# chunk+embed เข้า ChromaDB — อันนี้เป็น one-shot query เดียว ไม่มี RAG/chunking เลย)
-# ดู routes.py::_file_query_result สำหรับจุดต่อสาย (short-circuit เหมือน chat_response
-# ด้านบน ไม่แตะ browser/session/pool เลย)
+# "Attached File Query": ไฟล์ PDF/XLSX ที่แนบผ่าน composer — one-shot query ไม่มี RAG/chunking
+# (ต่างจาก rag/ingestion.py) ต่อสายที่ routes.py::_file_query_result
 _ANSWER_FILE_QUERY_SYSTEM_PROMPT = (
     "You are an AI assistant that reads a document the user has attached, then answers "
     "questions/summarizes/extracts data as the user requests, based only on the "
@@ -4086,19 +2918,14 @@ _ANSWER_FILE_QUERY_SYSTEM_PROMPT = (
     + _LANGUAGE_MIRROR_RULE
 )
 
-# ไม่มี RAG/chunking ในฟีเจอร์นี้ (ดู comment ด้านบน) — จำกัดความยาวเนื้อหาที่ส่งเข้า LLM
-# ตรงๆ กันไฟล์ใหญ่มากทำให้ context ล้น/ค่าใช้จ่ายพุ่ง เอกสารที่ยาวเกินนี้จะถูกตัดท้ายทิ้ง
-# พร้อมบอก LLM ตรงๆ ว่าเนื้อหาไม่ครบ (กันตอบราวกับเห็นทั้งไฟล์ทั้งที่จริงเห็นแค่บางส่วน)
+# ไม่มี chunking — ตัดเนื้อหาที่ยาวเกินและบอก LLM ตรงๆ ว่าไม่ครบ (กันตอบราวกับเห็นทั้งไฟล์)
 _ANSWER_FILE_QUERY_MAX_CHARS = 40_000
 
 
 async def answer_file_query(
     client, model: str, goal: str, file_text: str, filename: str, provider: str,
 ) -> str:
-    """ตอบคำถาม/สรุป/ดึงข้อมูลจากไฟล์ PDF/XLSX ที่ user แนบมา — ไม่แตะ browser/DOM เลย
-    (เหมือน chat_response ด้านบนทุกประการ แค่มีเนื้อหาไฟล์เป็น context เพิ่ม)
-
-    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error (เหมือน chat_response)"""
+    """ตอบคำถามจากเนื้อหาไฟล์ที่แนบ ไม่แตะ browser — ไม่ raise; error คืนข้อความขอโทษ"""
     truncated = len(file_text) > _ANSWER_FILE_QUERY_MAX_CHARS
     content = file_text[:_ANSWER_FILE_QUERY_MAX_CHARS]
     truncation_note = (
@@ -4110,48 +2937,15 @@ async def answer_file_query(
         f"User's request: {goal}"
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model, max_tokens=1024, system=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return "".join(b.text for b in response.content if b.type == "text").strip()
-        if provider == "groq":
-            response = await client.chat.completions.create(
-                model=model, max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": _ANSWER_FILE_QUERY_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            return (response.choices[0].message.content or "").strip()
-        if provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model, system_instruction=_ANSWER_FILE_QUERY_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            return (response.text or "").strip()
-        if provider == "openai":
-            # W_openai_oauth (follow-up fix 2026-08-17j): ดู chat_response() ด้านบนสำหรับ
-            # เหตุผลเต็ม — จุดเดียวกันทุกประการ (dispatch point แยกที่ไม่เคยมี branch นี้)
-            return await _openai_plain_text_reply(
-                client, model, _ANSWER_FILE_QUERY_SYSTEM_PROMPT, prompt,
-            )
-        return "Sorry, the system doesn't recognise this provider"
+        reply = await _system_prompt_reply(client, model, provider, _ANSWER_FILE_QUERY_SYSTEM_PROMPT, prompt, 1024)
+        return reply if reply is not None else _UNKNOWN_PROVIDER_REPLY
     except Exception as e:
         print(f"⚠️ answer_file_query error: {e}", flush=True)
-        return "Sorry, the system is temporarily unavailable. Please try again."
+        return _TEMPORARILY_UNAVAILABLE_REPLY
 
 
-# pdf/xlsx (ต่อ): รูปภาพที่ user แนบมาผ่าน composer เดียวกัน — ต่างจาก answer_file_query()
-# ด้านบน (extract เป็น text ก่อนด้วย load_manual_bytes()) เพราะรูปภาพไม่มี "text" ให้ extract
-# ล่วงหน้า ต้องส่ง base64 ตรงๆ ให้ LLM แบบ multimodal — ทำ 3 provider เต็มรูปแบบ (ไม่ใช่แค่
-# Gemini แบบ describe_screenshot() ด้านบน) เพราะ endpoint นี้ user เลือก provider เองได้ผ่าน
-# request ปกติ ต่างจาก vision fallback ที่เป็น internal retry mechanism เดียวที่ scope แคบไว้
-# ตั้งใจได้
+# รูปภาพที่แนบผ่าน composer — ส่ง base64 แบบ multimodal ทุก provider (ไม่ใช่ Gemini อย่างเดียวแบบ
+# describe_screenshot) เพราะ user เลือก provider เองได้
 _IMAGE_EXTENSION_MIME_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".webp": "image/webp", ".gif": "image/gif",
@@ -4168,12 +2962,7 @@ _ANSWER_IMAGE_QUERY_SYSTEM_PROMPT = (
 async def answer_image_query(
     client, model: str, goal: str, image_bytes: bytes, filename: str, provider: str,
 ) -> str:
-    """ตอบคำถามเกี่ยวกับรูปภาพที่ user แนบมาผ่าน composer — ไม่แตะ browser/DOM เลย (เหมือน
-    answer_file_query() ด้านบนทุกประการ แค่ input เป็นรูปภาพ base64 ตรงๆ แทน text ที่ extract
-    มาแล้ว) ดู routes.py::_file_query_result สำหรับจุดต่อสาย (แยกสาขาตามนามสกุลไฟล์ว่าเป็น
-    รูปภาพหรือเอกสาร ก่อนจะเลือกเรียกฟังก์ชันนี้หรือ answer_file_query())
-
-    ห้าม throw ออกไปพังเด็ดขาด — คืนข้อความขอโทษสั้นๆ แทนตอน error (เหมือน answer_file_query)"""
+    """ตอบคำถามเกี่ยวกับรูปที่แนบ ไม่แตะ browser — ไม่ raise; error คืนข้อความขอโทษ"""
     mime_type = _IMAGE_EXTENSION_MIME_TYPES.get(Path(filename).suffix.lower(), "image/png")
     prompt = f"User's request about the attached image (file name: {filename}): {goal}"
     try:
@@ -4219,13 +3008,11 @@ async def answer_image_query(
             )
             return (response.text or "").strip()
         if provider == "openai":
-            # W_openai_oauth (follow-up fix 2026-08-17j): ดู chat_response() ด้านบนสำหรับ
-            # เหตุผลเต็ม — content เป็น list ของ input_text/input_image part (ยืนยัน field
-            # shape จาก openai SDK's ResponseInputImageParam โดยตรง ไม่ใช่เดา — detail เป็น
-            # required field ของ SDK เลือก "auto" ให้ provider ตัดสินใจความละเอียดเอง)
+            # W_openai_oauth (2026-08-17j): shape input_text/input_image ตาม ResponseInputImageParam ของ SDK
+            # (detail เป็น required field — "auto")
             image_b64 = base64.b64encode(image_bytes).decode("ascii")
             stream = await _openai_create_with_backoff(
-        client,
+                client,
                 model=model,
                 instructions=_ANSWER_IMAGE_QUERY_SYSTEM_PROMPT,
                 input=[{
@@ -4240,13 +3027,13 @@ async def answer_image_query(
                 extra_headers=await _openai_oauth_headers(),
             )
             return await _consume_openai_text_stream(stream)
-        return "Sorry, the system doesn't recognise this provider"
+        return _UNKNOWN_PROVIDER_REPLY
     except Exception as e:
         print(f"⚠️ answer_image_query error: {e}", flush=True)
-        return "Sorry, the system is temporarily unavailable. Please try again."
+        return _TEMPORARILY_UNAVAILABLE_REPLY
 
 
-# --- Intent Classification & Page Summarization ---
+# Intent classification & page summarization
 _CLASSIFY_INTENT_PROMPT = """Analyze the user's Intent from the request (User Goal/Question) below:
 - Answer "qa_summary" if the user wants to ask a question, summarize content, read information, explain/translate, ask about price/details, ask about a product/data, or process information from the page, without wanting a click/form fill/navigation performed.
 - Answer "action_task" if the user is instructing the browser to perform an Action or any process on the page, e.g. clicking a button, filling a form, searching, ordering a product, logging in, navigating to another page.
@@ -4259,16 +3046,11 @@ Answer with exactly one word: qa_summary or action_task"""
 
 
 async def classify_intent(client, model: str, goal: str, page_text: str = "", provider: str = "gemini") -> str:
-    """วิเคราะห์ Intent ของผู้ใช้ว่าเป็น qa_summary (การถามตอบ/ขอสรุปเนื้อหา) หรือ action_task (การสั่งงาน/automation บนเว็บ)"""
+    """คืน "qa_summary" หรือ "action_task" — keyword heuristic ก่อน, LLM fallback เฉพาะกรณีกำกวม; error -> action_task"""
     goal_lower = goal.lower().strip()
 
-    # Action imperatives (สั่งให้เบราว์เซอร์กระทำ)
-    # W19 ("Intent Classification Router"): เพิ่ม "เข้าไปหน้า"/"เปิดเว็บ"/"เปิด"/"ไปยัง" —
-    # เดิมมีแค่ "ไปที่" ทำให้วลี navigation แบบอื่นที่ user พิมพ์จริง (เช่น "เข้าไปหน้า Admin
-    # แล้วอ่าน...") ไม่ match action_keywords เลยสักตัว ทั้งที่ "อ่าน" match qa_keywords —
-    # กลายเป็น has_qa=True, has_action=False ผิดๆ แล้วโดน step 1 ด้านล่างตัดสินเป็น
-    # qa_summary ทันทีทั้งที่ user สั่ง navigate จริง (compound command rule ด้านล่างจะทำงาน
-    # ไม่ได้เลยถ้า action_keywords ยังจับคำเหล่านี้ไม่ได้ตั้งแต่ต้น)
+    # W19 ("Intent Classification Router"): เพิ่มวลี navigation ("เข้าไปหน้า"/"เปิดเว็บ"/...) — เดิม
+    # "เข้าไปหน้า Admin แล้วอ่าน..." match แค่ qa_keywords เลยถูกตัดสินเป็น qa_summary ผิดๆ
     action_keywords = [
         "คลิก", "click", "กด", "กรอก", "fill", "พิมพ์", "type", "ซื้อ", "buy", "submit",
         "login", "ล็อกอิน", "เข้าสู่ระบบ", "สมัคร", "register", "search", "ค้นหา",
@@ -4277,7 +3059,6 @@ async def classify_intent(client, model: str, goal: str, page_text: str = "", pr
         "ป้อน", "ใส่ข้อมูล", "สั่งซื้อ", "เพิ่มลงตะกร้า", "add to cart", "checkout"
     ]
 
-    # Q&A & Summarization markers (ถาม/ขอสรุปข้อมูล)
     qa_keywords = [
         "สรุป", "คืออะไร", "หมายถึงอะไร", "ราคากี่บาท", "ราคาเท่าไหร่", "มีรายละเอียดอะไรบ้าง",
         "อ่าน", "แปล", "แปลภาษา", "ตอบคำถาม", "ช่วยอ่าน", "ย่อความ", "หน้านี้เกี่ยวกับอะไร",
@@ -4295,19 +3076,13 @@ async def classify_intent(client, model: str, goal: str, page_text: str = "", pr
     if has_action and not has_qa:
         return "action_task"
 
-    # 2. Priority heuristic when both or neither match
-    # If starting with pure question phrase
+    # 2. both or neither matched: a goal that starts with a pure question phrase
     if any(goal_lower.startswith(kw) for kw in ["สรุป", "หน้านี้", "คืออะไร", "มีอะไร", "ราคา", "แปล", "what", "how", "tell"]):
         if not any(goal_lower.startswith(kw) for kw in ["คลิก", "กด", "กรอก", "ค้นหา", "ไปที่", "click", "fill"]):
             return "qa_summary"
 
-    # 2.5 W19 ("Intent Classification Router" ROUTING RULE): ถึงจุดนี้แปลว่า goal match ทั้ง
-    # action_keywords และ qa_keywords พร้อมกันจริงๆ (ไม่ถูก step 2 ด้านบนจับว่าเป็น qa เพียวๆ
-    # ที่บังเอิญมี action keyword ปนมาแบบไม่ตั้งใจไปแล้ว) — นี่คือ compound command แท้ๆ (เช่น
-    # "เข้าไปหน้า Admin แล้วอ่านรายชื่อผู้ใช้", "Go to X and read Y") ต้องไป action_task เสมอ
-    # ตัดสินใจแบบ deterministic ตรงนี้เลย ไม่รอ LLM fallback ที่ step 3 (โมเดล compliance ไม่
-    # การันตี 100% — เหตุผลเดียวกับที่ permission/rules.py ต้องมีชั้นสำรองระดับโค้ดคู่กับ prompt
-    # เสมอ ไม่ใช่พึ่ง prompt อย่างเดียว)
+    # 2.5 W19 ROUTING RULE: match ทั้งสองชุด = compound command ("Go to X and read Y") -> action_task
+    # ตัดสินแบบ deterministic ไม่พึ่ง LLM fallback (compliance ไม่การันตี)
     if has_action and has_qa:
         return "action_task"
 
@@ -4339,7 +3114,7 @@ _SUMMARIZE_SYSTEM_PROMPT = (
 
 
 async def summarize_page(client, model: str, page_text: str, user_prompt: str, provider: str = "gemini") -> str:
-    """สรุปเนื้อหาหน้าเว็บหรือตอบคำถามตาม Prompt รูปแบบเฉพาะที่กำหนดให้ออกมาเป็นภาษาไทยอย่างเป็นธรรมชาติ"""
+    """สรุปหน้า/ตอบคำถามจากเนื้อหาหน้า (ภาษาตาม _LANGUAGE_MIRROR_RULE) — ไม่ raise; error คืนข้อความขอโทษ"""
     full_prompt = f"{_SUMMARIZE_SYSTEM_PROMPT}\n\nPage Content: {page_text}\n\nUser Question: {user_prompt}"
     try:
         return await generate_text(client, model, full_prompt, provider)
