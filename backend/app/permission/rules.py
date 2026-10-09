@@ -1,10 +1,8 @@
-"""Permission layer: allowlist / blocklist action + human-in-the-loop.
+"""Permission layer: classify_action() -> SAFE / NEEDS_CONFIRMATION / BLOCKED + SSRF guard
+ชั้นเครือข่าย (install_ssrf_guard)
 
-W1: skeleton only. W4-5: implement จริง (ดู roadmap.txt เฟส 1).
-
-Adapted from PR "permission-ab" (origin/permission-ab): เดิม classify_action()
-รับ action_name: str เฉยๆ — เปลี่ยนเป็นรับ cmd dict ทั้งก้อน เพราะ risk ของบาง action
-(เช่น goto) ขึ้นกับ parameter อื่นด้วย ไม่ใช่แค่ type (เช่น goto ไป domain ที่ถูกบล็อก)
+classify_action() รับ cmd dict ทั้งก้อน (จาก PR "permission-ab") ไม่ใช่แค่ type เพราะ risk ขึ้นกับ
+parameter อื่นด้วย (เช่น goto ไป domain ที่ถูกบล็อก)
 """
 
 import asyncio
@@ -24,11 +22,9 @@ class ActionRisk(str, Enum):
     BLOCKED = "blocked"
 
 
-# ตัวอย่าง action ที่ต้องขอยืนยันก่อนเสมอ (เช่น submit ฟอร์ม, ลบข้อมูล, ชำระเงิน)
 DEFAULT_NEEDS_CONFIRMATION = {"submit", "delete", "purchase", "pay"}
 DEFAULT_BLOCKED_ACTIONS: set[str] = set()
 
-# โดเมนที่ไม่อนุญาตให้เข้าถึงเด็ดขาด (Blocklist)
 BLOCKED_DOMAINS = {
     "malicious.com",
     "phishing.net",
@@ -37,23 +33,11 @@ BLOCKED_DOMAINS = {
 # ถ้า ALLOWED_DOMAINS มีค่า จะบล็อกโดเมนที่ไม่อยู่ในนี้ทั้งหมด (ถ้าว่าง แปลว่าอนุญาตทั้งหมดที่ไม่ได้ถูกบล็อก)
 ALLOWED_DOMAINS: set[str] = set()
 
-# ชั้นสำรอง (defense-in-depth) นอกจาก type: LLM อาจส่ง type="click" ธรรมดาสำหรับปุ่มที่
-# จริงๆ แล้วมีผลสำคัญ/ย้อนกลับยาก (เช่น saucedemo ปุ่ม "Remove" ในตะกร้าเป็นแค่
-# <button>Remove</button> ธรรมดา ไม่มี type พิเศษอะไรให้สังเกตเลยนอกจากป้ายข้อความ) —
-# ไม่ควรพึ่งแค่ LLM เลือก type (submit/delete/purchase/pay) ให้ถูกต้องเพียงอย่างเดียว
-# เพราะเป็นเรื่อง model compliance ที่ไม่การันตี — เช็คจากคำในป้าย element ประกอบด้วย
-# W_risky_multilingual (ช่องความปลอดภัย ไม่ใช่แค่ความสะดวก): เดิมชุดนี้เป็นภาษาอังกฤษล้วน
-# ขณะที่ SAFE_ACTION_LABEL_KEYWORDS ด้านล่างเป็นสองภาษามาตั้งแต่แรก — ความไม่สมมาตรนี้แปลว่า
-# ปุ่ม "ลบ" / "削除" / "Löschen" / "Supprimer" **ไม่ถูกยกระดับความเสี่ยงเลย** ชั้น
-# defense-in-depth ที่ตั้งใจไว้ว่า "ไม่พึ่ง LLM เลือก action type ให้ถูกอย่างเดียว" จึงป้องกัน
-# ได้เฉพาะเว็บภาษาอังกฤษ ส่วนเว็บภาษาอื่น human-in-the-loop ไม่ทำงานกับ action ทำลายข้อมูล
-# เลยนอกจากโมเดลจะบังเอิญเลือก type delete/purchase/pay ให้เอง
-#
-# เรื่อง false positive: การ match เป็น substring และภาษาที่ไม่มีการเว้นวรรค (ไทย/ญี่ปุ่น/จีน)
-# มีโอกาสชนคำอื่นได้จริง — ยอมรับได้และตั้งใจเลือกทางนี้ เพราะผลของ false positive คือ "ถาม
-# ผู้ใช้เกินจำเป็น 1 ครั้ง" ส่วนผลของ false negative คือ "ลบข้อมูลจริงโดยไม่มีใครเห็น"
-# (RISKY ชนะ SAFE เสมออยู่แล้วตามลำดับใน classify_action ด้านล่าง จึงไม่ทำให้ปุ่มค้นหา/ดู
-# เนื้อหาที่ SAFE_ACTION_LABEL_KEYWORDS ครอบไว้เปลี่ยนพฤติกรรม ตราบใดที่ไม่มีคำเสี่ยงปนอยู่)
+# defense-in-depth: LLM อาจส่ง type="click" ให้ปุ่มที่มีผลจริง (เช่น saucedemo "Remove" เป็น <button>
+# ธรรมดา) — model compliance ไม่การันตี จึงเช็คคำในป้ายด้วย
+# W_risky_multilingual: เดิมเป็นอังกฤษล้วน ปุ่ม "ลบ"/"削除"/"Löschen" ไม่ถูกยกระดับเลย — substring match
+# ในภาษาไม่เว้นวรรคอาจ false positive ได้ ยอมรับเพราะแค่ถามเกิน 1 ครั้ง ดีกว่าลบข้อมูลเงียบๆ
+# (RISKY ชนะ SAFE เสมอใน classify_action)
 RISKY_LABEL_KEYWORDS = {
     # อังกฤษ (ชุดเดิม ห้ามตัดออก)
     "remove", "delete", "place order", "finish", "pay", "purchase", "confirm",
@@ -67,51 +51,26 @@ RISKY_LABEL_KEYWORDS = {
     "eliminar", "borrar", "pagar", "comprar", "confirmar", "excluir",
 }
 
-# W_search: บั๊กจริงที่ user รายงาน — action ที่ย้อนกลับได้ง่ายมากและไม่มีผลถาวรใดๆ เลย
-# (กดปุ่มค้นหา, คลิกเข้าไปดูวิดีโอ/บทความ) มักถูกจัดเป็น NEEDS_CONFIRMATION ผิดๆ เพราะ
-# LLM บางครั้งเลือก action type "submit" ให้ปุ่มค้นหา (ตีความ "ค้นหา" ว่าเป็นการ "ส่งฟอร์ม"
-# ทางความหมาย ทั้งที่ SYSTEM_PROMPT (llm.py) สั่งห้ามเดาแบบนี้ไว้แล้ว — model compliance
-# ไม่การันตี 100% เหมือนที่ RISKY_LABEL_KEYWORDS ด้านบนก็มีไว้เพราะเหตุผลเดียวกัน ฝั่งตรงข้าม)
-# — เช็ค label สวนทางกัน: ถ้าดูชัดเจนว่าเป็นแค่ค้นหา/กรอง/เปิดดูเนื้อหา (ไม่ใช่ฟอร์มที่มี
-# ผลจริงเช่น สั่งซื้อ/ลบ/จ่ายเงิน) ให้ลดระดับกลับเป็น SAFE แม้ action_type จะดูเสี่ยง —
-# RISKY_LABEL_KEYWORDS ยังคงชนะเสมอถ้า label match ทั้งสองฝั่ง (เช่น "Confirm and Search"
-# ที่จริงๆ อยู่ในหน้า checkout) ระวังไว้ก่อนดีกว่า
+# W_search: บั๊กจริงที่ user รายงาน — LLM บางครั้งเลือก type "submit" ให้ปุ่มค้นหา/ดูเนื้อหา ทำให้ถาม
+# confirmation ผิดๆ; label ที่ชัดว่าเป็นค้นหา/กรอง/ดู ลดกลับเป็น SAFE (RISKY ยังชนะถ้า match ทั้งคู่
+# เช่น "Confirm and Search")
 SAFE_ACTION_LABEL_KEYWORDS = {
     "search", "ค้นหา", "ค้น", "find", "filter", "กรอง",
     "watch", "ดู", "ชม", "play", "เล่น", "view", "read", "อ่าน",
     "browse", "next", "ถัดไป", "previous", "ก่อนหน้า", "go to", "open",
 }
 
-# W_search follow-up: บั๊กจริงที่ user รายงานต่อ — คลิกเลือกวิดีโอ/บทความจากผลการค้นหา
-# (เช่น การ์ดวิดีโอ YouTube) ป้ายของ element มักเป็น "ชื่อเรื่อง" ดิบๆ (เช่น "เพลงรัก -
-# Three Man Down |Official MV|") ซึ่งไม่มีทางไป match SAFE_ACTION_LABEL_KEYWORDS ได้เลย
-# (เนื้อหาอิสระ ไม่ใช่คำกริยาสั่งงาน) แม้ตัวมันจะปลอดภัยมากก็ตาม (แค่ navigate ไปดู/เล่น) —
-# ใช้สัญญาณเชิงโครงสร้างแทน label: ปุ่ม/action ที่มีผลจริง (submit ฟอร์ม, ลบ, สั่งซื้อ,
-# จ่ายเงิน) แทบไม่มีทางเป็น <a> (anchor/ลิงก์ธรรมดา) เพราะ anchor แค่พาไปหน้าอื่น (GET,
-# ย้อนกลับได้ง่าย) ไม่ได้ submit ข้อมูลอะไรเลย — ปุ่มพวกนี้เกือบทั้งหมดเป็น <button>/input
-# ที่แท้จริง สั่งให้ tag == "a" ลดระดับ type ที่ดูเสี่ยงกลับเป็น SAFE ได้เสมอ (ยกเว้น label
-# หรือคู่มือยังคงชนะถ้าดูเสี่ยงจริง — กันกรณีหายากที่ปุ่ม "Place Order" ถูกทำเป็น <a> ที่
-# ตกแต่งด้วย CSS ให้ดูเหมือนปุ่ม)
+# W_search follow-up: การ์ดผลค้นหา (เช่น วิดีโอ YouTube) มี label เป็นชื่อเรื่องดิบ ไม่ match คำไหน —
+# ใช้สัญญาณโครงสร้าง: <a> แค่ navigate (GET) แทบไม่เคยเป็น submit/ลบ/จ่ายเงิน
 ANCHOR_TAG = "a"
 
-# W_search follow-up 2: บั๊กจริงอีกเคส — หลัง fill คำค้นหาลงในช่องค้นหาสำเร็จแล้ว label ของ
-# ช่องนั้น (จาก perception.py::get_snapshot) จะกลายเป็น "ค่าที่พิมพ์ไปแล้ว" (เช่น
-# "เพลงรัก") แทนที่จะเป็น placeholder/ชื่อช่องเดิม ("Search"/"ค้นหา") เพราะ label
-# computation fallback ไป el.value เมื่อ innerText ว่าง — ถ้า LLM เผลอเลือก type="submit"
-# ให้กับ action "กด Enter เพื่อค้นหา" (แทนที่จะเป็น "press_key" ธรรมดา) โดยเป้าหมายยังเป็น
-# ช่องกรอกข้อความ/ค้นหาเดิม label ที่เห็นตอนนั้นจะเป็นคำค้นหาดิบๆ ไม่ match ทั้งสองฝั่งอีกเช่น
-# กัน (เหมือน ANCHOR_TAG ด้านบนแต่คนละ element type) — <input type="text/search"> ธรรมดา
-# (ไม่ใช่ type="submit"/"password"/"image" ที่แท้จริงอาจเป็นส่วนหนึ่งของฟอร์มอันตราย) ก็แทบ
-# ไม่มีทางเป็นการ submit ฟอร์ม/ลบ/สั่งซื้อ/จ่ายเงินได้เองเช่นกัน (แค่กรอก/ค้นหา ย้อนกลับได้ง่าย)
+# W_search follow-up 2: หลัง fill ช่องค้นหา label กลายเป็นค่าที่พิมพ์ (perception fallback ไป el.value)
+# ถ้า LLM เลือก submit ให้ "กด Enter ค้นหา" — <input> ที่ไม่ใช่ submit/image/password ถือว่าปลอดภัย
 SAFE_INPUT_TAG = "input"
 RISKY_INPUT_TYPES = {"submit", "image", "password"}
 
-# W7[B]: RAG-based permission — คู่มือที่ user ป้อน (ผ่าน ingestion ตั้งแต่ W3) อาจ
-# กำหนดเองว่า action ไหนต้องขออนุมัติเพิ่มเติมจาก DEFAULT_NEEDS_CONFIRMATION/
-# RISKY_LABEL_KEYWORDS ที่ hardcode ไว้ข้างบน (เช่น คู่มือเขียนว่า "การสั่งซื้อเกิน
-# $100 ต้องขออนุมัติจากผู้จัดการก่อน") — ไม่ได้ให้ LLM ตัดสินเอง (พึ่ง model compliance
-# ไม่ได้ ดูเหตุผลเดียวกับ RISKY_LABEL_KEYWORDS ด้านบน) แต่สแกนหาคำที่บ่งบอกว่าคู่มือ
-# กำลังขอให้ขออนุมัติ/ยืนยันก่อนทำ เป็นชั้นสำรองระดับโค้ดเหมือนกัน
+# W7[B]: RAG-based permission — คู่มือของ user อาจกำหนดให้ขออนุมัติเพิ่ม (เช่น "สั่งซื้อเกิน $100 ต้อง
+# ขออนุมัติ") สแกนคำด้วยโค้ด ไม่ให้ LLM ตัดสินเอง
 MANUAL_CONFIRMATION_KEYWORDS = {
     "ต้องขออนุมัติ", "ต้องได้รับอนุมัติ", "ต้องขอความยินยอม", "ต้องยืนยันก่อน",
     "requires approval", "needs approval", "require confirmation",
@@ -135,11 +94,8 @@ def _manual_requires_confirmation(manual_guidance: str) -> bool:
 
 
 def normalize_domain(domain: str) -> str:
-    """lowercase + ตัด "www." นำหน้าออก — ใช้กับ domain string ที่เป็น hostname ล้วนๆ
-    อยู่แล้ว (เช่น path param ของ REST endpoint อย่าง /api/site-manual/{domain}/...) ต่าง
-    จาก extract_domain() ด้านล่างที่รับ URL เต็มรูปแบบ (มี scheme) แล้ว parse หา netloc
-    เอง — แยกออกมาเป็นฟังก์ชันกลางให้ทั้งคู่เรียกใช้ร่วมกัน กันไม่ให้กติกา "www. กับไม่มี
-    www. ถือเป็นโดเมนเดียวกัน" ไป drift กันระหว่าง 2 จุด"""
+    """lowercase + ตัด "www." สำหรับ hostname ล้วน (เช่น path param) — จุดเดียวที่ extract_domain()
+    ใช้ร่วม กันกติกา www. drift"""
     domain = domain.lower()
     if domain.startswith("www."):
         domain = domain[len("www."):]
@@ -147,18 +103,10 @@ def normalize_domain(domain: str) -> str:
 
 
 def extract_domain(url: str) -> str:
-    """แยก domain ล้วนๆ ออกจาก URL (lowercase, ตัด port ออก, ตัด "www." นำหน้าออก) — ใช้
-    ร่วมกันทุกจุดที่ต้องเทียบ/เก็บ domain ในระบบ (classify_action() เช็ค goto,
-    core/user_browser.py จับคู่ tab ที่เปิดอยู่, site_learning/storage.py เก็บ/ค้นหา
-    credential ต่อโดเมน ฯลฯ) กันไม่ให้ logic parse URL ซ้ำกันหลายที่ ถ้า URL ผิดรูปแบบ
-    มากๆ คืนสตริงว่างเปล่า (ให้ผู้เรียกตัดสินใจเองว่าจะปฏิบัติยังไงกับ domain ว่าง แทนที่จะ
-    throw ออกไป)
+    """domain จาก URL (lowercase, ไม่มี port, ไม่มี "www.") ใช้ร่วมทุกจุดในระบบ — URL พังคืน "" ไม่ throw
 
-    ตัด "www." ออกโดยเจตนา (ไม่ใช่แค่ lowercase+ตัด port): ก่อนหน้านี้ "www.example.com"
-    กับ "example.com" ถูกมองเป็นคนละ domain กันเป๊ะๆ ทำให้ credential ที่บันทึกไว้ตอน
-    login bootstrap ผ่าน URL หนึ่ง (เช่น มี www.) หาไม่เจอตอนรัน task จริงที่เริ่มจาก URL
-    อีกแบบ (ไม่มี www.) ของเว็บเดียวกัน — เห็นได้จาก storage.py::save_credentials/
-    load_credentials ที่ key ด้วยค่าจากฟังก์ชันนี้ตรงๆ"""
+    ตัด "www." โดยเจตนา: เดิม credential ที่บันทึกผ่าน www.example.com หาไม่เจอตอนรันจาก
+    example.com (storage.py key ด้วยค่านี้ตรงๆ)"""
     try:
         domain = urllib.parse.urlparse(url).netloc.lower()
         if ":" in domain:
@@ -168,14 +116,10 @@ def extract_domain(url: str) -> str:
         return ""
 
 
-# W_gate_local_hrm: อนุญาต navigation ไป IP ภายใน "เฉพาะงานที่ขอ" ไม่ใช่ทั้ง process
-# เดิม hrm_local_eval เปิด settings.allow_internal_navigation ซึ่งเป็น global — ระหว่างนั้น task ของ
-# user ทุกตัวใน process เดียวกันจะเข้า localhost/LAN ได้หมด ContextVar แยกตาม thread และ asyncio
-# task (asyncio.to_thread/asyncio.run/create_task คัดลอก context ตอนสร้าง) จึงมีผลเฉพาะงานที่
-# ถูกสร้างขึ้นภายใน with block เท่านั้น
-# route handler ของ Playwright ได้ค่านี้ก็ต่อเมื่อ Playwright ถูก start ภายใน context นั้น (dispatcher
-# task สืบ context ตอนสร้าง) — browser ที่ยืมมาจาก BrowserPool ซึ่ง start ไว้ก่อนจะมองไม่เห็นค่านี้
-# และถูกบล็อกตามปกติ = พังไปทางปลอดภัย
+# W_gate_local_hrm: อนุญาต internal navigation "เฉพาะงานที่ขอ" — เดิม hrm_local_eval เปิด
+# settings.allow_internal_navigation แบบ global ทำให้ task ของ user ใน process เดียวกันเข้า localhost ได้หมด
+# ContextVar มีผลเฉพาะงานที่สร้างใน with block; browser จาก BrowserPool ที่ start ไว้ก่อนมองไม่เห็นค่านี้
+# = พังไปทางปลอดภัย
 _internal_navigation_override: ContextVar[bool] = ContextVar(
     "internal_navigation_override", default=False,
 )
@@ -196,19 +140,15 @@ def _internal_navigation_allowed() -> bool:
 
 
 def is_private_or_internal(domain: str) -> bool:
-    """Security 1.2 (SSRF): domain นี้ resolve เป็น private/loopback/link-local IP ไหม (เช่น
-    cloud metadata endpoint 169.254.169.254, LAN ภายใน 192.168.x.x, localhost) — หน้าเว็บที่
-    ฝัง prompt injection สั่ง goto ไป resource ภายในเครือข่ายของเครื่องที่ agent รันอยู่ต้อง
-    ถูกกันตรงนี้เสมอ เพราะ goto ไม่อยู่ใน DEFAULT_NEEDS_CONFIRMATION (ไม่มี human เห็นเลย)
+    """Security 1.2 (SSRF): domain resolve เป็น private/loopback/link-local IP ไหม (169.254.169.254,
+    192.168.x.x, localhost) — goto ไม่อยู่ใน DEFAULT_NEEDS_CONFIRMATION จึงต้องกันตรงนี้
 
-    resolve ไม่ได้ (DNS ผิดพลาด/hostname ไม่มีจริง) ถือว่าไม่ใช่ internal (ให้ goto ที่แท้จริง
-    ไป fail เองทีหลังตอนพยายามเชื่อมต่อจริง ไม่ใช่หน้าที่ของ permission layer ที่จะเดา)"""
+    resolve ไม่ได้ = False (ปล่อยให้การเชื่อมต่อจริง fail เอง)"""
     hostname = (domain or "").strip()
     if not hostname:
         return False
     try:
-        # ลองแปลงเป็น IP ตรงๆ ก่อนตัด port เสมอ — IPv6 literal (เช่น "::1") มี ":" อยู่แล้ว
-        # เป็นปกติ ตัดมั่วๆ จะพังทันที
+        # แปลงเป็น IP ก่อนตัด port — IPv6 literal (เช่น "::1") มี ":" อยู่แล้ว
         ip = ipaddress.ip_address(hostname)
         return ip.is_private or ip.is_loopback or ip.is_link_local
     except ValueError:
@@ -235,84 +175,40 @@ def classify_action(
     cmd: dict, label: str = "", manual_guidance: str = "", allowed_domains: "set[str] | None" = None,
     element_tag: str = "", element_type: str = "",
 ) -> ActionRisk:
-    """label (optional): ข้อความของ element ที่จะโดน action นี้ (จาก indexed elements
-    ตอน perceive) — ใช้เช็คคำเสี่ยงเป็นชั้นสำรองนอกจาก type ล้วนๆ (ดู RISKY_LABEL_KEYWORDS)
-    ไม่ส่งมาก็ได้ (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ ไม่ throw
-
-    manual_guidance (optional, W7[B]): เนื้อหาคู่มือที่เกี่ยวข้องกับ step นี้ (ตัวเดียว
-    กับ manual_context ที่ orchestrator ดึงมาป้อน planner อยู่แล้วใน W6[B] — ไม่ยิง
-    ChromaDB ซ้ำ) ใช้เช็คว่าคู่มือระบุไว้ไหมว่า action แบบนี้ต้องขออนุมัติก่อน ไม่ส่งมา
-    ก็ได้ (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ เหมือน label
-
-    allowed_domains (optional): ชุดโดเมนที่อนุญาต override เฉพาะ call นี้ ไม่แตะ
-    module-level ALLOWED_DOMAINS เลย — ไม่ส่งมา (None, default) = พฤติกรรมเดิมทุก
-    ประการ (ใช้ ALLOWED_DOMAINS/BLOCKED_DOMAINS ของ module) ส่งมาเป็น set (แม้จะว่าง
-    เปล่า) = ใช้ set นี้แทน ALLOWED_DOMAINS เดิมทั้งหมดสำหรับ call นี้เท่านั้น (เพจ semantic
-    เดียวกับ ALLOWED_DOMAINS เดิม: ว่างเปล่า = ไม่จำกัด ไม่ใช่ deny-all) — ใช้ตอนต่อ agent
-    เข้า browser จริงของ user (core/user_browser.py) ที่ต้องจำกัดแค่โดเมนของ task นั้นๆ
-    โดยไม่กระทบ task/thread อื่นที่ใช้ classify_action() พร้อมกัน BLOCKED_DOMAINS
-    (module-level) ยังคงเป็น hard block เสมอไม่ว่าจะ override หรือไม่
-
-    element_tag (optional, W_search follow-up): ชื่อ HTML tag ของ element เป้าหมาย
-    (เช่น "a", "button", "input") จาก indexed elements ตอน perceive — ใช้เป็นสัญญาณ
-    โครงสร้างเพิ่มเติมนอกจาก label (ดู ANCHOR_TAG/SAFE_INPUT_TAG ด้านบน) ไม่ส่งมาก็ได้
-    (default "") จะข้ามการเช็คชั้นนี้ไปเฉยๆ
-
-    element_type (optional, W_search follow-up 2): ค่า attribute "type" ของ element
-    เป้าหมาย (เช่น input ที่ type="text"/"search"/"submit"/"password") จาก indexed
-    elements ตอน perceive — ใช้คู่กับ element_tag=="input" เพื่อแยกช่องกรอกข้อความ/
-    ค้นหาธรรมดา (ปลอดภัย) ออกจาก input ที่แท้จริงอาจเสี่ยง (ดู RISKY_INPUT_TYPES ด้านบน)
-    ไม่ส่งมาก็ได้ (default "")"""
+    """สัญญาณเสริมทั้งหมด optional (default "" = ข้ามการเช็คชั้นนั้น ไม่ throw):
+    - label: ข้อความของ element — RISKY/SAFE_ACTION_LABEL_KEYWORDS
+    - manual_guidance (W7[B]): manual_context ที่ orchestrator ดึงมาแล้ว (ไม่ยิง ChromaDB ซ้ำ)
+    - allowed_domains: override ALLOWED_DOMAINS เฉพาะ call นี้ (None = ค่า module; set ว่าง = ไม่จำกัด
+      ไม่ใช่ deny-all) BLOCKED_DOMAINS เป็น hard block เสมอ
+    - element_tag / element_type (W_search follow-up/-2): สัญญาณโครงสร้าง ดู ANCHOR_TAG /
+      SAFE_INPUT_TAG / RISKY_INPUT_TYPES"""
     action_type = cmd.get("type", "")
 
     if action_type in DEFAULT_BLOCKED_ACTIONS:
         return ActionRisk.BLOCKED
 
     if action_type in DEFAULT_NEEDS_CONFIRMATION:
-        # W_search: คู่มือ (ถ้ามี) ยังคงเป็นกฎที่ user ตั้งไว้เองโดยตรง ชนะเสมอไม่ว่า
-        # label จะดูปลอดภัยแค่ไหน — เช็คก่อนอันดับแรก
+        # ลำดับสำคัญ: คู่มือ (กฎของ user) > risky label > safe label > tag downgrade
         if _manual_requires_confirmation(manual_guidance):
             return ActionRisk.NEEDS_CONFIRMATION
-        # label เองก็ match คำเสี่ยงด้วย (เช่น "Confirm and Search" ในหน้า checkout หรือ
-        # "Place Order" ที่ทำเป็น <a> ตกแต่งด้วย CSS) ให้ฝั่งเสี่ยงชนะเสมอไม่ว่า label
-        # หรือ tag จะดูปลอดภัยแค่ไหน — เช็คก่อนอันดับสอง (กันไว้ก่อนเสมอ)
         if _label_looks_risky(label):
             return ActionRisk.NEEDS_CONFIRMATION
-        # label ที่ชัดเจนว่าเป็นแค่ค้นหา/เปิดดูเนื้อหา (ย้อนกลับได้ง่าย ไม่มีผลถาวร) ให้
-        # ลดระดับกลับเป็น SAFE แม้ LLM จะเผลอเลือก action type ที่ดูเสี่ยงมาก็ตาม (ดู
-        # SAFE_ACTION_LABEL_KEYWORDS ด้านบน)
         if _label_looks_safe(label):
             return ActionRisk.SAFE
-        # Security 1.3: tag/structure-based downgrade ด้านล่าง (W_search follow-up/-2) ใช้
-        # ได้เฉพาะ action_type=="submit" เท่านั้น — เดิมครอบคลุม delete/purchase/pay ด้วย
-        # ทำให้หน้าเว็บทำปุ่ม "ลบ"/"สั่งซื้อ" เป็น <a> ที่ label เป็นคำทั่วไปหลบ confirmation
-        # ได้ (บั๊กจริงที่พบ) — 2 เคส false-positive ที่ heuristic นี้เคยแก้ (ปุ่มค้นหา/กรอง
-        # ถูกจัด submit ผิด, การ์ดผลค้นหาเป็น <a> label อิสระ) เกิดกับ action_type=="submit"
-        # เท่านั้นอยู่แล้วในทางปฏิบัติ จึงยังทำงานถูกต้องเหมือนเดิมทุกประการหลังจำกัด scope นี้
+        # Security 1.3: tag downgrade ใช้ได้เฉพาะ "submit" — เดิมครอบ delete/purchase/pay ด้วย ทำให้
+        # ปุ่ม "ลบ"/"สั่งซื้อ" ที่ทำเป็น <a> หลบ confirmation ได้ (บั๊กจริง)
         if action_type == "submit":
-            # W_search follow-up: label เป็นเนื้อหาอิสระ (เช่น ชื่อวิดีโอ/บทความ) ไม่ match
-            # คำปลอดภัยหรือคำเสี่ยงเลย — เช็ค tag เป็นสัญญาณสุดท้าย: <a> ธรรมดาแทบไม่มีทางเป็น
-            # การ submit/ลบ/สั่งซื้อ/จ่ายเงินจริง (ดู ANCHOR_TAG ด้านบน)
             if (element_tag or "").lower() == ANCHOR_TAG:
                 return ActionRisk.SAFE
-            # W_search follow-up 2: เช่นเดียวกัน — label อาจกลายเป็น "ค่าที่พิมพ์ไปแล้ว" ใน
-            # ช่องกรอกข้อความ/ค้นหา (เช่น คำค้นหาดิบๆ) หลัง fill สำเร็จ ไม่ match ทั้งสองฝั่ง
-            # เหมือนกัน — <input> ที่ไม่ใช่ type เสี่ยง (submit/image/password) ก็แทบไม่มีทาง
-            # เป็นการ submit/ลบ/สั่งซื้อ/จ่ายเงินได้เองเช่นกัน (ดู SAFE_INPUT_TAG/
-            # RISKY_INPUT_TYPES ด้านบน)
             if (element_tag or "").lower() == SAFE_INPUT_TAG and (element_type or "").lower() not in RISKY_INPUT_TYPES:
                 return ActionRisk.SAFE
-        # delete/purchase/pay ที่ไม่ match risky/safe label เลย (หรือ submit ที่ไม่ match
-        # tag ปลอดภัยด้านบน) fallthrough ไป NEEDS_CONFIRMATION เสมอ — ปลอดภัยไว้ก่อน
         return ActionRisk.NEEDS_CONFIRMATION
 
     if action_type == "goto":
         url = cmd.get("url", "")
         domain = extract_domain(url)
 
-        # Security 1.2 (SSRF): เช็คก่อน BLOCKED_DOMAINS/ALLOWED_DOMAINS เสมอ เป็น hard block
-        # ไม่ขึ้นกับ config ผู้ใช้เลย (defense-in-depth) — settings.allow_internal_navigation
-        # เปิดได้เฉพาะ dev ที่ตั้งใจทดสอบเว็บ local จริงๆ เท่านั้น
+        # Security 1.2 (SSRF): hard block ก่อน BLOCKED/ALLOWED_DOMAINS เสมอ ไม่ขึ้นกับ config ผู้ใช้
         if not _internal_navigation_allowed() and is_private_or_internal(domain):
             return ActionRisk.BLOCKED
 
@@ -323,10 +219,7 @@ def classify_action(
         if effective_allowed and domain not in effective_allowed:
             return ActionRisk.BLOCKED
 
-        # goto ที่ผ่าน domain check แล้ว (ไม่ได้อยู่ blocklist) ยังต้องเช็คคู่มือต่อ
-        # (เช่น คู่มือบอกว่าการไปหน้า admin ต้องขออนุมัติก่อน) — แต่ไม่ตกไปเช็ค label
-        # ต่อด้านล่างเหมือนเดิม (label ปกติว่างเปล่าสำหรับ goto อยู่แล้วเพราะไม่มี
-        # index ให้จับคู่ เอามาตัดสิน risk ของการ "ไปหน้าเว็บ" ไม่ได้)
+        # goto ไม่เช็ค label (ไม่มี index ให้จับคู่ label จึงว่าง) — เช็คแค่คู่มือ
         if _manual_requires_confirmation(manual_guidance):
             return ActionRisk.NEEDS_CONFIRMATION
         return ActionRisk.SAFE
@@ -337,67 +230,37 @@ def classify_action(
     return ActionRisk.SAFE
 
 
-# Security (follow-up to 1.2): classify_action() ด้านบนเช็ค SSRF ได้แค่ตอน action_type
-# == "goto" เท่านั้น — ไม่ครอบคลุม 2 ช่องทางที่ยังหลุดผ่านได้จริง:
-#   (1) agent "คลิก" <a href="http://169.254.169.254/..."> แทนที่จะ goto ตรงๆ (คลิกไม่เคย
-#       ผ่าน branch goto ของ classify_action() เลย — ถ้าหน้าเว็บที่โดน prompt injection
-#       ทำลิงก์แบบนี้แล้วหลอกให้ LLM คลิก จะไม่มีการเช็คอะไรทั้งนั้น)
-#   (2) goto ไป domain สาธารณะที่ผ่าน check แล้ว แต่ 302 redirect ไปยัง internal IP
-#       (open redirect) หรือ DNS rebinding (resolve ตอน classify ได้ IP หนึ่ง ตอน Playwright
-#       ต่อจริงได้อีก IP หนึ่ง — TOCTOU เพราะ resolve คนละครั้งกัน คนละเวลา)
-# แก้ที่ "ชั้นเครือข่ายจริง" แทนที่จะพึ่ง classify_action() (ที่เช็คแค่ "เจตนา" ของ LLM ก่อน
-# dispatch) — ใช้ Playwright route interception ดักทุก navigation request จริงที่ browser
-# กำลังจะยิงออกไป (ครอบคลุมทั้ง goto/click-navigation/redirect แต่ละ hop เพราะ Chromium ยิง
-# navigation request แยกต่างหากทุก hop ของ redirect เอง — ปิดทั้ง 2 ช่องโหว่ข้างต้นพร้อมกัน
-# ในจุดเดียว) — ตั้งใจกรองเฉพาะ is_navigation_request() (goto/click ที่นำไปสู่หน้าใหม่/
-# redirect ระหว่างนั้น) ไม่ครอบคลุม subresource ธรรมดา (css/js/image/xhr) เพื่อไม่ให้เสีย
-# performance เช็ค DNS ทุก request ย่อยของทุกหน้า (ตั้งใจ trade-off scope แคบกว่า SSRF แบบ
-# เต็มรูปแบบ แลกกับไม่กระทบความเร็วที่เพิ่งทำไปในงาน Speed — ความเสี่ยงจริงที่พบคือ
-# navigation ไปหน้า/endpoint ภายใน ไม่ใช่การอ่าน response body ของ subresource)
+# Security (follow-up to 1.2): classify_action() เช็ค SSRF แค่ goto — ไม่ครอบ (1) คลิก <a href> ไป IP
+# ภายใน (2) 302 redirect / DNS rebinding (TOCTOU) — จึงดักที่ชั้นเครือข่ายด้วย Playwright route ทุก
+# navigation request (Chromium ยิงแยกทุก hop ของ redirect) ไม่เช็ค subresource เพื่อไม่เสีย performance
 async def install_ssrf_guard(target) -> None:
-    """เรียกครั้งเดียวทันทีหลังสร้าง Page หรือ BrowserContext ทุกจุดในระบบที่ agent อาจ
-    navigate ได้ (orchestrator.py, session_registry.py, actions.py, crawler.py,
-    routes.py, user_browser.py) — target รับได้ทั้ง Page และ BrowserContext (ทั้งคู่มี
-    .route() method หน้าตาเหมือนกัน, BrowserContext.route() ครอบคลุมทุก page ที่เกิดจาก
-    context นั้นอัตโนมัติ) ห้าม throw ออกไปเด็ดขาด (route() ของ Playwright เองแทบไม่ throw
-    อยู่แล้วนอกจาก target ปิดไปแล้ว — ปล่อยผ่านเงียบๆ ถ้าเกิดขึ้นจริง ดีกว่าทำให้ page
-    creation ทั้งก้อนพังเพราะ guard เสริมตัวนี้)"""
+    """เรียกทันทีหลังสร้าง Page หรือ BrowserContext ทุกจุดที่ agent navigate ได้ (context.route ครอบทุก
+    page ของ context) — never raises: target ที่ปิดแล้วปล่อยผ่านเงียบๆ ดีกว่าทำ page creation พัง"""
     try:
         await target.route("**/*", _ssrf_route_handler)
     except Exception:
         pass
 
 
-# is_private_or_internal() เรียก socket.gethostbyname() ซึ่งไม่มี timeout ในตัวเองเลย
-# (พึ่ง OS resolver default ซึ่งอาจช้ามากสำหรับโดเมนที่ resolve ไม่ได้/เครือข่ายที่ถูกจำกัด)
-# — _ssrf_route_handler() เรียกทุก navigation request จริง (ไม่ใช่แค่ตอน goto เหมือน
-# classify_action()) จึงต้องกัน DNS ช้าครั้งเดียวไม่ให้ทำให้ navigation ทั้งหน้าค้างไปด้วย —
-# timeout สั้นๆ พอสำหรับ DNS lookup ปกติ (มักเสร็จใน <100ms) แต่ไม่ปล่อยให้ค้างเป็นวินาทีถ้า
-# resolver ช้าจริง — timeout = ปล่อยผ่าน (fail open) เหมือน resolve ไม่ได้ปกติ
+# getaddrinfo ไม่มี timeout ในตัว และ handler ทำงานทุก navigation — กัน DNS ช้าทำ navigation ค้าง;
+# timeout = ปล่อยผ่าน (fail open) เหมือน resolve ไม่ได้
 _SSRF_DNS_TIMEOUT_SECONDS = 2.0
 
 
 async def _ssrf_route_handler(route) -> None:
     request = route.request
-    # เช็คเฉพาะ navigation request (ดู comment ด้านบน) — subresource ปกติปล่อยผ่านทันที
-    # ไม่เสียเวลา resolve DNS เพิ่ม
     if not request.is_navigation_request():
         await route.continue_()
         return
     try:
         hostname = urllib.parse.urlparse(request.url).hostname or ""
-        # is_private_or_internal() มี socket.gethostbyname() ข้างใน (blocking call) —
-        # ต้อง to_thread กันบล็อก event loop เดียวกับที่ Playwright ใช้อยู่ (เหมือน
-        # เหตุผลเดียวกับ retriever.retrieve()/long_term_memory.recall() ที่ wrap ด้วย
-        # to_thread ใน orchestrator.py) + wait_for กัน DNS ช้าไม่รู้จบ (ดู
-        # _SSRF_DNS_TIMEOUT_SECONDS ด้านบน)
+        # DNS lookup เป็น blocking — to_thread กันบล็อก event loop ของ Playwright
         blocked = not _internal_navigation_allowed() and await asyncio.wait_for(
             asyncio.to_thread(is_private_or_internal, hostname),
             timeout=_SSRF_DNS_TIMEOUT_SECONDS,
         )
     except Exception:
-        # resolve ไม่ได้/timeout/URL ผิดรูปแบบ — ปล่อยผ่าน ให้ Playwright เองไป fail ตามปกติ
-        # ตอน connect จริง (เหมือน is_private_or_internal() เองที่ resolve ไม่ได้ = ไม่ block)
+        # resolve ไม่ได้/timeout/URL ผิดรูป — ปล่อยผ่าน ให้ Playwright fail เองตอน connect
         blocked = False
     if blocked:
         await route.abort()
