@@ -1,14 +1,7 @@
-"""site_learning/auto_login.py — W15/W17: ตรวจจับ + auto-fill ฟอร์ม login แบบ
-deterministic (หา field จาก input_type="password"/username-keyword ล้วนๆ ไม่ใช้ LLM
-ตัดสินใจเลย) — ใช้ร่วมกันโดยสองที่:
-  - crawler.py (W15 login bootstrap — กรอก+submit ครั้งเดียวตอนเรียนรู้เว็บไซต์ เพื่อผ่าน
-    หน้า login แล้วสำรวจต่อได้)
-  - core/orchestrator.py (W17 auto-login — ถ้ามี credential เก็บไว้แล้วจาก
-    storage.save_credentials() และหน้าปัจจุบันเข้าข่ายเป็นหน้า login จริงตอนเริ่ม task)
+"""site_learning/auto_login.py — W15/W17: ตรวจจับ + auto-fill ฟอร์ม login แบบ deterministic (ไม่ใช้ LLM).
 
-แยกออกมาเป็นโมดูลกลางเพราะ crawler.py เอง import core/orchestrator.py อยู่แล้ว (ใช้
-Orchestrator._llm_backend()) — ถ้า orchestrator.py import จาก crawler.py กลับไปจะเกิด
-circular import ทันที โมดูลนี้ไม่ import ทั้งสองฝั่งเลย ปลอดภัยให้ทั้งคู่ import ได้อิสระ
+ใช้ร่วมโดย crawler.py (W15 login bootstrap ตอนเรียนรู้เว็บ) และ core/orchestrator.py (W17 auto-login ด้วย
+credential จาก storage.save_credentials()). แยกเป็นโมดูลกลางกัน circular import (crawler import orchestrator อยู่แล้ว).
 """
 
 import urllib.parse
@@ -24,8 +17,7 @@ _LOGIN_SUBMIT_KEYWORDS = ("sign in", "log in", "login", "signin", "เข้า�
 
 
 def find_login_fields(page_info: PageInfo) -> tuple[Optional[str], Optional[str]]:
-    """หา (username_selector, password_selector) จาก form field ที่ extract มาแล้ว — คืน
-    (None, None) ถ้าไม่เจอ password field เลย (ไม่ใช่หน้า login)"""
+    """คืน (username_selector, password_selector) หรือ (None, None) ถ้าไม่ใช่หน้า login"""
     password_field = next((f for f in page_info.forms if f.input_type == "password" and f.selector), None)
     if password_field is None:
         return None, None
@@ -38,8 +30,7 @@ def find_login_fields(page_info: PageInfo) -> tuple[Optional[str], Optional[str]
         None,
     )
     if username_field is None:
-        # fallback: ฟอร์ม login ธรรมดาส่วนใหญ่มีแค่ 2 ช่อง (user/pass) ไม่ต้องพึ่งชื่อ
-        # field ให้ตรง keyword เป๊ะ — เอา text/email field แรกที่ไม่ใช่ password
+        # fallback: ฟอร์ม login ส่วนใหญ่มีแค่ 2 ช่อง — เอา text/email field แรก
         username_field = next(
             (f for f in page_info.forms if f.input_type in ("text", "email") and f.selector),
             None,
@@ -58,28 +49,17 @@ def find_login_submit_selector(page_info: PageInfo) -> Optional[str]:
 
 
 def _normalize_url_for_compare(url: str) -> str:
-    """ตัด fragment/trailing slash ให้เทียบ URL ก่อน-หลัง login ได้แม่นยำ (URL ต่างกันแค่
-    #section หรือ / ท้ายสุดไม่ควรนับว่าเป็นคนละหน้า) — สำเนาย่อของ crawler.py::
-    _normalize_url โดยเจตนา (ไม่ import ข้ามมาเพราะเป็น private helper ของ crawler ที่ใช้
-    เพื่อ dedupe BFS queue คนละจุดประสงค์ ไม่ใช่ shared utility และ logic สั้นพอที่จะซ้ำได้
-    โดยไม่เสี่ยง drift)"""
+    """ตัด fragment/trailing slash เพื่อเทียบ URL ก่อน-หลัง login — สำเนาย่อของ crawler.py::_normalize_url
+    โดยเจตนา (นั่นเป็น private helper ไว้ dedupe BFS queue คนละจุดประสงค์)"""
     parsed = urllib.parse.urlparse(url)
     path = parsed.path.rstrip("/") or "/"
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
 
 
 async def verify_login_success(page: Page, pre_login_url: str) -> tuple[bool, str]:
-    """หลัง attempt_login() คืน True แล้ว (แปลว่ากด submit ได้จริง) เรียกตัวนี้ต่อเพื่อเช็คว่า
-    session ผ่านจริงไหม ไม่ใช่แค่กด submit ได้ — เกณฑ์ 2 ชั้นที่ต้องผ่านทั้งคู่ (ย้ายมาจาก
-    crawler.py::_login_and_continue เดิม (W24) ที่มี logic นี้อยู่ก่อนแล้ว รวมจุดเดียวให้
-    core/orchestrator.py::_maybe_auto_login เรียกใช้ร่วมได้ แทนที่จะไม่ verify อะไรเลยแบบ
-    เดิม):
-      (1) URL เปลี่ยนไปจาก URL ก่อน submit จริง (ไม่ใช่แค่ submit แล้ว reload หน้าเดิม)
-      (2) หน้าใหม่ไม่มีฟอร์ม login (username+password field) เหลืออยู่แล้ว (find_login_
-          fields คืน (None, None) — ถ้ายังเจอ = โดน redirect กลับมาหน้า login เดิม)
-
-    คืน (session_ok, reason) — reason เป็นข้อความอธิบายเหตุผลตอน session_ok=False เท่านั้น
-    (ว่างเปล่าตอน True) ไว้ log/แจ้ง user ต่อได้โดยไม่มี password ปนอยู่เลย ไม่ throw"""
+    """W24: เช็คว่า session ผ่านจริงหลัง attempt_login() — ต้อง (1) URL เปลี่ยนจากก่อน submit และ
+    (2) หน้าใหม่ไม่มีฟอร์ม login เหลือ (ยังเจอ = ถูก redirect กลับ). คืน (session_ok, reason);
+    reason ว่างตอน True และไม่มี password ปน. ไม่ throw"""
     post_login_url = _normalize_url_for_compare(page.url)
     if post_login_url == _normalize_url_for_compare(pre_login_url):
         return False, "URL ไม่เปลี่ยนหลัง submit — เข้าใจว่า login ไม่ผ่าน"
@@ -95,12 +75,9 @@ async def verify_login_success(page: Page, pre_login_url: str) -> tuple[bool, st
 async def login_with_verification(
     page: Page, page_info: PageInfo, username: str, password: str, retries: int = 1,
 ) -> tuple[bool, str]:
-    """attempt_login() + verify_login_success() รวมกัน พร้อม retry อัตโนมัติถ้ารอบแรกไม่
-    ผ่าน (retries ครั้ง นับแยกจากความพยายามแรก) — ใช้ตอนที่ caller ไม่ต้องการ page_info ของ
-    หน้าหลัง login ต่อ (แค่ต้องการรู้ผล pass/fail) เช่น core/orchestrator.py::
-    _maybe_auto_login ที่ต่างจาก crawler.py::_login_and_continue ตรงที่ไม่ต้อง record หน้า
-    หลัง login ลง manual คืน (True, "") ถ้า login ผ่านจริง (รอบใดก็ได้ใน retries+1 ครั้ง)
-    คืน (False, reason) ของความพยายามครั้งสุดท้ายถ้ายังไม่ผ่านแม้ retry ครบแล้ว ไม่ throw"""
+    """attempt_login() + verify_login_success() พร้อม retry (retries ครั้งหลังรอบแรก) สำหรับ caller ที่
+    ต้องการแค่ pass/fail (เช่น orchestrator._maybe_auto_login). คืน (True, "") หรือ (False, reason
+    ของรอบสุดท้าย). ไม่ throw"""
     reason = ""
     for attempt in range(retries + 1):
         pre_login_url = page.url
@@ -120,12 +97,9 @@ async def login_with_verification(
 
 
 async def attempt_login(page: Page, page_info: PageInfo, username: str, password: str) -> bool:
-    """กรอก username/password แล้วกด sign in — ข้อยกเว้นเดียวที่อนุญาตให้ "submit" ได้
-    ระหว่าง crawl (ดู crawler.py หัวไฟล์) หรือครั้งเดียวตอนต้น task จริง (ดู
-    orchestrator.py::_maybe_auto_login) คืน True ถ้าลองกด submit สำเร็จจริง (ไม่ได้แปลว่า
-    login สำเร็จเสมอไป — ผู้เรียกเช็คผลจริงจากการ re-extract หน้าถัดมาเอง) คืน False ถ้าไม่
-    เจอ field/ปุ่มที่จำเป็นครบ หรือ fill/click ล้มเหลว (ไม่ throw ออกไป — 1 หน้า login พัง
-    ไม่ควรทำทั้ง caller ล้มไปด้วย)"""
+    """กรอก username/password แล้วกด sign in — ข้อยกเว้นเดียวที่อนุญาตให้ "submit" ระหว่าง crawl.
+    True = กด submit ได้ (ไม่ได้แปลว่า login ผ่าน — ใช้ verify_login_success()); False = หา field/ปุ่ม
+    ไม่ครบหรือ fill/click ล้มเหลว. ไม่ throw"""
     username_selector, password_selector = find_login_fields(page_info)
     if not username_selector or not password_selector:
         return False
@@ -137,14 +111,8 @@ async def attempt_login(page: Page, page_info: PageInfo, username: str, password
         await page.fill(password_selector, password, timeout=5000)
         pre_click_url = page.url
         await page.click(submit_selector, timeout=5000)
-        # เว็บบางแห่ง (เช่น SPA ที่ยิง XHR ตรวจ credential ก่อนค่อย route เปลี่ยนหน้า) มีช่วง
-        # หน่วงสั้นๆ ระหว่างกด submit กับ navigation จริงเริ่มต้น — ถ้าเรียก
-        # wait_for_load_state("networkidle") ทันทีโดยไม่รอ URL เปลี่ยนก่อน มันอาจ resolve
-        # ทันทีเพราะหน้า "เดิม" (ก่อน navigate) ก็ idle อยู่แล้วอยู่แล้ว ทำให้
-        # verify_login_success() เห็น URL ยังไม่เปลี่ยนแล้วเข้าใจผิดว่า login ไม่ผ่านทั้งที่
-        # จริงๆ แค่ยังไม่ทันเปลี่ยนหน้า — รอ URL เปลี่ยนก่อนเป็นอันดับแรก (เงียบๆ ถ้า timeout
-        # เพราะ login ที่ล้มเหลวจริงก็ไม่มีทาง URL เปลี่ยนอยู่ดี ปล่อยให้ verify_login_success
-        # ตัดสินจากสถานะสุดท้ายแทน)
+        # SPA ตรวจ credential ด้วย XHR ก่อน route — networkidle ทันทีจะ resolve บนหน้าเดิมแล้ว verify
+        # เข้าใจผิดว่า login ไม่ผ่าน; รอ URL เปลี่ยนก่อน (timeout เงียบๆ ให้ verify ตัดสินเอง)
         try:
             await page.wait_for_url(lambda u: u != pre_click_url, timeout=10000)
         except PWTimeout:

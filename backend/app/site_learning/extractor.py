@@ -1,41 +1,13 @@
-"""site_learning/extractor.py — W14: DOM extraction สำหรับ crawler.py — แยกต่างหากจาก
-core/perception.py::get_snapshot() (ตัวนั้นคืนแค่ {index, tag, type, label} 4 ฟิลด์
-พอสำหรับ agent loop ปกติที่ตัดสินใจทีละ step ด้วย LLM แต่ไม่พอสำหรับ manual ที่ต้องการ
-selector/xpath ที่ใช้ซ้ำได้ข้ามรอบ + โครงสร้าง form/table/nav เต็มรูปแบบ) — ไม่แก้/ไม่
-ใช้ _COLLECT_JS ของ perception.py เลย เขียน JS แยกชุดใหม่ (_EXTRACT_JS) แต่ยึด
-convention เดียวกัน (เช็ค visibility ก่อนเก็บ, ไม่ throw ออกจาก JS)
+"""site_learning/extractor.py — W14: DOM extraction สำหรับ crawler.py (selector/xpath ที่ใช้ซ้ำข้ามรอบ + form/table/nav
+เต็มรูปแบบ) แยกจาก perception.py::get_snapshot() ที่คืนแค่ 4 ฟิลด์; _EXTRACT_JS ยึด convention เดียวกัน
+(เช็ค visibility, ไม่ throw จาก JS).
 
-W18: เพิ่มสองความสามารถ —
-  1. inferIconHint(): เดาความหมายของปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย
-     จาก <svg><title>, data-icon, ชื่อ class ของ icon font/library ทั่วไป (fa-*, icon-*,
-     lucide-*, material-icons ฯลฯ), หรือ aria-label ของ ancestor ที่ใกล้ที่สุด
-  2. UI pattern detection: หา element ที่ซ้ำโครงสร้างกันตั้งแต่ 3 ตัวขึ้นไป (เช่น product
-     card, แถวตาราง, การ์ดวิดีโอ) แล้วเก็บเป็น UIPatternInfo ตัวแทนตัวเดียว (ดู
-     schema.py::UIPatternInfo) แทนที่จะบันทึกทุก instance — element ที่ถูกจัดเป็นส่วนหนึ่ง
-     ของ pattern แล้วจะไม่ถูกเก็บซ้ำในลิสต์ buttons/forms ระดับหน้าอีก เป็น heuristic ล้วนๆ
-     (จับคู่ด้วย tag + sorted class list + child-tag sequence แบบ exact match — ไม่ครอบคลุม
-     ทุกกรณี แต่พอสำหรับเว็บที่ render จาก template เดียวกันจริงๆ ซึ่งเป็นส่วนใหญ่)
-
-W24 (แก้ตามข้อร้องขอ "ค้นหาเมนูให้ครบ ไม่ใช่เฉพาะ <a>"): BUTTON_SELECTOR เดิมพลาด SPA ที่
-render เมนู/แท็บเป็น <div role="menuitem">/<div role="tab">/<router-link> ล้วนๆ ไม่มี a/
-button เลย — เพิ่ม [role=menuitem]/[role=tab]/router-link เข้า selector + describeButton()
-เพิ่มฟิลด์ is_nav_menu_item (ดู isNavMenuItem() — true ถ้าอยู่ใน nav/aside/header/footer/
-[role=tablist]/[role=menu] หรือแมตช์ selector ใหม่พวกนี้ตรงๆ) ให้ crawler.py ตัดสินใจ
-default-allow (เหมือน nav link ปกติ) แทนที่จะต้องผ่าน keyword allowlist แบบปุ่มทั่วไป (ดู
-crawler.py::_is_explorable)
-
-W39: user รายงานว่า self-learning "ไม่เห็น" ปุ่มที่อยู่ใน <iframe> เลย (เจอบนหน้า test
-playground ที่มี iframe ซ้อนกัน 2 ชั้น แต่ละชั้นมีปุ่ม Edit/Submit/Click me/Primary ของ
-ตัวเอง) — สาเหตุจริง: _EXTRACT_JS เดิมรันผ่าน page.evaluate() ซึ่ง execute ใน context ของ
-main document เท่านั้น document.querySelectorAll() มองไม่เห็น element ภายใน <iframe> เลย
-(คนละ document object กันโดยสิ้นเชิง แม้จะเป็น same-origin ก็ตาม JS ไม่ query ข้าม frame
-boundary ให้อัตโนมัติ) — แก้ด้วยการเรียก _EXTRACT_JS ซ้ำกับทุก frame ใน page.frames (ไม่ใช่
-แค่ main frame) แล้ว merge ผลลัพธ์เข้าด้วยกัน (ดู extract_page() ด้านล่าง) — page.frames คืน
-ทุก frame แบบ flat อยู่แล้วรวม frame ที่ซ้อนกันกี่ชั้นก็ตาม ไม่ต้อง recurse เอง แต่ละปุ่ม/
-ช่องฟอร์มที่เจอในหน้าอื่นนอกจาก main frame จะถูกแปะ frame_index (ตำแหน่งใน page.frames ตอน
-extract) ไว้ ให้ crawler.py รู้ว่าต้องกดผ่าน frame object ไหน (ดู
-crawler.py::_resolve_click_target — page.click(selector) ธรรมดาหา element ข้าม frame
-boundary ไม่เจอเลย ต้องเรียก frame.click(selector) ตรงๆ กับ frame ที่ถูกต้อง)
+W18: inferIconHint() เดาความหมายปุ่ม icon-only + UI pattern detection (>=3 element โครงสร้างเดียวกัน -> UIPatternInfo
+     เดียว; heuristic: tag + sorted classes + child-tag sequence แบบ exact)
+W24: เพิ่ม [role=menuitem]/[role=tab]/router-link ใน BUTTON_SELECTOR (SPA ที่ไม่มี a/button) + is_nav_menu_item
+     ให้ crawler default-allow (crawler.py::_is_explorable)
+W39: ปุ่มใน <iframe> มองไม่เห็นเพราะ page.evaluate() query แค่ main document — รัน _EXTRACT_JS กับทุก frame ใน
+     page.frames (flat อยู่แล้ว) แล้วแปะ frame_index ให้ crawler.py::_resolve_click_target กดผ่าน frame ที่ถูก
 """
 
 from typing import Optional
@@ -88,29 +60,13 @@ _EXTRACT_JS = r"""
     return path.join(' > ');
   };
 
-  // W24: คอนเทนเนอร์เมนู/นำทางทั่วไป — ยกขึ้นมาไว้บนสุด (เดิมประกาศแค่ตอนเก็บ nav_links
-  // ท้ายสคริปต์) เพราะตอนนี้ describeButton() ก็ต้องใช้ตัวเดียวกันเช็ค isNavMenuItem() ด้วย
+  // W24: คอนเทนเนอร์เมนู/นำทาง — ใช้ทั้ง isNavMenuItem() และ nav_links
   const NAV_CONTAINERS = 'nav, [role=navigation], aside, header, footer, [role=tablist], [role=menu]';
 
-  // W24: True ถ้า element นี้ "น่าจะเป็นเมนู/นำทาง" ไม่ใช่ปุ่ม action ทั่วไปบนหน้า — อยู่ใน
-  // คอนเทนเนอร์เมนูด้านบน หรือมี role="menuitem"/"tab" ตรงๆ (SPA จำนวนมากไม่ใช้ <a href>
-  // สำหรับเมนู แต่ใช้ <button>/<div role="menuitem"> ที่ trigger client-side routing เอง)
-  // หรือเป็น <router-link> (Vue Router แบบไม่ render เป็น <a>) หรือมี class ที่มีคำว่า
-  // router-link (บาง component library แปะ class นี้ไว้แม้จะ render เป็น <a> จริงก็ตาม —
-  // ไม่มีผลเสียถ้าธงนี้ true ซ้ำกับที่ NAV_CONTAINERS จับได้อยู่แล้ว) ใช้ตัดสินใจใน
-  // crawler.py::_is_explorable ว่าจะยอมกดแบบ default-allow (เหมือน nav link ปกติ) หรือ
-  // ต้องผ่าน default-deny keyword allowlist เหมือนปุ่มอื่นๆ
-  //
-  // *** ข้อยกเว้นสำคัญ: <a href="..."> ที่มี href จริง (ไม่ใช่ "#fragment"/"javascript:")
-  // ไม่ถือเป็น nav menu item ที่นี่เลย แม้จะอยู่ใน NAV_CONTAINERS ก็ตาม — เพราะ crawler.py
-  // มีเส้นทาง BFS แยกต่างหากอยู่แล้วที่เดินตาม href นี้ (nav_links ด้านล่าง) ซึ่งเช็ค
-  // same-origin จาก href ได้ก่อน "goto" เสมอ (กัน cross-origin เด็ดขาด) ถ้าให้ธงนี้ true
-  // ด้วย จะทำให้ _explore_buttons() ไป "คลิก" ลิงก์เดิมซ้ำ ซึ่งคลิกจริงทำให้ browser
-  // navigate ไปเลยก่อนจะรู้ปลายทาง (ต่างจาก BFS ที่รู้ domain จาก href ได้ก่อน navigate)
-  // เสี่ยงคลิกหลุดไปเว็บอื่นจริงๆ ระหว่าง "เรียนรู้เว็บไซต์" ทั้งที่ตั้งใจจำกัดขอบเขตไว้แค่
-  // โดเมนเดียว — <a href="#tab1">/<a href="javascript:...">/element ที่ไม่ใช่ a เลย (ปุ่ม/
-  // div ที่ trigger client-side routing ด้วย JS ล้วนๆ) ไม่มีปลายทางข้ามหน้าให้เสี่ยงคลิก
-  // หลุดแบบนี้ได้อยู่แล้ว (คลิกแล้วอยู่หน้าเดิมเสมอ) ยังคง eligible ตามปกติ
+  // W24: เมนู/นำทาง = อยู่ใน NAV_CONTAINERS, role menuitem/tab, <router-link> หรือ class router-link (SPA ที่
+  // route ด้วย JS) -> crawler.py::_is_explorable ให้ default-allow
+  // *** ยกเว้น <a> ที่มี href จริง: BFS เดินตาม href อยู่แล้วโดยเช็ค same-origin ก่อน goto; ถ้าให้ true
+  // _explore_buttons() จะ "คลิก" ซ้ำ ซึ่ง navigate ก่อนรู้ปลายทาง เสี่ยงหลุดไปเว็บอื่น ***
   const isNavMenuItem = (el) => {
     if (el.tagName.toLowerCase() === 'a') {
       const href = el.getAttribute('href') || '';
@@ -124,12 +80,8 @@ _EXTRACT_JS = r"""
     return false;
   };
 
-  // W36: True ถ้า element นี้อยู่ใน <form> จริง และเป็นปุ่ม submit ของฟอร์มนั้นตาม HTML
-  // semantics — input[type=submit], button[type=submit], หรือ <button> ที่ไม่มี attribute
-  // type เลยภายใน form (default เป็น type=submit ตามสเปค HTML แม้จะไม่ได้ระบุ attribute
-  // ตรงๆ) ใช้เป็นสัญญาณ DOM หนึ่งใน safety.classify_button_tier()/button_core_priority()
-  // (ดู crawler.py) ไม่เกี่ยวกับ safety.is_crawl_safe() เลย (ปุ่ม submit ยังถูกบล็อกด้วย
-  // BLOCKED_CRAWL_KEYWORDS เหมือนเดิมทุกประการ)
+  // W36: ปุ่ม submit ของ <form> ตาม HTML (input/button[type=submit] หรือ <button> ไม่มี type) — แค่สัญญาณให้
+  // classify_button_tier()/button_core_priority() ไม่เกี่ยวกับ is_crawl_safe() (submit ยังโดน BLOCKED)
   const isFormSubmit = (el) => {
     const form = el.closest('form');
     if (!form) return false;
@@ -154,12 +106,8 @@ _EXTRACT_JS = r"""
     return '/html' + path;
   };
 
-  // W18: เดาความหมายของปุ่ม icon-only ที่ไม่มี text/aria-label/title เลย — ลำดับ: <svg>
-  // <title> ลูก > data-icon attribute > ชื่อ class ของ icon font/library ที่พบทั่วไป
-  // (fa-/fas-/far-/fab- ของ Font Awesome, icon-, lucide-, feather-, bi- ของ Bootstrap
-  // Icons, glyphicon-) > ligature text ของ Material Icons (<i class="material-icons">
-  // search</i> ตัว text content เองคือชื่อไอคอน) > aria-label ของ ancestor ที่ใกล้ที่สุด
-  // (บางเว็บแปะ aria-label ไว้ที่ wrapper แทนที่ปุ่มเอง) — คืนสตริงว่างถ้าเดาไม่ได้เลย
+  // W18: ความหมายปุ่ม icon-only — <svg><title> > data-icon > class ของ icon library (fa-/icon-/lucide-/feather-/
+  // bi-/glyphicon-) > ligature ของ material-icons > aria-label ของ ancestor; '' ถ้าเดาไม่ได้
   const inferIconHint = (el) => {
     const svgTitle = el.querySelector('svg > title');
     if (svgTitle && svgTitle.textContent && svgTitle.textContent.trim()) {
@@ -188,8 +136,7 @@ _EXTRACT_JS = r"""
     return '';
   };
 
-  // ปุ่ม/link ทั้ง buttons ระดับหน้าและปุ่มภายใน UI pattern (ดู uiPatterns ด้านล่าง) ใช้
-  // ตัวสกัดข้อมูลชุดเดียวกันนี้ กันโค้ดซ้ำ
+  // ใช้ร่วมทั้งปุ่มระดับหน้าและปุ่มภายใน UI pattern
   const describeButton = (el) => ({
     text: (el.innerText || el.value || '').trim().slice(0, 100),
     has_icon: !!el.querySelector('svg, img, [class*="icon" i]'),
@@ -204,19 +151,12 @@ _EXTRACT_JS = r"""
     xpath: computeXPath(el),
   });
 
-  // W24: เพิ่ม [role=menuitem]/[role=tab]/router-link เข้ามาแล้ว — เดิมมีแค่ a/button/
-  // [role=button]/[role=link]/input[submit|button]/[onclick] ซึ่งพลาดเมนู/แท็บที่ SPA
-  // สมัยใหม่ render เป็น <div role="menuitem">/<div role="tab"> ล้วนๆ ไม่ผ่าน a/button
-  // เลย (ดู isNavMenuItem ด้านบน — องค์ประกอบที่แมตช์ selector เหล่านี้ หรืออยู่ใน
-  // NAV_CONTAINERS จะถูก crawler.py ปฏิบัติแบบ "เมนู" default-allow แทนที่จะต้องผ่าน
-  // keyword allowlist แบบปุ่มทั่วไป)
+  // W24: [role=menuitem]/[role=tab]/router-link — เมนู/แท็บของ SPA ที่ไม่ใช่ a/button
   const BUTTON_SELECTOR =
     'a, button, [role=button], [role=link], [role=menuitem], [role=tab], router-link, ' +
     'input[type=submit], input[type=button], [onclick]';
 
-  // ---- W18: UI pattern detection (product card / list item / table row ฯลฯ ที่ซ้ำกัน
-  // หลาย instance) — ทำก่อน buttons/forms loop ด้านล่าง เพื่อรู้ว่า element ไหน "ถูกจัดเป็น
-  // ส่วนหนึ่งของ pattern แล้ว" จะได้ข้ามไม่เก็บซ้ำ ----
+  // ---- W18: UI pattern detection — ทำก่อน buttons/forms เพื่อข้าม element ที่อยู่ใน pattern แล้ว ----
   const MIN_PATTERN_REPEAT = 3;
   const CONSUMED_ATTR = 'data-ui-pattern-consumed';
   const consumedMarked = [];  // เก็บ element ที่แปะ attribute ไว้ชั่วคราว ไว้ล้างทิ้งท้ายสคริปต์
@@ -258,8 +198,7 @@ _EXTRACT_JS = r"""
   };
 
   const inferPatternName = (representative, parent, uiType) => {
-    // 1. heading ที่อยู่ก่อนหน้า container ทันที (เช่น <h2>Related Products</h2><div
-    // class="grid">...card...</div>) — บ่งบอกชื่อ section ได้ตรงกว่าเดาจาก class name
+    // heading ก่อน container (เช่น <h2>Related Products</h2>) บอกชื่อ section ได้ตรงกว่า class name
     let sib = parent.previousElementSibling;
     for (let i = 0; sib && i < 3; i++, sib = sib.previousElementSibling) {
       if (/^h[1-6]$/i.test(sib.tagName) && sib.innerText && sib.innerText.trim()) {
@@ -392,14 +331,8 @@ _EXTRACT_JS = r"""
   }
 
   // ---- nav links (ไว้ต่อคิว BFS ใน crawler.py — ไม่ใช่ส่วนหนึ่งของ PageInfo) ----
-  // W25: เดิมสแกนหาแค่ a[href] ที่อยู่ใน NAV_CONTAINERS เท่านั้น (nav/aside/header/footer/
-  // [role=tablist]/[role=menu]) — พลาดลิงก์ในเนื้อหา (content area) ที่ไม่ได้อยู่ในเมนูเลย
-  // (เช่น "อ่านต่อ"/"ดูรายละเอียด" กลางบทความ, ลิงก์ในตาราง/การ์ดที่ไม่ใช่ nav) ทำให้ BFS
-  // มองไม่เห็นหน้าที่เข้าถึงได้จริงแต่ไม่มีทางอื่นนอกจากลิงก์แบบนี้เลย — เปลี่ยนเป็นสแกนทั้ง
-  // เอกสาร (document.querySelectorAll ตรงๆ ไม่ผูกกับ NAV_CONTAINERS อีกต่อไป) ให้ตรงกับ
-  // "extract all clickable elements: a" ตามที่ user ระบุ — ยังกรองด้วย is_safe_nav_link()
-  // (default-allow, บล็อกเฉพาะคำทำลายชัดเจนอย่าง Logout/Delete) ที่ฝั่ง crawler.py เหมือน
-  // เดิมทุกประการ ไม่ได้ลดความเข้มงวดของ safety rule ลงเลย แค่ขยายขอบเขตที่ "เห็น" ลิงก์
+  // W25: สแกน a[href] ทั้งเอกสาร (เดิมแค่ใน NAV_CONTAINERS พลาดลิงก์ในเนื้อหาอย่าง "อ่านต่อ") — ยังกรองด้วย
+  // is_safe_nav_link() ฝั่ง crawler.py เหมือนเดิม
   const navLinks = [];
   const seenHref = new Set();
   document.querySelectorAll('a[href]').forEach((a) => {
@@ -409,11 +342,8 @@ _EXTRACT_JS = r"""
     const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
     if (!text) return;
     seenHref.add(href);
-    // W66[A] ("Fast-Path Navigation"): selector ให้ crawler.py หา element ตัวนี้กลับมา
-    // เจอสดๆ อีกครั้งหลัง extract เสร็จ (ตอนกำลังจะ queue ลิงก์นี้เข้า BFS จริง) เพื่อคำนวณ
-    // locator descriptor ผ่าน dom_locator.py::compute_locator_descriptor() — ใช้
-    // computeSelector() ตัวเดียวกับที่ buttons/forms ด้านบนใช้ (ดู docstring หัวไฟล์
-    // dom_locator.py ว่าทำไม priority ต้องตรงกันทั้งสองฝั่ง)
+    // W66[A]: selector ให้ crawler.py หา element กลับมาคำนวณ dom_locator.compute_locator_descriptor() —
+    // ใช้ computeSelector() ตัวเดียวกับ buttons/forms (priority ต้องตรงกับ dom_locator.py)
     navLinks.push({ text, href, menu_path: [text], selector: computeSelector(a) });
   });
 
@@ -435,8 +365,7 @@ _EXTRACT_JS = r"""
   const tabs = Array.from(document.querySelectorAll('[role="tab"]'))
     .map((e) => (e.innerText || '').trim()).filter(Boolean);
 
-  // ล้าง attribute ชั่วคราวที่แปะไว้ตอนตรวจ UI pattern — ไม่อยากทิ้งร่องรอยไว้ใน DOM จริง
-  // ของหน้าที่กำลัง crawl อยู่ (แม้จะไม่มีผลต่อ style/behavior ของเว็บก็ตาม)
+  // ล้าง attribute ชั่วคราวของ UI pattern ไม่ทิ้งร่องรอยใน DOM จริง
   for (const e of consumedMarked) e.removeAttribute(CONSUMED_ATTR);
 
   return {
@@ -448,22 +377,14 @@ _EXTRACT_JS = r"""
 
 
 def _build_button(b: dict) -> ButtonInfo:
-    """W36: สร้าง ButtonInfo จาก dict ดิบที่ได้จาก JS แล้วเติม tier ทันที (ดู
-    safety.classify_button_tier) — ต้องทำที่นี่ (ฝั่ง Python หลัง JS คืนค่ามาแล้ว) ไม่ใช่
-    ใน JS เอง เพราะ classify_button_tier() เป็นฟังก์ชัน Python ล้วนๆ (heuristic ไม่เรียก
-    LLM) เรียกจาก JS ตรงๆ ไม่ได้ — ใช้ทั้งกับปุ่มระดับหน้าและปุ่มภายใน UI pattern (ดู
-    extract_page ด้านล่าง) เพราะทั้งคู่ถูกส่งเข้า crawler.py::_explore_buttons() เหมือนกัน"""
+    """W36: ButtonInfo จาก dict ของ JS + tier (classify_button_tier เป็น Python จึงทำฝั่งนี้)"""
     button_info = ButtonInfo(**b)
     button_info.tier = classify_button_tier(button_info)
     return button_info
 
 
 async def _extract_frame_data(frame: Frame) -> Optional[dict]:
-    """W39: เรียก _EXTRACT_JS กับ frame ใดก็ได้ (child frame ใน <iframe> — ดู extract_page())
-    คืน None ถ้า evaluate ล้มเหลว (เช่น frame cross-origin ที่ browser บล็อกไม่ให้เข้าถึง
-    DOM ข้าม origin, frame ถูก detach ไปแล้วระหว่างอ่าน ฯลฯ) ไม่ throw ออกไปให้ caller เอง —
-    เฟรมเดียวพังไม่ควรทำทั้งการ extract หน้าล้มเหลวไปด้วย (กฎเดียวกับ describe_page() ใน
-    crawler.py ที่ 1 หน้าพังไม่ควรทำทั้ง crawl ล้ม)"""
+    """W39: _EXTRACT_JS บน frame เดียว; คืน None ถ้าล้ม (cross-origin, detached) — ไม่ throw ให้ทั้งหน้าล้ม"""
     try:
         return await frame.evaluate(_EXTRACT_JS)
     except Exception:
@@ -471,19 +392,8 @@ async def _extract_frame_data(frame: Frame) -> Optional[dict]:
 
 
 async def extract_page(page: Page) -> tuple[PageInfo, list[dict]]:
-    """สกัดโครงสร้างของหน้าปัจจุบัน — คืน (PageInfo, nav_links) โดย PageInfo ที่คืนมายัง
-    ไม่มี name/description (crawler.py เป็นคนเติมทีหลัง — description มาจาก LLM ครั้ง
-    เดียวต่อหน้า, name มาจากการอนุมานจาก breadcrumb/title/URL) nav_links คือ
-    list[{"text","href","menu_path"}] ที่เจอในหน้านี้ ไว้ให้ crawler.py ต่อคิว BFS
-    (ไม่ใช่ส่วนหนึ่งของ PageInfo โดยตรงเพราะเป็นลิงก์ที่ "จะ" ไปเยี่ยม ไม่ใช่โครงสร้าง
-    ของหน้านี้เอง)
-
-    W39: นอกจาก main frame แล้ว ไล่ extract ซ้ำในทุก child frame ด้วย (ดู
-    _extract_frame_data) — page.frames คืนทุก frame แบบ flat อยู่แล้ว (รวม frame ที่ซ้อนกัน
-    กี่ชั้นก็ตาม ไม่ต้อง recurse เอง) ปุ่ม/ช่องฟอร์มที่เจอในแต่ละ child frame ถูกแปะ
-    frame_index (ตำแหน่งใน page.frames ตอน extract นี้) ก่อนรวมเข้ากับของ main frame — ตาราง/
-    UI pattern/nav link จาก child frame ก็รวมเข้าด้วยเหมือนกัน (ครบทุกอย่างที่ PageInfo เก็บ
-    ไม่ใช่แค่ปุ่ม เพื่อให้ "โครงสร้างหน้า" ที่ได้ครบถ้วนจริง)"""
+    """คืน (PageInfo ที่ยังไม่มี name/description — crawler.py เติม, nav_links [{"text","href","menu_path","selector"}]
+    สำหรับคิว BFS). W39: รวมปุ่ม/ฟอร์ม/ตาราง/pattern/nav link จากทุก child frame (ปุ่ม/ฟอร์มแปะ frame_index)"""
     data = await page.evaluate(_EXTRACT_JS)
     buttons_raw = list(data.get("buttons", []))
     forms_raw = list(data.get("forms", []))
