@@ -1,41 +1,24 @@
 """
-perception.py  —  W2: Perception Module (หัวใจของ Agent)
-------------------------------------------------------------
-หน้าที่: มองหน้าเว็บขณะนั้น แล้วแปลงเป็น "indexed elements"
-         ที่ประหยัด token เพื่อส่งให้ LLM ตัดสินใจ
+perception.py — W2: Perception Module
+-------------------------------------
+แปลงหน้าเว็บเป็น "indexed elements" ประหยัด token ให้ LLM ตัดสินใจ แทนการส่ง HTML ดิบ:
+    [0] input 'Username'
+    [1] input 'Password'
+    [2] button 'Login'
 
-แนวคิด: อย่าส่ง HTML ดิบทั้งหน้าให้ LLM (เปลือง token + งง)
-        ให้ดึงเฉพาะ element ที่ "โต้ตอบได้" + "มองเห็น" มาติดหมายเลข
-        เช่น  [0] input 'Username'
-              [1] input 'Password'
-              [2] button 'Login'
+W40 (iframe): page.evaluate() เห็นแค่ main document — element ใน <iframe> จึงหายจาก snapshot
+(เจอบน uitestingplayground.com/frames: agent วนกด nav link จนโดน loop-guard) แก้โดยรัน
+_COLLECT_JS ทุก frame ใน page.frames (flat อยู่แล้ว, main frame ก่อนเสมอ) ส่ง startIndex ให้
+index ต่อกันไม่ชนข้าม frame และ click/fill ต้องหา frame ที่ถูกก่อนผ่าน resolve_frame()
+(ใช้โดย actions.py)
 
-รันกับ saucedemo.com เพื่อทดสอบ
-
-ติดตั้งก่อนใช้:
-    pip install playwright
-    playwright install chromium
-
-W40: user รายงานว่า agent "มองไม่เห็นปุ่ม" บนหน้าที่มี <iframe> (เจอบน
-uitestingplayground.com/frames — Outer Frame (Level 1) ซ้อน Inner Frame (Level 2) แต่ละ
-ชั้นมีปุ่ม Edit/Submit/Click me/Primary ของตัวเอง) แล้วเข้าลูปกดวนกลับไปหน้า Home/Frames/
-Resources ไม่รู้จบ (LLM เห็นแค่ nav link ที่มีอยู่จริงในหน้า Home เป็น element ที่กดได้เท่านั้น
-ไม่มีทางสั่งกดปุ่มใน frame ที่ไม่เคยอยู่ใน snapshot เลย วนจนโดน loop-guard ของ
-orchestrator.py บังคับ go_back/scroll ซ้ำๆ) — สาเหตุจริง (เหมือนบั๊กเดียวกับที่เจอใน
-site_learning/extractor.py W39 มาก่อน แต่คนละ subsystem กัน): _COLLECT_JS เดิมรันผ่าน
-page.evaluate() ซึ่ง execute ใน context ของ main document เท่านั้น
-document.querySelectorAll() มองไม่เห็น element ภายใน <iframe> เลย (คนละ document object
-กันโดยสิ้นเชิง แม้ same-origin ก็ตาม) — แก้ด้วยการเรียก _COLLECT_JS ซ้ำกับทุก frame ใน
-page.frames (ดู get_snapshot() ด้านล่าง) page.frames คืนทุก frame แบบ flat อยู่แล้ว รวม
-frame ที่ซ้อนกันกี่ชั้นก็ตาม ไม่ต้อง recurse เอง — เรียง main frame ก่อนเสมอ (หน้าที่ไม่มี
-iframe เลย page.frames จะมีแค่ [main_frame] ตัวเดียว พฤติกรรมเดิมทุกประการ ไม่มีอะไรเปลี่ยน)
-ส่ง startIndex เป็น argument ให้ _COLLECT_JS เพื่อให้เลข index เรียงต่อกันข้าม frame แบบไม่
-ชนกัน (agent ใช้ index เดียวอ้างอิง element ทั้งหน้า ไม่แยกตาม frame)
-
-แค่ perceive เห็นยังไม่พอ — click(N)/fill(N) เดิมก็ query ข้าม frame boundary ไม่ได้เหมือนกัน
-(page.click(selector) หา element ใน main document เท่านั้น) เพิ่ม resolve_frame() ด้านล่าง
-ให้ backend/app/core/actions.py (จุด dispatch จริงที่ orchestrator.py เรียก) ใช้หา Frame
-object ที่ถูกต้องก่อนกดทุกครั้ง
+แผนที่โซน (ค้นหา "# โซน N" ในไฟล์):
+  โซน 1  _COLLECT_JS — JS ใน browser เก็บ element + สร้าง label/marker
+  โซน 2  LABEL_MARKERS / label_without_markers / แยก label ซ้ำ
+  โซน 3  get_snapshot() (ทางเข้าหลัก) + resolve_frame()
+  โซน 4  Lane 1: count_elements() — นับ
+  โซน 5  Lane 2: extract_table_data() — ดึงตาราง/list + lookup
+  โซน 6  helper + demo()
 """
 
 import asyncio
@@ -49,24 +32,17 @@ from backend.app.config import settings
 from backend.app.permission.rules import install_ssrf_guard
 
 
-# --- JS ที่ inject เข้าไปเก็บ element โต้ตอบได้ที่มองเห็นบนหน้าจอ ---
+# ══════════════════════════════════════════════════════════════════════
+# โซน 1: เก็บ element จากหน้าเว็บ (JS ที่รันใน browser)
+#   ทำอะไร: หา element ที่โต้ตอบได้และมองเห็น แปะ data-ai-index แล้วสร้าง label ให้ LLM อ่าน
+#   ทำงานยังไง: selector มาตรฐาน + pass เสริม (icon/profile menu/checkbox/radio/switch) -> กรอง footer/การมองเห็น -> สร้าง label + marker สถานะ -> คืน list ของ dict
+# ══════════════════════════════════════════════════════════════════════
 _COLLECT_JS = r"""
 (startIndex) => {
-  // W50: role=option/menuitem*/combobox — ปุ่ม/ตัวเลือกของ custom dropdown/menu widget
-  // (MUI, Ant Design, React-select, Headless UI ฯลฯ) มักไม่ใช่ <select><option> จริงเลย
-  // แต่ implement เป็น <div>/<li> ที่มี role ตาม ARIA listbox/menu pattern แทน — เดิม
-  // selectors ด้านบนไม่มี role พวกนี้เลย ทำให้ perception มองไม่เห็นตัวเลือกข้างในหลัง
-  // เปิด dropdown แม้ document.querySelectorAll() (ด้านล่าง) จะกวาดทั้ง document อยู่แล้ว
-  // (ไม่ขึ้นกับว่า dropdown จะ portal ไปแปะที่ document.body หรือซ้อนอยู่ใต้ trigger ก็ตาม
-  // — ปัญหาจริงคือ selector ไม่ครอบคลุม ไม่ใช่เรื่อง portal location) role=combobox คือตัว
-  // trigger ของ widget แบบนี้เอง (คู่กับ [role=button] เดิมที่มีอยู่แล้ว)
-  // W_contenteditable (P3.5): rich-text editor ทุกตัวในโลกจริง (Gmail compose, Notion,
-  // Slack, Quill/CKEditor/TinyMCE) ไม่ใช่ <textarea> แต่เป็น div[contenteditable] — เดิม
-  // selector ชุดนี้ไม่มีเลยสักตัว agent จึงมองไม่เห็นช่องพิมพ์ของเว็บกลุ่มนี้ทั้งหมด
-  // (ไม่ใช่ "กรอกแล้วพลาด" แต่คือ "ไม่มี index ให้สั่งตั้งแต่แรก")
-  //
-  // ARIA role ที่ขาด: radio/slider/spinbutton/searchbox/textbox/treeitem/listbox — role
-  // มาตรฐานที่ widget library ใช้กันทั่วไป แต่ลิสต์เดิมมีแค่ 8 role ที่เจอบ่อยที่สุด
+  // W50: role=option/menuitem*/combobox — custom dropdown/menu (MUI, AntD, React-select ฯลฯ)
+  // ไม่ใช่ <select> จริง ถ้าไม่มี role พวกนี้จะมองไม่เห็นตัวเลือกหลังเปิด dropdown
+  // W_contenteditable (P3.5): rich-text editor (Gmail, Notion, Quill ฯลฯ) เป็น div[contenteditable]
+  // ARIA role เพิ่มเติม (radio/slider/spinbutton/...) = role มาตรฐานของ widget library
   const selectors = [
     'a', 'button', 'input', 'select', 'textarea',
     '[contenteditable=""]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]',
@@ -74,30 +50,16 @@ _COLLECT_JS = r"""
     '[role=tab]', '[role=option]', '[role=menuitem]',
     '[role=menuitemradio]', '[role=menuitemcheckbox]', '[role=combobox]',
     '[role=radio]', '[role=slider]', '[role=spinbutton]', '[role=searchbox]',
-    // W_listbox_container: ห้ามใส่ '[role=listbox]' กลับเข้ามาเด็ดขาด — listbox เป็น
-    // *container* ของรายการตัวเลือก ไม่ใช่ปุ่ม พอมันได้ index เอง label ของมันคือ innerText
-    // ของทุก option ต่อกัน ('-- Select -- Admin ESS') ซึ่งมีคำที่ goal ต้องการอยู่ด้วย โมเดล
-    // จึงคลิกมันแล้วไปโดน option แรกแทน (บั๊กจริง live run 2026-08-27: goal ขอ ESS แต่ได้
-    // Admin) — '[role=option]' ด้านบนให้ index กับตัวเลือกทีละตัวอยู่แล้ว container จึงไม่ได้
-    // เพิ่มอะไรเลย มีแต่สร้างเป้าปลอมที่ label ล่อให้คลิกผิด
+    // W_listbox_container: ห้ามเพิ่ม '[role=listbox]' — container ได้ label เป็น text ของทุก option
+    // ต่อกัน โมเดลคลิกแล้วโดน option แรก (live run 2026-08-27: ขอ ESS ได้ Admin)
     '[role=textbox]', '[role=treeitem]', '[role=switch]',
     '[onclick]', '[tabindex]'
   ].join(',');
 
-  // W_shadow_dom (P3.4): document.querySelectorAll() ไม่ทะลุ shadow root — เว็บที่สร้างด้วย
-  // web component (Salesforce Lightning, Vaadin, YouTube/Polymer, design system องค์กร
-  // จำนวนมาก) จึง "มองไม่เห็นทั้งหน้า" ไม่ใช่เห็นไม่ครบ ก่อนหน้านี้ทั้งโปรเจกต์ไม่มีคำว่า
-  // shadowRoot อยู่เลยสักบรรทัด
-  //
-  // เดินเฉพาะ open shadow root (closed mode เข้าถึงไม่ได้จาก JS อยู่แล้วโดยการออกแบบของ
-  // เบราว์เซอร์ ไม่มีทางแก้ฝั่งเรา) — จำกัดความลึกกัน component ที่ซ้อนกันลึกผิดปกติ/วนกลับ
-  // ทำให้ค้าง และ try/catch ครอบ querySelectorAll เพราะ selector บางตัวอาจ throw ใน
-  // shadow tree ที่ implement แปลกๆ (หลักการเดียวกับที่ get_snapshot ข้าม frame ที่พังไป
-  // เงียบๆ — ส่วนหนึ่งพังไม่ควรทำให้ perceive ทั้งหน้าล้มเหลว)
-  //
-  // หมายเหตุสำคัญ: Playwright CSS selector ทะลุ open shadow root ให้เองอยู่แล้ว ดังนั้น
-  // data-ai-index ที่แปะบน element ใน shadow tree ยังถูก click/fill ได้ตามปกติ ไม่ต้องแก้
-  // actions.py เลยสักบรรทัด
+  // W_shadow_dom (P3.4): querySelectorAll ไม่ทะลุ shadow root — เว็บ web component (Salesforce,
+  // Vaadin, YouTube) มองไม่เห็นทั้งหน้า เดินเฉพาะ open root (closed เข้าไม่ได้โดยการออกแบบ)
+  // จำกัดความลึกกันค้าง, try/catch กัน tree แปลกๆ ทำทั้ง pass ล้ม
+  // Playwright CSS selector ทะลุ open shadow root เอง จึงไม่ต้องแก้ actions.py
   const SHADOW_MAX_DEPTH = 8;
   const deepQueryAll = (root, sel) => {
     const out = [];
@@ -116,16 +78,9 @@ _COLLECT_JS = r"""
     return out;
   };
 
-  // footer/ส่วนที่ไม่เกี่ยวกับการทำ task จริง (โซเชียล/copyright/nav ซ้ำ) —
-  // กันไม่ให้กิน token เปล่าๆ ทุก step โดยที่ agent แทบไม่เคยต้องกด element พวกนี้
-  //
-  // *** เดิมใช้ [class*="footer" i] แบบ substring เปล่าๆ ซึ่งดันไปแมตช์ id/class
-  // ของ "แถบปุ่ม action ท้าย component" ด้วย (เช่น saucedemo ใส่ปุ่ม Checkout จริง
-  // ไว้ใน <div class="cart_footer">) ทำให้ปุ่มที่ต้องกดจริงหายไปจาก snapshot ทั้งที่
-  // ไม่ใช่ footer ของทั้งหน้าเลย — เปลี่ยนมาเช็คแบบ token-aware แทน: ยอมให้ "footer"
-  // โดดๆ หรือมีคำขอบเขตระดับทั้งหน้านำหน้า (site/page/global/main/app) เท่านั้น
-  // ถึงจะถือว่าเป็น footer จริงของหน้า — ชื่อที่มีคำ component อื่นนำหน้า (cart_footer,
-  // modal-footer, card-footer) จะไม่ถูกกรอง เพราะมักเป็น action bar ที่มีปุ่มสำคัญ ***
+  // กรอง footer ระดับหน้า (โซเชียล/copyright) กันเปลือง token
+  // เช็คแบบ token-aware: substring "footer" เดิมไปโดน action bar เช่น saucedemo "cart_footer"
+  // (ปุ่ม Checkout หาย) — นับเฉพาะ "footer" โดดๆ หรือนำหน้าด้วย site/page/global/main/app
   const PAGE_SCOPE_FOOTER_WORDS = new Set(['site', 'page', 'global', 'main', 'app']);
 
   const isGlobalFooterToken = (raw) => {
@@ -148,21 +103,12 @@ _COLLECT_JS = r"""
     return false;
   };
 
-  // W19 ("Scoped Search Context"): user รายงานปัญหาบน OrangeHRM — label เดียวกัน
-  // ("Search"/username field ฯลฯ) โผล่ซ้ำทั้งใน sidebar (เมนูหลัก) และ main content
-  // (search filter form จริง) ทำให้ agent เดา index ผิดเลือกตัวใน sidebar ทั้งที่ตั้งใจ
-  // จะกรอกฟอร์มค้นหาในเนื้อหาหลัก — เดินขึ้นจาก element หา ancestor ที่ตรงกับ
-  // navigation/main content container ที่ใกล้ที่สุดก่อน (nested <nav> ใน <main> เช่น
-  // breadcrumb ยังนับเป็น "navigation" ถูกต้อง เพราะเป็น container ที่ใกล้ตัว element
-  // ที่สุด) คืนค่าว่างถ้าไม่ match อะไรเลย (หน้าที่ไม่ได้ใช้ semantic container ชัดเจน —
-  // ไม่ใช่ error แค่ไม่มีข้อมูลให้ disambiguate เพิ่ม)
+  // W19 (Scoped Search Context): label ซ้ำใน sidebar กับ main (OrangeHRM) ทำให้เลือกผิดตัว
+  // หา container ที่ใกล้ที่สุด คืน '' ถ้าหน้าไม่มี semantic container
   const NAVIGATION_REGION_SELECTOR = 'aside, nav, [role="navigation"], .oxd-sidepanel';
   const MAIN_REGION_SELECTOR = 'main, [role="main"], .oxd-layout-context';
-  // W_dialog_in_snapshot: dialog ที่เปิดค้างอยู่ไม่ใช่ทั้ง navigation และ main — ของเดิมจึงได้
-  // region='' ไม่มี marker อะไรเลย ปุ่ม "Yes, Delete" เลยปนอยู่กลางลิสต์ร่วมกับแถวข้อมูลที่อยู่
-  // *หลัง* dialog ซึ่งหน้าตาคลิกได้เหมือนกันทุกประการ (บั๊กจริง live run 2026-08-28: agent ไล่
-  // คลิกของหลัง dialog จน timeout ซ้ำๆ โดยไม่เคยแตะปุ่มใน dialog เลย)
-  // ชุดเดียวกับ actions.py::_DIALOG_CONTAINER_SELECTORS โดยเจตนา — generic ก่อน framework
+  // W_dialog_in_snapshot: ปุ่มใน dialog เคยปนกับแถวข้อมูลข้างหลัง (live run 2026-08-28: agent
+  // คลิกของหลัง dialog จน timeout) — ชุดเดียวกับ actions.py::_DIALOG_CONTAINER_SELECTORS โดยเจตนา
   const DIALOG_REGION_SELECTOR = 'dialog[open], [role="dialog"], [role="alertdialog"], ' +
     '[aria-modal="true"], .modal.show, .MuiDialog-root, .ant-modal-wrap, .swal2-container, ' +
     '.oxd-dialog-container';
@@ -170,7 +116,7 @@ _COLLECT_JS = r"""
   const getRegion = (node) => {
     let cur = node;
     while (cur && cur.nodeType === 1) {
-      // dialog ตรวจก่อนเสมอ: dialog ที่ render อยู่ข้างใน <main> ต้องยังนับเป็น dialog
+      // dialog ก่อนเสมอ: dialog ใน <main> ต้องนับเป็น dialog
       if (cur.matches && cur.matches(DIALOG_REGION_SELECTOR)) return 'dialog';
       if (cur.matches && cur.matches(NAVIGATION_REGION_SELECTOR)) return 'navigation';
       if (cur.matches && cur.matches(MAIN_REGION_SELECTOR)) return 'main';
@@ -179,12 +125,8 @@ _COLLECT_JS = r"""
     return '';
   };
 
-  // W19 ("Exact Element Matching" ข้อ 2): <label for="id">/<label>...<input></label>
-  // เป็นแหล่ง label ที่น่าเชื่อถือที่สุดสำหรับ form field (เช่น OrangeHRM "Employee
-  // Name") แต่ของเดิมไม่เคยอ่านเลย (มีแค่ placeholder/aria-label/name/id เป็น fallback)
-  // — ไม่ได้ตั้งใจเปลี่ยนสถาปัตยกรรมจาก index-based เป็น selector-based (ยังใช้
-  // data-ai-index dispatch เหมือนเดิมทุกประการ) แค่ทำให้ label ที่ LLM เห็นตรงกับที่
-  // มนุษย์มองเห็นจริงมากขึ้น ลดโอกาสเดา index ผิดจาก label ที่กำกวม
+  // W19: <label for>/<label> ห่อ = label ที่น่าเชื่อถือที่สุดของ form field (ยัง dispatch ด้วย
+  // data-ai-index เหมือนเดิม แค่ label ตรงกับที่มนุษย์เห็นมากขึ้น)
   const getAssociatedLabelText = (node) => {
     if (node.id) {
       try {
@@ -203,16 +145,13 @@ _COLLECT_JS = r"""
     return '';
   };
 
-  // W_field_label_for_plain_inputs: "ชื่อของช่อง" ล้วนๆ สำหรับเอาไปทำ prefix — ต่างจาก
-  // getAssociatedLabelText() ด้านบนตรงที่ตัวนั้นคืน innerText ของ <label> ทั้งก้อน ซึ่งใน
-  // กรณี label แบบ *ห่อครอบ* (`<label>User Role <select>...</select></label>`) จะมีค่าที่
-  // เลือกอยู่ในช่องติดมาด้วย -> ได้ prefix เพี้ยนแบบ "User Role Admin: Admin"
-  // (ตัวนั้นยังใช้เป็น label เต็มๆ ได้ถูกต้องอยู่ จึงไม่แก้ของเดิม แยกตัวใหม่มาเฉพาะงาน prefix)
+  // W_field_label_for_plain_inputs: ชื่อช่องล้วนๆ สำหรับทำ prefix — ต่างจาก getAssociatedLabelText
+  // ตรงตัดค่าของ control ออกจาก label ที่ห่อ (ไม่งั้นได้ "User Role Admin: Admin")
   const getFieldNameLabel = (node) => {
     if (node.id) {
       try {
         const forLabel = document.querySelector(`label[for="${CSS.escape(node.id)}"]`);
-        // label[for=...] ไม่ได้ห่อ control จึงเป็นชื่อช่องล้วนๆ อยู่แล้ว ใช้ได้เลย
+        // label[for] ไม่ได้ห่อ control จึงเป็นชื่อช่องล้วนๆ อยู่แล้ว
         if (forLabel) {
           const t = (forLabel.innerText || forLabel.textContent || '').replace(/\s+/g, ' ').trim();
           if (t) return t;
@@ -223,33 +162,18 @@ _COLLECT_JS = r"""
     if (wrappingLabel) {
       const whole = (wrappingLabel.innerText || wrappingLabel.textContent || '');
       const own = (node.innerText || node.textContent || '');
-      // ตัดข้อความของ control เองออกจาก label ที่ห่อมัน เหลือแต่ชื่อช่อง
       const t = (own ? whole.split(own).join(' ') : whole).replace(/\s+/g, ' ').trim();
       if (t) return t;
     }
     return getPrecedingSiblingLabelText(node);
   };
 
-  // W_toggle ("Switch/Toggle Label Resolver" — บั๊กจริงที่ user รายงาน: agent แก้ toggle
-  // switch ไม่ได้เลย เช่น "Include Past Employees" บน OrangeHRM Leave List) — ยืนยันจาก
-  // DOM จริง: ปุ่ม toggle พวกนี้ (<div class="oxd-switch-wrapper"><label><input
-  // type=checkbox opacity:0><span class="oxd-switch-input">...</span></label></div>)
-  // ไม่มีทั้ง id/label[for]/wrapping-label-ที่มีข้อความเลย (label ที่ห่อ input ว่างเปล่า
-  // สนิท) — ข้อความอธิบายจริง ("Include Past Employees") อยู่ใน <p>/sibling แยกต่างหาก
-  // "ก่อนหน้า" container ของ toggle ทั้งก้อน (พี่น้องของ .oxd-switch-wrapper เอง ไม่ใช่
-  // บรรพบุรุษ/ลูกของ element ที่ได้ index) — เดินขึ้นไม่กี่ชั้น (พอสำหรับ pattern
-  // "label -> wrapper -> grid-item" ที่พบจริง) เช็ค previous sibling ทุกตัวในแต่ละชั้น
-  // หาตัวแรกที่เป็นข้อความสั้นๆ ไม่มี element โต้ตอบได้ซ้อนอยู่ข้างใน (กัน match ปุ่ม/ช่อง
-  // กรอกอื่นที่บังเอิญอยู่ก่อนหน้าผิดที่) คืนค่าว่างถ้าไม่เจอเลย (ไม่ throw ไม่เดามั่ว)
-  // W_sentence_is_not_a_field_label (release-gate 2026-09-08, MiniWoB focus-text): หน้านั้น
-  // มี <input> เปล่าๆ ตัวเดียวที่ไม่มี label/aria/placeholder/name อะไรเลย ตัวไล่หา sibling
-  // จึงเดินขึ้นไปเจอ <div id="query"> ซึ่งเป็น *โจทย์ของหน้า* แล้วเอามาเป็นชื่อช่อง —
-  // snapshot จึงมี element เดียวชื่อ 'Focus into the textbox.' ซึ่งอ่านเหมือนหัวข้อ ไม่ใช่
-  // ช่องกรอก โมเดลเลยคลิกมันซ้ำ 15 ครั้งจนหมด step โดยไม่รู้ว่านั่นคือช่องที่ต้องโฟกัส
-  //
-  // ชื่อช่องจริงเป็นวลีสั้นๆ ("Email", "User Role", "ชื่อผู้ใช้") ไม่ใช่ประโยคที่มี
-  // เครื่องหมายจบประโยคหรือยาวหลายคำ — เกณฑ์นี้แคบพอที่จะไม่ไปตัดชื่อช่องจริงทิ้ง
-  // และกันไม่ให้ข้อความระดับหน้ากลายเป็นชื่อของ element
+  // W_toggle: toggle ของ OrangeHRM ไม่มี id/label[for]/label ที่มีข้อความ — ข้อความจริง
+  // ("Include Past Employees") เป็น sibling ก่อนหน้า container เดินขึ้นไม่กี่ชั้น หา sibling
+  // ข้อความสั้นที่ไม่มี element โต้ตอบได้ข้างใน คืน '' ถ้าไม่เจอ (ไม่เดา)
+  // W_sentence_is_not_a_field_label (gate 2026-09-08, MiniWoB focus-text): เคยหยิบโจทย์ของหน้า
+  // ('Focus into the textbox.') มาเป็นชื่อช่อง โมเดลคลิกซ้ำ 15 ครั้ง — ชื่อช่องจริงเป็นวลีสั้น
+  // ไม่ใช่ประโยค
   const looksLikeSentence = (t) => /[.!?。]\s*$/.test(t) || t.split(/\s+/).length > 6;
 
   const getPrecedingSiblingLabelText = (node) => {
@@ -269,39 +193,20 @@ _COLLECT_JS = r"""
     return '';
   };
 
-  // W_select_all_aria_grid (บั๊กจริง live-reproduce บน OrangeHRM ผ่าน step trace 2026-08-26:
-  // agent ไม่เคยเจอปุ่ม "Select All" เลย เลยไล่ติ๊ก 'Select row' ทีละแถวจนโดน
-  // _MAX_CONSECUTIVE_SAME_LABEL_ACTIONS ฆ่า task ทิ้ง): กฎ label ของ checkbox หัวตารางเดิม
-  // ตัดสินด้วย el.closest('th, thead') อย่างเดียว — แต่ OrangeHRM 5.x (และ data grid สมัยใหม่
-  // จำนวนมาก: MUI DataGrid, AG Grid, Ant Design Table แบบ virtualized ฯลฯ) ไม่ใช้ <table>
-  // เลยสักตัว ใช้ div[role="table"]/[role="row"]/[role="columnheader"] แทนทั้งหมด
-  //
-  // ข้อเท็จจริงนี้โปรเจกต์รู้อยู่แล้วและเขียนไว้ใน _EXTRACT_TABLE_JS ด้านล่างของไฟล์เดียวกันนี้
-  // (ที่ fallback ไป ARIA grid ถูกต้องอยู่แล้ว) แต่กฎ label ของ checkbox ไม่ได้ใช้ความรู้นั้น
-  // ผลคือ checkbox หัวตารางถูกตั้งชื่อ 'Select row' เหมือนทุกแถว ทำให้ W21 ที่สั่งโมเดลว่า
-  // "หา element ที่ label บอกว่าเป็น Select All" ชี้ไปยัง element ที่ไม่มีอยู่ใน snapshot เลย
-  //
-  // (การ "ติ๊ก" checkbox หัวตารางแบบนี้ทำได้อยู่แล้ว — actions.py::check() มี fallback
-  // force-click/JS-click พร้อม verify สถานะจริงหลังคลิก สำหรับ custom checkbox ที่ไม่ใช่
-  // <input> จริง เช่น .oxd-checkbox-input — ปัญหาเดียวที่เหลือคือโมเดล "มองไม่เห็น" มัน)
+  // W_select_all_aria_grid (OrangeHRM 2026-08-26): grid สมัยใหม่ (OrangeHRM 5.x, MUI, AG Grid)
+  // ไม่ใช้ <table> — เช็คแค่ th/thead ทำให้ checkbox หัวตารางได้ชื่อ 'Select row' agent จึง
+  // ไม่เจอ "Select All" แล้วติ๊กทีละแถวจนโดน loop guard
   const TABLE_HEADER_ANCESTOR_SELECTOR = 'th, thead, [role="columnheader"], ' +
     '[class*="table-header" i], [class*="tableheader" i], [class*="header-cell" i]';
   const isInsideTableHeader = (node) => {
     if (node.closest && node.closest(TABLE_HEADER_ANCESTOR_SELECTOR)) return true;
-    // แถวหัวตารางแบบ ARIA ที่ไม่ได้ตั้งชื่อ class ว่า header เลย — ดูจากเนื้อในแทน: แถวที่มี
-    // [role="columnheader"] อยู่ข้างในคือแถวหัวตารางตามนิยามของ ARIA เอง ไม่ต้องเดาจากชื่อ
+    // แถวที่มี [role=columnheader] = แถวหัวตารางตามนิยาม ARIA
     const row = node.closest ? node.closest('[role="row"]') : null;
     return !!(row && row.querySelector('[role="columnheader"]'));
   };
 
-  // W19 ("Pre-Execution Planner & Navigation Guard" ข้อ "Log Cleanliness"): เมนู/แท็บที่
-  // ถูกเลือก/active อยู่แล้ว บาง framework จะไม่ trigger navigation/DOM change ซ้ำถ้าคลิก
-  // ทับตัวเดิม (โครงสร้างหน้าเหมือนเดิมทุกอย่าง) ทำให้ wait_stable() ที่รอ networkidle/
-  // การเปลี่ยนแปลงหลัง action นี้ timeout เปล่าๆ — ติด marker ให้ LLM เห็นก่อนตัดสินใจ
-  // (ไม่ใช่ deterministic hard-block แบบ state_filter.py เพราะ "active อยู่แล้ว" ไม่ได้
-  // แปลว่า "ห้ามคลิกเด็ดขาด" เสมอไป — user อาจตั้งใจสั่ง refresh/เปิดใหม่จริงๆ (ดู EXCEPTION
-  // ใน W19.txt) เป็นการตัดสินใจเชิงเจตนาที่ควรให้ LLM เห็นสัญญาณแล้วตัดสินใจเอง ไม่ใช่โค้ด
-  // เดา/บล็อกไปเลย)
+  // W19 (Log Cleanliness): คลิกเมนู/แท็บที่ active อยู่แล้วไม่เกิด DOM change ทำให้ wait_stable
+  // timeout เปล่า — แค่ติด marker ให้ LLM ตัดสินใจเอง ไม่ hard-block (user อาจตั้งใจ refresh)
   const isElementAlreadyActive = (el) => {
     const ariaCurrent = (el.getAttribute('aria-current') || '').toLowerCase();
     if (ariaCurrent === 'page' || ariaCurrent === 'true' || ariaCurrent === 'step') return true;
@@ -311,12 +216,7 @@ _COLLECT_JS = r"""
     return tokens.includes('active') || tokens.includes('selected') || tokens.includes('current');
   };
 
-  // element ที่เป็นแค่ตัวเลข/badge นับจำนวนล้วนๆ (เช่น <span class="cart-badge">1</span>
-  // ที่ซ้อนอยู่ใน <a class="shopping_cart_link">) ไม่ควรได้ index เป็นของตัวเอง —
-  // ตัวที่คลิกแล้วมีผลจริงคือ element พ่อ (a/button) ถ้าปล่อยให้ badge ได้ index
-  // แยก จะได้ index ชี้ไปที่ span เล็กๆ ที่คลิกไม่โดน handler ของลิงก์จริง (เกิดได้
-  // ถ้า selector อื่นในลิสต์ข้างบนไปแมตช์ badge เข้าโดยบังเอิญ เช่นมี tabindex/
-  // role ติดมาด้วยเพื่อ accessibility) — ให้ขยับไปแปะ index ที่ตัวพ่อที่คลิกได้แทน
+  // badge ตัวเลขล้วน (เช่น cart-badge "1") ไม่ควรได้ index เอง — ย้ายไปแปะที่พ่อที่คลิกได้จริง
   const CLICKABLE_ANCESTOR_SELECTOR = 'a, button, [role="button"], [role="link"], [onclick]';
 
   const isBadgeLikeLeaf = (node) => {
@@ -326,77 +226,38 @@ _COLLECT_JS = r"""
     return text !== '' && /^\d{1,4}$/.test(text);
   };
 
-  // เคลียร์ data-ai-index ค้างจาก get_snapshot() รอบก่อนหน้าออกก่อนเสมอ — เดิมไม่เคลียร์
-  // ทำให้ element ที่เคยได้ index ไปแล้วในรอบก่อน (ยังไม่มี navigation คั่นกลาง เช่น
-  // "fill" สองครั้งติดกันบนหน้าเดิม) ถูกมองว่า "แปะ index ไปแล้ว" โดย guard ด้านล่าง
-  // (ไว้กันแปะซ้ำ "ภายในรอบเดียวกัน" ระหว่างเช็ค badge-ก่อนไปตัวพ่อ ไม่ได้ตั้งใจให้กัน
-  // ข้ามรอบ) แล้วโดน skip ออกจาก elements list ของรอบใหม่ไปเงียบๆ ทั้งที่ element ยัง
-  // อยู่จริงและมองเห็นได้อยู่ — ทำให้ snapshot รอบถัดๆ ไปบนหน้าเดิม (ไม่มี goto/reload
-  // คั่น) เห็น element น้อยลงเรื่อยๆ (label หาย แม้ selector [data-ai-index="N"] เดิม
-  // จะยังคลิก/กรอกได้จริงเพราะ attribute เก่ายังติดอยู่บน DOM) ปลอดภัยที่จะเคลียร์ตรงนี้
-  // เพราะทุก index ที่ orchestrator.py ตัดสินใจใช้ ถูก dispatch จริงภายใน loop iteration
-  // เดียวกับที่ได้ index มา เสมอ ก่อนจะเรียก get_snapshot() รอบถัดไป (ไม่มี index ค้างข้าม
-  // รอบที่ยังไม่ถูกใช้)
+  // เคลียร์ data-ai-index ของรอบก่อน — ไม่งั้น guard กันแปะซ้ำด้านล่างจะ skip element ที่เคยได้
+  // index แล้ว snapshot บนหน้าเดิมจะเห็น element น้อยลงเรื่อยๆ ปลอดภัยเพราะ orchestrator ใช้
+  // index ภายใน iteration เดียวกับที่ได้มาเสมอ
   deepQueryAll(document, '[data-ai-index]').forEach((el) => el.removeAttribute('data-ai-index'));
 
   const nodes = deepQueryAll(document, selectors);
 
-  // icon-only clickable elements: <span>/<div> ที่มี title/aria-label/data-test* (สื่อว่า
-  // เป็น element ที่มีความหมาย ไม่ใช่แค่ container เปล่าๆ) และ cursor:pointer จริง (สื่อว่า
-  // ผู้พัฒนาตั้งใจให้กดได้) แต่ไม่ตรงกับ selectors มาตรฐานด้านบนเลย (ไม่มี role="button"/
-  // tabindex/onclick attribute ตาม a11y spec) — เจอบ่อยมากในเว็บที่ implement ปุ่ม icon เอง
-  // ด้วย SVG/icon-font ตรงๆ แทนที่จะใช้ <button> จริง (เช่น demoqa.com/webtables คอลัมน์
-  // Action: <span title="Edit"><svg>...</svg></span>, <span title="Delete">...) ทำให้
-  // selectors เดิมด้านบนมองไม่เห็นปุ่มพวกนี้เลยทั้งที่กดได้จริงในเบราว์เซอร์ — ไม่ต้องแก้ label
-  // logic ด้านล่างเลย (title/aria-label กลายเป็น label ผ่าน `semantic` อยู่แล้ว)
+  // icon-only element: span/div ที่มี title/aria-label/data-test* + cursor:pointer แต่ไม่ตรง
+  // selectors มาตรฐาน (เช่น demoqa webtables <span title="Edit"><svg/></span>)
   const ICON_LABEL_SELECTOR = '[title], [aria-label], [data-test], [data-testid], [data-qa]';
   for (const cand of deepQueryAll(document, ICON_LABEL_SELECTOR)) {
     if (window.getComputedStyle(cand).cursor !== 'pointer') continue;
-    // ตัวเองหรือบรรพบุรุษตรงกับ selectors มาตรฐานอยู่แล้ว (เช่น <button title="Edit">, หรือ
-    // <img title="Logo"> ที่ซ้อนอยู่ใน <a>) -> pass ปกติจัดการไปแล้ว ไม่ต้องเพิ่มซ้ำ
+    // ตัวเอง/บรรพบุรุษตรง selectors แล้ว -> pass ปกติจัดการแล้ว
     if (cand.closest(selectors)) continue;
-    // ตัวเองห่อ element ที่ตรงกับ selectors มาตรฐานไว้ข้างใน (เช่น container กว้างๆ ที่มีปุ่ม
-    // จริงซ้อนอยู่) -> ให้ปุ่มจริงข้างในได้ index ของตัวเองแทน ไม่ต้องนับ container ด้วย
+    // ห่อ element ที่ตรง selectors -> ให้ตัวข้างในได้ index แทน
     if (cand.querySelector(selectors)) continue;
     nodes.push(cand);
   }
 
-  // W20 (Task10, "Element Finder/Selector Resolver" — บั๊กจริงที่ user รายงาน: agent มองหา
-  // "Profile Menu/Avatar" มุมขวาบนไม่เจอ แล้วเผลอไปคลิก element ใกล้เคียงผิด เช่นปุ่ม "Help")
-  // — ตรวจ DOM จริงของ opensource-demo.orangehrmlive.com พบสาเหตุตรงๆ: ตัว trigger จริงคือ
-  // `<span class="oxd-userdropdown-tab">` ที่ไม่มีทั้ง role/tabindex/onclick attribute (ไม่
-  // ตรงกับ selectors มาตรฐานด้านบนเลย) และไม่มีทั้ง title/aria-label/data-test* (ไม่ตรงกับ
-  // ICON_LABEL_SELECTOR ด้านบนด้วย) มีแค่ cursor:pointer + class name เป็นสัญญาณเดียวว่ากดได้
-  // จริง — element นี้จึง "ไม่เคยติด index เลยตั้งแต่ต้น" ไม่ใช่แค่ label ไม่ดี ทำให้ LLM ไม่มี
-  // ทางเลือกอื่นนอกจากเดา index ของ element อื่นที่ใกล้เคียงในหน้า header แทน — จับด้วย
-  // class-name pattern ที่เว็บ dashboard/SPA สมัยใหม่มักใช้ตั้งชื่อ (userdropdown, profile-menu,
-  // account-menu, avatar) + cursor:pointer เป็นชั้นสำรองที่ 2 ต่อจาก ICON_LABEL_SELECTOR
+  // W20 (Task10): trigger เมนู profile ของ OrangeHRM (span.oxd-userdropdown-tab) ไม่มี role/
+  // tabindex/onclick/title เลย มีแค่ class + cursor:pointer — ไม่เคยได้ index agent จึงไปคลิก
+  // "Help" แทน จับด้วย class pattern + cursor:pointer
   const PROFILE_MENU_CLASS_RE = /user-?dropdown|profile-?menu|account-?menu|avatar/i;
-  // SPD-2 (speed audit): `document.querySelectorAll('[class]')` ด้านล่างเดิมกวาดทุก element
-  // ที่มี class attribute ในหน้า (แทบทุก element บนเว็บ SPA จริง — หลักพันตัวได้ง่ายๆ) แล้ว
-  // เรียก window.getComputedStyle() ต่อทุกตัวที่ regex match — ตัว querySelectorAll('[class]')
-  // เองก็ต้องสร้าง NodeList ขนาดใหญ่ทุก step ของ loop อยู่แล้วโดยไม่จำเป็น ทั้งที่ 4 คำที่
-  // PROFILE_MENU_CLASS_RE ต้องมีอย่างน้อย 1 คำ (dropdown/profile/account/avatar/menu) เป็น
-  // substring เสมอ — ใช้ attribute substring selector (`*=`, native ในเบราว์เซอร์ ไม่ต้อง
-  // JS iterate เอง) กรอง candidate ให้แคบลงก่อนตั้งแต่ระดับ selector เลย แล้วค่อยเช็ค regex
-  // เป๊ะๆ ซ้ำในลูปเหมือนเดิม (ผลลัพธ์เป๊ะเท่าเดิมทุกประการ เพราะทุก alternative ใน regex มี
-  // substring พวกนี้อย่างน้อย 1 ตัวเสมอ แค่ query เร็วขึ้นเพราะ candidate set เล็กลงมาก)
+  // SPD-2: กรอง candidate ด้วย attribute substring selector ก่อน (แทน querySelectorAll('[class]')
+  // ทั้งหน้า) แล้วเช็ค regex ซ้ำ — ผลเท่าเดิมเพราะทุก alternative ของ regex มี substring เหล่านี้
   const PROFILE_MENU_CANDIDATE_SELECTOR = [
     '[class*="dropdown" i]', '[class*="profile" i]', '[class*="account" i]',
     '[class*="avatar" i]', '[class*="menu" i]',
   ].join(',');
-  // W20 (Task10, ต่อ): DOM จริงของ OrangeHRM ยืนยันว่า class pattern นี้ไม่ได้ตรงแค่ตัว
-  // container เดียว — child ข้างใน (<img class="oxd-userdropdown-img">, <p class="oxd-
-  // userdropdown-name">, <i class="...oxd-userdropdown-icon">) ก็ตรง regex เดียวกันด้วยตัวเอง
-  // และ cursor:pointer สืบทอดมาจาก parent ด้วย ถ้าไม่กันไว้จะได้ index แยกกัน 4 อัน สำหรับพื้นที่
-  // คลิกเดียวกัน (เหมือนปัญหา badge-leaf ที่ isBadgeLikeLeaf() กันไว้ด้านบน แต่ทิศทางตรงข้าม
-  // — ที่นี่ต้องมองหา "บรรพบุรุษ" ที่ตรง pattern เดียวกัน ไม่ใช่ "ลูก") ข้าม candidate ที่มี
-  // บรรพบุรุษตรง pattern นี้อยู่แล้วไปเลย ให้บรรพบุรุษตัวนอกสุดเป็นตัวแทนพื้นที่คลิกทั้งก้อน —
-  // แต่ต้องเช็ค cursor:pointer ของบรรพบุรุษด้วยเสมอ ไม่ใช่แค่ class ตรง (ยืนยันจริงจาก DOM
-  // ของ OrangeHRM: <li class="oxd-userdropdown"> ที่ห่อ span ไว้ตรง class pattern เหมือนกัน
-  // แต่ตัวมันเอง cursor:auto ไม่ใช่ pointer — ไม่ใช่ element ที่กดได้จริง แค่ชื่อ class บังเอิญ
-  // ตรงเฉยๆ ถ้าเช็คแค่ class จะไปกัน span ตัวจริงที่กดได้ (cursor:pointer) ไม่ให้ติด index เลย
-  // ทั้งที่ตั้งใจจะแก้บั๊กนี้อยู่)
+  // ลูก (img/p/i ของ userdropdown) ก็ตรง pattern + สืบทอด cursor:pointer — ให้บรรพบุรุษนอกสุด
+  // เป็นตัวแทนเดียว ต้องเช็ค cursor ของบรรพบุรุษด้วย: <li class="oxd-userdropdown"> ตรง class
+  // แต่ cursor:auto ถ้าเช็คแค่ class จะกัน span ตัวจริงทิ้ง
   const hasProfileMenuAncestor = (node) => {
     let cur = node.parentElement;
     while (cur) {
@@ -412,31 +273,17 @@ _COLLECT_JS = r"""
     if (!PROFILE_MENU_CLASS_RE.test(classStr)) continue;
     if (window.getComputedStyle(cand).cursor !== 'pointer') continue;
     if (hasProfileMenuAncestor(cand)) continue;
-    // target = element ที่จะได้ index จริงสำหรับ candidate นี้ — อาจเป็นบรรพบุรุษที่ตรงกับ
-    // selectors มาตรฐานอยู่แล้ว (เช่น cand เป็น <span> ลูกของ <button class="user-dropdown">
-    // ตัว button คือสิ่งที่ได้ index จริง ไม่ใช่ span) หรือ cand เองถ้าไม่มีบรรพบุรุษแบบนั้น
+    // target = ตัวที่ได้ index จริง (บรรพบุรุษที่ตรง selectors หรือ cand เอง)
     const target = cand.closest(selectors) || cand;
     if (target === cand && !nodes.includes(cand)) {
-      // ยังไม่เคยถูกเพิ่มเลยทั้งจาก selectors มาตรฐานและ ICON_LABEL_SELECTOR ด้านบน (เคสจริง
-      // ของ oxd-userdropdown-tab) — เพิ่มเข้า nodes เอง ยกเว้นถ้า cand ห่อ element ที่ตรงกับ
-      // selectors มาตรฐานไว้ข้างในอีกที (ให้ element ข้างในนั้นได้ index+marker ของตัวเองแทน)
       if (!cand.querySelector(selectors)) nodes.push(cand);
     }
-    // ไม่ว่า target จะได้ index มาจาก pass ไหน (selectors มาตรฐาน/ICON_LABEL_SELECTOR/เพิ่งเพิ่ม
-    // เอง) ก็ต้องแปะ marker เสมอ — กันไม่ให้ element ที่มี title/aria-label อยู่แล้วด้วย (ผ่าน
-    // ICON_LABEL_SELECTOR ไปแล้ว) เสีย marker พิเศษนี้ไปเฉยๆ เพราะไปเจอ pass อื่นก่อน
+    // แปะ marker เสมอไม่ว่า target จะได้ index จาก pass ไหน
     profileMenuNodes.add(target);
   }
 
-  // W21 ("Custom UI Checkbox"): OrangeHRM/SPA ทั่วไปมักซ่อน native <input type="checkbox">
-  // จริงด้วย CSS (display:none/opacity:0) แล้วแทนที่ด้วย span/div ห่อหุ้มที่ styled เอง (เช่น
-  // .oxd-checkbox-input ของ header "Select All") ไม่มี role="checkbox"/tabindex/onclick
-  // attribute ติดมาด้วยเสมอไป ทำให้ทั้ง selectors มาตรฐานด้านบน ([role=checkbox] ครอบคลุมแค่
-  // wrapper ที่ทำตาม ARIA จริงๆ) และ ICON_LABEL_SELECTOR ข้างบน (ต้องมี title/aria-label/
-  // data-test — wrapper พวกนี้มักไม่มีเลย) มองไม่เห็นเลย — เก็บ wrapper ที่ match class/
-  // โครงสร้างที่พบบ่อยของ custom checkbox โดยเฉพาะแยกต่างหาก คลุมทั้ง OrangeHRM
-  // (.oxd-checkbox-input, .oxd-table-header-cell-checkbox) และ SPA ทั่วไป (label ที่ห่อ
-  // input[type=checkbox] ไว้ข้างใน, thead/th ที่มี input[type=checkbox] ตรงๆ)
+  // W21 (Custom UI Checkbox): native checkbox ถูกซ่อน แล้ววาด span/div แทน (.oxd-checkbox-input)
+  // ไม่มี role/title — selectors มาตรฐานกับ ICON_LABEL_SELECTOR มองไม่เห็น
   const CHECKBOX_WRAPPER_SELECTOR = [
     '.oxd-checkbox-input', '.oxd-table-header-cell-checkbox',
     '[class*="checkbox-input" i]', '[class*="checkbox-wrapper" i]',
@@ -449,16 +296,8 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
-  // Perception fix (radio buttons — บั๊กจริงที่ user รายงาน: agent มองไม่เห็นตัวเลือก Gender
-  // Male/Female บน OrangeHRM "My Info > Personal Details") — เจอสาเหตุตรงๆ จากการตรวจ DOM
-  // จริง: OrangeHRM (เหมือนกับ custom checkbox ด้านบนเป๊ะ) ซ่อน native
-  // <input type="radio"> จริงด้วย opacity:0 แล้ววาดวงกลมที่มองเห็นแทนด้วย
-  // <span class="oxd-radio-input">...</span> เป็น "พี่น้อง" (sibling) ของ input ภายใน
-  // <label> เดียวกัน (<label><input type=radio><span class="oxd-radio-input">...</span>
-  // Male</label>) — input ที่ opacity:0 โดน visibility check ด้านล่างกรองทิ้งไป (เหมือนที่
-  // ตั้งใจกรอง honeypot/hidden field อื่นๆ) และไม่มี selector ไหนจับ span ตัวที่มองเห็น/
-  // คลิกได้จริงเลย ทำให้ตัวเลือก radio ทั้งหมดไม่เคยติด index ตั้งแต่ต้น (ไม่ใช่แค่ label
-  // ไม่ดีเหมือนเคส icon-only อื่น — ไม่มี element ไหนแทนตัวเลือกนี้ใน snapshot เลยสักตัว)
+  // Radio fix (OrangeHRM Gender): <input type=radio> opacity:0 โดน visibility check กรองทิ้ง
+  // ส่วน span.oxd-radio-input ที่มองเห็นไม่ตรง selector ใดเลย — ตัวเลือกหายจาก snapshot ทั้งหมด
   const RADIO_WRAPPER_SELECTOR = [
     '.oxd-radio-input', '[class*="radio-input" i]', '[class*="radio-wrapper" i]',
   ].join(',');
@@ -468,27 +307,9 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
-  // W_toggle ("Switch/Toggle Label Resolver" — บั๊กจริงที่ user รายงาน: agent เปิด/ปิด
-  // toggle "Include Past Employees" บน OrangeHRM Leave List ไม่ได้เลย) — สาเหตุตรงๆ จาก
-  // การตรวจ DOM จริง: pattern เดียวกับ checkbox/radio wrapper ด้านบนเป๊ะ (native
-  // <input type="checkbox"> ซ่อนด้วย opacity:0 วาด toggle ที่มองเห็นแทนด้วย
-  // <span class="oxd-switch-input">) แต่ชื่อ class ไม่มีคำว่า "checkbox" เลยสักตัว
-  // (CHECKBOX_WRAPPER_SELECTOR ด้านบนจับไม่ได้) — ต่างจาก checkbox/radio ตรงที่ input ถูก
-  // ห่อด้วย <label> เปล่าๆ (ไม่มี text ใดๆ ข้างใน label เลย) ทำให้แม้แต่
-  // 'label:has(input[type="checkbox"])' ใน CHECKBOX_WRAPPER_SELECTOR ก็ยังไม่ช่วย เพราะ
-  // input ข้างในแมตช์ selectors มาตรฐาน (bare 'input') อยู่แล้ว ทำให้ label ถูก skip ที่
-  // guard `cand.querySelector(selectors)` ด้านบน (คิดว่า input ข้างในจะได้ index ของ
-  // ตัวเองแทน) แต่ input เองก็ถูกกรองทิ้งจาก visibility check ด้านล่างอีกที (opacity:0 +
-  // ไม่เข้าเงื่อนไข exemption ไหนเลยเพราะ isCheckboxWrapperCandidate เช็คคำว่า "checkbox"
-  // เท่านั้น) — สุทธิคือไม่มี element ไหนแทน toggle นี้ในหน้าเลยสักตัว
-  //
-  // *** ตั้งใจแยกเป็น selector/candidate ของตัวเอง ไม่รวมกับ CHECKBOX_WRAPPER_SELECTOR ***
-  // เพราะ isCheckboxWrapperCandidate (ด้านล่าง) ให้ label เริ่มต้นเป็น "Select row"/
-  // "Select All" ซึ่งออกแบบมาสำหรับ checkbox เลือกแถวในตารางเท่านั้น ถ้า toggle switch ที่
-  // เป็นคนละความหมายกันสิ้นเชิง (เช่น "Include Past Employees") ไปติด class ที่มีคำว่า
-  // checkbox ปนมาโดยบังเอิญ จะได้ label ผิดทันที — switch ใช้ isSwitchCandidate
-  // แยกต่างหาก (ดูด้านล่าง) ที่ไม่มี default แบบนั้นเลย ต้องหา label จริงจาก sibling text
-  // เท่านั้น (getPrecedingSiblingLabelText — ดูด้านบนสุดของไฟล์)
+  // W_toggle: pattern เดียวกับ checkbox/radio (span.oxd-switch-input) แต่ class ไม่มีคำว่า
+  // checkbox และ label ที่ห่อว่างเปล่า — ไม่มี element ใดแทน toggle เลย
+  // แยก selector จาก checkbox โดยเจตนา: ไม่งั้นได้ default label "Select row"/"Select All" ผิดความหมาย
   const SWITCH_WRAPPER_SELECTOR = [
     '[class*="switch-input" i]', '[class*="switch-wrapper" i]', '[role="switch"]',
   ].join(',');
@@ -498,14 +319,8 @@ _COLLECT_JS = r"""
     nodes.push(cand);
   }
 
-  // W21 ("Icon-based Action Button Resolver"): ปุ่ม action ในตาราง (View/Download/Edit/
-  // Delete ฯลฯ) ที่ implement ด้วย icon font/SVG ล้วนๆ ข้างใน <button> จริง (เช่น
-  // <button><i class="bi-eye-fill"></i></button> — OrangeHRM Recruitment candidate table)
-  // ตัว <button> เองตรงกับ selectors มาตรฐานด้านบนอยู่แล้วเลยได้ index เสมอ แต่ไม่มี text
-  // node/aria-label/title/data-test ให้ label เห็นความหมายเลย (LLM เห็นแค่ "[N] button"
-  // เดาไม่ออกว่าเป็นปุ่มอะไร) — เตรียม lookup ไว้ให้ label-building logic ด้านล่าง (getRegion
-  // ก่อนหน้านี้/semantic ถัดไป) ดึงความหมายจาก class ของ icon ลูกข้างในแทน ไม่ต้องเพิ่ม node
-  // ใหม่เข้า nodes เลย (ปุ่มแม่มี index อยู่แล้ว) แค่เสริม fallback label เท่านั้น
+  // W21 (Icon-based Action Button Resolver): <button><i class="bi-eye-fill"></i></button>
+  // ได้ index อยู่แล้วแต่ไม่มี label — ดึงความหมายจาก class ของ icon ข้างในเป็น fallback
   const ICON_CLASS_LABEL_RULES = [
     [/\beye\b/i, 'View Details'],
     [/\bdownload\b/i, 'Download Resume'],
@@ -533,64 +348,34 @@ _COLLECT_JS = r"""
       : null;
     const el = ancestor || candidate;
 
-    // ตัวพ่ออาจถูกแปะ index ไปแล้ว (จากการวนถึงตัวพ่อเองก่อนหน้านี้ในลูป หรือจาก
-    // badge อีกตัวในพ่อเดียวกัน) — ไม่ต้องแปะซ้ำ/ไม่ต้อง push entry ซ้ำ
+    // แปะ index ไปแล้วในรอบนี้ (ตัวพ่อ/badge อีกตัว) — ไม่ push ซ้ำ
     if (el.hasAttribute('data-ai-index')) continue;
 
     if (isIrrelevant(el)) continue;
 
-    // W_listbox_container: ข้าม element ที่ "ห่อรายการตัวเลือกไว้" ไม่ว่ามันจะเข้ามาทางไหน
-    // — ลูปนี้ (nodes หลัก) ไม่มี guard `cand.querySelector(selectors)` แบบที่ pass เสริมทุก
-    // ตัวมี (checkbox/radio/switch/icon wrapper) container ของ dropdown จึงได้ index ได้ถ้า
-    // บังเอิญมี [tabindex]/[onclick] ติดมา ซึ่งเป็นช่องที่มีมาก่อนจะเพิ่ม role=listbox ด้วยซ้ำ
-    //
-    // เงื่อนไข ">= 2 option" แคบพอที่จะไม่โดน element ปกติ: รายการตัวเลือกที่มีให้เลือก
-    // มากกว่าหนึ่งตัวไม่มีทางเป็นเป้าคลิกเอง ส่วนตัว option เองมี 0 option ข้างในจึงไม่โดน
+    // W_listbox_container: container ที่มี >= 2 option ไม่ใช่เป้าคลิก (ลูปหลักไม่มี guard
+    // querySelector(selectors) แบบ pass เสริม จึงหลุดมาได้ทาง [tabindex]/[onclick])
     if (el.querySelectorAll('[role="option"]').length >= 2) continue;
 
-    // เช็คว่ามองเห็นจริงไหม
     const rect = el.getBoundingClientRect();
     const st = window.getComputedStyle(el);
     const hasSize = rect.width > 0 && rect.height > 0;
     const notDisplayNone = st.display !== 'none';
 
-    // W47: ปุ่ม/ลิงก์ที่ซ่อนด้วย CSS ของตัวเอง (opacity:0 หรือ visibility:hidden) แต่
-    // bounding box ไม่เป็น 0x0 จริง (แปลว่า browser ยัง layout พื้นที่ไว้ให้ — ต่างจาก
-    // display:none ที่ browser ไม่ layout เลย ไม่มีทางคลิกได้จริงไม่ว่า CSS state ไหนจะ
-    // เปลี่ยน ต้องกรองทิ้งเหมือนเดิม) เจอจริงบน uitestingplayground.com/scrolltoclick
-    // Case 4 "Hover to Reveal": ปุ่ม flag แต่ละแถวใช้ visibility:hidden จนกว่าจะ hover
-    // แถวแม่ ทำให้ perception เดิมกรองทิ้งไปเลย agent เลยไม่มีทาง index ให้กดได้ตั้งแต่ต้น
-    // — ให้ยังติด index ตามปกติ แต่จำกัดเฉพาะ element ที่เป็นปุ่ม/ลิงก์เท่านั้น (ไม่ใช่ทุก
-    // selector ในลิสต์บนสุด) กัน hidden <input> ที่เป็น honeypot/CSRF token จริงๆ (ซ่อนถาวร
-    // ไม่ได้รอ hover) ไม่ให้ agent เผลอไปกรอก
+    // W47 (hover-to-reveal, uitestingplayground scrolltoclick): ปุ่มที่ opacity:0/visibility:hidden
+    // แต่ยังมี layout ให้ติด index ได้ — เฉพาะปุ่ม/ลิงก์/wrapper ไม่รวม input (กัน honeypot/CSRF)
+    // display:none ยังกรองทิ้งเสมอ
     const hiddenByOwnStyle = st.visibility === 'hidden' || st.opacity === '0';
-    // W21: custom checkbox wrapper (ดู CHECKBOX_WRAPPER_SELECTOR ด้านบน) บางเว็บวาดกล่อง
-    // checkbox ล้วนๆ ผ่าน CSS ::before/::after บน wrapper ที่ตัวเอง opacity:0/visibility:
-    // hidden (คล้าย hover-to-reveal button ข้างบน) — ให้ผ่อนปรนเงื่อนไข visible เหมือนปุ่ม/
-    // ลิงก์เช่นกัน กัน perception กรอง wrapper พวกนี้ทิ้งทั้งที่มองเห็น/คลิกได้จริงในเบราว์เซอร์
+    // W21: custom checkbox บางเว็บวาดผ่าน ::before บน wrapper ที่ตัวเอง opacity:0
     const isCheckboxWrapperCandidate = (el.className || '').toString().toLowerCase().includes('checkbox') ||
       (el.tagName.toLowerCase() === 'label' && !!el.querySelector('input[type="checkbox"]'));
-    // Perception fix (radio buttons): เหมือน isCheckboxWrapperCandidate ข้างบนเป๊ะ แค่คนละ
-    // widget — เผื่อเว็บอื่นวาด radio wrapper ด้วย opacity:0/visibility:hidden เหมือนที่
-    // checkbox wrapper บางเว็บทำ (ในเคสจริงของ OrangeHRM เองตัว span.oxd-radio-input
-    // มองเห็นปกติอยู่แล้ว ไม่ได้ต้องพึ่ง exemption นี้ — กันไว้เผื่อเว็บอื่น)
     const isRadioWrapperCandidate = (el.className || '').toString().toLowerCase().includes('radio');
-    // W_toggle: เหมือน isCheckboxWrapperCandidate/isRadioWrapperCandidate ข้างบนเป๊ะ แค่
-    // คนละ widget (switch/toggle) — ตั้งใจแยก const ต่างหาก (ไม่รวมเข้า
-    // isCheckboxWrapperCandidate) เพราะตัวนี้ต้อง "ไม่" trigger checkboxWrapperLabel
-    // ("Select row"/"Select All") ด้านล่าง — ดู docstring ของ SWITCH_WRAPPER_SELECTOR
+    // W_toggle: แยกจาก isCheckboxWrapperCandidate — ต้องไม่ได้ label "Select row"/"Select All"
     const isSwitchCandidate = (el.className || '').toString().toLowerCase().includes('switch') ||
       el.getAttribute('role') === 'switch';
-    // W_dropdown_field_label (บั๊กจริง live-reproduce บน OrangeHRM ผ่าน step trace
-    // 2026-08-26): trigger ของ custom dropdown เป็น <div class="oxd-select-text"> ไม่ใช่ form
-    // field จริง จึงไม่เข้า getAssociatedLabelText() (ผูกไว้กับ input/select/textarea/
-    // [role=combobox] เท่านั้น) และ label chain ด้านล่างเอา trimmedText มาก่อนเสมอ — ผลคือ
-    // dropdown "User Role" กับ "Status" ที่อยู่ติดกันบนหน้า Admin > User Management ได้ label
-    // เป็น '-- Select --' เหมือนกันเป๊ะทั้งคู่ ไม่มี region marker ช่วยแยกด้วย (อยู่ใน main
-    // ทั้งคู่) โมเดลจึงต้องเดาจากลำดับ DOM ล้วนๆ ว่าอันไหนคือ User Role
-    //
-    // นี่คือรากของบั๊ก W_filter_safety เดิมที่เคยกรอง/ลบผิดกลุ่มมาแล้วจริง — ป้ายชื่อที่แยก
-    // ไม่ออกคือความกำกวมระดับ perception ไม่ใช่ระดับ prompt จึงต้องแก้ที่ snapshot
+    // W_dropdown_field_label (OrangeHRM 2026-08-26): trigger ของ custom dropdown (div.oxd-select-text)
+    // ไม่ใช่ form field จึงได้ label '-- Select --' เหมือนกันทุกช่อง (User Role/Status แยกไม่ออก)
+    // — รากของบั๊ก W_filter_safety เดิม
     const dropdownAriaPopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
     const isDropdownTriggerCandidate = el.getAttribute('role') === 'combobox' ||
       (!!dropdownAriaPopup && dropdownAriaPopup !== 'false') ||
@@ -602,39 +387,15 @@ _COLLECT_JS = r"""
 
     const visible = hasSize && notDisplayNone && (!hiddenByOwnStyle || hoverRevealCandidate);
     if (!visible) continue;
-    // ACC-2 (accuracy audit follow-up): เดิม element ที่ disabled ถูกกรองทิ้งไปเลย ทำให้
-    // LLM ไม่มีทางรู้ว่าปุ่ม/ช่องกรอกนี้ "มีอยู่แต่กดไม่ได้ตอนนี้" (เช่น ปุ่ม Submit ที่รอ
-    // required field ให้ครบก่อน) เห็นแค่ว่าไม่มีตัวเลือกนี้ในหน้าเลย อาจไปเดากด element
-    // ใกล้เคียงผิดตัวแทน หรือสรุปผิดว่าไม่มีทางทำ action นี้ได้เลยทั้งที่จริงๆ มีแค่ต้องทำ
-    // อย่างอื่นให้ครบก่อน — ยังคงติด index ให้ปกติ แต่แปะ marker "[disabled]" ในป้ายแทน
-    // (ดู marker pattern อื่นในไฟล์นี้ เช่น [already active]/[obscured])
+    // ACC-2: disabled ยังได้ index แต่ติด marker — ไม่งั้น LLM คิดว่าไม่มีปุ่มนี้แล้วเดากดตัวอื่น
     const isDisabled = !!el.disabled;
 
-    // W65[1] ("Required-Field Validation"): เดิม HTML `required`/`aria-required` attribute
-    // ถูก crawl เก็บไว้ใน site_manuals (site_learning/schema.py::FormFieldInfo.required)
-    // แต่ perception.py (เส้นทาง live DOM ที่ agent ใช้จริงตอนรัน task) ไม่เคยอ่านค่านี้เลย
-    // ทำให้ agent ไม่รู้ว่า field ไหน "ต้องกรอกจริง" จนกว่าจะลอง submit แล้วเจอ validation
-    // error ย้อนหลัง — แปะ marker "[required]" ให้ตรงๆ ตั้งแต่ perceive (เหมือน [disabled]
-    // ด้านบน) ให้ agent เห็นล่วงหน้าว่าต้องมีค่าจริงก่อนกด submit (ดู SYSTEM_PROMPT W65 rule
-    // ใน llm.py ที่ใช้ marker นี้ตัดสินใจว่าต้องถาม user ก่อนไหม)
+    // W65[1]: marker [required] ให้รู้ล่วงหน้าว่าต้องมีค่าก่อน submit (ใช้โดย SYSTEM_PROMPT W65 ใน llm.py)
     const isRequired = !!(el.required || el.getAttribute('aria-required') === 'true');
 
-    // W9[A]: เช็คว่า element นี้ถูก popup/modal/overlay อื่นบังอยู่จริงไหม —
-    // getBoundingClientRect()/CSS visibility ข้างบนเช็คแค่ว่า element เอง "มองเห็นได้"
-    // เฉยๆ ไม่ได้เช็คว่ามี element อื่นวางทับอยู่ข้างบน (เช่น cookie-consent banner/
-    // modal ที่มี z-index สูงคลุมทั้งหน้า) ทำให้ perception บอกว่า element "คลิกได้"
-    // ทั้งที่คลิกจริงจะโดน overlay แทน (เจอปัญหานี้บ่อยตอน action ล้มเหลวซ้ำแม้ retry
-    // ครบแล้ว ทั้งที่ index มีอยู่จริงใน DOM — ดู W9[A] vision fallback ใน llm.py/
-    // orchestrator.py ที่ใช้ marker นี้เป็นสัญญาณเสริม) — ใช้
-    // document.elementFromPoint() เช็คว่า element บนสุดตรงจุดกึ่งกลางจริงๆ คือตัวนี้
-    // (หรือเป็นลูกของมัน) ไหม ถ้าไม่ใช่ แปะ marker ไว้ในป้าย ไม่ตัดออกจากลิสต์เพราะยัง
-    // คลิกได้จริงถ้า overlay หายไปแล้วในตอนที่ action ทำงานจริง (เช่น modal ปิดไปแล้ว)
-    //
-    // hoverRevealCandidate (visibility:hidden อยู่ตอนนี้) ต้องข้ามเช็คนี้ไปเลย —
-    // browser ไม่ hit-test element ที่ visibility:hidden ให้ document.elementFromPoint()
-    // เลย (คนละเรื่องกับ opacity:0 ที่ยัง hit-test ได้ปกติ) ทำให้ topEl กลายเป็น element
-    // อื่นที่อยู่ตำแหน่งเดียวกันแทนเสมอ (เช่น <div> แม่) และ obscured จะเป็น true มั่ว
-    // ทุกครั้งทั้งที่ไม่มีอะไรมาบังจริง — ไม่ใช่ overlay บัง แค่ยังไม่ hover เฉยๆ
+    // W9[A]: เช็ค overlay (cookie banner/modal) บังด้วย elementFromPoint ที่จุดกึ่งกลาง — ติด
+    // marker ไม่ตัดทิ้ง เพราะ overlay อาจหายไปแล้วตอน action ทำงานจริง
+    // hoverRevealCandidate ข้ามเช็คนี้: visibility:hidden ไม่ถูก hit-test จะได้ obscured=true มั่ว
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     let obscured = false;
@@ -646,80 +407,37 @@ _COLLECT_JS = r"""
       obscured = topEl !== null && topEl !== el && !el.contains(topEl);
     }
 
-    // ติดหมายเลขไว้บน element เพื่อให้ agent สั่งกลับได้ทีหลัง
     el.setAttribute('data-ai-index', idx);
 
     const tag  = el.tagName.toLowerCase();
     const type = el.getAttribute('type') || '';
 
-    // icon-only element (เช่น ปุ่มตะกร้าที่เป็นแค่ svg/background-image ไม่มี
-    // text ข้างใน) ไม่มี innerText/aria-label ให้ใช้ -> ทำให้ LLM เห็นแค่ "[N] a"
-    // เดาไม่ออกว่าคือปุ่มอะไร ทั้งที่ element ยังอยู่ในลิสต์จริง (ไม่ได้โดนกรอง)
-    // แก้ด้วยการเพิ่มแหล่ง label สำรอง: title, data-test(id)/data-qa (attribute
-    // มาตรฐานที่เว็บทำ QA อัตโนมัติมักใส่ไว้ เช่น saucedemo ใส่ data-test บน
-    // แทบทุก element) และ id เป็นตัวสำรองสุดท้าย — แปลง kebab/snake-case เป็น
-    // ช่องว่างให้อ่านง่ายขึ้น (เช่น "shopping-cart-link" -> "shopping cart link")
+    // label สำรองของ icon-only element: title, data-test*/data-qa, id (kebab/snake -> ช่องว่าง)
     const humanize = (s) => (s || '').replace(/[-_]+/g, ' ').trim();
     const dataTest = el.getAttribute('data-test') || el.getAttribute('data-testid') ||
                      el.getAttribute('data-qa') || '';
-    // W19: <label> ที่ผูกกับ field นี้จริง (ถ้ามี) ชนะ aria-label/title/data-test/name/id
-    // เสมอ เฉพาะ form field เท่านั้น (input/select/textarea/combobox) — element อื่น
-    // (button/a/...) ไม่น่าจะมี <label for> ผูกอยู่จริงตามสเปก HTML อยู่แล้ว ข้ามการเช็ค
-    // ไปเลยกัน query เปล่าๆ
+    // W19: <label> ผูก field ชนะ aria-label/title/... เฉพาะ form field (element อื่นไม่มี label[for])
     const isFormFieldTag = tag === 'input' || tag === 'select' || tag === 'textarea' ||
       el.getAttribute('role') === 'combobox';
     const associatedLabel = isFormFieldTag ? getAssociatedLabelText(el) : '';
-    // W21 ("Icon-based Action Button Resolver"): checkbox wrapper (ดู CHECKBOX_WRAPPER_
-    // SELECTOR ด้านบน) แทบไม่มี aria-label/title/data-test เลย — ให้ "Select All"/"Select
-    // row" เป็น fallback เฉพาะทาง (แยกจาก header เพราะ th/thead คือ checkbox หัวตารางที่
-    // เลือกทุกแถวทีเดียว ต่างจาก checkbox รายแถวที่เลือกแค่แถวเดียว) ก่อนถึง getIconClassLabel
-    // (ปุ่ม view/download/edit/delete ที่เป็น icon font ล้วนๆ — ดู getIconClassLabel ด้านบน)
+    // W21: fallback เฉพาะ checkbox wrapper — หัวตาราง = Select All, แถว = Select row
     const checkboxWrapperLabel = isCheckboxWrapperCandidate
       ? (isInsideTableHeader(el) ? 'Select All' : 'Select row')
       : '';
-    // Perception fix (radio buttons): ต่างจาก checkbox wrapper ข้างบน — radio wrapper
-    // (span.oxd-radio-input) เอง innerText ว่างเปล่าเสมอ (แค่วงกลม CSS ล้วนๆ ไม่มีตัวอักษร)
-    // แต่ข้อความที่บอกว่าตัวเลือกนี้คืออะไร ("Male"/"Female") เป็น text node พี่น้อง
-    // (sibling) ของมันอยู่ใน <label> เดียวกัน (<label><input><span>...</span>Male</label>)
-    // — ดึงจาก closest('label').innerText ซึ่งรวม text ของ sibling ทั้งหมดใน label นั้นมา
-    // ด้วยเสมอ (ต่างจาก getAssociatedLabelText() ด้านบนที่ใช้กับ form field tag เท่านั้น —
-    // span ไม่ใช่ form field tag เลยไม่เข้า path นั้น)
+    // Radio fix: span วงกลมไม่มี text — "Male"/"Female" เป็น sibling ใน <label> เดียวกัน
     const radioWrapperLabel = isRadioWrapperCandidate
       ? ((el.closest('label') && (el.closest('label').innerText || '').trim()) || '')
       : '';
-    // W_toggle: switch (span.oxd-switch-input เป็นต้น) เอง innerText ว่างเปล่าเสมอเหมือน
-    // radio wrapper ข้างบน แต่ต่างตรงที่ label ที่บอกความหมาย ("Include Past Employees")
-    // ไม่ได้อยู่ใน <label> เดียวกันเลย (label ที่ห่อ switch ว่างเปล่าสนิท) ต้องเดินหา
-    // sibling ก่อนหน้าแทน (getPrecedingSiblingLabelText — ดูด้านบนสุดของไฟล์) — ตั้งใจไม่มี
-    // default แบบ checkboxWrapperLabel เลย (ไม่มีความหมายทั่วไปแบบ "Select row" ให้ switch
-    // เดา ถ้าหา sibling text ไม่เจอจริงๆ ต้องคืนค่าว่างไปเลย ให้ fallback อื่น (icon
-    // class ฯลฯ) ลองต่อแทนที่จะโชว์ label ผิดความหมาย)
+    // W_toggle: label ที่ห่อ switch ว่าง ต้องหา sibling ก่อนหน้า ไม่มี default (ปล่อยให้ fallback อื่นลองต่อ)
     const switchLabel = isSwitchCandidate ? getPrecedingSiblingLabelText(el) : '';
-    // W_dropdown_field_label: ใช้ helper ตัวเดียวกับ switch (getPrecedingSiblingLabelText —
-    // ดูด้านบนสุดของไฟล์) เพราะโครงสร้างเหมือนกันเป๊ะ: ข้อความที่บอกว่า widget นี้คือ field
-    // อะไร เป็นพี่น้อง "ก่อนหน้า" container ของ widget ไม่ใช่บรรพบุรุษ/ลูกของ element ที่ได้
-    // index — ต่างจาก switchLabel ตรงที่ตัวนี้ไม่ได้เอามาใช้เป็น label แทน แต่เอามา "นำหน้า"
-    // ค่าที่เลือกอยู่ (ดูจุดใช้งานด้านล่าง) เพราะค่าที่เลือกอยู่จริงก็ยังเป็นข้อมูลที่โมเดล
-    // ต้องเห็น (เช่น รู้ว่ายังเป็น '-- Select --' อยู่ = ยังไม่ได้ตั้งค่า)
-    // W_field_label_for_plain_inputs (C4 จาก audit ของ P7/P8): prefix ชื่อ field เคยเติมให้
-    // *เฉพาะ* custom dropdown trigger (role=combobox / aria-haspopup / class select-text)
-    // — `<select>` มาตรฐานและ `<input type=text>` ไม่เข้าเงื่อนไขสักข้อ label จึงเป็นแค่ค่าที่
-    // เลือก/พิมพ์อยู่ ("ESS", "William") ไม่มีอะไรบอกว่าเป็นช่องอะไรเลย
-    // ผลที่ตามมาไม่ใช่แค่โมเดลอ่านยาก: W_filter_scope_guard อ่านชื่อ field จาก prefix นี้
-    // มันจึง **เงียบสนิทบนเว็บที่ใช้ form มาตรฐาน** (คืน "" -> fail-open ทุกครั้ง) โดยไม่ error
-    // ไม่ log อะไรเลย ดูจากภายนอกเหมือน guard ทำงานปกติ — ซึ่งอันตรายกว่า guard ที่พังดังๆ
-    //
-    // เหตุผลเดียวกับ W_widget_semantic_label ที่เขียนไว้ด้านล่างเป๊ะ: ค่าที่อยู่ข้างในคือ
-    // "เนื้อหา" ไม่ใช่ "ชื่อของช่อง" — ต่างกันแค่ตรงนี้รู้ชื่อช่องจาก <label for> ได้ตรงๆ
-    // ไม่ต้องพึ่ง aria-label
-    // ตัดชนิดที่มี label ทางของตัวเองอยู่แล้วออก (checkbox/radio มี wrapper label, ปุ่มมี
-    // ข้อความบนตัวมันเอง) กันไปทับของที่ถูกอยู่แล้ว
+    // W_dropdown_field_label: ชื่อ field ใช้ "นำหน้า" ค่าที่เลือกอยู่ (ไม่แทน) เพราะโมเดลต้องเห็นค่าด้วย
+    // W_field_label_for_plain_inputs: เดิมเติม prefix ให้แค่ custom dropdown — <select>/<input>
+    // มาตรฐานไม่มีชื่อช่อง ทำให้ W_filter_scope_guard fail-open เงียบๆ บนเว็บ form มาตรฐาน
+    // ตัด checkbox/radio/ปุ่ม ออก (มี label ทางของตัวเองแล้ว)
     const NON_FILTER_INPUT_TYPES = ['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'hidden', 'file'];
     const isFilterFieldCandidate = isDropdownTriggerCandidate ||
       tag === 'select' || tag === 'textarea' ||
       (tag === 'input' && !NON_FILTER_INPUT_TYPES.includes(type));
-    // custom dropdown trigger ไม่ใช่ form field จริง (ไม่มี <label> ผูก) จึงยังใช้ทางเดิม
-    // ส่วน form field มาตรฐานใช้ getFieldNameLabel ที่ตัดค่าในช่องออกให้แล้ว
     const dropdownFieldLabel = isFilterFieldCandidate
       ? (isFormFieldTag ? getFieldNameLabel(el) : getPrecedingSiblingLabelText(el))
       : '';
@@ -728,46 +446,23 @@ _COLLECT_JS = r"""
                       humanize(el.id) || checkboxWrapperLabel || radioWrapperLabel ||
                       switchLabel || getIconClassLabel(el) || '';
 
-    // ปุ่มตะกร้าหลังใส่สินค้าแล้วมี badge span ลูก (เช่น "1") ทำให้ innerText
-    // กลายเป็นแค่ตัวเลขล้วนๆ ซึ่งชนะ fallback ด้านบนไปเพราะไม่ใช่ค่าว่าง แต่ก็ไม่ได้
-    // สื่อว่า element นี้คือปุ่มตะกร้า — ถ้า innerText เป็นแค่ตัวเลขสั้นๆ (badge
-    // counter) แต่มี label เชิงความหมายให้ใช้ ให้ผสมกันแทนที่จะทิ้งไปเฉยๆ
-    //
-    // element ที่ hoverRevealCandidate (visibility:hidden อยู่ตอนนี้) — innerText คืน
-    // ค่าว่างเปล่าเสมอ (browser ไม่คำนวณ "rendered text" ให้ element ที่ไม่ได้ render จริง
-    // แม้จะมี text node อยู่ใน DOM จริงก็ตาม) fallback ไป textContent (ดิบกว่า ไม่สนใจว่า
-    // render อยู่จริงไหม) เฉพาะกรณีนี้เท่านั้น ไม่กระทบ element ที่มองเห็นปกติเลย
+    // innerText เป็นตัวเลขล้วน (badge ตะกร้า) -> ผสมกับ semantic แทนทิ้ง
+    // hoverRevealCandidate: innerText ของ element ที่ไม่ render คืน '' ใช้ textContent แทน
     const innerTextTrimmed = (el.innerText || '').trim();
     const trimmedText = innerTextTrimmed ||
       (hoverRevealCandidate ? (el.textContent || '').trim() : '');
     const isBareCounter = /^\d{1,3}$/.test(trimmedText);
 
-    // หา label ที่สื่อความหมายที่สุด
     let label;
     if (isBareCounter && semantic) {
       label = `${semantic} (${trimmedText})`;
     } else {
-      // W19: associatedLabel (<label for>/wrapping <label>, ดูด้านบนสุดของไฟล์) แทรก
-      // ระหว่าง "ค่าที่กรอกอยู่จริง" (trimmedText/value — ยังต้องชนะเสมอถ้ามีค่าจริงอยู่
-      // แล้ว เช่น select ที่เลือกตัวเลือกไว้แล้ว/ช่องค้นหาที่พิมพ์คำไปแล้ว) กับ
-      // "placeholder ทั่วไป" (แพ้ label จริงเสมอถ้ามี — "Employee Name" สื่อความหมายกว่า
-      // "Type for hints..." เยอะ)
-      //
-      // Perception fix (radio buttons, ต่อ): ข้อยกเว้นสำหรับ type="radio"/"checkbox"
-      // โดยเฉพาะ — value ของ toggle input พวกนี้เป็นแค่ internal identifier ฝั่ง server
-      // (เช่น "1"/"2" ของ Gender) ไม่ใช่ข้อความที่ตั้งใจให้มนุษย์อ่าน ต่างจาก text/search
-      // input ที่ value คือ "สิ่งที่พิมพ์ไปจริง" ซึ่งสื่อความหมายเสมอ — ให้ associatedLabel
-      // ("Male"/"Female" จาก <label> ที่ห่อ) ชนะ value ก่อน แล้วค่อย fallback ไป value ถ้า
-      // ไม่มี label จริงๆ (ดีกว่าไม่มี label อะไรเลย)
+      // W19: ลำดับ = ค่าจริงในช่อง > associatedLabel > placeholder > semantic
+      // radio/checkbox: value เป็นแค่ id ฝั่ง server ("1"/"2") ให้ associatedLabel ชนะ value
       const isToggleInputType = type === 'radio' || type === 'checkbox';
-      // W_password_value_leaks_into_label (บั๊กจริงจากรันสด 2026-09-03 พร้อม ground truth):
-      // หลัง fill_secret กรอกรหัสที่บันทึกไว้ลงช่อง Current Password ตัว label ของ element
-      // นั้นกลายเป็น 'Current Password: admin123' แล้วถูกส่งเข้า prompt ทุก step ต่อจากนั้น
-      // — รหัสผ่านจริงของ user ถึงมือ LLM ของบุคคลที่สามแบบข้อความล้วน ซึ่งลบล้างเหตุผล
-      // ทั้งหมดที่ fill_secret มีอยู่ ("ระบบกรอกให้ โมเดลไม่มีทางเห็นค่า") และ crypto_store
-      // ที่เข้ารหัสไว้ตอนพักก็ไร้ความหมายไปด้วย
-      //
-      // สถานะของช่อง (ว่าง/กรอกแล้ว) ยังจำเป็นกับโมเดลจริง จึงแทนด้วยหมุดคงที่ ไม่ใช่ตัดทิ้ง
+      // W_password_value_leaks_into_label (live run 2026-09-03): label เคยเป็น
+      // 'Current Password: admin123' ส่งเข้า LLM ทุก step — ลบล้างเหตุผลของ fill_secret ทั้งหมด
+      // แทนด้วยหมุดคงที่ (ยังบอกสถานะว่าง/กรอกแล้ว)
       const safeValue = type === 'password'
         ? ((el.value || '') ? '[filled]' : '')
         : el.value;
@@ -780,30 +475,19 @@ _COLLECT_JS = r"""
       );
     }
     label = label.trim().replace(/\s+/g, ' ').slice(0, 80);
-    // W_widget_semantic_label (P3.5): สำหรับ contenteditable และ widget role ที่เพิ่งเพิ่ม
-    // เข้ามา (slider/spinbutton/searchbox/textbox/treeitem/listbox) ตัว innerText คือ
-    // "เนื้อหาที่อยู่ข้างใน" ไม่ใช่ "ชื่อของช่อง" — ช่อง compose ของ Gmail จะได้ label เป็น
-    // ข้อความที่พิมพ์ค้างไว้ ส่วน slider ได้เป็นตัวเลขค่าปัจจุบัน ซึ่งโมเดลแยกไม่ออกเลยว่า
-    // element นั้นคืออะไร เติมชื่อจาก aria-label/title นำหน้าแทน (pattern เดียวกับ
-    // W_dropdown_field_label ด้านล่างเป๊ะ — คงค่าที่อยู่ข้างในไว้ ไม่ทับทิ้ง)
+    // W_widget_semantic_label (P3.5): contenteditable/slider/... innerText คือเนื้อหา ไม่ใช่ชื่อช่อง
+    // เติม semantic นำหน้า (คงค่าเดิมไว้)
     const WIDGET_SEMANTIC_ROLES = ['slider', 'spinbutton', 'searchbox', 'textbox', 'treeitem', 'listbox'];
     const elRole = el.getAttribute('role') || '';
     const needsSemanticPrefix = el.isContentEditable || WIDGET_SEMANTIC_ROLES.includes(elRole);
     if (needsSemanticPrefix && semantic && !label.toLowerCase().includes(semantic.toLowerCase())) {
       label = (label ? semantic + ': ' + label : semantic).slice(0, 80);
     }
-    // W_dropdown_field_label: เติมชื่อ field นำหน้าเฉพาะตอนที่ label ปัจจุบันยังไม่มีชื่อนั้น
-    // อยู่แล้ว (dropdown ที่เลือกค่าไปแล้วอาจโชว์ค่าที่ตรงกับชื่อ field พอดี ไม่ควรซ้ำสองรอบ)
-    // — คงค่าที่เลือกอยู่ไว้เสมอ ไม่ทับทิ้ง ให้ผลเป็น 'User Role: -- Select --'
+    // W_dropdown_field_label: เติมชื่อ field เฉพาะเมื่อ label ยังไม่มีชื่อนั้น -> 'User Role: -- Select --'
     if (dropdownFieldLabel && !label.toLowerCase().includes(dropdownFieldLabel.toLowerCase())) {
-      // W_empty_field_shows_no_value (บั๊กจริงที่ user รายงาน 2026-08-31): ช่อง input ที่ยัง
-      // *ว่าง* ตกไปใช้ placeholder เป็น label ("Type for hints...") พอเติมชื่อ field นำหน้าจึง
-      // ได้ "Employee Name: Type for hints..." ซึ่งอ่านยังไงก็เหมือน "ช่องนี้มีค่าแล้ว"
-      // ผลจริง: guard ที่อ่านค่าตัวกรองจาก label (W_empty_table_needs_right_filter) เห็นเป็น
-      // ตัวกรองส่วนเกินที่ตั้งค้างอยู่ แล้วปฏิเสธงานที่ทำสำเร็จแล้ว -> รายงานว่า Failed ทั้งที่
-      // agent ทำถูกครบ
-      // ช่องว่างต้องแสดงแค่ "ชื่อช่อง" เฉยๆ ซึ่งเป็นความจริงตรงตัวอยู่แล้ว — placeholder เป็น
-      // คำใบ้ของ UI ไม่ใช่ค่าที่ถูกกรอกไว้
+      // W_empty_field_shows_no_value (2026-08-31): ช่องว่างเคยได้ "Employee Name: Type for hints..."
+      // ดูเหมือนมีค่า guard W_empty_table_needs_right_filter จึงปฏิเสธงานที่สำเร็จแล้ว —
+      // ช่องว่างแสดงแค่ชื่อช่อง (placeholder เป็นคำใบ้ ไม่ใช่ค่า)
       const isEmptyValueField = isFormFieldTag && !((el.value || '').trim());
       label = (
         isEmptyValueField || !label
@@ -811,89 +495,54 @@ _COLLECT_JS = r"""
           : `${dropdownFieldLabel}: ${label}`
       ).slice(0, 80);
     }
-    // W20 (Task10): แปะ marker ที่ชัดเจนไม่กำกวมให้ element ที่จับได้จาก
-    // PROFILE_MENU_CLASS_RE ด้านบน — ให้ LLM มั่นใจได้ 100% ว่านี่คือ target ที่ SYSTEM_PROMPT
-    // สั่งให้หา (ดู "Account Security & Password Actions" ข้อ mandatory protocol) ไม่ต้องเดา
-    // จาก username text เฉยๆ (ซึ่งเปลี่ยนไปตาม user ที่ login อยู่ ไม่ใช่ label คงที่)
-    // W_dialog_in_snapshot: ป้ายบอกว่า element นี้อยู่ในกล่องโต้ตอบที่เปิดค้างอยู่ — pattern
-    // เดียวกับ marker อื่นในไฟล์นี้ ([obscured]/[already active]/[Profile/Account Menu])
-    // (เช็คด้วย closest() ตรงนี้ ไม่ใช้ตัวแปร region เพราะ region ถูกคำนวณหลังจุดนี้)
+    // marker สถานะชั่วคราว (ต้องอยู่ใน LABEL_MARKERS ฝั่ง Python ด้วย) แปะซ้อนกันได้
+    // W_dialog_in_snapshot: ใช้ closest() เพราะ region คำนวณหลังจุดนี้
     if (el.closest && el.closest(DIALOG_REGION_SELECTOR)) {
       label = label ? `${label} [in open dialog]` : '[in open dialog]';
     }
+    // W20: marker ชัดเจนแทนการเดาจาก username (เปลี่ยนตาม user ที่ login)
     if (profileMenuNodes.has(el)) {
       label = label ? `${label} [Profile/Account Menu]` : '[Profile/Account Menu]';
     }
     if (obscured) {
       label = label ? `${label} [obscured]` : '[obscured]';
     }
-    // คนละเงื่อนไขกับ obscured ข้างบน (obscured = ถูก element อื่นวางทับ, นี่ = ซ่อนด้วย
-    // CSS opacity/visibility ของตัวเอง/บรรพบุรุษ) — ทั้งสอง marker แปะซ้อนกันได้ถ้าเข้า
-    // เงื่อนไขทั้งคู่พร้อมกัน (เคสหายากแต่ไม่ผิดอะไร)
+    // ต่างจาก obscured: นี่คือซ่อนด้วย CSS ของตัวเอง ไม่ใช่โดนบัง
     if (hoverRevealCandidate) {
       label = label ? `${label} [hidden — may need to hover the row first]` : '[hidden — may need to hover the row first]';
     }
-    // ACC-2: คนละเงื่อนไขกับ marker อื่นข้างบนทั้งหมด (obscured/hoverReveal คือเรื่อง
-    // "มองเห็นไหม", นี่คือ "กดได้ไหม" — element ที่มองเห็นชัดเจนแต่ disabled ก็ต้องแปะ
-    // marker นี้ได้ปกติ) แปะซ้อนกับ marker อื่นได้ถ้าเข้าเงื่อนไขพร้อมกัน
+    // ACC-2: "กดได้ไหม" (อิสระจาก marker มองเห็น)
     if (isDisabled) {
       label = label ? `${label} [disabled]` : '[disabled]';
     }
-    // W65[1]: เงื่อนไขอิสระจาก disabled เหมือนกัน (field ที่ required อาจ enable/disable
-    // อยู่ก็ได้ ไม่เกี่ยวกัน) แปะซ้อนกับ marker อื่นได้ปกติ
+    // W65[1]
     if (isRequired) {
       label = label ? `${label} [required]` : '[required]';
     }
 
-    // W_focus_is_invisible (release-gate 2026-09-08, MiniWoB focus-text): โจทย์คือ "โฟกัส"
-    // ช่องข้อความ agent คลิกถูกตั้งแต่ครั้งแรก (MiniWoB ให้คะแนนเต็ม) แต่ snapshot ไม่เคย
-    // บอกเลยว่า element ไหนกำลังโฟกัสอยู่ มันจึงไม่มีทางรู้ว่าทำสำเร็จแล้ว เลยคลิกซ้ำ
-    // จนหมด 15 step แล้วรายงานว่าไม่จบ
-    //
-    // ตามจริงแล้ว marker นี้ช่วย focus-text ไม่ได้เลย และไม่มีอะไรช่วยได้: หน้านั้นผูก
-    // handler ไว้ว่า `d3.select('#tt').on('focus', function(){ this.blur(); ... })` — มัน
-    // เป่าโฟกัสทิ้งทันทีที่ได้รับ แล้วจบ episode ตรงนั้น สถานะ "โฟกัสอยู่" จึงไม่มีวัน
-    // สังเกตได้จาก DOM ไม่ว่าจะดูเร็วแค่ไหน (วัดแล้ว: activeElement เป็นค่าว่างทันที
-    // หลังคลิก ทั้งที่ reward เต็ม) — เคยเข้าใจผิดว่าเป็นเพราะ createDisplay() ของ
-    // harness เรา แล้วแก้ผิดจุดไปหนึ่งรอบ
-    //
-    // ไม่ใช่เรื่องของ MiniWoB อย่างเดียว: "ตอนนี้เคอร์เซอร์อยู่ช่องไหน" เป็นสถานะที่
-    // มองไม่เห็นจาก DOM text ล้วนๆ และจำเป็นทุกครั้งที่จะพิมพ์/กด Enter ต่อ — เป็น
-    // ข้อมูลชนิดเดียวกับ marker ตัวอื่นในชุดนี้ (สถานะชั่วคราวของ element)
+    // W_focus_is_invisible (gate 2026-09-08, MiniWoB focus-text): snapshot ไม่เคยบอกว่า element
+    // ไหนโฟกัสอยู่ agent จึงคลิกซ้ำจนหมด step — marker นี้ช่วย focus-text เองไม่ได้ (หน้านั้น blur
+    // ทันทีใน on('focus')) แต่ "เคอร์เซอร์อยู่ช่องไหน" จำเป็นทุกครั้งก่อนพิมพ์/กด Enter
     if (el === document.activeElement) {
       label = label ? `${label} [focused]` : '[focused]';
     }
 
-    // W50 (viewport-aware sorting): เช็คว่า element นี้อยู่ในกรอบจอที่มองเห็นตอนนี้ไหม
-    // (ไม่ใช่ obscured เช็คด้านบนที่ดูว่าโดน element อื่นบังอยู่หรือเปล่า — ตัวนี้ดูแค่
-    // ตำแหน่ง top/bottom เทียบกับ viewport เฉยๆ) ใช้ rect ที่คำนวณไปแล้วด้านบนสุดของ
-    // element นี้ ไม่ query DOM เพิ่ม — get_snapshot() (ฝั่ง Python) ใช้ค่านี้ "จัดลำดับ"
-    // การแสดงผลใน text_repr เท่านั้น (element ที่เห็นอยู่ในจอตอนนี้ขึ้นก่อน) ไม่ใช่กรอง
-    // element ที่ยังไม่ scroll ถึงทิ้ง — element นอกจอยังคงอยู่ครบใน list เหมือนเดิมทุก
-    // ตัว แค่เรียงลำดับต่างไป (data-ai-index ที่แปะไปแล้วด้านบนไม่เปลี่ยนตามการเรียงนี้)
+    // W50: ใช้ "จัดลำดับ" ใน text_repr เท่านั้น ไม่กรองทิ้ง (index ไม่เปลี่ยนตามการเรียง)
     const inViewport = rect.bottom > 0 && rect.top < window.innerHeight;
 
-    // W19 ("Scoped Search Context"): "main"/"navigation"/"" (ดู getRegion ด้านบน) — ใช้
-    // แค่ "จัดหมวด" ให้ LLM เห็นใน text_repr เท่านั้น (ดู get_snapshot() ฝั่ง Python) ไม่ใช่
-    // ตัวกรอง element ทิ้งเหมือน in_viewport เดิม — element นอก main/navigation (region
-    // ว่างเปล่า) ยังคงอยู่ครบใน list เหมือนเดิมทุกตัว
+    // W19: "main"/"navigation"/"dialog"/"" ใช้จัดหมวดใน text_repr ไม่ใช่ตัวกรอง
     const region = getRegion(el);
 
-    // W19 ("Log Cleanliness"): จำกัดแค่ element ที่เป็นเมนู/แท็บจริงๆ (อยู่ใน navigation
-    // region หรือมี role=tab เจาะจง) เท่านั้นถึงเช็ค isElementAlreadyActive — ตั้งใจไม่เช็ค
-    // กับทุก element ที่มี class "active" เพราะคำนี้ใช้กว้างมากในเว็บจริง (เช่น ตัวเลือกที่
-    // ถูก highlight ด้วยคีย์บอร์ดใน custom dropdown/autocomplete ก็มักได้ class "active"
-    // เหมือนกัน แต่เป็น element ที่ "ควร" คลิกเพื่อเลือก ไม่ใช่ตัวที่ควรข้าม — ดู W19
-    // "Exact Element Matching" guidance เรื่อง autocomplete ด้วย)
+    // W19 (Log Cleanliness): เช็ค active เฉพาะเมนู/แท็บ — class "active" ใช้กว้างมาก (ตัวเลือก
+    // ที่ highlight ใน autocomplete ก็ได้ class นี้ แต่เป็นตัวที่ควรคลิก)
     const isNavCandidate = region === 'navigation' || el.getAttribute('role') === 'tab';
     const alreadyActive = isNavCandidate && isElementAlreadyActive(el);
     if (alreadyActive) {
       label = label ? `${label} [already active]` : '[already active]';
     }
 
-    // W_same_label_for_different_fields: ส่ง placeholder ออกมาด้วยเพื่อให้ฝั่ง Python แยก
-    // ช่องที่ label ซ้ำกันได้ — ไม่ได้เอาไปใส่ label ตรงนี้เพราะช่องส่วนใหญ่ label ไม่ซ้ำ
-    // และ W_empty_field_shows_no_value ห้ามเอา placeholder มาแสดงเป็นค่าของช่องว่าง
+    // W_same_label_for_different_fields: ส่ง placeholder แยกให้ Python ใช้ disambiguate label ซ้ำ
+    // (ไม่ใส่ใน label ตรงนี้ — ขัด W_empty_field_shows_no_value)
     out.push({ index: idx, tag, type, label, in_viewport: inViewport, region,
                placeholder: (el.getAttribute && el.getAttribute('placeholder')) || '' });
     idx++;
@@ -903,9 +552,13 @@ _COLLECT_JS = r"""
 """
 
 
-# marker ที่ JS ด้านบนแปะต่อท้าย label (สถานะชั่วคราวของ element ไม่ใช่ชื่อของมัน)
-# อยู่ที่นี่เพราะเป็นที่เดียวกับตัวที่สร้างมัน — orchestrator import ต่อจากไฟล์นี้
-# (ทางกลับกันทำไม่ได้ perception ห้าม import orchestrator: circular)
+# ══════════════════════════════════════════════════════════════════════
+# โซน 2: marker สถานะ + แยก label ที่ซ้ำกัน (Python)
+#   ทำอะไร: จัดการ marker ที่ JS ต่อท้าย label และเติม placeholder ให้ช่องที่ชื่อซ้ำ
+#   ทำงานยังไง: label_without_markers() ตัด marker เพื่อเทียบตัวตน, _disambiguate_shared_labels() ใช้ placeholder แยกช่องที่ label เหมือนกัน
+# ══════════════════════════════════════════════════════════════════════
+# marker สถานะที่ JS ด้านบนต่อท้าย label — อยู่ที่นี่เพราะ orchestrator import จากไฟล์นี้
+# (กลับทิศไม่ได้: circular import)
 LABEL_MARKERS = (
     "[in open dialog]",
     "[Profile/Account Menu]",
@@ -919,32 +572,21 @@ LABEL_MARKERS = (
 
 
 def label_without_markers(label: str) -> str:
-    """label ที่ตัด marker ออกหมดแล้ว — ใช้ตอนต้องเทียบว่า "เป็น element เดียวกันไหม"
-    เพราะ marker เปลี่ยนไปมาได้ตลอดโดยที่ตัว element ไม่ได้เปลี่ยนเลย"""
+    """label ที่ตัด marker ออก — ใช้เทียบว่าเป็น element เดียวกันไหม (marker เปลี่ยนได้ตลอด)"""
     text = str(label or "")
     for marker in LABEL_MARKERS:
         text = text.replace(marker, " ")
     return " ".join(text.split())
 
+
 def _disambiguate_shared_labels(elements: list[dict]) -> None:
-    """ช่องกรอกหลายช่องที่ได้ label เดียวกัน -> เติม placeholder ต่อท้ายให้แยกออกจากกัน
+    """ช่องกรอกหลายช่องที่ label ซ้ำกัน -> เติม placeholder ให้แยกออกจากกัน
 
-    W_same_label_for_different_fields (release gate จับได้ 2026-09-07, งาน add_candidate ตกทุก
-    รอบตั้งแต่ต้น): ฟอร์ม Add Candidate ของ OrangeHRM มีช่อง First/Middle/Last Name อยู่ใต้
-    label กลุ่มเดียวว่า "Full Name" — perception ให้ associatedLabel ชนะ placeholder เสมอ ทั้ง
-    สามช่องจึงมี label ว่า "Full Name" เหมือนกันเป๊ะ โมเดลแยกไม่ออกว่าช่องไหนคืออะไร มันกรอก
-    สองช่องแรก (First + Middle) แล้วปล่อย Last Name ว่าง ระบบขึ้น "Required" กด Save ไม่ผ่าน
-    ทุกครั้ง (ยืนยันด้วย probe ที่ไม่ใช้ LLM: placeholder ของสามช่องคือ First/Middle/Last Name)
-
-    เติมเฉพาะตอน label ซ้ำจริงเท่านั้น ซึ่งเป็นเคสที่กำกวมจริงและตรวจได้จาก snapshot ตรงๆ —
-    เติมให้ทุกช่องไม่ได้ เพราะ W_empty_field_shows_no_value แก้บั๊กจริงไว้แล้วว่าช่องว่างที่โชว์
-    placeholder ("Employee Name: Type for hints...") อ่านแล้วเหมือนช่องนั้นมีค่าอยู่ ทำให้ guard
-    ที่อ่านค่าตัวกรองจาก label ตัดสินผิด"""
-    # W_marker_hides_a_shared_label (gate 3915868, add_candidate): ต้องเทียบด้วย label ที่
-    # ตัด marker ออกแล้ว — พอช่องหนึ่งได้ [focused] ต่อท้าย (หรือ [required]/[obscured])
-    # label ก็ "ไม่ซ้ำ" กันอีกต่อไป ตัว disambiguate เลยเงียบ ทั้งสามช่องกลับไปชื่อ
-    # "Full Name" เหมือนกันหมด = บั๊กเดิมที่ฟังก์ชันนี้ถูกเขียนมาแก้พอดี (วัดแล้ว: agent
-    # กรอกนามสกุลลงช่อง Middle Name แล้วงานล้มทั้ง task)
+    W_same_label_for_different_fields (gate 2026-09-07, add_candidate): First/Middle/Last Name
+    ของ OrangeHRM ได้ label "Full Name" เหมือนกันหมด โมเดลเว้น Last Name ว่าง Save ไม่ผ่าน
+    เติมเฉพาะตอนซ้ำจริง — เติมทุกช่องขัด W_empty_field_shows_no_value"""
+    # W_marker_hides_a_shared_label (gate 3915868): เทียบ label ที่ตัด marker แล้ว ไม่งั้น
+    # [focused]/[required] ทำให้ "ไม่ซ้ำ" แล้ว disambiguate เงียบ
     by_label: dict[str, list[dict]] = {}
     for el in elements:
         base = label_without_markers(el.get("label"))
@@ -954,81 +596,64 @@ def _disambiguate_shared_labels(elements: list[dict]) -> None:
         if len(group) < 2:
             continue
         hints = [str(e.get("placeholder") or "").strip() for e in group]
-        # ต้องแยกออกจากกันได้จริงทุกตัว ไม่งั้นเติมไปก็ยังกำกวมเหมือนเดิม
+        # ต้องแยกออกจากกันได้ทุกตัว ไม่งั้นเติมไปก็ยังกำกวม
         if not all(hints) or len(set(hints)) != len(hints):
             continue
         for el, hint in zip(group, hints):
-            # เติมเข้าไปในส่วน "ชื่อ" แล้วต่อ marker กลับท้ายสุดตามเดิม เพื่อให้
-            # marker ยังอ่านออกว่าเป็นสถานะ ไม่ใช่ส่วนหนึ่งของชื่อช่อง
+            # เติมในส่วนชื่อ แล้วต่อ marker กลับท้ายสุด
             base = label_without_markers(el.get("label"))
             markers = [m for m in LABEL_MARKERS if m in str(el.get("label") or "")]
             el["label"] = " ".join([f"{base}: {hint}", *markers])
 
 
+# ══════════════════════════════════════════════════════════════════════
+# โซน 3: snapshot (ทางเข้าหลักของ perception) + หา frame
+#   ทำอะไร: get_snapshot() ที่ orchestrator เรียกทุก step และ resolve_frame() ที่ actions ใช้ก่อนคลิก
+#   ทำงานยังไง: รัน _COLLECT_JS ทุก frame (main ก่อน) -> เรียง dialog/in_viewport ก่อน -> ตัดตาม snapshot_max_elements -> คืน (elements, text_repr)
+# ══════════════════════════════════════════════════════════════════════
+def _frames_main_first(page: Page) -> list:
+    """W40: ทุก frame ของหน้า โดย main frame มาก่อนเสมอ"""
+    main_frame = page.main_frame
+    return [main_frame] + [f for f in page.frames if f != main_frame]
+
+
 async def get_snapshot(page: Page):
     """
-    คืนค่า 2 อย่าง:
-      elements  = list ของ dict (index, tag, type, label, in_viewport, region) -> ไว้ให้
-                  โค้ดใช้ (in_viewport ใช้แค่จัดลำดับการแสดงผล ดู W50 ด้านล่าง — ไม่ใช่ตัว
-                  กรอง, region คือ "main"/"navigation"/"" ดู getRegion ใน _COLLECT_JS — W19
-                  "Scoped Search Context" ใช้ disambiguate label ซ้ำระหว่าง sidebar/menu
-                  กับ main content)
-      text_repr = string สรุปสั้นๆ (เรียงตาม in_viewport ก่อนแล้ว) -> ไว้ยัดใส่ prompt LLM
+    คืน (elements, text_repr):
+      elements  = list[dict] (index, tag, type, label, in_viewport, region, placeholder) ให้โค้ดใช้
+      text_repr = string สรุปสำหรับ prompt LLM (dialog ก่อน แล้ว in_viewport ก่อน)
 
-    W40: ไล่เก็บจากทุก frame ใน page.frames ไม่ใช่แค่ main document (ดู docstring หัวไฟล์) —
-    main frame เก็บก่อนเสมอ (หน้าที่ไม่มี iframe เลย page.frames มีแค่ [main_frame] ตัวเดียว
-    พฤติกรรม/ลำดับ index เดิมทุกประการ ไม่มีอะไรเปลี่ยน) ส่ง len(elements) ปัจจุบันเป็น
-    startIndex ให้ _COLLECT_JS ของแต่ละ frame ถัดไป ให้ index เรียงต่อกันไม่ชนกันข้าม frame
-    — frame ที่ evaluate ไม่ได้ (cross-origin ที่ browser บล็อก, frame ถูก detach ระหว่างอ่าน
-    ฯลฯ) ข้ามไปเงียบๆ ไม่ throw ออกไป (เฟรมเดียวพังไม่ควรทำให้ perceive ทั้งหน้าล้มเหลวไปด้วย)
+    W40: เก็บทุก frame, index ต่อกันข้าม frame; frame ที่ evaluate ไม่ได้ (cross-origin/detach)
+    ข้ามเงียบๆ — เฟรมเดียวพังไม่ควรทำให้ perceive ทั้งหน้าล้ม
     """
     elements: list[dict] = []
-    main_frame = page.main_frame
-    frames = [main_frame] + [f for f in page.frames if f != main_frame]
-    for frame in frames:
+    for frame in _frames_main_first(page):
         try:
             frame_elements = await frame.evaluate(_COLLECT_JS, len(elements))
         except Exception:
             continue
         elements.extend(frame_elements)
 
-    # W50 (viewport-aware sorting, soft — ไม่ตัด element ทิ้ง): เรียง element ที่อยู่ใน
-    # กรอบจอที่มองเห็นตอนนี้ขึ้นก่อน element ที่อยู่นอกจอ (ยังต้อง scroll ถึง) — ใช้
-    # list.sort() ซึ่งเป็น stable sort ของ Python เสมอ (คงลำดับเดิมของกลุ่มที่ key เท่ากัน
-    # ไว้) เลยไม่กระทบลำดับเดิมภายในกลุ่ม in_viewport เดียวกัน — data-ai-index ที่แปะไปแล้ว
-    # ใน _COLLECT_JS (ผูกกับ element ตัวจริงผ่าน selector ไม่ใช่ผ่านตำแหน่งใน list) ไม่ถูก
-    # แตะเลย การเรียงนี้มีผลแค่ลำดับการแสดงผลใน text_repr ให้ LLM เห็น element ที่กำลังเปิด
-    # อยู่ตรงหน้า (เช่น dropdown ที่เพิ่ง click เปิด) ก่อน element ที่ต้อง scroll ไปหา —
-    # element นอกจอยังอยู่ครบใน list เหมือนเดิมทุกตัว ไม่มีตัวไหนถูกกรองทิ้ง
-    #
-    # หมายเหตุ: สำหรับ element ใน <iframe> ค่า in_viewport อ้างอิงตำแหน่ง scroll ของ frame
-    # นั้นเอง ไม่ใช่ของหน้าหลัก — เป็นข้อจำกัดที่ยอมรับได้ (ยังสื่อความหมายอยู่ ไม่ใช่ bug)
-    # W_dialog_in_snapshot: dialog ที่เปิดค้างบล็อกทุกอย่างที่อยู่ข้างหลังมันจริงๆ — ของใน
-    # dialog จึงเป็นสิ่งเดียวที่กดได้ ณ ตอนนั้น ต้องมาก่อน in_viewport ด้วยซ้ำ (แถวข้อมูลหลัง
-    # dialog ก็ in_viewport เหมือนกันหมด การเรียงด้วย in_viewport อย่างเดียวจึงแยกไม่ออกเลย)
-    # ต่อยอด sort เดิม ไม่เขียนใหม่ — tuple key เรียงตามลำดับความสำคัญจากซ้ายไปขวา
     _disambiguate_shared_labels(elements)
+    # เรียงแค่ลำดับแสดงผล (stable sort, data-ai-index ไม่เปลี่ยน, ไม่ตัดทิ้ง):
+    # W_dialog_in_snapshot: dialog ก่อน — เป็นสิ่งเดียวที่กดได้ขณะเปิดอยู่
+    # W50: แล้ว in_viewport ก่อน (ใน iframe อิงตำแหน่ง scroll ของ frame นั้น — ยอมรับได้)
     elements.sort(key=lambda e: (e.get("region") != "dialog", not e.get("in_viewport", True)))
 
-    # W_snapshot_cap (P3.3): ตัดเฉพาะรายการที่ส่งให้ LLM ไม่แตะ elements ที่คืนให้โค้ด
-    # (ดู config.py::snapshot_max_elements สำหรับเหตุผลเต็ม) — เรียง in_viewport ขึ้นก่อนไปแล้ว
-    # ด้านบน (W50) ตัวที่ถูกตัดจึงเป็นตัวที่ต้อง scroll ไปหาเสมอ
+    # W_snapshot_cap (P3.3): ตัดเฉพาะรายการที่ส่ง LLM (ดู config.py::snapshot_max_elements)
+    # ตัวที่ถูกตัดเป็นตัวที่ต้อง scroll ไปหาเสมอเพราะเรียงไว้แล้ว
     cap = settings.snapshot_max_elements
     shown = elements[:cap] if cap > 0 and len(elements) > cap else elements
     lines = []
     for e in shown:
         kind = f"{e['tag']}" + (f"({e['type']})" if e['type'] else "")
         label = f" '{e['label']}'" if e['label'] else ""
-        # W19 ("Scoped Search Context"): แปะ "(navigation)" เฉพาะ element ที่อยู่ใน
-        # nav/aside/sidepanel เท่านั้น (ไม่แปะ "(main)" ให้ทุกบรรทัดเปล่าๆ เพราะเป็น
-        # ส่วนใหญ่ของหน้าอยู่แล้ว — แปะเฉพาะกรณีที่ต้อง disambiguate จริงถึงจะมีประโยชน์
-        # เหมือน marker อื่นในไฟล์นี้ เช่น [obscured]/[ซ่อนอยู่])
+        # W19: แปะเฉพาะ "(navigation)" — "(main)" เป็นส่วนใหญ่ของหน้า ไม่ช่วยแยก
         region_marker = " (navigation)" if e.get("region") == "navigation" else ""
         lines.append(f"[{e['index']}] {kind}{label}{region_marker}")
 
     if len(shown) < len(elements):
-        # ห้ามตัดเงียบๆ — โมเดลต้องรู้ว่ายังมี element ที่มันไม่เห็น ไม่งั้นจะสรุปว่า "ไม่มีปุ่มนี้
-        # บนหน้านี้" ทั้งที่แค่ถูกตัดออกไป (failure mode เดียวกับ W_confident_zero)
+        # ห้ามตัดเงียบ — ไม่งั้นโมเดลสรุปว่า "ไม่มีปุ่มนี้" (failure mode เดียวกับ W_confident_zero)
         lines.append(
             f"[... {len(elements) - len(shown)} more elements are further down this page and "
             "were left out to keep this list readable — scroll down if what you need is not "
@@ -1039,13 +664,9 @@ async def get_snapshot(page: Page):
 
 
 async def resolve_frame(page: Page, selector: str) -> Union[Page, Frame]:
-    """W40: หา Frame (หรือ page เอง) ที่มี element ตรง selector นี้จริง — ลอง main frame
-    ก่อนเสมอ (เร็วที่สุด/ตรงกับกรณีส่วนใหญ่ที่ element ไม่ได้อยู่ใน iframe เลย) แล้วค่อยไล่
-    frame อื่นถ้าไม่เจอ ใช้ query_selector() เช็คแค่ "มีอยู่ไหม" (คืนทันทีไม่รอ) แทนที่จะลอง
-    click()/wait_for_selector() ทีละ frame ซึ่งจะรอจน timeout เต็มทุกครั้งที่ไม่เจอ (ช้ามาก
-    ถ้าต้องไล่หลาย frame) — คืน page เฉยๆ ถ้าหาไม่เจอในทุก frame เลย ให้ caller
-    (backend/app/core/actions.py) เรียก click()/fill() ปกติแล้วเจอ error message ที่คุ้นเคย
-    (เช่น "หา element ไม่เจอ") แทนที่จะต้องแยก error กรณีนี้ออกมาต่างหาก"""
+    """W40: หา frame ที่มี selector นี้ (main ก่อน) ด้วย query_selector() ซึ่งคืนทันที — ไม่ลอง
+    click ทีละ frame เพราะจะรอ timeout เต็มทุก frame ที่ไม่เจอ ไม่เจอเลยคืน page ให้ caller
+    (actions.py) เจอ error ปกติเอง"""
     try:
         if await page.query_selector(selector) is not None:
             return page
@@ -1063,24 +684,17 @@ async def resolve_frame(page: Page, selector: str) -> Union[Page, Frame]:
     return page
 
 
-# --- W45: Lane 1/2 อ่าน "เนื้อหา" หน้าเว็บ (นับ/ตาราง) — แยกจาก get_snapshot() ด้านบนซึ่ง
-# กรองเอาเฉพาะ element ที่คลิกได้ ไม่มีเส้นทางอ่านเนื้อหา (ตาราง/ตัวเลข/text) เลย —
-# ทั้งสองฟังก์ชันนี้ "ไม่" ถูกเรียกอัตโนมัติทุก step เหมือน get_snapshot() ต้องถูกเรียกผ่าน
-# tool "read_page_data" เท่านั้น (ดู backend/app/core/actions.py::read_page_data ที่เป็น
-# จุดตัดสินใจว่าจะเรียกตัวไหน + backend/app/core/llm.py สำหรับ tool schema/SYSTEM_PROMPT
-# ที่ให้ LLM เรียกเอง) กันไม่ให้ token cost ต่อ step โตขึ้นถาวรเหมือนที่ get_snapshot() ระวัง
-# ไว้อยู่แล้ว (trim system prompt/filter footer/prompt caching)
+# ══════════════════════════════════════════════════════════════════════
+# โซน 4: อ่านเนื้อหาหน้าเว็บ Lane 1 — นับจำนวน
+#   ทำอะไร: นับ element ที่ตรง selector แบบ deterministic (ไม่ใช้ LLM)
+#   ทำงานยังไง: _COUNT_ELEMENTS_JS นับเฉพาะที่มองเห็นจริง รวมทุก frame
+# ══════════════════════════════════════════════════════════════════════
+# --- W45: อ่าน "เนื้อหา" หน้าเว็บ (นับ/ตาราง) — ไม่เรียกอัตโนมัติทุก step เรียกผ่าน tool
+# "read_page_data" เท่านั้น (actions.py::read_page_data) กัน token ต่อ step โตถาวร
 
-# W63[3.3] ("Accurate Record Counting" — ticket Issue 3.3, บั๊กจริง: querySelectorAll(...).length
-# เดิมนับ node ที่ match selector "ทุกตัวใน DOM" ตรงๆ ไม่สนว่ามองเห็นได้จริงไหม — เว็บจำนวนมาก
-# (รวม OrangeHRM) ทิ้ง <option>/แถวตารางของหน้าอื่นที่ยัง paginate ไม่มาถึง/dropdown ที่ยังไม่เปิด
-# ไว้ใน DOM เดิมด้วย display:none/ไม่ได้ layout เลย ทำให้ "จำนวนที่นับได้" สูงกว่าจำนวนแถว/รายการ
-# ที่ user เห็นจริงบนจอเสมอถ้า selector ที่ LLM เดามากว้างเกินไปโดยไม่ตั้งใจไปโดน node ที่ซ่อนอยู่
-# — กรองเฉพาะ element ที่ "เห็นได้จริง" ก่อนนับ (มี layout size + display ไม่ใช่ none +
-# visibility ไม่ใช่ hidden) เกณฑ์เดียวกับที่ get_snapshot() ใช้ตัดสินว่า element ไหน "เห็นได้"
-# (ดู hasSize/notDisplayNone ด้านบนของไฟล์นี้) ยกเว้นไม่ต้องรองรับ hover-to-reveal
-# (opacity:0/visibility:hidden ที่ยัง "นับได้" สำหรับปุ่มคลิก — W47) เพราะจุดประสงค์ต่างกัน: ที่
-# นี่นับ "รายการที่มีอยู่จริงตามที่ user มองเห็น" ไม่ใช่หา element ที่คลิกได้แม้จะซ่อนชั่วคราว
+# W63[3.3] (Accurate Record Counting): querySelectorAll().length เดิมนับ node ที่ซ่อน (option/แถว
+# ของหน้าอื่นที่ display:none) ได้ตัวเลขเกินจริง — นับเฉพาะที่เห็นจริง (เกณฑ์เดียวกับ
+# get_snapshot แต่ไม่รองรับ hover-to-reveal เพราะนับ "สิ่งที่ user เห็น" ไม่ใช่หาปุ่มคลิก)
 _COUNT_ELEMENTS_JS = r"""
 (selector) => {
   try {
@@ -1101,20 +715,11 @@ _COUNT_ELEMENTS_JS = r"""
 
 
 async def count_elements(page: Page, selector_hint: str) -> int:
-    """Lane 1: นับจำนวน element ที่ตรงกับ selector_hint (CSS selector) รวมทุก frame
-    (เหมือน get_snapshot() — เนื้อหาที่ต้องนับอาจอยู่ใน <iframe>) ใช้ JS query ล้วนๆ
-    (document.querySelectorAll(...).length) ไม่เรียก LLM เลย ไม่ส่งเนื้อหาดิบกลับมาด้วย
-    คืนแค่ตัวเลข (token แทบเป็นศูนย์ เร็วกว่าให้ LLM อ่านตารางทั้งก้อนมานับเอง — ดู
-    actions.py::read_page_data ที่ favor ฟังก์ชันนี้ก่อน extract_table_data() เสมอตอน
-    query เป็นคำถามเชิงนับ)
-
-    selector_hint ที่ผิดรูปแบบ (invalid CSS) นับเป็น 0 ที่ frame นั้นเงียบๆ ไม่ throw
-    ออกไป เหมือน pattern ที่ get_snapshot()/resolve_frame() ใช้อยู่แล้ว (frame เดียวพัง/
-    query ไม่ได้ไม่ควรทำให้ทั้งฟังก์ชันล้มเหลว)"""
+    """Lane 1: นับ element ที่ตรง selector_hint รวมทุก frame — JS ล้วน ไม่เรียก LLM คืนแค่ตัวเลข
+    (actions.py::read_page_data เลือกตัวนี้ก่อนเสมอสำหรับคำถามเชิงนับ)
+    selector ผิดรูปแบบ = 0 ที่ frame นั้น ไม่ throw"""
     total = 0
-    main_frame = page.main_frame
-    frames = [main_frame] + [f for f in page.frames if f != main_frame]
-    for frame in frames:
+    for frame in _frames_main_first(page):
         try:
             total += await frame.evaluate(_COUNT_ELEMENTS_JS, selector_hint)
         except Exception:
@@ -1122,32 +727,22 @@ async def count_elements(page: Page, selector_hint: str) -> int:
     return total
 
 
+# ══════════════════════════════════════════════════════════════════════
+# โซน 5: อ่านเนื้อหาหน้าเว็บ Lane 2 — ดึงตาราง/list
+#   ทำอะไร: ดึงตาราง/list เป็น markdown หรือ JSON และ lookup ค่าที่ถาม (exact -> fuzzy)
+#   ทำงานยังไง: _EXTRACT_TABLE_JS (รองรับ <table>/ARIA grid/list + fallback) -> _lookup_annotation -> _cap_rows ตัดแถว -> ไม่เจอค่ารอ AJAX แล้วสแกนซ้ำ 1 รอบ
+# ══════════════════════════════════════════════════════════════════════
 _EXTRACT_TABLE_JS = r"""
 (hint) => {
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 
-  // W_extract_counts_stylesheets (บั๊กจริงจาก gate 2026-09-07, task add_candidate): agent
-  // กด Save แล้วไม่ผ่านเพราะไม่ได้กรอก Email หน้าเว็บขึ้นคำว่า "Required" ใต้ช่องนั้นจริงๆ
-  // แต่พอ agent ถาม read_page_data ว่า "มี validation error ไหม" กลับได้ CSS ทั้งก้อนจาก
-  // <style> กลับไปพร้อมประโยค "[counted by the system] the data below contains exactly 4
-  // entries" — มันจึงมองไม่เห็นสาเหตุ แล้วกด Save ซ้ำจนหมด step (4 ครั้งในรันเดียว)
-  //
-  // ต้นเหตุ: hint "body" -> extractList(body) -> อ่าน body.children ซึ่งรวม <style>/<script>
-  // ด้วย และ innerText ของ element ที่ไม่ถูก render จะ fallback ไปเป็น textContent (คือ CSS
-  // ทั้งไฟล์) — ไม่ใช่ช่องว่างอย่างที่คาด
-  //
-  // เรื่องนี้ร้ายกว่าการรกตา เพราะ "counted by the system, not by you" คือ guard เรือธงที่
-  // บอกโมเดลว่าห้ามนับเอง ถ้าตัวเลขนั้นนับ stylesheet เข้าไปด้วย guard ก็กลายเป็นตัวยืนยัน
-  // ข้อมูลผิดอย่างมั่นใจ ซึ่งอันตรายกว่าไม่มี guard เลย
+  // W_extract_counts_stylesheets (gate 2026-09-07, add_candidate): hint "body" อ่าน body.children
+  // รวม <style>/<script> — innerText ของ node ไม่ render fallback เป็น CSS ทั้งไฟล์ ข้อความ
+  // "Required" จริงจึงถูกกลบ และ "counted by the system" กลายเป็นตัวยืนยันข้อมูลผิด
   const NON_CONTENT_TAGS = ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META", "HEAD"];
   const isContentNode = (node) => !!node && !NON_CONTENT_TAGS.includes(node.tagName);
 
-  // W_ariagrid: หลายเว็บ (OrangeHRM, MUI DataGrid, AG Grid, React-select ฯลฯ) ไม่ใช้
-  // <table><tr><td> จริงเลย แต่ implement เป็น <div role="table">/<div role="row">/
-  // <div role="cell|gridcell|columnheader"> แทน (ARIA grid pattern) — querySelectorAll("tr")
-  // บน element พวกนี้จะได้ [] เสมอทั้งที่มีข้อมูลเต็มหน้า ต้อง fallback ไปหา [role=row]
-  // ก่อนยอมแพ้ (เหมือน role=option/menuitem ที่ต้องเพิ่มให้ _COLLECT_JS ตอนแก้ปัญหา custom
-  // dropdown มองไม่เห็นมาก่อนหน้านี้ — อาการเดียวกัน คนละจุด)
+  // W_ariagrid: OrangeHRM/MUI/AG Grid ใช้ div[role=row/cell] ไม่ใช่ <tr> — fallback ไป [role=row]
   const extractTable = (el) => {
     let rowEls = Array.from(el.querySelectorAll("tr"));
     let cellSelector = "th,td";
@@ -1181,26 +776,12 @@ _EXTRACT_TABLE_JS = r"""
     return isTableLike(el) ? extractTable(el) : extractList(el);
   };
 
-  // W_hint_matches_many (บั๊กจริง live-reproduce บน saucedemo 2026-08-26 — ไม่ใช่เว็บเฉพาะ
-  // ทาง เป็นรูปแบบที่เว็บส่วนใหญ่ใช้): เดิมบรรทัดนี้เป็น document.querySelector(hint) ตัวเดียว
-  // (เอกพจน์) = ดูแค่ element "ตัวแรก" ที่ตรง hint เท่านั้น
-  //
-  // แต่ hint ที่มีประโยชน์ที่สุดมักตรงกับ "หลาย element พี่น้องกัน" พอดี (รายการสินค้า, การ์ด
-  // ผลการค้นหา, แถวใน list) — ตัวแรกตัวเดียวไม่มี children เลย extractList จึงคืน null แล้ว
-  // ไหลไป fallback ด้านล่างซึ่งไปคว้า <ul> อะไรก็ได้ที่ยาวที่สุดบนหน้ามาแทน ผลจริงที่วัดได้:
-  //
-  //   hint=".inventory_item_name" (มีจริง 6 ตัว) -> ["Twitter","Facebook","LinkedIn"]  ← footer!
-  //   hint="a" (มีจริง 20 ตัว)                    -> ["Twitter","Facebook","LinkedIn"]
-  //   hint=".inventory_item" (มีจริง 6 ตัว)       -> คืนมาแค่ 1 รายการ
-  //
-  // ผลคือ read_page_data ตอบผิด/ตอบ [FAIL] เสมอบนหน้า list ทั่วไป ต่อให้ LLM เดา selector
-  // ถูกเป๊ะก็ตาม — live run จริงเสีย 8 จาก 12 step ไปกับการลอง hint ใหม่ไปเรื่อยๆ
-  //
-  // แก้: ดูผลลัพธ์ทั้งชุดจาก querySelectorAll ก่อนเสมอ
-  //   - มี element ที่เป็นตาราง -> ใช้ตารางที่มีแถวเยอะสุด (พฤติกรรมเดิมของเคสตาราง)
-  //   - ตรงหลายตัว -> ตัวชุดนั้นเองคือ "รายการ" อ่าน innerText ของแต่ละตัว (เคสที่พังอยู่)
-  //   - ตรงตัวเดียว -> extractFrom ตัวนั้นเหมือนเดิมทุกประการ
-  // fallback ด้านล่างยังอยู่ครบ ใช้เฉพาะตอน hint ไม่ตรงอะไรเลยจริงๆ เหมือนเดิม
+  // W_hint_matches_many (saucedemo 2026-08-26): เดิม querySelector(hint) ดูแค่ตัวแรก — hint ที่ตรง
+  // หลายตัวพี่น้อง (รายการสินค้า) จึงหลุดไป fallback ได้ footer มาแทน
+  // (".inventory_item_name" 6 ตัว -> ["Twitter","Facebook","LinkedIn"])
+  //   - มีตาราง -> ตารางที่แถวเยอะสุด
+  //   - ตรงหลายตัว -> ชุดนั้นคือรายการ
+  //   - ตรงตัวเดียว -> extractFrom ตัวนั้น
   const matches = Array.from(document.querySelectorAll(hint));
   if (matches.length > 0) {
     let bestTable = null;
@@ -1212,15 +793,8 @@ _EXTRACT_TABLE_JS = r"""
     if (bestTable) return bestTable;
 
     if (matches.length > 1) {
-      // W_column_aware_count (เจอจากการวัดกับ DOM จริงของ OrangeHRM 2026-08-26): hint ที่
-      // ตรงกับ "ทุกแถวของตาราง" (เช่น '[role="row"]' ซึ่งเป็น hint ที่โมเดลเดามาบ่อยที่สุด
-      // สำหรับ data grid) กวาดเอา *แถวหัวตาราง* มาเป็นรายการที่ 1 ด้วยเสมอ — ตารางที่มีข้อมูล
-      // จริง 26 แถวจึงถูกนับเป็น 27 แล้วรายงานออกไปเป็นคำตอบของ "มีทั้งหมดกี่คน" ซึ่งเกินจริง
-      // 1 เสมอ (off-by-one ที่ดูน่าเชื่อถือมาก จับได้ยากกว่าตัวเลขที่ผิดเยอะๆ)
-      //
-      // แถวหัวตารางแยกออกได้แน่นอนตามมาตรฐาน HTML/ARIA อยู่แล้ว (มี th/[role=columnheader]
-      // อยู่ข้างใน หรืออยู่ใน <thead>) ไม่ต้องเดาจากเนื้อหา — ถ้ากรองแล้วไม่เหลืออะไรเลยให้
-      // คืนชุดเดิม (fail-safe: hint ที่ตรงกับหัวตารางล้วนๆ ยังต้องอ่านได้เหมือนเดิม)
+      // W_column_aware_count (OrangeHRM 2026-08-26): hint '[role="row"]' รวมแถวหัวตาราง -> นับเกิน 1
+      // ตัดแถวหัว (มี th/columnheader หรืออยู่ใน thead) ถ้าตัดแล้วว่างคืนชุดเดิม (fail-safe)
       const isHeaderRow = (el) =>
         !!(el.querySelector && el.querySelector('th, [role="columnheader"]')) ||
         !!(el.closest && el.closest('thead'));
@@ -1235,12 +809,7 @@ _EXTRACT_TABLE_JS = r"""
     if (direct) return direct;
   }
 
-  // Fallback Extraction Protocol: target_hint ที่ LLM เดามาไม่ตรง/ไม่มีข้อมูลเลย (get_snapshot()
-  // กรองเฉพาะ element คลิกได้ ไม่เคยโชว์โครงสร้างตาราง/class name จริงให้ LLM เห็นเลย เดาได้
-  // แค่จาก URL/context อื่น) — ก่อนจะยอม fail ให้บังคับหาตาราง <table>/[role=table|grid]/
-  // list (<ul>,<ol>) จริงบนหน้านี้ตรงๆ แล้วอ่าน td/th (หรือ li) ทุกอันตรงๆ ก่อน (เอาตัวที่มี
-  // แถว/รายการเยอะที่สุดถ้ามีหลายอัน) แทนที่จะตอบว่า "ไม่พบข้อมูล" ทั้งที่จริงๆ มีตาราง/list
-  // อยู่บนหน้านี้ แค่เดา selector ผิดเฉยๆ
+  // Fallback: LLM เดา hint ผิด (snapshot ไม่โชว์โครงสร้างตาราง) — หาตาราง/list จริงที่ใหญ่สุดบนหน้า
   let best = null;
   for (const t of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
     const r = extractTable(t);
@@ -1257,17 +826,10 @@ _EXTRACT_TABLE_JS = r"""
 
 
 def fuzzy_find(query: str, candidates: list[str], threshold: float = 0.75) -> Optional[str]:
-    """W46: เทียบ query กับแต่ละ candidate ด้วย difflib.SequenceMatcher.ratio() (stdlib ล้วนๆ
-    ไม่ต้องเพิ่ม dependency ใหม่ — candidates ในบริบทนี้คือ label/ชื่อในตาราง 1 หน้า ไม่เยอะ
-    พอที่ performance ของ difflib จะเป็นปัญหาจริง) คืน candidate ที่ score สูงสุดถ้าเกิน
-    threshold เท่านั้น ไม่งั้นคืน None (ไม่มีตัวไหนใกล้เคียงพอ) — เทียบแบบไม่สนตัวพิมพ์ใหญ่
-    เล็ก (lowercase ทั้งสองฝั่งก่อนเทียบ)
+    """W46: candidate ที่ SequenceMatcher.ratio() สูงสุด (ไม่สนตัวพิมพ์) ถ้า >= threshold ไม่งั้น None
 
-    threshold (ดู settings.agent_fuzzy_match_threshold สำหรับค่า default ที่ปรับได้จริงใน
-    ระบบ — ฟังก์ชันนี้เก็บ default ของตัวเองแยกเป็น literal ให้เรียกตรงๆ/เทสต์ได้โดยไม่ต้อง
-    พึ่ง settings) ตั้งต่ำไปจะ false-positive จับคนละคน/คนละชื่อที่บังเอิญคล้ายกันเป็นตัว
-    เดียวกัน (อันตรายกว่า false negative เพราะตอบข้อมูลผิดคนแบบมั่นใจ) ตั้งสูงไปจะพลาดคำที่
-    พิมพ์ผิดจริงๆ"""
+    default แยกจาก settings.agent_fuzzy_match_threshold ให้เทสต์ได้ตรงๆ — ต่ำไป = จับคนละคน
+    (อันตรายกว่า เพราะตอบผิดคนแบบมั่นใจ) สูงไป = พลาดคำพิมพ์ผิด"""
     best_candidate: Optional[str] = None
     best_score = 0.0
     for candidate in candidates:
@@ -1281,16 +843,10 @@ def fuzzy_find(query: str, candidates: list[str], threshold: float = 0.75) -> Op
 
 
 def _lookup_annotation(query: str, candidates: list[str]) -> tuple[str, bool]:
-    """ใช้ตอน extract_table_data() ได้ query มาด้วย (ไม่ใช่แค่ table_hint) แปลว่าผู้เรียก
-    กำลังหา "ค่าเฉพาะเจาะจง" ในตาราง/list (เช่น ชื่อคน) ไม่ใช่แค่ขอสรุปทั้งก้อนเฉยๆ — ต้อง
-    ลอง exact substring match (case-insensitive ทั้ง 2 ทิศทาง) ก่อนเสมอ ถ้าเจอแล้ว (หรือ
-    ไม่มี query มาตั้งแต่แรก) ไม่ต้องทำอะไรต่อ ถ้าไม่เจอเลยค่อย fuzzy_find เป็นชั้นสำรอง
+    """หา query ใน candidates: exact substring (case-insensitive ทั้งสองทิศ) ก่อน แล้วค่อย fuzzy
 
-    คืน (annotation_text, found_anything) — annotation_text ใช้แปะนำหน้าผลลัพธ์ตอนเจอ
-    fuzzy match (ให้ LLM เห็นชัดว่าเป็นการเดา ไม่ใช่ตรงกันเป๊ะ ไม่ใช่แกล้งทำเป็นตรงกัน — ดู
-    "Cierra Vaga"/"Cierra Vega" ในตัวอย่างจริงที่ user รายงาน) found_anything=False เฉพาะ
-    ตอนมี query แต่ไม่เจอทั้ง exact และ fuzzy เลย — ให้ผู้เรียกตัดสินใจคืน [FAIL] แทนที่จะ
-    คืนตารางทั้งก้อนที่ไม่เกี่ยวข้องกับสิ่งที่ถามจริงๆ"""
+    คืน (annotation, found) — annotation แปะหน้าผลตอน fuzzy match ให้ LLM รู้ว่าเป็นการเดา
+    ("Cierra Vaga"/"Cierra Vega") found=False เมื่อมี query แต่ไม่เจอเลย ให้ผู้เรียกคืน [FAIL]"""
     if not query:
         return "", True
     lower_query = query.lower()
@@ -1302,21 +858,15 @@ def _lookup_annotation(query: str, candidates: list[str]) -> tuple[str, bool]:
     return f"[พบ '{match}' ใกล้เคียงกับคำค้น '{query}' ที่คุณพิมพ์ — ไม่ตรงกันเป๊ะ ตรวจสอบก่อนใช้คำตอบ]\n\n", True
 
 
-# W64[7.2]: เวลารอก่อนลอง extract_table_data() lookup ซ้ำรอบเดียวตอนไม่เจอ query ในรอบแรก —
-# สั้นพอที่จะไม่ทำให้ query ที่หาไม่เจอจริงๆ (ไม่ใช่แค่ AJAX ยังโหลดไม่เสร็จ) ช้าเกินจำเป็น แต่
-# นานพอให้ table reload ทั่วไปที่เจอจริง (OrangeHRM ฯลฯ) เสร็จทัน
+# W64[7.2]: รอก่อน lookup ซ้ำ — พอให้ AJAX table reload เสร็จ ไม่ช้าเกินเมื่อไม่มีข้อมูลจริง
 _LOOKUP_RETRY_WAIT_SEC = 2.0
 
 
 def _cap_rows(rows: list, total: int) -> tuple[list, str]:
-    """W_extract_row_cap (P4.5): ตัดจำนวนแถวที่ส่งกลับเข้า messages ให้ไม่เกิน
-    settings.read_page_data_max_rows พร้อมข้อความบอกตรงๆ ว่าตัดไปเท่าไหร่
+    """W_extract_row_cap (P4.5): ตัดแถวไม่เกิน settings.read_page_data_max_rows พร้อมบอกตรงๆ
 
-    ทำไมตัดได้โดยไม่เสียความถูกต้อง: W_deterministic_count (actions.py) นับจำนวนจริงด้วยโค้ด
-    จากข้อมูลชุดเต็มแล้วแนบตัวเลขไปกับผลลัพธ์อยู่แล้ว โมเดลจึงตอบคำถามเชิงนับได้ถูกโดยไม่ต้อง
-    เห็นครบทุกแถว — สิ่งที่ห้ามทำคือตัดแบบเงียบๆ ให้โมเดลเข้าใจว่านี่คือข้อมูลทั้งหมด
-
-    ผู้เรียกต้องส่ง total ของ "ก่อนตัด" มาเอง (ผู้เรียกรู้ดีกว่าว่าอะไรนับเป็น 1 รายการ)"""
+    ตัดได้เพราะ W_deterministic_count (actions.py) นับจากข้อมูลชุดเต็มแล้ว — ห้ามตัดเงียบ
+    total = จำนวนก่อนตัด (ผู้เรียกรู้ดีว่าอะไรนับเป็น 1 รายการ)"""
     limit = settings.read_page_data_max_rows
     if limit <= 0 or total <= limit:
         return rows, ""
@@ -1330,34 +880,14 @@ def _cap_rows(rows: list, total: int) -> tuple[list, str]:
 
 
 async def extract_table_data(page: Page, table_hint: str, query: str = "") -> str:
-    """Lane 2: ดึงตาราง/list ที่ตรงกับ table_hint (CSS selector) มาแปลงเป็น markdown
-    table (ถ้าเป็น <table>) หรือ JSON list กระชับ (ถ้าเป็น container อื่นที่มี item ลูก
-    เช่น <ul>) — ตัด whitespace ส่วนเกิน/attribute ที่ไม่จำเป็นออกหมด (คล้ายแนวที่ทำกับ
-    footer filter ใน get_snapshot() เดิม) เพื่อไม่ให้กินเนื้อที่ context เกินจำเป็น
+    """Lane 2: ตาราง/list ที่ตรง table_hint -> markdown table หรือ JSON list กระชับ
 
-    "ไม่" ถูกเรียกอัตโนมัติทุก step (ต่างจาก get_snapshot()) เป็น Lane 2 ที่ LLM ต้อง
-    ตีความเนื้อหาที่ดึงมาเองต่อ — ถูกเรียกเฉพาะผ่าน tool "read_page_data" ตอนคำถามตอบด้วย
-    การนับล้วนๆ ไม่ได้ (ดู count_elements() ด้านบนสำหรับกรณีนับ)
+    เรียกผ่าน tool "read_page_data" เมื่อคำถามตอบด้วยการนับอย่างเดียวไม่ได้ (ดู count_elements)
+    query ว่าง = สรุปทั้งก้อน; มีค่า = lookup (exact ก่อน แล้ว fuzzy) ไม่เจอคืน "[FAIL] ..."
+    hint ไม่ตรง -> fallback หาตาราง/list จริงบนหน้า (ดู _EXTRACT_TABLE_JS) ไม่ throw
 
-    query (optional): ค่าเฉพาะเจาะจงที่กำลังหา (เช่น ชื่อคน) — ว่างเปล่า (default) = แค่ขอ
-    สรุปทั้งตาราง/list ไม่ต้องเช็ค lookup อะไรเลย (พฤติกรรมเดิมทุกประการ) มีค่า = เช็ค exact
-    match ในแถว/รายการก่อน ไม่เจอค่อย fuzzy_find (ดู _lookup_annotation() ด้านบน) — ถ้าไม่
-    เจอทั้ง exact และ fuzzy เลย คืน "[FAIL] ..." แทนที่จะคืนตารางทั้งก้อนที่ไม่ตรงกับที่ถาม
-
-    table_hint ที่ไม่ตรงกับ element ไหนเลย (หรือตรงแต่ไม่มีข้อมูล เช่น table ว่างเปล่า) จะ
-    fallback ไปหาตาราง/list จริงบนหน้านั้นเอง (เอาตัวที่มีแถว/รายการเยอะที่สุดถ้ามีหลายอัน)
-    ก่อนจะยอม fail (ดู _EXTRACT_TABLE_JS) — กันกรณี LLM เดา table_hint ผิดทั้งที่มีข้อมูลอยู่
-    บนหน้าจริงๆ (get_snapshot() ไม่เคยโชว์โครงสร้างตาราง/class name ให้ LLM เห็นเลย)
-
-    ไม่พบ element/ตาราง/list ใดๆ ในทุก frame เลย (แม้ fallback แล้ว) คืนข้อความ "[FAIL] ..."
-    อธิบายเหตุผล (ไม่ throw ออกไป เหมือน action อื่นๆ ในระบบ — ดู actions.py::ActionResult)
-
-    W64[7.2] ("Add-Action Idempotency Lock" — ticket Issue 7.2, บั๊กจริง: agent ค้นหาแถวที่
-    เพิ่งบันทึกไปทันทีหลัง Save โดยไม่รอ AJAX table reload ให้เสร็จก่อน อ่านได้ตารางเก่า/ว่าง
-    เปล่า แล้วเข้าใจผิดว่าบันทึกไม่สำเร็จ — เมื่อมี query (กำลังหาค่าเฉพาะเจาะจง) และรอบแรกหา
-    ไม่เจอเลย ให้รอสั้นๆ (_LOOKUP_RETRY_WAIT_SEC) แล้วลองสแกนใหม่อีกครั้งก่อนยอม [FAIL] จริง —
-    ไม่กระทบ happy path เลย (เพิ่ม latency เฉพาะตอนหาไม่เจอรอบแรกเท่านั้น) และไม่กระทบ query
-    ว่างเปล่า (ขอสรุปทั้งตาราง ไม่ใช่ lookup ค่าเฉพาะ)"""
+    W64[7.2]: agent ค้นแถวที่เพิ่ง Save ก่อน AJAX reload เสร็จ แล้วเข้าใจว่าบันทึกไม่สำเร็จ —
+    มี query และรอบแรกไม่เจอ ให้รอ _LOOKUP_RETRY_WAIT_SEC แล้วสแกนซ้ำหนึ่งรอบ"""
     result = await _extract_table_data_once(page, table_hint, query)
     if query and result.startswith("[FAIL]"):
         await asyncio.sleep(_LOOKUP_RETRY_WAIT_SEC)
@@ -1366,12 +896,8 @@ async def extract_table_data(page: Page, table_hint: str, query: str = "") -> st
 
 
 async def _extract_table_data_once(page: Page, table_hint: str, query: str) -> str:
-    """W64[7.2]: สแกนจริง 1 รอบ — แยกออกมาจาก extract_table_data() เพื่อให้เรียกซ้ำได้หลัง
-    รอ AJAX reload (ดู docstring ของ extract_table_data ด้านบน) โดยไม่ต้องเขียน loop scan
-    ซ้ำสองที่"""
-    main_frame = page.main_frame
-    frames = [main_frame] + [f for f in page.frames if f != main_frame]
-    for frame in frames:
+    """W64[7.2]: สแกน 1 รอบ แยกออกมาให้ extract_table_data() เรียกซ้ำได้"""
+    for frame in _frames_main_first(page):
         try:
             data = await frame.evaluate(_EXTRACT_TABLE_JS, table_hint)
         except Exception:
@@ -1406,9 +932,12 @@ async def _extract_table_data_once(page: Page, table_hint: str, query: str) -> s
     return f"[FAIL] no element matching '{table_hint}' was found"
 
 
-# --- helper: ให้ agent สั่งงานกลับด้วย "หมายเลข" ที่ perception ให้มา ---
-# ทุก action คืนค่า "[OK]" หรือ "[FAIL] เหตุผล" เสมอ ไม่ raise exception ออกไป
-# เพื่อให้ agent loop (W4) จับ error แล้วตัดสินใจ retry/แจ้ง user ต่อได้ ไม่ crash ทั้ง process
+# ══════════════════════════════════════════════════════════════════════
+# โซน 6: helper + demo (python run.py perception)
+#   ทำอะไร: สั่ง click/fill/select/scroll ด้วย index สำหรับ demo เท่านั้น (agent loop ใช้ actions.py)
+#   ทำงานยังไง: คืน "[OK]"/"[FAIL] ..." เสมอ ไม่ raise
+# ══════════════════════════════════════════════════════════════════════
+# คืน "[OK]" / "[FAIL] เหตุผล" เสมอ ไม่ raise
 
 ACTION_TIMEOUT_MS = 3000
 
@@ -1453,23 +982,22 @@ async def scroll_by(page: Page, dy: int = 1000) -> str:
 
 
 # ------------------------------------------------------------
-# DEMO: ลองกับ saucedemo — ดู snapshot แล้วลอง login
+# DEMO (python run.py perception): saucedemo — ดู snapshot แล้วลอง login
 # ------------------------------------------------------------
 async def demo():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # เห็นหน้าจอตอน dev
+        browser = await p.chromium.launch(headless=False)
         page = await browser.new_page()
         await install_ssrf_guard(page)
         await page.goto("https://www.saucedemo.com/")
 
-        # 1) Perceive — ดูว่า agent "เห็น" อะไรบ้าง
+        # 1) Perceive
         elements, text_repr = await get_snapshot(page)
         print("=== หน้า Login ที่ AI มองเห็น ===")
         print(text_repr)
         print()
 
-        # 2) Act — จำลองว่า LLM ตัดสินใจแล้วสั่งกลับมาด้วย index
-        #    (saucedemo ให้ user/pass มาตรฐานไว้ทดสอบ)
+        # 2) Act — จำลอง LLM สั่งด้วย index (user/pass มาตรฐานของ saucedemo)
         u_idx = next(e['index'] for e in elements if 'user' in e['label'].lower())
         p_idx = next(e['index'] for e in elements if 'pass' in e['label'].lower())
         b_idx = next(e['index'] for e in elements if e['tag'] == 'input' and e['type'] == 'submit')
@@ -1480,7 +1008,7 @@ async def demo():
         print(" click submit :", await click_by_index(page, b_idx))
         await page.wait_for_load_state("networkidle")
 
-        # 3) Perceive อีกครั้ง — พิสูจน์ว่า agent เรียนรู้หน้าใหม่เองได้
+        # 3) Perceive หน้าใหม่
         elements2, text_repr2 = await get_snapshot(page)
         print("\n=== หน้า Inventory หลัง login (agent เห็นอะไรใหม่) ===")
         print(text_repr2)
@@ -1505,7 +1033,7 @@ async def demo():
         y_after = await page.evaluate("window.scrollY")
         print(f" scrollY: {y_before} -> {y_after} (เปลี่ยนจริง: {y_after != y_before})")
 
-        # --- ทดสอบ error handling: ยิง index ที่ไม่มีอยู่จริง ---
+        # --- error handling: index ที่ไม่มีอยู่จริงต้องไม่ crash ---
         print("\n[ERROR HANDLING] ยิง action ด้วย index ผิดๆ (ไม่ควร crash)")
         print(" click index=9999 ->", await click_by_index(page, 9999))
         print(" fill  index=9999 ->", await fill_by_index(page, 9999, "x"))
@@ -1513,14 +1041,14 @@ async def demo():
         print(" (โปรแกรมยังรันต่อได้ไม่ crash = error handling ทำงาน)")
 
         # --- หน้า cart ---
-        await page.click("button:has-text('Add to cart')")   # ใส่สินค้าลงตะกร้า 1 ชิ้น
-        await page.click(".shopping_cart_link")               # เปิดตะกร้า
+        await page.click("button:has-text('Add to cart')")
+        await page.click(".shopping_cart_link")
         await page.wait_for_load_state("networkidle")
         _, cart_repr = await get_snapshot(page)
         print("\n=== หน้า Cart ที่ AI มองเห็น ===")
         print(cart_repr)
 
-        # --- หน้า checkout (ฟอร์มกรอกข้อมูล) ---
+        # --- หน้า checkout ---
         await page.click("#checkout")
         await page.wait_for_load_state("networkidle")
         _, checkout_repr = await get_snapshot(page)
