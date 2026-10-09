@@ -2572,11 +2572,7 @@ _PASSWORD_CHANGE_INTENT_KEYWORDS = (
     "เปลี่ยนรหัสผ่าน", "เปลี่ยนรหัส", "ตั้งรหัสผ่านใหม่", "รีเซ็ตรหัสผ่าน", "รหัสผ่านปัจจุบัน",
 )
 
-# ป้ายช่อง "รหัสผ่านปัจจุบัน" — ถ้าวันหลัง state_filter มีชุดนี้ ให้ใช้ร่วมกัน อย่ามี 2 ชุด drift กัน
-_CURRENT_PASSWORD_LABEL_HINTS = (
-    "current password", "old password", "existing password",
-    "รหัสผ่านปัจจุบัน", "รหัสผ่านเดิม",
-)
+_CURRENT_PASSWORD_LABEL_HINTS = state_filter.CURRENT_PASSWORD_LABEL_HINTS
 
 
 def _goal_or_plan_requests_password_change(text: str) -> bool:
@@ -2589,25 +2585,7 @@ def _goal_or_plan_requests_password_change(text: str) -> bool:
 # label/aria/placeholder/name/id เลย (<label> เป็นพี่น้อง ไม่ผูก for=) gate จึงตัด fill_secret ออกจาก
 # สคีมาบนหน้าจริง โมเดลยิง fill(21,"") จนโดน loop detector — เดินขึ้น ancestor หา <label> (แบบ
 # perception) จำกัด 4 ชั้น หน้า Add User ยังได้แค่ 'password'/'confirm password' -> False ตามเดิม
-_PASSWORD_FIELD_LABEL_JS = r"""el => {
-    const direct = (
-        (el.labels && el.labels[0] && el.labels[0].innerText) ||
-        el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
-        el.getAttribute('name') || el.id || ''
-    );
-    if (direct.trim()) return direct.toLowerCase();
-    const byIds = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
-        .map(id => (document.getElementById(id) || {}).innerText || '').join(' ');
-    if (byIds.trim()) return byIds.toLowerCase();
-    let node = el;
-    for (let i = 0; i < 4 && node; i++) {
-        node = node.parentElement;
-        if (!node) break;
-        const lab = node.querySelector('label');
-        if (lab && lab.innerText.trim()) return lab.innerText.toLowerCase();
-    }
-    return '';
-}"""
+_PASSWORD_FIELD_LABEL_JS = state_filter.PASSWORD_FIELD_LABEL_JS
 
 
 async def _page_looks_like_change_password_form(page: Page) -> bool:

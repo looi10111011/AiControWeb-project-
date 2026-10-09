@@ -1,43 +1,25 @@
 """core/openai_oauth.py — W_openai_oauth: "Sign in with ChatGPT" สำหรับ provider "openai"
 
 === risk disclosure (อ่านก่อนแก้ไฟล์นี้) ===
-โมดูลนี้ reuse OAuth client_id สาธารณะของ Codex CLI (github.com/openai/codex,
-"app_EMoamEEZ73f0CkXaXp7hrann") นอกขอบเขตที่ตั้งใจไว้ — client_id นี้ถูกออกแบบให้ Codex CLI
-ตัวจริงใช้เท่านั้น ไม่ใช่ integration surface ที่ OpenAI ประกาศรองรับ third-party app อื่นอย่าง
-เป็นทางการ (maintainer ของ openai/codex เคยถูกถามตรงๆ ใน GitHub Discussion #8338 และ
-ปฏิเสธที่จะยืนยัน/ปฏิเสธว่าถูก ToS หรือไม่) — มีความเสี่ยงจริงที่บัญชี ChatGPT ที่ใช้ login
-ผ่าน flow นี้จะถูกจำกัด/แบนถ้า OpenAI ตรวจจับ traffic ที่ไม่ใช่ Codex CLI ตัวจริง (เช่นผ่าน
-originator header, IP/pattern อื่นๆ)
+reuse OAuth client_id สาธารณะของ Codex CLI ("app_EMoamEEZ73f0CkXaXp7hrann") นอกขอบเขตที่ตั้งใจ —
+ไม่ใช่ integration surface ที่ OpenAI รองรับ third-party อย่างเป็นทางการ (maintainer เลี่ยงตอบเรื่อง ToS
+ใน openai/codex Discussion #8338) เสี่ยงจริงที่บัญชี ChatGPT จะถูกจำกัด/แบนถ้าตรวจจับ traffic ที่ไม่ใช่ Codex CLI
 
-ตัดสินใจร่วมกับ user แล้วเมื่อ 2026-08-17: ยอมรับความเสี่ยงนี้โดยรู้ตัว เพราะต้องการใช้โควต้า
-ChatGPT Plus/Pro subscription ที่มีอยู่แล้วแทนการจ่าย API credit แยกต่างหาก — ขอบเขตจำกัดไว้
-แค่ "single-tenant" เท่านั้น: operator คนเดียว login ครั้งเดียว เก็บ credential เดียวในเครื่อง
-server เอง (เข้ารหัสไว้ที่ดิสก์ ไม่ใช่ database หลายผู้ใช้) เทียบเท่ากับการตั้ง API key เดียวใน
-.env แบบเดิมทุกประการ แค่เปลี่ยนวิธี auth เป็น OAuth token แทน
+ตัดสินใจร่วมกับ user 2026-08-17: ยอมรับความเสี่ยงโดยรู้ตัวเพื่อใช้โควต้า ChatGPT Plus/Pro แทน API credit —
+จำกัด single-tenant: operator คนเดียว credential เดียว เข้ารหัสบนดิสก์ของ server (เทียบเท่า API key ใน .env)
+**ห้ามขยายเป็น multi-user/hosted SaaS โดยไม่ทบทวนความเสี่ยงนี้ใหม่ก่อน** — ไม่ควรผลักความเสี่ยงแบนให้ user อื่น
+ปฏิเสธ third-party proxy (เช่น "OpenClaw") — มี CVE auth-token exfiltration จริง; คุยกับ endpoint OpenAI ตรงเท่านั้น
 
-**ห้ามขยายเป็น multi-user/hosted SaaS โดยไม่ทบทวนความเสี่ยงนี้ใหม่ก่อน** — ความเสี่ยง
-ban ที่ยอมรับได้สำหรับ operator คนเดียวที่รู้ตัวเอง จะกลายเป็นความเสี่ยงที่ไม่ควรผลักให้ user
-คนอื่นแบกรับโดยไม่รู้ตัวถ้าขยาย scope
-
-ปฏิเสธทางเลือกที่ใช้ third-party proxy tool (เช่น "OpenClaw") อย่างชัดเจน — ตรวจสอบแล้วพบ
-CVE จริง (auth-token exfiltration) และเว็บที่แนะนำมาไม่น่าเชื่อถือ (ไม่มีเจ้าของที่ตรวจสอบได้)
-โมดูลนี้จึงคุยกับ endpoint ของ OpenAI ตรงๆ เท่านั้น ไม่มี binary/proxy ภายนอกแตะ token เลย
-
-=== protocol details (verify กับ github.com/openai/codex source โดยตรง ไม่ใช่เดา) ===
-Authorize: https://auth.openai.com/oauth/authorize
-Token/Refresh: https://auth.openai.com/oauth/token (code exchange = form-urlencoded,
-    refresh = JSON body — asymmetry นี้ยืนยันแล้วจาก source จริง ระวังอย่า copy ฟังก์ชันผิด)
-Revoke: https://auth.openai.com/oauth/revoke
-Flow: Authorization Code + PKCE (S256), redirect_uri = loopback native-app pattern
-    (http://localhost:1455/auth/callback, fallback 1457) — Codex CLI เปิด local server
-    ชั่วคราวแค่ตอน login เท่านั้น ไม่ใช่ endpoint ถาวรบน main app server
-Account info (email, chatgpt_plan_type, chatgpt_account_id) ฝังอยู่ใน claims ของ id_token
-    (JWT) — decode อ่านตรงๆ ไม่ verify signature เพราะได้ id_token มาจาก response ของ
-    token endpoint ที่เราเรียกเองผ่าน TLS ตรงๆ ไม่ใช่รับมาจาก redirect ที่ไม่น่าเชื่อถือ
+=== protocol (verify กับ source ของ github.com/openai/codex ไม่ใช่เดา) ===
+Token endpoint: code exchange = form-urlencoded, refresh = JSON body (asymmetry ยืนยันแล้ว อย่า copy ผิด)
+Flow: Authorization Code + PKCE (S256), loopback redirect http://localhost:1455/auth/callback (fallback 1457)
+    เปิด local server ชั่วคราวแค่ตอน login
+Account info อยู่ใน id_token claims — decode โดยไม่ verify signature (ได้มาจาก token endpoint ผ่าน TLS เอง)
 """
 
 import asyncio
 import base64
+import hashlib
 import json
 import secrets
 import time
@@ -60,17 +42,13 @@ SCOPES = "openid profile email offline_access api.connectors.read api.connectors
 CALLBACK_PATH = "/auth/callback"
 RESPONSES_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
-# W_openai_oauth (follow-up fix 2026-08-17c — ยืนยันจริงจาก token ที่ login สำเร็จของ user เอง,
-# ไม่ใช่เดา): chatgpt_account_id/chatgpt_plan_type/chatgpt_user_id ไม่ได้อยู่ top-level ของ
-# id_token claims ตรงๆ แต่ซ้อนอยู่ใต้ namespaced claim key นี้ (มาตรฐาน OIDC — custom claim
-# ต้อง namespace กันชนกับ claim มาตรฐาน) ต่างจากที่เอกสาร/แหล่งข้อมูลรองที่หามาตอนวางแผนบอกไว้
-# "ไม่ยืนยัน" ตอนนั้น — ตอนนี้ยืนยันแล้วจริงผ่านการ decode token จริงของ user โดยตรง
+# W_openai_oauth (fix 2026-08-17c, ยืนยันจาก token จริงของ user): chatgpt_account_id/plan_type/user_id
+# ไม่อยู่ top-level ของ id_token claims แต่ซ้อนใต้ namespaced key นี้ (OIDC custom claim)
 _OPENAI_AUTH_CLAIMS_KEY = "https://api.openai.com/auth"
 
 
 def _extract_openai_auth_claims(claims: dict) -> dict:
-    """ดึง nested claims ใต้ _OPENAI_AUTH_CLAIMS_KEY — คืน {} เฉยๆ ถ้าไม่มี (ไม่ throw)
-    กัน token ที่มี shape ผิดคาด (เช่น scope เปลี่ยนไปในอนาคต) ทำให้ login พังทั้งกระบวนการ"""
+    """nested claims ใต้ _OPENAI_AUTH_CLAIMS_KEY หรือ {} ถ้าไม่มี (ไม่ throw)"""
     nested = claims.get(_OPENAI_AUTH_CLAIMS_KEY)
     return nested if isinstance(nested, dict) else {}
 
@@ -84,17 +62,13 @@ _CALLBACK_SUCCESS_HTML = """<!doctype html>
 
 
 class OAuthLoginRequired(Exception):
-    """raise เมื่อยังไม่เคย login OpenAI OAuth เลย หรือ refresh token ใช้ไม่ได้แล้วจริงๆ
-    (ต้อง re-link ผ่าน UI ใหม่) — caller (llm.py::next_action_openai) จับ exception นี้แล้ว
-    แปลงเป็นข้อความ error ที่ user อ่านเข้าใจได้ ไม่ใช่ raw traceback หลุดออกจาก run_task()"""
+    """ยังไม่เคย login หรือ refresh ไม่ได้แล้ว (ต้อง re-link) — llm.py::next_action_openai แปลงเป็นข้อความ user"""
 
 
 # --- PKCE / state ---
 
 def generate_pkce_pair() -> tuple[str, str]:
     """คืน (code_verifier, code_challenge) ตาม RFC 7636 S256"""
-    import hashlib
-
     code_verifier = secrets.token_urlsafe(96)[:128]
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -120,7 +94,7 @@ def build_authorize_url(code_challenge: str, state: str, redirect_uri: str) -> s
     return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
-# --- Temporary loopback callback server (มีอยู่แค่ตอน login ครั้งเดียว ไม่ใช่ endpoint ถาวร) ---
+# --- loopback callback server ชั่วคราว (เฉพาะตอน login) ---
 
 def _make_callback_handler(result: dict):
     class _Handler(BaseHTTPRequestHandler):
@@ -148,11 +122,8 @@ def _make_callback_handler(result: dict):
 
 
 def _bind_loopback_server() -> tuple[HTTPServer, int, dict]:
-    """ลอง bind port หลักก่อนเสมอ (settings.openai_oauth_callback_port, ปกติ 1455) —
-    fallback ไป openai_oauth_callback_port_fallback (1457) เฉพาะตอน bind ไม่สำเร็จจริงๆ
-    (เช่นมี process อื่นถือ port นั้นอยู่) ต้องรู้ port จริงที่ bind สำเร็จ "ก่อน" สร้าง
-    authorize_url เสมอ (ดู start_login_flow) ไม่งั้น redirect_uri ที่ส่งให้ OpenAI จะไม่ตรง
-    กับ port ที่ listener ใช้จริง"""
+    """bind port หลัก (1455) ก่อน fallback (1457) เฉพาะเมื่อ bind ไม่ได้ — ต้องรู้ port จริงก่อนสร้าง
+    authorize_url ไม่งั้น redirect_uri ไม่ตรงกับ listener"""
     result: dict = {"code": None, "state": None, "error": None}
     handler_cls = _make_callback_handler(result)
     last_error: Optional[OSError] = None
@@ -170,9 +141,7 @@ def _bind_loopback_server() -> tuple[HTTPServer, int, dict]:
 
 
 def _wait_for_callback(server: HTTPServer, timeout_seconds: float) -> None:
-    """block รอ request เดียว (single-shot handle_request(), ไม่ใช่ serve_forever()) — เลี่ยง
-    ปัญหา stdlib ที่เรียก server.shutdown() จาก thread เดียวกับที่กำลัง handle request อยู่
-    ไม่ได้ (deadlock) เพราะ handle_request() คืนค่าเองอยู่แล้วหลังรับ 1 request หรือ timeout"""
+    """block รอ 1 request ด้วย handle_request() (ไม่ใช่ serve_forever() — shutdown() จาก thread เดียวกัน deadlock)"""
     server.timeout = timeout_seconds
     try:
         server.handle_request()
@@ -180,16 +149,13 @@ def _wait_for_callback(server: HTTPServer, timeout_seconds: float) -> None:
         server.server_close()
 
 
-# --- login orchestration (in-memory, per-process — ไม่ persist ข้าม restart เหมือน session อื่นในระบบนี้) ---
+# --- login orchestration (in-memory, ไม่ persist ข้าม restart) ---
 
 _pending_logins: dict[str, dict] = {}
 
 
 async def start_login_flow() -> dict:
-    """เริ่ม OAuth flow: bind loopback listener ก่อน (ให้รู้ port จริง) แล้วค่อยสร้าง
-    authorize_url คืน {authorize_url, login_id} ให้ route handler ส่งต่อ frontend เปิดในแท็บ
-    ใหม่ — token exchange เกิดขึ้นใน background task (_finish_login_background) ไม่ใช่ใน
-    response ของฟังก์ชันนี้ — poll ผ่าน get_login_status(login_id) ต่อ"""
+    """คืน {authorize_url, login_id} — token exchange ทำใน background poll ผ่าน get_login_status(login_id)"""
     login_id = secrets.token_urlsafe(12)
     code_verifier, code_challenge = generate_pkce_pair()
     state = generate_state()
@@ -243,8 +209,7 @@ def get_login_status(login_id: str) -> Optional[dict]:
 
 
 def get_link_status() -> dict:
-    """สถานะ link ปัจจุบัน (ไม่ผูกกับ login attempt ไหนเป็นพิเศษ) — ใช้ตอนโหลดหน้าเพื่อรู้ว่า
-    จะ enable provider "openai" ใน dropdown ได้ไหม ไม่ decrypt/คืน token จริงออกไปเลย"""
+    """สถานะ link ปัจจุบัน (สำหรับ enable provider "openai" ใน UI) — ไม่คืน token จริงออกไป"""
     tokens = load_token()
     if tokens is None:
         return {"linked": False, "email": None, "plan_type": None}
@@ -271,9 +236,8 @@ async def exchange_code_for_tokens(code: str, code_verifier: str, redirect_uri: 
 
 
 async def refresh_tokens(refresh_token: str) -> dict:
-    """W_openai_oauth: endpoint เดียวกับ exchange_code_for_tokens() แต่ body เป็น JSON ไม่ใช่
-    form-urlencoded — asymmetry นี้ยืนยันแล้วจาก source ของ Codex CLI เอง ห้าม copy
-    exchange_code_for_tokens() มาแก้แทนที่จะเขียนแยก (ผิดพลาดง่ายเพราะสองฟังก์ชันดูคล้ายกัน)"""
+    """W_openai_oauth: endpoint เดียวกับ exchange_code_for_tokens() แต่ body เป็น JSON (ยืนยันจาก
+    source Codex CLI) — ห้ามรวม/copy จากฟังก์ชันนั้น"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             TOKEN_URL,
@@ -285,10 +249,7 @@ async def refresh_tokens(refresh_token: str) -> dict:
 
 
 def decode_id_token_claims(id_token: str) -> dict:
-    """อ่าน claims จาก id_token (JWT) โดยไม่ verify signature — ปลอดภัยในกรณีนี้เพราะ
-    id_token มาจาก response ของ token endpoint ที่เราเรียกเองตรงๆ ผ่าน TLS (ไม่ใช่รับมาจาก
-    redirect/third-party ที่ไม่น่าเชื่อถือ) threat model จึงต่างจาก "verify JWT ที่รับมาจาก
-    client ภายนอก" ทั่วไป — ไม่ต้องพึ่ง PyJWT แค่ base64url decode segment กลาง + json.loads"""
+    """decode payload ของ JWT โดยไม่ verify signature — ปลอดภัยเพราะได้จาก token endpoint ที่เรียกเองผ่าน TLS"""
     segments = id_token.split(".")
     if len(segments) != 3:
         raise ValueError("id_token ไม่ใช่รูปแบบ JWT ที่ถูกต้อง (ต้องมี 3 segment)")
@@ -314,8 +275,7 @@ def save_token(tokens: dict) -> None:
     encrypted_blob = fernet.encrypt(json.dumps(secret_payload).encode("utf-8")).decode("ascii")
     record = {
         "encrypted_tokens": encrypted_blob,
-        # non-secret metadata เก็บ plaintext ไว้นอก blob — status endpoint อ่านโชว์ได้โดยไม่
-        # ต้อง decrypt (account_id/email/plan_type ไม่ใช่ secret เอง)
+        # metadata ที่ไม่ใช่ secret เก็บ plaintext นอก blob ให้ status อ่านได้โดยไม่ decrypt
         "account_id": tokens.get("account_id"),
         "email": tokens.get("email"),
         "plan_type": tokens.get("plan_type"),
@@ -328,8 +288,7 @@ def save_token(tokens: dict) -> None:
 
 
 def load_token() -> Optional[dict]:
-    """คืน dict ที่รวม token จริง (decrypt แล้ว) + metadata หรือ None ถ้ายังไม่เคย login/
-    ไฟล์เสีย/decrypt ไม่ได้ (ไม่ throw — ยังไม่เคย login เป็นเรื่องปกติ ไม่ใช่ error)"""
+    """token (decrypt แล้ว) + metadata หรือ None ถ้ายังไม่ login/ไฟล์เสีย/decrypt ไม่ได้ (ไม่ throw)"""
     path = _token_path()
     if not path.exists():
         return None
@@ -364,9 +323,8 @@ def token_exists() -> bool:
 # --- refresh cadence + public entrypoint ---
 
 async def _refresh_if_needed(tokens: dict) -> dict:
-    """refresh ถ้าใกล้หมดอายุ (ภายใน openai_oauth_refresh_before_expiry_seconds ก่อน exp)
-    หรือถ้านานเกินไปตั้งแต่ refresh ครั้งล่าสุด (openai_oauth_refresh_max_age_days วัน) แม้ยัง
-    ไม่ใกล้หมดอายุ — cadence นี้ตามที่ Codex CLI ใช้เอง (ดู risk disclosure หัวไฟล์)"""
+    """refresh เมื่อใกล้ exp หรือ refresh ล่าสุดเก่ากว่า max_age_days (cadence เดียวกับ Codex CLI)
+    ล้มเหลว -> OAuthLoginRequired"""
     now = time.time()
     exp = tokens.get("exp") or 0
     last_refresh = tokens.get("last_refresh") or 0
@@ -389,8 +347,7 @@ async def _refresh_if_needed(tokens: dict) -> dict:
     updated = {
         "id_token": fresh.get("id_token", tokens["id_token"]),
         "access_token": fresh.get("access_token", tokens["access_token"]),
-        # refresh_token อาจ rotate หรือไม่ก็ได้ — เก็บตัวใหม่ถ้า response ส่งมา ไม่งั้นคงตัวเดิม
-        # ไว้ (ห้ามทิ้ง refresh_token เดิมไปเฉยๆ ถ้า response ไม่ได้แนบตัวใหม่มา)
+        # refresh_token อาจ rotate หรือไม่ — ไม่มีตัวใหม่ต้องคงตัวเดิม ห้ามทิ้ง
         "refresh_token": fresh.get("refresh_token", tokens["refresh_token"]),
         "account_id": auth_claims.get("chatgpt_account_id", tokens.get("account_id")),
         "email": claims.get("email", tokens.get("email")),
@@ -403,10 +360,8 @@ async def _refresh_if_needed(tokens: dict) -> dict:
 
 
 async def get_valid_access_token() -> tuple[str, str]:
-    """คืน (access_token, chatgpt_account_id) พร้อมใช้เรียก API ทันที — refresh ให้อัตโนมัติ
-    ถ้าจำเป็น นี่คือฟังก์ชันเดียวที่โค้ดส่วนอื่น (llm.py::next_action_openai) ต้องรู้จัก —
-    ที่เหลือในไฟล์นี้เป็นรายละเอียดภายในทั้งหมด raise OAuthLoginRequired ถ้ายังไม่เคย login/
-    refresh ไม่สำเร็จจริงๆ"""
+    """public entrypoint: คืน (access_token, chatgpt_account_id) refresh อัตโนมัติถ้าจำเป็น
+    raise OAuthLoginRequired ถ้ายังไม่ login/refresh ไม่สำเร็จ"""
     tokens = load_token()
     if tokens is None:
         raise OAuthLoginRequired(
@@ -420,8 +375,7 @@ async def get_valid_access_token() -> tuple[str, str]:
 
 
 async def revoke_token() -> None:
-    """logout: best-effort revoke ที่ OpenAI แล้วลบ local เสมอไม่ว่า network จะสำเร็จไหม
-    (logout ต้อง succeed ในเครื่องได้แม้ offline)"""
+    """logout: revoke แบบ best-effort แล้วลบ local เสมอ (ต้องสำเร็จได้แม้ offline)"""
     tokens = load_token()
     if tokens is not None:
         try:

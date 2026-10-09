@@ -1,30 +1,13 @@
-"""core/dom_locator.py — W_procmem: locator ที่ "อยู่รอด" ข้าม task run ได้จริง สำหรับ
-Procedural Memory (ดู core/procedural_memory.py, core/fastpath_executor.py)
+"""core/dom_locator.py — W_procmem: locator ที่อยู่รอดข้าม task run สำหรับ Procedural Memory
+(data-ai-index ของ perception.py ถูกล้าง/แปะใหม่ทุก get_snapshot() จึงอ้างอิงข้าม step/run ไม่ได้)
 
-ปัญหาที่ต้องแก้: element addressing ที่ agent loop ปกติใช้ (data-ai-index ใน
-core/perception.py/actions.py) เป็น "ephemeral" 100% — _COLLECT_JS ล้างแล้วแปะเลขใหม่
-ทุกครั้งที่ get_snapshot() ถูกเรียก ไม่มีทางอ้างอิงข้าม step หรือข้าม task run ได้เลย
-ทำให้ template ที่ Abstractor สร้างไว้ไม่มีอะไรให้ "target" ชี้กลับไปหาตอน replay ในอนาคต
+  - compute_locator_descriptor(): จับภาพ element ตอน action สำเร็จใน actions.py
+  - resolve_locator(): หาคืนตอน fastpath_executor.py replay — role+name -> label -> data-testid -> CSS
 
-ไฟล์นี้จึงมี 2 ฝั่งที่ใช้ locator descriptor เดียวกัน:
-  - compute_locator_descriptor(): ฝั่ง "จับภาพ" — เรียกตอน action สำเร็จจริงใน
-    actions.py (click/fill/select_option/check) เพื่อบันทึกว่า element ที่เพิ่งกระทำ
-    ไปคือใคร ด้วยคำอธิบายที่ยังใช้หาตัวเดิมได้ในหน้าเว็บเวอร์ชันอนาคต
-  - resolve_locator(): ฝั่ง "ค้นหากลับ" — ใช้ตอน fastpath_executor.py replay
-    template เดิม โดยไล่ fallback chain role+name -> label -> data-testid -> CSS
-    (ลำดับเดียวกับที่ user ระบุไว้ตรงๆ ใน Repair prompt: "prefer role+name, label, or
-    data-testid over long CSS/XPath")
+CSS fallback chain ใช้ priority เดียวกับ site_learning/extractor.py::computeSelector() (data-testid >
+id ที่ unique > class combo ที่ unique > nth-of-type path) คัดลอกไว้เพราะไม่มีกลไก share JS — แก้ต้องแก้ทั้งคู่
 
-CSS fallback chain (css_fallback field) ใช้ priority เดียวกับ
-site_learning/extractor.py::computeSelector() ทุกประการ (data-testid/data-test > id ที่
-unique > class combo ที่ unique > nth-of-type path) — คัดลอกมาแยกไว้ที่นี่แทนที่จะ
-import JS string ข้ามไฟล์ (เขียน JS แบบ inline string ในทั้งสองไฟล์อยู่แล้ว ไม่มี
-กลไก share JS ระหว่างไฟล์ในระบบนี้) ถ้าแก้ priority ฝั่งใดฝั่งหนึ่งต้องแก้ให้ตรงกันทั้งคู่
-
-ทุกฟังก์ชันในไฟล์นี้ "ห้าม throw ออกไปเด็ดขาด" (กฎเดียวกับ plan_memory.py/
-long_term_memory.py/perception.py) — คืนค่า fallback ที่ปลอดภัย (dict ว่าง/None) แทน
-เสมอ เพราะเป็นแค่ enhancement (บันทึกไว้ใช้ทีหลัง) ไม่ใช่สิ่งที่ agent loop หลักต้องมี
-ถึงจะทำงานได้
+ทุกฟังก์ชันห้าม throw — คืน fallback ที่ปลอดภัย ({}/None) เพราะเป็นแค่ enhancement
 """
 
 from typing import Optional, Union
@@ -129,34 +112,18 @@ _STABLE_LOCATOR_JS = r"""
 """
 
 
-# W_descriptor_timeout: เพดานเวลาของ evaluate() ใน compute_locator_descriptor() (ดูเหตุผล
-# เต็มใน docstring ของฟังก์ชันนั้น) — สั้นพอที่จะไม่เสียเวลาเปล่าเมื่อ element หายไปแล้ว
-# แต่ยาวพอสำหรับ element ที่ยังอยู่จริงบนหน้าที่ยังไม่นิ่งสนิท
+# W_descriptor_timeout: เพดาน evaluate() ใน compute_locator_descriptor() — สั้นพอไม่รอ element ที่หายแล้ว
+# ยาวพอสำหรับหน้าที่ยังไม่นิ่ง
 _DESCRIPTOR_TIMEOUT_MS = 1000
 
 
 async def compute_locator_descriptor(target: Union[Page, Frame], selector: str) -> dict:
-    """เรียกตอน action (click/fill/select_option/check) สำเร็จแล้วเท่านั้น — target คือ
-    Frame/Page ที่ resolve_frame() คืนมา (ตัวเดียวกับที่ actions.py ใช้ dispatch action
-    จริง), selector คือ _sel(index) เดิม (ephemeral แต่ยังใช้ query element ตัวเดียวกัน
-    ได้ในจังหวะที่ action พึ่งสำเร็จ) คืน dict ว่างเปล่าถ้า evaluate ล้มเหลวไม่ว่ากรณีใด
-    (element หาย/frame ถูก detach ระหว่างทาง ฯลฯ) — ไม่ throw ออกไปให้ actions.py พังตาม
-    เด็ดขาด (descriptor เป็นแค่ข้อมูลเสริมสำหรับบันทึกไว้ใช้ทีหลัง ไม่ใช่ผลลัพธ์ของ
-    action เอง)
+    """เรียกหลัง action (click/fill/select_option/check) สำเร็จ — target คือ Frame/Page จาก resolve_frame(),
+    selector คือ _sel(index) เดิม คืน descriptor dict หรือ {} ถ้าล้มเหลวใดๆ; never raises
 
-    W_descriptor_timeout (เจอจาก step trace ตัวใหม่ ไม่ใช่จากการอ่านโค้ด — ดู
-    config.py::step_trace_log_path): เดิม evaluate() ตรงนี้ไม่ได้ตั้ง timeout เลย จึงใช้ค่า
-    default ของ Playwright คือ **30 วินาที** และ Locator.evaluate() เป็น API ที่ auto-wait
-    ให้ element โผล่ก่อนเสมอ — พอ action ที่เพิ่งสำเร็จทำให้หน้า re-render (ซึ่งเป็นเรื่องปกติ
-    มากสำหรับ action ที่ "ได้ผล" จริง เช่น เปลี่ยนการเรียงสินค้า/กด Search) attribute
-    data-ai-index จะหายไปพร้อมกับ DOM node เดิม selector จึงไม่ตรงอะไรเลย แล้วรอจนครบ 30
-    วินาทีก่อนจะ throw ให้ except ด้านล่างจับ
-
-    วัดได้จริงบน saucedemo: step ที่ select เรียงตามราคา ใช้เวลา action 30.0 วินาที จากทั้ง
-    task 42 วินาที โดยได้ descriptor เป็น {} ในตอนท้ายอยู่ดี — เสียเวลาเปล่าล้วนๆ
-
-    ตั้ง timeout สั้นๆ แทน: descriptor นี้มีความหมายเฉพาะ "ณ จังหวะที่ action เพิ่งสำเร็จ"
-    เท่านั้น ถ้า element ไม่อยู่แล้วตอนนี้ การรอต่อไม่ได้ทำให้มันกลับมา"""
+    W_descriptor_timeout (จาก step trace, saucedemo: select เรียงราคาใช้ 30.0s จาก task 42s แล้วได้ {}):
+    เดิมไม่ตั้ง timeout -> default 30s และ evaluate() auto-wait ขณะที่หน้า re-render ลบ data-ai-index ไปแล้ว
+    descriptor มีความหมายแค่ ณ จังหวะ action สำเร็จ รอต่อไม่ทำให้ element กลับมา"""
     try:
         return await target.locator(selector).first.evaluate(
             _STABLE_LOCATOR_JS, timeout=_DESCRIPTOR_TIMEOUT_MS,
@@ -166,12 +133,8 @@ async def compute_locator_descriptor(target: Union[Page, Frame], selector: str) 
 
 
 async def resolve_locator(target: Union[Page, Frame], descriptor: dict) -> Optional[Locator]:
-    """ไล่ fallback chain ตามลำดับที่ user ระบุไว้ตรงๆ ใน Repair prompt: role+name ก่อน
-    -> label -> data-testid -> CSS ยาวๆ เป็นทางเลือกสุดท้าย — คืน Locator ตัวแรกที่
-    resolve ได้ "พอดี 1 ตัว" เท่านั้น (count()==1 — ทั้ง 0 ตัวและมากกว่า 1 ตัวถือว่า
-    ทางนี้ใช้ไม่ได้ ไปลองทางถัดไป เพราะ locator ที่กำกวมอันตรายพอๆ กับหาไม่เจอเลย) คืน
-    None ถ้าทุกทางในเชนล้มเหลวหมด (ให้ผู้เรียก — fastpath_executor.py — ตีความว่าต้อง
-    เรียก Repair module ต่อ)"""
+    """ไล่ role+name -> label -> data-testid -> CSS คืน Locator ตัวแรกที่ count()==1 พอดี (กำกวมอันตราย
+    พอๆ กับไม่เจอ) หรือ None ถ้าทุกทางล้ม (fastpath_executor.py จะเรียก Repair ต่อ)"""
     name = descriptor.get("accessible_name") or None
     role = descriptor.get("explicit_role") or descriptor.get("implicit_role") or None
 

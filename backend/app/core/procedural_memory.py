@@ -1,32 +1,13 @@
-"""core/procedural_memory.py — W_procmem: template แบบมีโครงสร้าง (ordered steps +
-stable locator + {{slot}} placeholder) ต่อยอดจาก core/plan_memory.py
+"""core/procedural_memory.py — W_procmem: template แบบมีโครงสร้าง (ordered steps + locator
+descriptor จาก dom_locator.py + {{slot}} placeholder ไม่เคยเก็บค่าจริง) ให้ fastpath_executor.py replay
+ข้าม LLM loop — ต่างจาก plan_memory.py ที่เก็บแค่ข้อความแผนไว้ข้าม LLM ตอนร่างแผน
+ลำดับตอนหาแผน (routes.py::generate_plan): procedural template -> plan_memory -> LLM ร่างใหม่
 
-ต่างจาก plan_memory.py ตรงไหน: plan_memory เก็บ "ข้อความแผน" ดิบๆ ที่ user confirm แล้ว
-reuse ได้แค่ตอนร่างแผน (ข้าม LLM call เดียว) — ตัวนี้เก็บ "step ที่รันได้จริง" (action +
-locator descriptor จาก core/dom_locator.py + ค่าที่แทนด้วย {{slot}} เสมอ ไม่เคยเป็นค่า
-จริง) ให้ fastpath_executor.py replay ได้ตรงๆ ข้าม step-by-step LLM loop ทั้งหมด ไม่ใช่
-แค่ตอนร่างแผน
+Data model เหมือน plan_memory (lineage = intent_key, versioned, ไม่ลบ) แต่ steps/slots เก็บเป็น JSON
+string (Chroma metadata รับแค่ scalar) Versioning เทียบ structural signature (ลำดับ action + ชื่อ slot)
+แทนเนื้อหาเป๊ะ เพราะ locator ของ run เดียวกันต่างกันเล็กน้อยได้ — ไม่งั้นได้ lineage ซ้ำทุกครั้งที่สำเร็จ
 
-ลำดับความสำคัญตอนหาแผนให้ user (ดู routes.py::generate_plan): procedural template
-(ไฟล์นี้) ก่อน -> plan_memory (ข้อความแผนเดิม) -> LLM ร่างใหม่สดๆ — plan_memory ไม่ถูก
-แทนที่ ยังทำงานเป็น fallback ชั้นถัดไปเหมือนเดิมทุกประการ
-
-Data model: เหมือน plan_memory.py ทุกประการ (lineage = intent_key สุ่มครั้งแรก, versioned,
-ไม่เคยลบทิ้ง) ต่างแค่ metadata ที่เก็บเพิ่ม — steps/slots เป็น list/dict ซึ่ง Chroma
-metadata รองรับแค่ scalar (str/int/float/bool) เท่านั้น จึงต้อง json.dumps() ก่อนเก็บ
-เสมอ แล้ว json.loads() กลับตอนอ่าน (ดู steps_json/slots_json ด้านล่าง)
-
-Versioning ต่างจาก plan_memory.py ตรงที่ plan_memory เทียบ "เนื้อหาแผนเป๊ะๆ" ว่าเหมือน
-version ล่าสุดไหม (ข้อความ plain text, exact match เดียวกันได้ทุกครั้งถ้า user ไม่แก้
-อะไรเลย) — ตัวนี้เทียบ "structural signature" แทน (ลำดับ action type ของ steps + ชื่อ
-slot ทั้งหมด) เพราะสอง task run ที่ "ทำงานเดียวกัน" จริงๆ แทบไม่มีทางได้ JSON เหมือนกัน
-เป๊ะไบต์ต่อไบต์ (locator descriptor อาจต่างกันเล็กน้อยแม้ action sequence จะเหมือนกัน) —
-signature ตรงกัน = ถือว่าเป็น run เดิมของ intent เดิม บันทึกเพิ่ม version/success_count
-ให้ lineage นั้น แทนที่จะสร้าง lineage ใหม่ที่แทบซ้ำกันทุกครั้งที่ task class เดิมสำเร็จ
-ซ้ำ (จะทำให้ find_candidate_templates() คืน candidate ซ้ำๆ กันเปล่าๆ ให้ Planner เลือก)
-
-ห้าม throw ออกไปให้ endpoint/orchestrator loop พังเด็ดขาด (กฎเดียวกับ plan_memory.py/
-long_term_memory.py) — เป็นแค่ enhancement ไม่ใช่ requirement"""
+ห้าม throw ออกไปให้ endpoint/orchestrator พัง (เป็น enhancement ไม่ใช่ requirement)"""
 
 import json
 import re
@@ -40,9 +21,7 @@ from backend.app.rag.chroma_client import get_procedural_memory_collection
 
 _SLOT_RE = re.compile(r"\{\{(\w+)\}\}")
 
-# คำอธิบาย action type เป็นภาษาไทยสั้นๆ สำหรับ render_steps_as_plan_text() — ให้ template
-# ที่มาจาก procedural memory โชว์เป็นแผนอ่านง่ายแบบเดียวกับที่ LLM ร่างสดๆ ทุกประการ
-# (ดู llm.py::_PLAN_PROMPT_TEMPLATE) ไม่ต้องแก้อะไรฝั่ง frontend เลย
+# คำกริยาไทยสำหรับ render_steps_as_plan_text() ให้แผนหน้าตาเหมือนที่ LLM ร่าง (llm.py::_PLAN_PROMPT_TEMPLATE)
 _ACTION_VERB_TH = {
     "click": "คลิก",
     "fill": "กรอกข้อมูลลงใน",
@@ -55,22 +34,17 @@ _ACTION_VERB_TH = {
 
 
 def substitute_slots(text: str, slot_values: dict) -> str:
-    """แทน {{slot_name}} ด้วยค่าจริงจาก slot_values — placeholder ที่ไม่มีใน slot_values
-    (Planner ไม่ได้เติมมาให้ หรือพิมพ์ชื่อ slot ผิด) ปล่อยไว้เป็น literal เดิม ({{...}})
-    ให้เห็นชัดว่ายังไม่ถูกแทนค่า แทนที่จะแอบหายไปเงียบๆ"""
+    """แทน {{slot_name}} ด้วยค่าจาก slot_values — slot ที่ไม่มีค่าปล่อยเป็น literal {{...}} ให้เห็นชัด"""
     return _SLOT_RE.sub(lambda m: str(slot_values.get(m.group(1), m.group(0))), text)
 
 
 def _step_signature(steps: list[dict]) -> str:
-    """ลำดับ action type ล้วนๆ ของ steps (ไม่รวม locator/value) — ใช้เทียบว่า 2 template
-    เป็น "ขั้นตอนแบบเดียวกัน" ไหม (ดู module docstring ส่วน Versioning ด้านบน)"""
+    """ลำดับ action type ล้วนๆ (ไม่รวม locator/value) — ส่วนหนึ่งของ versioning signature"""
     return "/".join(str(step.get("action", "")) for step in steps)
 
 
 def _slot_names(slots: list) -> tuple:
-    """ชื่อ slot ทั้งหมด เรียงตามตัวอักษร (ไม่สนลำดับที่ปรากฏ) — รวมเป็นส่วนหนึ่งของ
-    signature เพราะ action sequence เดียวกันเป๊ะแต่จำนวน/ชื่อ slot ต่างกัน (เช่น เพิ่ม
-    field ใหม่) ถือว่าเป็นคนละ "รุ่น" ของ template ที่ควรบันทึกแยก version ให้เห็นชัด"""
+    """ชื่อ slot เรียงตามตัวอักษร — slot ต่างกันแม้ action เหมือนกันถือเป็นคนละรุ่นของ template"""
     names = []
     for slot in slots or []:
         name = slot.get("name") if isinstance(slot, dict) else slot
@@ -80,9 +54,7 @@ def _slot_names(slots: list) -> tuple:
 
 
 def _best_match(domain: str, goal_pattern: str) -> Optional[tuple[str, float]]:
-    """คืน (intent_key, distance) ของ document ที่ใกล้เคียงที่สุดในโดเมนนี้ หรือ None ถ้า
-    โดเมนนี้ไม่มี document เลย (เหมือน plan_memory.py::_best_match ทุกประการ แค่คนละ
-    collection)"""
+    """คืน (intent_key, distance) ของ approved document ที่ใกล้ที่สุดในโดเมน หรือ None"""
     collection = get_procedural_memory_collection()
     results = collection.query(
         query_texts=[goal_pattern], n_results=1, where={"$and": [{"domain": domain}, {"status": "approved"}]}
@@ -106,13 +78,9 @@ def _latest_version(domain: str, intent_key: str) -> Optional[dict]:
 
 
 def save_template(domain: str, template: dict) -> Optional[dict]:
-    """บันทึก template ที่ Abstractor สร้างเสร็จหลัง task สำเร็จ (เรียกจาก
-    orchestrator.py หลัง finish_task(success=True) เท่านั้น — ดู module docstring หัวไฟล์
-    llm.py::abstract_trajectory()) template ต้องมี goal_pattern/url_pattern/steps/slots
-    ตรงตาม schema ของ ABSTRACTOR_TOOL (llm.py) — คืน None เงียบๆ ถ้าขาด goal_pattern/
-    steps หรือ goal_pattern ใช้สคริปต์ที่ embedding ไม่รองรับ (ดู
-    plan_memory._uses_unsupported_script) หรือ error ระหว่างทางไม่ว่ากรณีใด (ห้าม throw
-    ให้ orchestrator loop ที่กำลังจะ return ผลลัพธ์ของ task ที่เพิ่งสำเร็จพังตาม)"""
+    """บันทึก template จาก Abstractor (schema ABSTRACTOR_TOOL ใน llm.py) หลัง task สำเร็จ
+    คืน {template_id, intent_key, version} หรือ None ถ้าขาด goal_pattern/steps, ใช้สคริปต์ที่
+    embedding ไม่รองรับ หรือ error ใดๆ — never raises"""
     goal_pattern = template.get("goal_pattern", "")
     url_pattern = template.get("url_pattern", "")
     steps = template.get("steps") or []
@@ -128,9 +96,7 @@ def save_template(domain: str, template: dict) -> Optional[dict]:
         intent_key = None
         new_version = 1
         success_count = 1
-        # W_procmem versioning (ดู module docstring): reuse ระยะห่างเดียวกับ
-        # plan_memory_max_distance — เป็น embedding model ตัวเดียวกันเป๊ะ ค่าที่คาลิเบรต
-        # ไว้แล้วยังใช้ได้ตรงๆ ไม่ต้องคาลิเบรตใหม่แยกต่างหาก
+        # W_procmem versioning: reuse plan_memory_max_distance (embedding model ตัวเดียวกัน)
         match = _best_match(domain, goal_pattern)
         if match is not None and match[1] <= settings.plan_memory_max_distance:
             candidate_key = match[0]
@@ -180,11 +146,8 @@ def save_template(domain: str, template: dict) -> Optional[dict]:
 
 
 def find_candidate_templates(domain: str, goal: str, k: Optional[int] = None) -> list[dict]:
-    """W_procmem Step 1: ดึง top-K candidate template ที่ใกล้เคียงกับ goal นี้ที่สุดใน
-    โดเมนนี้ (ดึงแบบหลวมๆ ไม่มี threshold ตัดสินใจเด็ดขาดแบบ
-    plan_memory.find_matching_plan — ปล่อยให้ llm.plan_with_procedural_memory()
-    ตัดสินใจ reuse/adapt/plan_fresh เองจาก candidate list นี้) คืน [] เงียบๆ ถ้าไม่มี
-    candidate เลย/goal ใช้สคริปต์ที่ embedding ไม่รองรับ/error ระหว่างทาง"""
+    """W_procmem Step 1: top-K candidate ในโดเมน ไม่มี threshold (llm.plan_with_procedural_memory()
+    ตัดสิน reuse/adapt/plan_fresh เอง) คืน [] ถ้าไม่มี/สคริปต์ไม่รองรับ/error — never raises"""
     if _uses_unsupported_script(goal):
         return []
     try:
@@ -212,12 +175,8 @@ def find_candidate_templates(domain: str, goal: str, k: Optional[int] = None) ->
                 "steps": steps,
                 "slots": slots,
                 "distance": distance,
-                # ACC-1 (accuracy audit follow-up): track record จริงของ template นี้ (ดู
-                # record_template_outcome() ด้านล่าง) — เดิม dict นี้ไม่มี field พวกนี้เลย
-                # ทำให้ llm.plan_with_procedural_memory() (ผู้เรียกฟังก์ชันนี้) ไม่มีทาง
-                # แยกแยะ template ที่เพิ่งถูกบันทึกครั้งเดียว (success_count=1, ยังไม่เคย
-                # ถูก verify ซ้ำ) ออกจาก template ที่ reuse สำเร็จมาแล้วหลายครั้งจริง —
-                # ประเมิน confidence จากแค่ semantic/pattern match ล้วนๆ เหมือนกันหมด
+                # ACC-1: ส่ง track record ให้ Planner แยก template ที่บันทึกครั้งเดียวออกจากที่ reuse
+                # สำเร็จหลายครั้ง (เดิมไม่มี field นี้ confidence มาจาก semantic match ล้วนๆ)
                 "success_count": meta.get("success_count", 0),
                 "failure_count": meta.get("failure_count", 0),
             })
@@ -228,10 +187,8 @@ def find_candidate_templates(domain: str, goal: str, k: Optional[int] = None) ->
 
 
 def record_template_outcome(template_id: str, success: bool) -> None:
-    """อัปเดต success_count/failure_count/last_used_at หลัง fast-path run ที่ใช้
-    template_id นี้จบ (ไม่ว่าจะจบด้วยตัวเองหรือผ่าน Repair สำเร็จก็ยังนับเป็น success —
-    ดู fastpath_executor.py) — ไม่มีผลอะไรถ้าไม่เจอ template_id นี้แล้ว (เช่นถูกลบ/error
-    ระหว่างบันทึกครั้งก่อน) เงียบๆ ไม่ throw"""
+    """อัปเดต success_count/failure_count/last_used_at หลัง fast-path run (สำเร็จผ่าน Repair ก็นับ
+    success) — template_id ที่หาไม่เจอไม่มีผล; never raises"""
     if not template_id:
         return
     try:
@@ -251,13 +208,8 @@ def record_template_outcome(template_id: str, success: bool) -> None:
 
 
 def render_steps_as_plan_text(steps: list[dict], slot_values: Optional[dict] = None) -> str:
-    """แปลง steps ที่มีโครงสร้าง (+ แทนค่า slot แล้ว) เป็นข้อความแผนรูปแบบเดียวกับที่
-    llm.py::_PLAN_PROMPT_TEMPLATE บังคับ LLM ตอบอยู่แล้ว ("1. ...\\n2. ...") — ให้
-    index.html::parsePlanSteps()/renderPlanPreviewList() ใช้ได้ตรงๆ โดยไม่ต้องแก้อะไร
-    ฝั่ง frontend เลย ไม่ว่าแผนจะมาจาก procedural memory หรือ LLM ร่างสดๆ
-
-    step ที่ sensitive=True (เช่น กรอกรหัสผ่าน) จะไม่โชว์ค่าจริงเด็ดขาด แสดงเป็น
-    "••••••" แทนเสมอ ไม่ว่า slot_values จะมีค่าจริงส่งมาด้วยหรือไม่ก็ตาม"""
+    """steps (+ แทน slot) -> ข้อความแผน "1. ...\\n2. ..." รูปแบบเดียวกับ llm.py::_PLAN_PROMPT_TEMPLATE
+    ให้ frontend parsePlanSteps() ใช้ได้ตรงๆ step ที่ sensitive=True แสดง "••••••" เสมอ"""
     slot_values = slot_values or {}
     lines = []
     for i, step in enumerate(steps, start=1):
@@ -282,13 +234,8 @@ def render_steps_as_plan_text(steps: list[dict], slot_values: Optional[dict] = N
 
 
 def apply_template_patch(steps: list[dict], patch: Optional[list[dict]]) -> list[dict]:
-    """ใช้ patch (op: replace/insert/remove, index, step?) จาก
-    llm.plan_with_procedural_memory()'s decision="adapt" กับ steps ของ candidate ที่
-    Planner เลือกไว้ — เรียกจาก routes.py::generate_plan ก่อนส่ง final_steps กลับไปให้
-    user review คืน list ใหม่เสมอ (ไม่แก้ steps เดิมของ candidate ที่อาจถูกอ้างอิงที่อื่น
-    อยู่ด้วย) op ที่ index ไม่ถูกต้อง (นอกช่วง/ไม่ใช่ int) หรือไม่มี "step" มาด้วยตอน
-    replace/insert จะถูกข้ามเงียบๆ ทีละ op (ไม่ throw ทั้งฟังก์ชัน — LLM อาจส่ง index ผิด
-    มาได้ ดีกว่าทำให้ endpoint ทั้งตัวพัง)"""
+    """ใช้ patch (op: replace/insert/remove, index, step?) จาก decision="adapt" ของ Planner
+    คืน list ใหม่เสมอ (ไม่แก้ของเดิม) op ที่ index ผิด/ไม่มี step ถูกข้ามทีละ op ไม่ throw"""
     result = list(steps)
     for op in patch or []:
         action = op.get("op")
