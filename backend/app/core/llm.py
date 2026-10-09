@@ -200,6 +200,58 @@ async def _gemini_generate_with_backoff(gemini_model, **kwargs):
             await asyncio.sleep(wait)
 
 
+async def _forced_tool_call(
+    client, model: str, provider: str, *, tool: dict, system: str, prompt: str,
+    max_tokens: int, anthropic_system: Any = None, openai: bool = False,
+) -> Optional[dict]:
+    """Single-shot call ที่บังคับเรียก `tool` (รูปแบบ Anthropic: name/description/input_schema)
+    ตัวเดียวข้าม provider — คืน args เป็น dict หรือ None ถ้า provider ไม่รู้จัก/ไม่มี tool call
+    กลับมา ไม่จับ exception เอง: ผู้เรียกทุกตัวแปลง None/error เป็น safe default ของตัวเอง
+
+    openai=False คงพฤติกรรมเดิมของ call site ที่ยังไม่ port ไป codex endpoint (ตกเป็น None
+    — ดู W_openai_multiturn ใน _openai_forced_tool_call)"""
+    name, description, params = tool["name"], tool["description"], tool["input_schema"]
+    if provider == "anthropic":
+        response = await client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=anthropic_system if anthropic_system is not None else system,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": name},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+        return tool_use.input if tool_use is not None else None
+    if provider == "groq":
+        response = await client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            tools=[{"type": "function", "function": {"name": name, "description": description, "parameters": params}}],
+            tool_choice={"type": "function", "function": {"name": name}},
+        )
+        tool_calls = response.choices[0].message.tool_calls or []
+        return json.loads(tool_calls[0].function.arguments) if tool_calls else None
+    if provider == "gemini":
+        gemini_model = client.GenerativeModel(
+            model_name=model,
+            tools=[{"function_declarations": [{"name": name, "description": description, "parameters": params}]}],
+            tool_config={"function_calling_config": {"mode": "ANY"}},
+            system_instruction=system,
+        )
+        response = await _gemini_generate_with_backoff(
+            gemini_model, contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        )
+        for part in response.candidates[0].content.parts:
+            fc = getattr(part, "function_call", None)
+            if fc and fc.name == name:
+                return _gemini_struct_to_plain_python(fc.args)
+        return None
+    if provider == "openai" and openai:
+        return await _openai_forced_tool_call(client, model, system, prompt, name, description, params)
+    return None
+
+
 # W_prompt_sections (P4.1): SYSTEM_PROMPT เดิมยาว 44,487 ตัวอักษร (~11k token) และถูกส่ง
 # "ทั้งก้อน" ทุก step ของทุก task — วัดจาก step trace ของ release gate จริง: step แรกของ
 # ทุก task เริ่มที่ ~11.4k input token ทั้งที่หน้า saucedemo/MiniWoB มี element ไม่กี่ตัว
@@ -1073,12 +1125,6 @@ _ABSTRACTOR_DESC = (
     "template (steps + locator + {{slot}} placeholders always replacing real values)"
 )
 ABSTRACTOR_TOOL = {"name": "emit_template", "description": _ABSTRACTOR_DESC, "input_schema": _ABSTRACTOR_PARAMS}
-_GROQ_ABSTRACTOR_TOOLS = [
-    {"type": "function", "function": {"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}},
-]
-_GEMINI_ABSTRACTOR_TOOLS = [
-    {"function_declarations": [{"name": "emit_template", "description": _ABSTRACTOR_DESC, "parameters": _ABSTRACTOR_PARAMS}]},
-]
 
 _ABSTRACTOR_SYSTEM_PROMPT = (
     "You are a Workflow Abstractor for a browser-automation agent.\n"
@@ -1155,52 +1201,10 @@ async def abstract_trajectory(
         "Call emit_template now with the distilled reusable template."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=_ABSTRACTOR_SYSTEM_PROMPT,
-                tools=[ABSTRACTOR_TOOL],
-                tool_choice={"type": "tool", "name": "emit_template"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            return tool_use.input if tool_use is not None else None
-
-        if provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=2048,
-                messages=[
-                    {"role": "system", "content": _ABSTRACTOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_ABSTRACTOR_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_template"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            if not tool_calls:
-                return None
-            return json.loads(tool_calls[0].function.arguments)
-
-        if provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_ABSTRACTOR_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_ABSTRACTOR_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_template":
-                    return _gemini_struct_to_plain_python(fc.args)
-            return None
-
-        return None
+        return await _forced_tool_call(
+            client, model, provider, tool=ABSTRACTOR_TOOL, system=_ABSTRACTOR_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=2048,
+        )
     except Exception as e:
         print(f"⚠️ abstract_trajectory error: {e}", flush=True)
         return None
@@ -1248,12 +1252,6 @@ _PROCEDURAL_PLANNER_DESC = (
 PROCEDURAL_PLANNER_TOOL = {
     "name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "input_schema": _PROCEDURAL_PLANNER_PARAMS,
 }
-_GROQ_PROCEDURAL_PLANNER_TOOLS = [
-    {"type": "function", "function": {"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}},
-]
-_GEMINI_PROCEDURAL_PLANNER_TOOLS = [
-    {"function_declarations": [{"name": "plan_decision", "description": _PROCEDURAL_PLANNER_DESC, "parameters": _PROCEDURAL_PLANNER_PARAMS}]},
-]
 
 _PROCEDURAL_PLANNER_SYSTEM_PROMPT = (
     "You are the Planner of a browser agent with PROCEDURAL MEMORY.\n"
@@ -1365,50 +1363,10 @@ async def plan_with_procedural_memory(
         "Call plan_decision now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=1024,
-                system=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
-                tools=[PROCEDURAL_PLANNER_TOOL],
-                tool_choice={"type": "tool", "name": "plan_decision"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            decision = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": _PROCEDURAL_PLANNER_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_PROCEDURAL_PLANNER_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "plan_decision"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            decision = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_PROCEDURAL_PLANNER_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_PROCEDURAL_PLANNER_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            decision = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "plan_decision":
-                    decision = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            decision = None
-
+        decision = await _forced_tool_call(
+            client, model, provider, tool=PROCEDURAL_PLANNER_TOOL,
+            system=_PROCEDURAL_PLANNER_SYSTEM_PROMPT, prompt=prompt, max_tokens=1024,
+        )
         if decision is None:
             return dict(_PROCEDURAL_PLANNER_SAFE_DEFAULT)
 
@@ -1479,12 +1437,6 @@ _REPAIR_STEP_PARAMS = {
 }
 _REPAIR_STEP_DESC = "Repair one template step that failed during replay so it still achieves the same sub-goal on the current page, or signal replan if that is genuinely impossible"
 REPAIR_STEP_TOOL = {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "input_schema": _REPAIR_STEP_PARAMS}
-_GROQ_REPAIR_STEP_TOOLS = [
-    {"type": "function", "function": {"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}},
-]
-_GEMINI_REPAIR_STEP_TOOLS = [
-    {"function_declarations": [{"name": "emit_repaired_step", "description": _REPAIR_STEP_DESC, "parameters": _REPAIR_STEP_PARAMS}]},
-]
 
 _REPAIR_STEP_SYSTEM_PROMPT = (
     "You are the Repair module. One template step failed during execution.\n"
@@ -1528,50 +1480,10 @@ async def repair_step(
         "Call emit_repaired_step now with the corrected step (or replan)."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=1024,
-                system=_REPAIR_STEP_SYSTEM_PROMPT,
-                tools=[REPAIR_STEP_TOOL],
-                tool_choice={"type": "tool", "name": "emit_repaired_step"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": _REPAIR_STEP_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_REPAIR_STEP_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_repaired_step"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_REPAIR_STEP_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_REPAIR_STEP_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_repaired_step":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=REPAIR_STEP_TOOL, system=_REPAIR_STEP_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=1024,
+        )
         return result if result is not None else dict(REPLAN_SIGNAL)
     except Exception as e:
         print(f"⚠️ repair_step error: {e}", flush=True)
@@ -1616,12 +1528,6 @@ _SEMANTIC_REDUNDANCY_DESC = "Judge whether the proposed action genuinely advance
 SEMANTIC_REDUNDANCY_TOOL = {
     "name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "input_schema": _SEMANTIC_REDUNDANCY_PARAMS,
 }
-_GROQ_SEMANTIC_REDUNDANCY_TOOLS = [
-    {"type": "function", "function": {"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}},
-]
-_GEMINI_SEMANTIC_REDUNDANCY_TOOLS = [
-    {"function_declarations": [{"name": "evaluate_action_value", "description": _SEMANTIC_REDUNDANCY_DESC, "parameters": _SEMANTIC_REDUNDANCY_PARAMS}]},
-]
 
 _SEMANTIC_REDUNDANCY_SYSTEM_PROMPT = (
     "You are a Semantic Redundancy Evaluator for a browser automation agent.\n"
@@ -1670,50 +1576,10 @@ async def evaluate_semantic_redundancy(
         "Call evaluate_action_value now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
-                tools=[SEMANTIC_REDUNDANCY_TOOL],
-                tool_choice={"type": "tool", "name": "evaluate_action_value"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _SEMANTIC_REDUNDANCY_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_SEMANTIC_REDUNDANCY_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "evaluate_action_value"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_SEMANTIC_REDUNDANCY_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "evaluate_action_value":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=SEMANTIC_REDUNDANCY_TOOL,
+            system=_SEMANTIC_REDUNDANCY_SYSTEM_PROMPT, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_SEMANTIC_REDUNDANCY_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ evaluate_semantic_redundancy error: {e}", flush=True)
@@ -1775,12 +1641,6 @@ _MIDDLEWARE_DESC = (
 MIDDLEWARE_EVALUATOR_TOOL = {
     "name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "input_schema": _MIDDLEWARE_PARAMS,
 }
-_GROQ_MIDDLEWARE_TOOLS = [
-    {"type": "function", "function": {"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}},
-]
-_GEMINI_MIDDLEWARE_TOOLS = [
-    {"function_declarations": [{"name": "middleware_evaluate", "description": _MIDDLEWARE_DESC, "parameters": _MIDDLEWARE_PARAMS}]},
-]
 
 _MIDDLEWARE_SYSTEM_PROMPT = (
     "You are the Safety & Performance Middleware for a Universal AI Browser Automation\n"
@@ -1851,50 +1711,10 @@ async def evaluate_safety_and_performance(
         "Call middleware_evaluate now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_MIDDLEWARE_SYSTEM_BLOCKS,
-                tools=[MIDDLEWARE_EVALUATOR_TOOL],
-                tool_choice={"type": "tool", "name": "middleware_evaluate"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _MIDDLEWARE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_MIDDLEWARE_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "middleware_evaluate"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_MIDDLEWARE_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_MIDDLEWARE_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "middleware_evaluate":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=MIDDLEWARE_EVALUATOR_TOOL, system=_MIDDLEWARE_SYSTEM_PROMPT,
+            anthropic_system=_MIDDLEWARE_SYSTEM_BLOCKS, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_MIDDLEWARE_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ evaluate_safety_and_performance error: {e}", flush=True)
@@ -1930,12 +1750,6 @@ _PERSONA_PARAMS = {
 }
 _PERSONA_DESC = "Turn raw agent state into a natural personal-assistant message for display in the UI"
 PERSONA_VOICE_TOOL = {"name": "speak_to_user", "description": _PERSONA_DESC, "input_schema": _PERSONA_PARAMS}
-_GROQ_PERSONA_TOOLS = [
-    {"type": "function", "function": {"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}},
-]
-_GEMINI_PERSONA_TOOLS = [
-    {"function_declarations": [{"name": "speak_to_user", "description": _PERSONA_DESC, "parameters": _PERSONA_PARAMS}]},
-]
 
 # W20 (follow-up "reply in the user's own language"): this used to hard-require Thai output
 # regardless of what language USER_GOAL was actually written in — real bug, same root cause as
@@ -1998,50 +1812,10 @@ async def generate_persona_message(
         "Call speak_to_user now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=256,
-                system=_PERSONA_SYSTEM_PROMPT,
-                tools=[PERSONA_VOICE_TOOL],
-                tool_choice={"type": "tool", "name": "speak_to_user"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=256,
-                messages=[
-                    {"role": "system", "content": _PERSONA_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_PERSONA_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "speak_to_user"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_PERSONA_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_PERSONA_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "speak_to_user":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=PERSONA_VOICE_TOOL, system=_PERSONA_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=256,
+        )
         return result if result is not None else dict(_PERSONA_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ generate_persona_message error: {e}", flush=True)
@@ -2083,55 +1857,10 @@ async def route_multi_turn_strategy(
         "Call route_strategy now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=768,
-                system=_MULTI_TURN_SYSTEM_PROMPT,
-                tools=[MULTI_TURN_STRATEGY_TOOL],
-                tool_choice={"type": "tool", "name": "route_strategy"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=768,
-                messages=[
-                    {"role": "system", "content": _MULTI_TURN_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_MULTI_TURN_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "route_strategy"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_MULTI_TURN_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_MULTI_TURN_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "route_strategy":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        elif provider == "openai":
-            result = await _openai_forced_tool_call(
-                client, model, _MULTI_TURN_SYSTEM_PROMPT, prompt,
-                "route_strategy", _MULTI_TURN_DESC, _MULTI_TURN_PARAMS,
-            )
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=MULTI_TURN_STRATEGY_TOOL, system=_MULTI_TURN_SYSTEM_PROMPT,
+            prompt=prompt, max_tokens=768, openai=True,
+        )
         return result if result is not None else dict(_MULTI_TURN_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ route_multi_turn_strategy error: {e}", flush=True)
@@ -2176,12 +1905,6 @@ _MULTI_TURN_DESC = "Decide whether a new user instruction (turn N) should be han
 MULTI_TURN_STRATEGY_TOOL = {
     "name": "route_strategy", "description": _MULTI_TURN_DESC, "input_schema": _MULTI_TURN_PARAMS,
 }
-_GROQ_MULTI_TURN_TOOLS = [
-    {"type": "function", "function": {"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}},
-]
-_GEMINI_MULTI_TURN_TOOLS = [
-    {"function_declarations": [{"name": "route_strategy", "description": _MULTI_TURN_DESC, "parameters": _MULTI_TURN_PARAMS}]},
-]
 
 _MULTI_TURN_SYSTEM_PROMPT = (
     "You are the Orchestrator & Planner Agent for a Universal Multi-Turn AI Browser\n"
@@ -2256,12 +1979,6 @@ _STRUCTURED_EXTRACT_DESC = "Convert raw page content into a structured item arra
 STRUCTURED_EXTRACTOR_TOOL = {
     "name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "input_schema": _STRUCTURED_EXTRACT_PARAMS,
 }
-_GROQ_STRUCTURED_EXTRACT_TOOLS = [
-    {"type": "function", "function": {"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}},
-]
-_GEMINI_STRUCTURED_EXTRACT_TOOLS = [
-    {"function_declarations": [{"name": "emit_structured_items", "description": _STRUCTURED_EXTRACT_DESC, "parameters": _STRUCTURED_EXTRACT_PARAMS}]},
-]
 
 _STRUCTURED_EXTRACT_SYSTEM_PROMPT = (
     "You are the Structured Data Extractor. When extracting data from ANY web page:\n"
@@ -2300,55 +2017,10 @@ async def extract_structured_items(client, model: str, page_content: str, extrac
         "Call emit_structured_items now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=2048,
-                system=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
-                tools=[STRUCTURED_EXTRACTOR_TOOL],
-                tool_choice={"type": "tool", "name": "emit_structured_items"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=2048,
-                messages=[
-                    {"role": "system", "content": _STRUCTURED_EXTRACT_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_STRUCTURED_EXTRACT_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_structured_items"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_STRUCTURED_EXTRACT_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_STRUCTURED_EXTRACT_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_structured_items":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        elif provider == "openai":
-            result = await _openai_forced_tool_call(
-                client, model, _STRUCTURED_EXTRACT_SYSTEM_PROMPT, prompt,
-                "emit_structured_items", _STRUCTURED_EXTRACT_DESC, _STRUCTURED_EXTRACT_PARAMS,
-            )
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=STRUCTURED_EXTRACTOR_TOOL,
+            system=_STRUCTURED_EXTRACT_SYSTEM_PROMPT, prompt=prompt, max_tokens=2048, openai=True,
+        )
         if result is None:
             return []
         items = result.get("items")
@@ -2393,12 +2065,6 @@ _EXTRACTION_QUERY_DESC = "Turn a long natural-language question into a specific 
 EXTRACTION_QUERY_NORMALIZER_TOOL = {
     "name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "input_schema": _EXTRACTION_QUERY_PARAMS,
 }
-_GROQ_EXTRACTION_QUERY_TOOLS = [
-    {"type": "function", "function": {"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}},
-]
-_GEMINI_EXTRACTION_QUERY_TOOLS = [
-    {"function_declarations": [{"name": "emit_normalized_query", "description": _EXTRACTION_QUERY_DESC, "parameters": _EXTRACTION_QUERY_PARAMS}]},
-]
 
 _EXTRACTION_QUERY_SYSTEM_PROMPT = (
     "You are the Structured Data Extractor Engine. Convert long natural language read\n"
@@ -2442,50 +2108,10 @@ async def normalize_extraction_query(
         "Call emit_normalized_query now."
     )
     try:
-        if provider == "anthropic":
-            response = await client.messages.create(
-                model=model,
-                max_tokens=512,
-                system=_EXTRACTION_QUERY_SYSTEM_PROMPT,
-                tools=[EXTRACTION_QUERY_NORMALIZER_TOOL],
-                tool_choice={"type": "tool", "name": "emit_normalized_query"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-            result = tool_use.input if tool_use is not None else None
-        elif provider == "groq":
-            response = await client.chat.completions.create(
-                model=model,
-                max_tokens=512,
-                messages=[
-                    {"role": "system", "content": _EXTRACTION_QUERY_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=_GROQ_EXTRACTION_QUERY_TOOLS,
-                tool_choice={"type": "function", "function": {"name": "emit_normalized_query"}},
-            )
-            tool_calls = response.choices[0].message.tool_calls or []
-            result = json.loads(tool_calls[0].function.arguments) if tool_calls else None
-        elif provider == "gemini":
-            gemini_model = client.GenerativeModel(
-                model_name=model,
-                tools=_GEMINI_EXTRACTION_QUERY_TOOLS,
-                tool_config={"function_calling_config": {"mode": "ANY"}},
-                system_instruction=_EXTRACTION_QUERY_SYSTEM_PROMPT,
-            )
-            response = await _gemini_generate_with_backoff(
-                gemini_model,
-                contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            )
-            result = None
-            for part in response.candidates[0].content.parts:
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name == "emit_normalized_query":
-                    result = _gemini_struct_to_plain_python(fc.args)
-                    break
-        else:
-            result = None
-
+        result = await _forced_tool_call(
+            client, model, provider, tool=EXTRACTION_QUERY_NORMALIZER_TOOL,
+            system=_EXTRACTION_QUERY_SYSTEM_PROMPT, prompt=prompt, max_tokens=512,
+        )
         return result if result is not None else dict(_EXTRACTION_QUERY_SAFE_DEFAULT)
     except Exception as e:
         print(f"⚠️ normalize_extraction_query error: {e}", flush=True)
