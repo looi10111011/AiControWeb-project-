@@ -98,18 +98,20 @@ def test_summary_counts_false_success_and_skips_infra():
         _record("FULL", "T1", 1, passed=True, claimed=True),
         _record("FULL", "T1", 2, passed=False, claimed=True),
         _record("FULL", "T1", 3, passed=False, claimed=None, valid=False),
+        _record("FULL", "T1", 4, passed=True, claimed=False),
         _record("NO_VERIFY", "T1", 1, passed=False, claimed=True,
                 tokens={"input": 2000, "output": 10, "cache_read": 0, "cache_creation": 0}),
     ]
     rows = analyze_ablation.enrich(records, "openai", {}, {})
     invalid = Counter(r["arm"] for r in records if not r["valid"])
     full, no_verify = analyze_ablation.summarize_arms(rows, ["FULL", "NO_VERIFY"], invalid)
-    assert (full["valid_attempts"], full["infra_failures"], full["passed"], full["false_success"]) == (2, 1, 1, 1)
-    assert full["success_rate"] == 0.5
+    assert (full["valid_attempts"], full["infra_failures"], full["passed"]) == (3, 1, 2)
+    assert (full["false_success"], full["false_failure"]) == (1, 1)
+    assert full["success_rate"] == pytest.approx(2 / 3)
     assert no_verify["false_success"] == 1
     (delta,) = analyze_ablation.paired_deltas(rows, ["FULL", "NO_VERIFY"], "FULL")
     assert delta["paired_tasks"] == 1
-    assert delta["mean_success_rate_diff"] == -0.5
+    assert delta["mean_success_rate_diff"] == pytest.approx(-2 / 3)
     assert delta["median_pct_change_total_tokens"] == pytest.approx((2010 - 1010) / 1010 * 100)
 
 
@@ -119,13 +121,36 @@ _CODEX_400 = (
 )
 
 
-def test_provider_error_before_first_step_is_infra():
+_GEMINI_429_STEP_3 = (
+    "Task stopped by an unexpected error at step 3: ResourceExhausted: 429 You exceeded your current quota"
+)
+_GEMINI_500_STEP_5 = "Task stopped by an unexpected error at step 5: InternalServerError: 500 Internal error encountered."
+
+
+def test_provider_errors_are_infra_at_any_step():
     from benchmark_target.runner.agent_adapters import AgentRunResult
 
-    assert run_ablation.provider_failed_before_acting(AgentRunResult(False, 0, _CODEX_400, {}))
-    assert not run_ablation.provider_failed_before_acting(AgentRunResult(False, 4, _CODEX_400, {}))
-    assert not run_ablation.provider_failed_before_acting(AgentRunResult(True, 0, "stub: no action taken", {}))
-    assert not run_ablation.provider_failed_before_acting(None)
+    assert run_ablation.provider_failed(AgentRunResult(False, 0, _CODEX_400, {}))
+    # rep 1 (2026-10-22): 429/500 กลาง task ถูกนับเป็นความผิดของ agent ใน BASELINE/FULL
+    assert run_ablation.provider_failed(AgentRunResult(False, 3, _GEMINI_429_STEP_3, {}))
+    assert run_ablation.provider_failed(AgentRunResult(False, 5, _GEMINI_500_STEP_5, {}))
+    # agent พูดถึง quota เองแต่ลูปไม่ได้ crash = ผลจริง
+    assert not run_ablation.provider_failed(AgentRunResult(False, 4, "The quota field on the form is invalid", {}))
+    assert not run_ablation.provider_failed(AgentRunResult(True, 0, "stub: no action taken", {}))
+    assert not run_ablation.provider_failed(None)
+
+
+def test_resume_reruns_cells_reclassified_as_provider_failure(tmp_path):
+    results_path = tmp_path / "abl-y.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({"session_id": "abl-y"}), encoding="utf-8")
+    rows = [
+        {**_record("BASELINE", "T1", 1, passed=False, claimed=False, steps=3), "agent_message": _GEMINI_429_STEP_3},
+        {**_record("FULL", "T1", 1, passed=True, claimed=True), "agent_message": "done"},
+    ]
+    results_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _, done, tries_made = run_ablation._load_resume(results_path)
+    assert done == {("FULL", "T1", 1)}
+    assert tries_made[("BASELINE", "T1", 1)] == 1
 
 
 def test_session_stops_when_provider_keeps_failing(tmp_path, monkeypatch):

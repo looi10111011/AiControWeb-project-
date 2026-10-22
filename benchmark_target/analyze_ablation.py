@@ -32,6 +32,30 @@ _INPUT_INCLUDES_CACHED = {"openai"}
 
 _TIMING_PHASES = ("snapshot", "llm", "action", "pacing", "wait")
 
+# ข้อความที่ run_task() คืนเมื่อ exception หลุดออกจากลูป (orchestrator.py W_loop_crash)
+_CRASH_PREFIX = "task stopped by an unexpected error at step "
+# Gemini ตอบ "InternalServerError: 500 Internal error encountered." — marker ของ gate มีแค่ 502/503
+_EXTRA_PROVIDER_MARKERS = ("internalservererror", "internal error encountered")
+
+
+def is_provider_failure(success, steps: int, message: str) -> bool:
+    """attempt ที่ provider ล่ม ไม่ใช่ agent ทำพลาด — ไม่นับเป็น sample ของ arm ไหนเลย
+
+    กฎของ release gate (task_failed_on_infrastructure) จับเฉพาะ steps == 0 เพราะ gate ตัดสิน commit
+    แต่ ablation เทียบ arm กัน: rep 1 (2026-10-22) มี 429 ที่ step 3 ใน BASELINE และ 500 ที่ step 5 ใน
+    FULL — ถ้านับเป็นผลจริง arm ที่บังเอิญรันตอนโควตาใกล้หมดจะโดนลงโทษ จึงนับเพิ่มเมื่อลูป crash
+    ด้วย error ฝั่ง provider ไม่ว่าจะอยู่ step ไหน"""
+    if success:
+        return False
+    from backend.app.core.release_gate import _INFRA_FAILURE_MARKERS, task_failed_on_infrastructure
+
+    if task_failed_on_infrastructure({"success": success, "steps": steps, "message": message}):
+        return True
+    text = (message or "").lower()
+    return text.startswith(_CRASH_PREFIX) and any(
+        marker in text for marker in _INFRA_FAILURE_MARKERS + _EXTRA_PROVIDER_MARKERS
+    )
+
 
 def total_tokens(tokens: dict, provider: str) -> int:
     def val(key: str) -> int:
@@ -55,14 +79,12 @@ def load_session(results_path: Path) -> tuple[dict, list[dict]]:
         json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
     for record in records:
-        if "provider_failure" not in record:
-            # ไฟล์ก่อนมี field นี้ (smoke 2026-10-22) นับ provider ล่มที่ step 0 เป็น valid — จัดใหม่ด้วยเกณฑ์เดียวกัน
-            from backend.app.core.release_gate import task_failed_on_infrastructure
-
-            record["provider_failure"] = record["claimed_success"] is not None and task_failed_on_infrastructure({
-                "success": record["claimed_success"], "steps": record["steps"], "message": record["agent_message"],
-            })
-            record["valid"] = record["valid"] and not record["provider_failure"]
+        # จัดใหม่ทุกครั้ง — ไฟล์เก่าเขียนด้วยเกณฑ์ที่หลวมกว่า (smoke ไม่มี field นี้, rep 1 นับแค่ step 0)
+        record["provider_failure"] = bool(record.get("provider_failure")) or (
+            record["claimed_success"] is not None
+            and is_provider_failure(record["claimed_success"], record["steps"], record["agent_message"])
+        )
+        record["valid"] = record["valid"] and not record["provider_failure"]
     return manifest, records
 
 
@@ -129,6 +151,10 @@ def enrich(records: list[dict], provider: str, usage: dict, steps: dict) -> list
             "passed": record["passed"],
             "claimed_success": record["claimed_success"],
             "false_success": bool(record["claimed_success"]) and not record["passed"],
+            # rep 1 (2026-10-22) RECRUITMENT-SHORTLIST-01: shortlist สำเร็จจริง แต่ agent อ่านฟอร์ม Schedule
+            # Interview ที่โผล่หลัง shortlist เป็นส่วนของงานแล้วรายงานว่าทำไม่ได้ — ความผิดพลาดของคำรายงาน
+            # อีกทิศ นับแยกจาก false success
+            "false_failure": record["claimed_success"] is False and record["passed"],
             "steps": record["steps"],
             "llm_calls": usage_row.get("llm_calls") if usage_row else None,
             "input_tokens": int(tokens.get("input", 0) or 0),
@@ -165,6 +191,7 @@ def summarize_arms(rows: list[dict], arms: list[str], invalid_counts: Counter) -
             "ci_high": ci_high,
             "claimed_success": sum(1 for r in arm_rows if r["claimed_success"]),
             "false_success": sum(1 for r in arm_rows if r["false_success"]),
+            "false_failure": sum(1 for r in arm_rows if r["false_failure"]),
             "median_steps": _median([r["steps"] for r in arm_rows]),
             "median_llm_calls": _median(llm_calls),
             "median_total_tokens": _median([r["total_tokens"] for r in arm_rows]),
@@ -268,14 +295,16 @@ def render_markdown(manifest: dict, summaries: list[dict], deltas: list[dict], r
         "## สรุปราย arm",
         "",
         "| Arm | valid (infra) | ผ่าน (DB) | success rate [95% CI] | agent บอกสำเร็จ | false success | "
-        "median steps | median LLM calls | median tokens | cache share | median เวลา (s) | p95 เวลา (s) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "false failure | median steps | median LLM calls | median tokens | cache share | median เวลา (s) | "
+        "p95 เวลา (s) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
         ci = f" [{_fmt(s['ci_low'], 'pct')}–{_fmt(s['ci_high'], 'pct')}]" if s["valid_attempts"] else ""
         lines.append(
             f"| {s['arm']} | {s['valid_attempts']} ({s['infra_failures']}) | {s['passed']} | "
             f"{_fmt(s['success_rate'], 'pct')}{ci} | {s['claimed_success']} | {s['false_success']} | "
+            f"{s['false_failure']} | "
             f"{_fmt(s['median_steps'])} | {_fmt(s['median_llm_calls'])} | {_fmt(s['median_total_tokens'])} | "
             f"{_fmt(s['cache_share'], 'pct')} | {_fmt(s['median_duration_seconds'])} | "
             f"{_fmt(s['p95_duration_seconds'])} |"
@@ -325,7 +354,9 @@ def render_markdown(manifest: dict, summaries: list[dict], deltas: list[dict], r
         "",
         "## การตีความ",
         "",
-        "- success rate มาจาก DB หลัง reset fixture ไม่ใช่จากคำพูด agent; false success = agent บอกสำเร็จแต่ DB บอกไม่",
+        "- success rate มาจาก DB หลัง reset fixture ไม่ใช่จากคำพูด agent; false success = agent บอกสำเร็จแต่ DB บอกไม่,"
+        " false failure = agent บอกไม่สำเร็จแต่ DB บอกสำเร็จ",
+        "- infra = provider ล่ม (429/500/โมเดลถูกปฏิเสธ) ไม่ว่าจะเกิดที่ step ไหน — ไม่นับเป็น sample ของ arm ใด",
         "- benchmark นี้ผันผวน (commit เดียวกันเคยได้ 12/15 และ 15/15) — ส่วนต่าง success rate ที่ CI ยังซ้อนกัน"
         " ให้ถือว่าแยกไม่ออกจาก noise",
         f"- tokens = {'input + output (input ของ openai รวม cached แล้ว)' if manifest['provider'] in _INPUT_INCLUDES_CACHED else 'input + output + cache_read + cache_creation'}",

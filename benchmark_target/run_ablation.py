@@ -32,7 +32,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app.config import settings  # noqa: E402
 from backend.app.core import llm, orchestrator  # noqa: E402
-from backend.app.core.release_gate import _git_commit_short, task_failed_on_infrastructure  # noqa: E402
+from backend.app.core.release_gate import _git_commit_short  # noqa: E402
+from benchmark_target.analyze_ablation import is_provider_failure  # noqa: E402
 
 DEFAULT_OUT_DIR = REPO_ROOT / "data" / "ablation"
 
@@ -163,21 +164,18 @@ def _make_adapter(dry_run: bool, provider: str | None, max_steps: int, headless:
     return HermesAgentAdapter(provider=provider, max_steps=max_steps, headless=headless, run_id=run_id)
 
 
-def provider_failed_before_acting(agent_result) -> bool:
-    """run_task() ไม่ raise เมื่อ provider ล่ม — คืน success=False, steps=0 พร้อมข้อความ error
-    attempt_runner จึงเห็นเป็น FUNCTIONAL_FAIL ปกติ (smoke 2026-10-22: codex ตอบ 400 "gpt-5.5 not
-    supported" ทั้ง 5 arm ถูกนับเป็นความผิดของ agent) ใช้เกณฑ์เดียวกับ release gate:
-    ล้ม + steps == 0 + ข้อความตรง marker ฝั่ง provider/เครือข่าย"""
+def provider_failed(agent_result) -> bool:
+    """run_task() ไม่ raise เมื่อ provider ล่ม — คืน success=False พร้อมข้อความ error attempt_runner
+    จึงเห็นเป็น FUNCTIONAL_FAIL ปกติ (smoke 2026-10-22: codex ตอบ 400 "gpt-5.5 not supported" ทั้ง 5 arm
+    ถูกนับเป็นความผิดของ agent) เกณฑ์อยู่ที่ analyze_ablation.is_provider_failure ให้สองไฟล์ตรงกัน"""
     if agent_result is None:
         return False
-    return task_failed_on_infrastructure({
-        "success": agent_result.success, "steps": agent_result.steps, "message": agent_result.message,
-    })
+    return is_provider_failure(agent_result.success, agent_result.steps, agent_result.message)
 
 
 def attempt_record(*, session_id: str, arm: str, task: dict, rep: int, try_index: int,
                    telemetry_run_id: str | None, attempt, agent_result) -> dict:
-    provider_failure = provider_failed_before_acting(agent_result)
+    provider_failure = provider_failed(agent_result)
     return {
         "session_id": session_id,
         "arm": arm,
@@ -226,7 +224,11 @@ def _load_resume(results_path: Path) -> tuple[dict, set, dict]:
             row = json.loads(line)
             key = (row["arm"], row["task_id"], row["rep"])
             tries_made[key] = max(tries_made.get(key, 0), row["try"])
-            if row["valid"]:
+            # ไฟล์ที่เขียนก่อนเกณฑ์ปัจจุบันอาจบอก valid ทั้งที่ provider ล่มกลาง task — ช่องนั้นต้องรันใหม่
+            reclassified = row["claimed_success"] is not None and is_provider_failure(
+                row["claimed_success"], row["steps"], row["agent_message"],
+            )
+            if row["valid"] and not reclassified:
                 done.add(key)
     return manifest, done, tries_made
 
