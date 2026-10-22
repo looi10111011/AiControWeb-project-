@@ -54,6 +54,7 @@ def test_patched_helpers_accept_real_call_signatures():
     with run_ablation.arm_patches("BASELINE"):
         assert orchestrator._compact_stale_user_turns(messages, "goal") == (messages, 0)
         assert orchestrator._dedupe_stale_snapshots(messages, keep_last_full=1) is messages
+        assert orchestrator._dedupe_stale_gated(messages, keep_last_full=0) == (messages, 0)
         sections = orchestrator._resolve_prompt_sections(
             frozenset(), goal="g", plan_text=None, elements=[], allow_fill_secret=False,
         )
@@ -110,6 +111,61 @@ def test_summary_counts_false_success_and_skips_infra():
     assert delta["paired_tasks"] == 1
     assert delta["mean_success_rate_diff"] == -0.5
     assert delta["median_pct_change_total_tokens"] == pytest.approx((2010 - 1010) / 1010 * 100)
+
+
+_CODEX_400 = (
+    "Task stopped by an unexpected error at step 0: BadRequestError: Error code: 400 - "
+    "{'detail': \"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}"
+)
+
+
+def test_provider_error_before_first_step_is_infra():
+    from benchmark_target.runner.agent_adapters import AgentRunResult
+
+    assert run_ablation.provider_failed_before_acting(AgentRunResult(False, 0, _CODEX_400, {}))
+    assert not run_ablation.provider_failed_before_acting(AgentRunResult(False, 4, _CODEX_400, {}))
+    assert not run_ablation.provider_failed_before_acting(AgentRunResult(True, 0, "stub: no action taken", {}))
+    assert not run_ablation.provider_failed_before_acting(None)
+
+
+def test_session_stops_when_provider_keeps_failing(tmp_path, monkeypatch):
+    """smoke 2026-10-22: codex เลิกรับ gpt-5.5 — ทุกช่องต้องเป็น infra (ไม่โทษ agent) และหยุด session"""
+    from benchmark_target.runner.agent_adapters import AgentRunResult, StubAgentAdapter
+
+    monkeypatch.setattr(
+        run_ablation, "_make_adapter",
+        lambda *args: StubAgentAdapter([AgentRunResult(False, 0, _CODEX_400, {})]),
+    )
+    with pytest.raises(SystemExit, match="--resume"):
+        run_ablation.main([
+            "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,NO_VERIFY,BASELINE",
+            "--reps", "1", "--max-infra-retries", "0", "--max-consecutive-infra", "2",
+            "--out-dir", str(tmp_path),
+        ])
+    (results_path,) = tmp_path.glob("*.jsonl")
+    records = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert all(not r["valid"] and r["provider_failure"] for r in records)
+
+
+def test_resume_refuses_when_model_changed(tmp_path, monkeypatch):
+    results_path = tmp_path / "abl-x.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({
+        "session_id": "abl-x", "dry_run": False, "provider": "openai", "model": "retired-model",
+    }), encoding="utf-8")
+    monkeypatch.setattr(settings, "openai_model", "new-model")
+    with pytest.raises(SystemExit, match="เริ่ม session ใหม่"):
+        run_ablation.main(["--resume", str(results_path)])
+
+
+def test_analysis_reclassifies_records_written_before_provider_failure_field(tmp_path):
+    results_path = tmp_path / "old.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({"session_id": "old"}), encoding="utf-8")
+    old = {**_record("FULL", "T1", 1, passed=False, claimed=False, steps=0), "agent_message": _CODEX_400}
+    results_path.write_text(json.dumps(old) + "\n", encoding="utf-8")
+    _, (record,) = analyze_ablation.load_session(results_path)
+    assert record["provider_failure"] is True
+    assert record["valid"] is False
 
 
 def test_dry_run_end_to_end(tmp_path):

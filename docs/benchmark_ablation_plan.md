@@ -33,7 +33,7 @@
 | Arm | ปิดอะไร | patch |
 |---|---|---|
 | **FULL** | ไม่ปิด (ค่าปัจจุบัน) | — |
-| **NO_CONTEXT** | การบีบ context ทั้งกลุ่ม W_token_trim / W_token_cut | `orchestrator._COMPACT_AFTER_STEPS = 10**9`; `orchestrator._compact_stale_user_turns = lambda m, g, **k: (m, 0)`; `orchestrator._dedupe_stale_snapshots = lambda m, **k: m`; `settings.snapshot_max_elements = 10**6`; `settings.read_page_data_max_rows = 10**6` |
+| **NO_CONTEXT** | การบีบ context ทั้งกลุ่ม W_token_trim / W_token_cut | `orchestrator._COMPACT_AFTER_STEPS = 10**9`; `orchestrator._compact_stale_user_turns = lambda m, g, **k: (m, 0)`; `orchestrator._dedupe_stale_snapshots = lambda m, **k: m`; `orchestrator._dedupe_stale_gated = lambda m, **k: (m, 0)`; `settings.snapshot_max_elements = 10**6`; `settings.read_page_data_max_rows = 10**6` |
 | **NO_PROMPT_SECTIONS** | การส่ง system prompt แบบเลือกบล็อก (W_prompt_sections) | `orchestrator._resolve_prompt_sections = lambda prev, **k: llm.ALL_PROMPT_SECTIONS` |
 | **NO_VERIFY** | การตรวจหลักฐานก่อนยอมรับ `finish_task` (W5[A], ACC-3, W63[7.2] ฯลฯ) | ตั้ง `_MAX_PREMATURE_TRUE_FINISH_RETRIES`, `_MAX_PREMATURE_FALSE_FINISH_RETRIES`, `_MAX_PREMATURE_ALL_FAILED_RETRIES`, `_MAX_PREMATURE_VALIDATION_ERROR_RETRIES`, `_MAX_PREMATURE_DELETION_INCOMPLETE_RETRIES`, `_MAX_DELETE_ALL_UNVERIFIED_RETRIES`, `_MAX_PREMATURE_TABLE_VERIFY_RETRIES`, `_MAX_COUNT_ANSWER_MISMATCH_RETRIES` = 0 และแทน `orchestrator._scan_created_item_in_table` (เป็น async) ด้วย coroutine ที่คืน `True` เสมอ |
 | **BASELINE** | ปิดทั้ง 3 กลุ่มข้างบน = "ก่อนปรับปรุง" | รวม patch ของ 3 arm |

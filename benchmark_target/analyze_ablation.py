@@ -54,6 +54,15 @@ def load_session(results_path: Path) -> tuple[dict, list[dict]]:
     records = [
         json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
+    for record in records:
+        if "provider_failure" not in record:
+            # ไฟล์ก่อนมี field นี้ (smoke 2026-10-22) นับ provider ล่มที่ step 0 เป็น valid — จัดใหม่ด้วยเกณฑ์เดียวกัน
+            from backend.app.core.release_gate import task_failed_on_infrastructure
+
+            record["provider_failure"] = record["claimed_success"] is not None and task_failed_on_infrastructure({
+                "success": record["claimed_success"], "steps": record["steps"], "message": record["agent_message"],
+            })
+            record["valid"] = record["valid"] and not record["provider_failure"]
     return manifest, records
 
 

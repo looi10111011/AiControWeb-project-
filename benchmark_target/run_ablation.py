@@ -32,7 +32,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app.config import settings  # noqa: E402
 from backend.app.core import llm, orchestrator  # noqa: E402
-from backend.app.core.release_gate import _git_commit_short  # noqa: E402
+from backend.app.core.release_gate import _git_commit_short, task_failed_on_infrastructure  # noqa: E402
 
 DEFAULT_OUT_DIR = REPO_ROOT / "data" / "ablation"
 
@@ -86,6 +86,8 @@ _CONTEXT_PATCHES = [
     (orchestrator, "_COMPACT_AFTER_STEPS", _UNLIMITED),
     (orchestrator, "_compact_stale_user_turns", lambda messages, goal, **_: (messages, 0)),
     (orchestrator, "_dedupe_stale_snapshots", lambda messages, **_: messages),
+    # W_token_cut W7 — smoke 2026-10-22 พบว่าตัวนี้ยังทำงานใน NO_CONTEXT (gated_deref_events=19) จนกว่าจะ patch
+    (orchestrator, "_dedupe_stale_gated", lambda messages, **_: (messages, 0)),
     (settings, "snapshot_max_elements", _UNLIMITED),
     (settings, "read_page_data_max_rows", _UNLIMITED),
 ]
@@ -161,8 +163,21 @@ def _make_adapter(dry_run: bool, provider: str | None, max_steps: int, headless:
     return HermesAgentAdapter(provider=provider, max_steps=max_steps, headless=headless, run_id=run_id)
 
 
+def provider_failed_before_acting(agent_result) -> bool:
+    """run_task() ไม่ raise เมื่อ provider ล่ม — คืน success=False, steps=0 พร้อมข้อความ error
+    attempt_runner จึงเห็นเป็น FUNCTIONAL_FAIL ปกติ (smoke 2026-10-22: codex ตอบ 400 "gpt-5.5 not
+    supported" ทั้ง 5 arm ถูกนับเป็นความผิดของ agent) ใช้เกณฑ์เดียวกับ release gate:
+    ล้ม + steps == 0 + ข้อความตรง marker ฝั่ง provider/เครือข่าย"""
+    if agent_result is None:
+        return False
+    return task_failed_on_infrastructure({
+        "success": agent_result.success, "steps": agent_result.steps, "message": agent_result.message,
+    })
+
+
 def attempt_record(*, session_id: str, arm: str, task: dict, rep: int, try_index: int,
                    telemetry_run_id: str | None, attempt, agent_result) -> dict:
+    provider_failure = provider_failed_before_acting(agent_result)
     return {
         "session_id": session_id,
         "arm": arm,
@@ -173,7 +188,8 @@ def attempt_record(*, session_id: str, arm: str, task: dict, rep: int, try_index
         "try": try_index,
         # HermesAgentAdapter เขียน telemetry ด้วย task_id = f"{run_id}-{task_id}" — เก็บไว้ join ตอนวิเคราะห์
         "telemetry_task_id": f"{telemetry_run_id}-{task['task_id']}" if telemetry_run_id else None,
-        "valid": not attempt.is_infra_failure(),
+        "valid": not attempt.is_infra_failure() and not provider_failure,
+        "provider_failure": provider_failure,
         "passed": bool(attempt.passed),
         # None = agent ไม่ได้เริ่ม (fixture/precondition/infra ล้มก่อน)
         "claimed_success": bool(agent_result.success) if agent_result is not None else None,
@@ -231,6 +247,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--max-infra-retries", type=int, default=2,
                         help="รันซ้ำช่องที่ล้มเพราะ infra ได้อีกกี่ครั้งก่อนข้าม")
+    parser.add_argument("--max-consecutive-infra", type=int, default=5,
+                        help="หยุด session เมื่อ infra ล้มติดกันครบจำนวนนี้ (รันต่อด้วย --resume)")
     parser.add_argument("--delay", type=float, default=settings.eval_task_delay_seconds,
                         help="วินาทีที่เว้นระหว่าง attempt")
     parser.add_argument("--headed", action="store_true")
@@ -247,6 +265,13 @@ def main(argv: list[str] | None = None) -> Path:
     if args.resume:
         results_path = Path(args.resume)
         manifest, done, tries_made = _load_resume(results_path)
+        current_model = getattr(settings, f"{manifest['provider']}_model", "unknown")
+        if not manifest["dry_run"] and current_model != manifest["model"]:
+            # adapter อ่านโมเดลจาก settings ตอนรัน ไม่ใช่จาก manifest — resume หลังเปลี่ยนโมเดลจะปนสองโมเดล
+            # ใน session เดียวโดยที่ manifest ยังบอกโมเดลเดิม
+            raise SystemExit(
+                f"โมเดลเปลี่ยนจาก {manifest['model']!r} เป็น {current_model!r} — เริ่ม session ใหม่แทน --resume"
+            )
         print(f"resume {manifest['session_id']}: ใช้ arms/tasks/reps/seed จาก manifest, เสร็จแล้ว {len(done)} ช่อง")
     else:
         arms = _parse_list(args.arms, ARM_NAMES)
@@ -306,6 +331,7 @@ def main(argv: list[str] | None = None) -> Path:
     print(f"session {manifest['session_id']} — {len(schedule)} ช่อง "
           f"({len(manifest['tasks'])} task x {len(manifest['arms'])} arm x {manifest['reps']} rep) -> {results_path}")
     attempts_made = 0
+    consecutive_infra = 0
     # SSRF guard บล็อก localhost เป็นค่าเริ่มต้น — เปิดเฉพาะ context นี้ เหมือน hrm_local_eval._run_sync()
     with allow_internal_navigation_here(), TestClient(control_app) as control_client:
         for position, (rep, task_id, arm) in enumerate(schedule, 1):
@@ -332,9 +358,20 @@ def main(argv: list[str] | None = None) -> Path:
                 verdict = "PASS" if record["passed"] else ("INFRA" if not record["valid"] else "FAIL")
                 print(f"  [{position}/{len(schedule)}] r{rep} {task_id:36s} {arm:19s} {verdict:5s} "
                       f"claimed={record['claimed_success']} steps={record['steps']} "
-                      f"{record['duration_seconds']:.1f}s {'' if record['valid'] else record['detail'][:80]}")
+                      f"{record['duration_seconds']:.1f}s "
+                      f"{'' if record['valid'] else (record['agent_message'] if record['provider_failure'] else record['detail'])[:100]}")
                 if record["valid"]:
+                    consecutive_infra = 0
                     break
+                # provider ล่มทั้งรัน (โมเดลถูกเลิกรับ/โควตาหมด) — ไล่ทุกช่องต่อก็ได้แต่แถว infra ไม่ต้องเผาเวลา
+                # แก้ต้นเหตุแล้ว --resume ช่องที่เหลือ (เทียบ run_is_invalid ของ release gate)
+                consecutive_infra += 1
+                if consecutive_infra >= args.max_consecutive_infra:
+                    raise SystemExit(
+                        f"infra ล้มติดกัน {consecutive_infra} ครั้ง — หยุด session ไว้ก่อน ล่าสุด: "
+                        f"{(record['agent_message'] or record['detail'])[:200]}\n"
+                        f"แก้แล้วรันต่อ: python benchmark_target/run_ablation.py --resume {results_path}"
+                    )
 
     print(f"\nผลอยู่ที่ {results_path}\nวิเคราะห์: python benchmark_target/analyze_ablation.py {results_path}")
     return results_path
