@@ -97,20 +97,43 @@ benchmark นี้ผันผวน (commit เดียวกันเคย�
 python benchmark_target/run_ablation.py --dry-run --reps 1                      # stub, ไม่ใช้ LLM
 python benchmark_target/run_ablation.py --provider openai --arms FULL,BASELINE  # รันจริง
 python benchmark_target/run_ablation.py --resume data/ablation/<session>.jsonl  # รันต่อช่องที่ขาด
-python benchmark_target/analyze_ablation.py data/ablation/<session>.jsonl
+python benchmark_target/analyze_ablation.py data/ablation/<session>.jsonl [<session2>.jsonl ...]
 ```
 
-dry-run 10 task × 5 arm (2026-10-22): ทั้ง 50 ช่องได้ FUNCTIONAL_FAIL — ไม่มี task ไหนผ่านได้โดย agent ไม่ทำอะไร
+- dry-run 10 task × 5 arm (2026-10-22): ทั้ง 50 ช่องได้ FUNCTIONAL_FAIL — ไม่มี task ไหนผ่านได้โดย agent ไม่ทำอะไร
+- `run_ablation.py` — arm เป็น context manager ของ patch, schedule สลับลำดับ, เขียนผลทีละ attempt,
+  `--resume`, `--first-rep`, หยุดเมื่อ infra ล้มติดกัน 5 ครั้ง
+- `analyze_ablation.py` — ตาราง Markdown + CSV (ไม่มีกราฟ PNG เพราะ venv ไม่มี matplotlib — ทำกราฟจาก CSV ใน Excel)
+  รวมหลาย session ได้ถ้า provider/model/max_steps ตรงกันและเลข rep ไม่ชน และเตือนถ้าโค้ด agent/target
+  ต่างกันระหว่าง commit ของแต่ละ session
+- infra = provider ล่ม (429/500/โมเดลถูกปฏิเสธ) **ที่ step ไหนก็ได้** — ต่างจาก release gate ที่นับแค่ step 0
+  เพราะ ablation เทียบ arm กัน ถ้านับผลจริงจะลงโทษ arm ที่บังเอิญรันตอนโควตาใกล้หมด
 
-1. `benchmark_target/run_ablation.py` (~150 บรรทัด) — นิยาม arm เป็น context manager ของ patch,
-   วนแบบสลับลำดับ, เรียก `run_attempt()` + `HermesAgentAdapter(run_id=f"abl-{arm}-{ts}")` ใน
-   `allow_internal_navigation_here()` + `TestClient(control_app)` แบบเดียวกับ `hrm_local_eval._run_sync()`,
-   ใส่ `--arms`, `--tasks`, `--reps`, `--dry-run` (ใช้ `StubAgentAdapter`)
-2. `benchmark_target/analyze_ablation.py` (~100 บรรทัด) — อ่านผล + join token_usage/step_trace ด้วย `run_id`,
-   ออกตาราง Markdown/CSV และกราฟ PNG สำหรับใส่เล่ม
-3. เทสต์สั้น ๆ: arm แต่ละตัว patch ค่าตามที่ประกาศ และคืนค่าเดิมหลังออกจาก context
+## 6. สิ่งที่เกิดขึ้นจริง (2026-10-22) และแผนใหม่
 
-## 6. ลำดับการทำ (เหลือถึง 31 ต.ค.)
+- smoke openai: Codex endpoint ตอบ 400 "gpt-5.5 is not supported" สองรอบติด — ยังไม่ได้โพรบชื่อโมเดลใหม่
+- smoke gemini 1 task × 5 arm: ผ่านทุก arm, telemetry ยืนยันว่า patch แต่ละ arm มีผลจริง และพบว่า NO_CONTEXT
+  ยังไม่ได้ปิด `_dedupe_stale_gated` (แก้แล้ว)
+- rep 1 (`abl-20261022-144846`, 5 arm): ได้ 33/50 ช่องก่อนโควตา `GenerateRequestsPerDayPerProjectPerModel-FreeTier`
+  (500 request/วัน, ราว 15 request ต่อ attempt) หมด — หลังจัดประเภทใหม่ valid 31 ช่อง และมี 2 ช่องต้องรันซ้ำ
+  (provider ล่มกลาง task) ยังไม่ได้แตะ TIME-CREATE-SUBMIT-TIMESHEET, TIME-APPROVE-BY-SUPERVISOR,
+  RECRUITMENT-FULL-HIRE-WORKFLOW-02
+
+โควตาไม่พอรัน 5 arm × 3 rep ทันวันวิเคราะห์ จึงลดขอบเขต: rep 1 ครบ 5 arm (ใช้ทำ ablation), rep 2–3 รันแค่
+FULL + BASELINE (ใช้ทำตารางก่อน/หลัง ซึ่งเป็นตารางหลักของเล่ม) แล้ววิเคราะห์รวมกัน
+
+| วัน (หลังโควตารีเซ็ต ~14:00 เวลาไทย) | คำสั่ง | ช่อง ≈ request |
+|---|---|---|
+| 23 ต.ค. | `run_ablation.py --resume data/ablation/abl-20261022-144846.jsonl` | 19 ≈ 285 |
+| 23 ต.ค. (โควตาที่เหลือ) | `run_ablation.py --provider gemini --arms FULL,BASELINE --first-rep 2 --reps 2 --seed 1` | ~14 จาก 40 |
+| 24 ต.ค. | `run_ablation.py --resume data/ablation/<session rep 2–3>.jsonl` | ~26 ≈ 390 |
+| 25 ต.ค. | `analyze_ablation.py data/ablation/abl-20261022-144846.jsonl data/ablation/<session rep 2–3>.jsonl` | — |
+| 26–31 ต.ค. | เขียน 2.3.4 ใหม่ + บทสรุป, เผื่อ rerun | — |
+
+ผลที่ได้: FULL และ BASELINE มี 3 sample ต่อ task, arm อื่นมี 1 — ตาราง ablation ใช้ดูทิศทางของ token/เวลา
+ส่วน success rate ของ arm ที่มี 1 sample ต่อ task ไม่พอสรุป
+
+## 6.1 แผนเดิม (ก่อนรู้ขนาดโควตา)
 
 | วัน | งาน | LLM |
 |---|---|---|

@@ -72,6 +72,12 @@ def test_schedule_is_balanced_and_deterministic():
         assert set(cells.values()) == {1}
 
 
+def test_schedule_can_continue_rep_numbering():
+    schedule = run_ablation.build_schedule(["A"], ["FULL", "BASELINE"], reps=2, seed=1, first_rep=2)
+    assert sorted({rep for rep, _, _ in schedule}) == [2, 3]
+    assert len(schedule) == 4
+
+
 def test_unsupported_verification_type_is_rejected():
     with pytest.raises(SystemExit, match="INCONCLUSIVE"):
         run_ablation.load_selected_tasks(["AUTH-LOGIN-INVALID-PASSWORD"])
@@ -191,6 +197,79 @@ def test_analysis_reclassifies_records_written_before_provider_failure_field(tmp
     _, (record,) = analyze_ablation.load_session(results_path)
     assert record["provider_failure"] is True
     assert record["valid"] is False
+
+
+def _write_session(directory, session_id, records, **manifest_overrides):
+    path = directory / f"{session_id}.jsonl"
+    manifest = {
+        "session_id": session_id, "git_commit": "abc1234", "uncommitted_files": [], "dry_run": False,
+        "provider": "gemini", "model": "gemini-flash-lite-latest", "arms": ["FULL", "BASELINE"],
+        "reference_arm": "FULL", "tasks": ["T1"], "reps": 1, "first_rep": 1, "seed": 0, "max_steps": 20,
+        **manifest_overrides,
+    }
+    path.with_suffix(".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    path.write_text("".join(json.dumps({**r, "agent_message": "done"}) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def test_sessions_started_in_same_second_get_distinct_ids(tmp_path, monkeypatch):
+    class _FrozenNow:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime as real
+
+            return real(2026, 10, 22, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(run_ablation, "datetime", _FrozenNow)
+    args = ["--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL", "--reps", "1",
+            "--out-dir", str(tmp_path)]
+    first, second = run_ablation.main(args), run_ablation.main(args)
+    assert first != second
+    assert len(first.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(second.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_combining_sessions_rejects_rep_clash(tmp_path):
+    first = _write_session(tmp_path, "abl-a", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    second = _write_session(tmp_path, "abl-b", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    with pytest.raises(SystemExit, match="--first-rep"):
+        analyze_ablation.load_sessions([first, second])
+
+
+def test_combining_sessions_rejects_different_model(tmp_path):
+    first = _write_session(tmp_path, "abl-a", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    second = _write_session(
+        tmp_path, "abl-b", [_record("FULL", "T1", 2, passed=True, claimed=True)], model="other-model",
+    )
+    with pytest.raises(SystemExit, match="model"):
+        analyze_ablation.load_sessions([first, second])
+
+
+def test_dry_run_combined_sessions(tmp_path):
+    """แผนหลังโควตาหมด: rep 1 รัน 3 arm, rep 2-3 รันแค่ FULL+BASELINE เป็นอีก session แล้ววิเคราะห์รวมกัน"""
+    first = run_ablation.main([
+        "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,NO_VERIFY,BASELINE",
+        "--reps", "1", "--out-dir", str(tmp_path),
+    ])
+    second = run_ablation.main([
+        "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,BASELINE",
+        "--first-rep", "2", "--reps", "2", "--seed", "1", "--out-dir", str(tmp_path),
+    ])
+    assert second != first
+    result = analyze_ablation.analyze(
+        [first, second], tmp_path / "no_usage.jsonl", tmp_path / "no_trace.jsonl",
+    )
+    valid = {s["arm"]: s["valid_attempts"] for s in result["summaries"]}
+    assert valid == {"FULL": 3, "NO_VERIFY": 1, "BASELINE": 3}
+    assert result["report"].name.endswith("_combined_report.md")
+    report = result["report"].read_text(encoding="utf-8")
+    assert "rep 2–3" in report and "rep 1," in report
+    # commit เดียวกันทั้งสอง session — ห้ามมีคำเตือนเรื่องเทียบโค้ด (คำเตือนไฟล์ค้างขึ้นกับ working tree ไม่เช็ค)
+    code_warnings = ("เทียบโค้ดระหว่าง commit", "โค้ด agent/target ต่างกัน")
+    assert not any(w in report for w in code_warnings)
+
+    single = analyze_ablation.analyze(first, tmp_path / "no_usage.jsonl", tmp_path / "no_trace.jsonl")
+    assert not any(w in single["report"].read_text(encoding="utf-8") for w in code_warnings)
 
 
 def test_dry_run_end_to_end(tmp_path):

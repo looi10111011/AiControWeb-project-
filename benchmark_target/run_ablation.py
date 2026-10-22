@@ -11,9 +11,10 @@ orchestrator.py ทุกจุดที่ปิดเป็นชื่อร�
 
 Usage:
     python benchmark_target/run_ablation.py --dry-run                 # stub agent ไม่ใช้ LLM/browser
-    python benchmark_target/run_ablation.py --arms FULL,BASELINE --reps 3
+    python benchmark_target/run_ablation.py --provider gemini --arms FULL,BASELINE --reps 3
+    python benchmark_target/run_ablation.py --provider gemini --arms FULL,BASELINE --first-rep 2 --reps 2 --seed 1
     python benchmark_target/run_ablation.py --resume data/ablation/<session>.jsonl
-    python benchmark_target/analyze_ablation.py data/ablation/<session>.jsonl
+    python benchmark_target/analyze_ablation.py data/ablation/<session>.jsonl [<session2>.jsonl ...]
 """
 
 import argparse
@@ -116,10 +117,11 @@ def arm_patches(arm: str):
         yield
 
 
-def build_schedule(task_ids: list[str], arms: list[str], reps: int, seed: int) -> list[tuple[int, str, str]]:
+def build_schedule(task_ids: list[str], arms: list[str], reps: int, seed: int,
+                   first_rep: int = 1) -> list[tuple[int, str, str]]:
     rng = random.Random(seed)
     cells = []
-    for rep in range(1, reps + 1):
+    for rep in range(first_rep, first_rep + reps):
         for task_id in task_ids:
             order = list(arms)
             rng.shuffle(order)
@@ -244,7 +246,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--arms", default=None, help=f"comma list จาก {','.join(ARM_NAMES)} (default ทั้งหมด)")
     parser.add_argument("--tasks", default=None, help="comma list ของ task_id (default 10 ตัวตามแผน)")
     parser.add_argument("--reps", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=0, help="seed ของการสลับลำดับ arm")
+    # โควตา Gemini free tier 500 request/วัน ไม่พอรัน 5 arm x 3 rep ทัน — rep 2-3 แยกเป็น session ใหม่ที่รัน
+    # แค่บาง arm แล้วให้ analyze_ablation รวมหลาย session ต้องเริ่มเลข rep ต่อจากเดิม ไม่งั้นชนกัน
+    parser.add_argument("--first-rep", type=int, default=1, help="เลข rep แรกของ session นี้ (ต่อจาก session ก่อน)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="seed ของการสลับลำดับ arm — session ใหม่ควรใช้ค่าต่างจากเดิม")
     parser.add_argument("--provider", default=None, help="openai/anthropic/gemini (default = settings.llm_provider)")
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--max-infra-retries", type=int, default=2,
@@ -285,7 +291,14 @@ def main(argv: list[str] | None = None) -> Path:
         if not args.dry_run and not args.provider:
             raise SystemExit(f"รันจริงต้องใส่ --provider (ค่าใน settings ตอนนี้คือ {settings.llm_provider!r})")
         provider = args.provider or settings.llm_provider
-        session_id = f"abl-{'dry-' if args.dry_run else ''}{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base_id = f"abl-{'dry-' if args.dry_run else ''}{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        session_id, suffix = base_id, 1
+        # สอง session ในวินาทีเดียวกันห้ามเขียนทับ manifest/ต่อท้ายผลของกันและกัน
+        while (out_dir / f"{session_id}.manifest.json").exists():
+            suffix += 1
+            session_id = f"{base_id}-{suffix}"
         manifest = {
             "session_id": session_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -298,12 +311,11 @@ def main(argv: list[str] | None = None) -> Path:
             "reference_arm": REFERENCE_ARM if REFERENCE_ARM in arms else arms[0],
             "tasks": _parse_list(args.tasks, DEFAULT_TASK_IDS),
             "reps": args.reps,
+            "first_rep": args.first_rep,
             "seed": args.seed,
             "max_steps": args.max_steps,
             "step_pacing_delay_seconds": settings.step_pacing_delay_seconds,
         }
-        out_dir = Path(args.out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
         results_path = out_dir / f"{session_id}.jsonl"
         results_path.with_suffix(".manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8",
@@ -318,7 +330,11 @@ def main(argv: list[str] | None = None) -> Path:
         )
 
     tasks_by_id = load_selected_tasks(manifest["tasks"])
-    schedule = build_schedule(manifest["tasks"], manifest["arms"], manifest["reps"], manifest["seed"])
+    schedule = build_schedule(
+        manifest["tasks"], manifest["arms"], manifest["reps"], manifest["seed"],
+        # manifest ก่อนมี first_rep (rep 1 ของ 2026-10-22) เริ่มที่ 1 เสมอ
+        first_rep=manifest.get("first_rep", 1),
+    )
 
     from fastapi.testclient import TestClient
 

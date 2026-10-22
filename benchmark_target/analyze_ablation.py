@@ -85,7 +85,73 @@ def load_session(results_path: Path) -> tuple[dict, list[dict]]:
             and is_provider_failure(record["claimed_success"], record["steps"], record["agent_message"])
         )
         record["valid"] = record["valid"] and not record["provider_failure"]
+        record.setdefault("session_id", manifest["session_id"])
     return manifest, records
+
+
+# ตัวรัน/ตัววิเคราะห์ (run_ablation.py, analyze_ablation.py) อยู่ใน benchmark_target/ เหมือนกัน แต่ไม่ใช่โค้ดที่ถูกวัด
+_MEASURED_CODE_PATHS = (
+    "backend/", "benchmark_target/app/", "benchmark_target/catalog/", "benchmark_target/control/",
+    "benchmark_target/runner/",
+)
+_MUST_MATCH_ACROSS_SESSIONS = ("provider", "model", "max_steps", "dry_run")
+
+
+def _measured_code_changes(commits: list[str]) -> list[str] | None:
+    """ไฟล์ของ agent/target ที่ต่างกันระหว่าง commit ของแต่ละ session — None = ถาม git ไม่ได้"""
+    import subprocess
+
+    changed: set[str] = set()
+    for other in commits[1:]:
+        try:
+            out = subprocess.run(
+                ["git", "diff", "--name-only", commits[0], other, "--", *_MEASURED_CODE_PATHS],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=30, check=True,
+            ).stdout
+        except Exception:
+            return None
+        changed.update(line for line in out.splitlines() if line.strip())
+    return sorted(changed)
+
+
+def load_sessions(results_paths: list[Path]) -> tuple[dict, list[dict]]:
+    """W_ablation: รวมหลาย session เป็นการทดลองเดียว — โควตา Gemini free tier (500 request/วัน) ทำให้
+    rep 1 รัน 5 arm แต่ rep 2-3 รันแค่ FULL+BASELINE เป็นอีก session (run_ablation.py --first-rep 2)
+    รวมได้เฉพาะ provider/model/max_steps เดียวกัน และช่อง (arm, task, rep) ห้ามซ้ำข้าม session"""
+    loaded = [load_session(path) for path in results_paths]
+    if len(loaded) == 1:
+        return loaded[0]
+    manifests = [manifest for manifest, _ in loaded]
+    records = [record for _, session_records in loaded for record in session_records]
+    for key in _MUST_MATCH_ACROSS_SESSIONS:
+        values = {str(m.get(key)) for m in manifests}
+        if len(values) > 1:
+            raise SystemExit(f"รวม session ไม่ได้: {key} ไม่ตรงกัน {sorted(values)}")
+    owner: dict[tuple[str, str, int], str] = {}
+    clashes = []
+    for record in records:
+        if not record["valid"]:
+            continue
+        key = (record["arm"], record["task_id"], record["rep"])
+        if owner.setdefault(key, record["session_id"]) != record["session_id"]:
+            clashes.append(key)
+    if clashes:
+        raise SystemExit(f"ช่องเดียวกันอยู่หลาย session (เลข rep ชนกัน — ใช้ --first-rep): {clashes[:5]}")
+
+    arms = list(dict.fromkeys(arm for m in manifests for arm in m["arms"]))
+    commits = list(dict.fromkeys(m["git_commit"] for m in manifests))
+    combined = {
+        **{key: manifests[0][key] for key in _MUST_MATCH_ACROSS_SESSIONS},
+        "session_id": " + ".join(m["session_id"] for m in manifests),
+        "sessions": manifests,
+        "git_commit": ", ".join(commits),
+        "measured_code_changes": _measured_code_changes(commits) if len(commits) > 1 else [],
+        "uncommitted_files": sorted({f for m in manifests for f in m.get("uncommitted_files", [])}),
+        "arms": arms,
+        "tasks": list(dict.fromkeys(task for m in manifests for task in m["tasks"])),
+        "reference_arm": "FULL" if "FULL" in arms else arms[0],
+    }
+    return combined, records
 
 
 def load_telemetry(telemetry_task_ids: set[str], token_usage_path: Path, step_trace_path: Path):
@@ -145,6 +211,7 @@ def enrich(records: list[dict], provider: str, usage: dict, steps: dict) -> list
             for phase in _TIMING_PHASES:
                 timing[phase] += float((step.get("timing") or {}).get(phase) or 0.0)
         rows.append({
+            "session_id": record.get("session_id"),
             "arm": record["arm"],
             "task_id": record["task_id"],
             "rep": record["rep"],
@@ -250,6 +317,7 @@ def token_curve(records: list[dict], steps: dict, provider: str) -> list[dict]:
         for step in steps.get(telemetry_id, []):
             tokens = step.get("tokens") or {}
             out.append({
+                "session_id": record.get("session_id"),
                 "arm": record["arm"],
                 "task_id": record["task_id"],
                 "rep": record["rep"],
@@ -281,11 +349,25 @@ def render_markdown(manifest: dict, summaries: list[dict], deltas: list[dict], r
     lines = [
         f"# ผล ablation — {manifest['session_id']}",
         "",
-        f"- commit `{manifest['git_commit']}`, provider `{manifest['provider']}` / model `{manifest['model']}`"
-        f"{' — **DRY RUN (stub agent)**' if manifest['dry_run'] else ''}",
-        f"- {len(manifest['tasks'])} task × {len(manifest['arms'])} arm × {manifest['reps']} rep, "
-        f"max_steps={manifest['max_steps']}, seed={manifest['seed']}",
+        f"- commit `{manifest['git_commit']}`, provider `{manifest['provider']}` / model `{manifest['model']}`, "
+        f"max_steps={manifest['max_steps']}{' — **DRY RUN (stub agent)**' if manifest['dry_run'] else ''}",
     ]
+    for session in manifest.get("sessions") or [manifest]:
+        first_rep = session.get("first_rep", 1)
+        last_rep = first_rep + session["reps"] - 1
+        lines.append(
+            f"- session `{session['session_id']}` @ `{session['git_commit']}`: {len(session['tasks'])} task × "
+            f"arm {', '.join(session['arms'])} × rep {first_rep}{f'–{last_rep}' if last_rep != first_rep else ''}"
+            f", seed={session['seed']}"
+        )
+    # session เดียวไม่มี key นี้ = ไม่มีอะไรต้องเทียบ; None = รวมหลาย session แต่ถาม git ไม่ได้
+    changes = manifest.get("measured_code_changes", [])
+    if changes is None:
+        lines.append("- ⚠️ เทียบโค้ดระหว่าง commit ของแต่ละ session ไม่ได้ (git ไม่ตอบ)")
+    elif changes:
+        lines.append(f"- ⚠️ โค้ด agent/target ต่างกันระหว่าง session: {', '.join(changes)}")
+    elif len(manifest.get("sessions") or []) > 1 and "," in manifest["git_commit"]:
+        lines.append("- commit ต่างกันแต่โค้ด agent/target เหมือนกัน (เปลี่ยนแค่ตัวรัน/ตัววิเคราะห์)")
     if manifest.get("uncommitted_files"):
         lines.append(f"- ⚠️ มีไฟล์ยังไม่ commit ตอนรัน: {', '.join(manifest['uncommitted_files'])}")
     if rows and not any(r["has_telemetry"] for r in rows):
@@ -359,6 +441,7 @@ def render_markdown(manifest: dict, summaries: list[dict], deltas: list[dict], r
         "- infra = provider ล่ม (429/500/โมเดลถูกปฏิเสธ) ไม่ว่าจะเกิดที่ step ไหน — ไม่นับเป็น sample ของ arm ใด",
         "- benchmark นี้ผันผวน (commit เดียวกันเคยได้ 12/15 และ 15/15) — ส่วนต่าง success rate ที่ CI ยังซ้อนกัน"
         " ให้ถือว่าแยกไม่ออกจาก noise",
+        "- arm ที่มีจำนวน valid น้อยกว่า (รันแค่บาง rep) มี CI กว้างกว่า — ดูคอลัมน์ valid ก่อนเทียบ",
         f"- tokens = {'input + output (input ของ openai รวม cached แล้ว)' if manifest['provider'] in _INPUT_INCLUDES_CACHED else 'input + output + cache_read + cache_creation'}",
     ]
     return "\n".join(lines) + "\n"
@@ -373,9 +456,12 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def analyze(results_path: Path, token_usage_path: Path | None = None, step_trace_path: Path | None = None,
-            curve_task: str | None = None) -> dict:
-    manifest, records = load_session(results_path)
+def analyze(results_paths: Path | list[Path], token_usage_path: Path | None = None,
+            step_trace_path: Path | None = None, curve_task: str | None = None,
+            out_stem: Path | None = None) -> dict:
+    if isinstance(results_paths, Path):
+        results_paths = [results_paths]
+    manifest, records = load_sessions(results_paths)
     provider = manifest["provider"]
     telemetry_ids = {r["telemetry_task_id"] for r in records if r.get("telemetry_task_id")}
     usage, steps = load_telemetry(
@@ -395,7 +481,12 @@ def analyze(results_path: Path, token_usage_path: Path | None = None, step_trace
     if curve_task:
         curve = [c for c in curve if c["task_id"] == curve_task]
 
-    stem = results_path.with_suffix("")
+    if out_stem is not None:
+        stem = out_stem
+    elif len(results_paths) == 1:
+        stem = results_paths[0].with_suffix("")
+    else:
+        stem = Path(f"{results_paths[0].with_suffix('')}_combined")
     report_path = Path(f"{stem}_report.md")
     report_path.write_text(render_markdown(manifest, summaries, deltas, rows, failure_counts), encoding="utf-8")
     _write_csv(Path(f"{stem}_arms.csv"), summaries)
@@ -411,16 +502,19 @@ def analyze(results_path: Path, token_usage_path: Path | None = None, step_trace
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="สรุปผล run_ablation.py")
-    parser.add_argument("results", help="path ของ <session>.jsonl")
+    parser.add_argument("results", nargs="+", help="path ของ <session>.jsonl (หลายไฟล์ = รวมเป็นการทดลองเดียว)")
     parser.add_argument("--curve-task", default=None, help="กรองกราฟ token ต่อ step ให้เหลือ task เดียว")
     parser.add_argument("--token-usage", default=None, help=f"default {settings.token_usage_log_path}")
     parser.add_argument("--step-trace", default=None, help=f"default {settings.step_trace_log_path}")
+    parser.add_argument("--out", default=None,
+                        help="prefix ของไฟล์ผล (default: <ไฟล์แรก> หรือ <ไฟล์แรก>_combined เมื่อหลายไฟล์)")
     args = parser.parse_args(argv)
     result = analyze(
-        Path(args.results),
+        [Path(path) for path in args.results],
         Path(args.token_usage) if args.token_usage else None,
         Path(args.step_trace) if args.step_trace else None,
         args.curve_task,
+        Path(args.out) if args.out else None,
     )
     print(result["report"].read_text(encoding="utf-8"))
     print(f"ไฟล์: {result['report']} (+ _arms/_deltas/_attempts/_token_curve/_failure_classes .csv)")
