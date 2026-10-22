@@ -206,3 +206,4 @@ class TaskManager:
             info["cmd"]["answer"] = answer_text
         info["future"].set_result(approved)
         return True
+    
