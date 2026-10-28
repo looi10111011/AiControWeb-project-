@@ -59,6 +59,7 @@ db/
 # ---- Telemetry / eval ผลลัพธ์ (เขียนทุกรัน, churn สูง) ----
 data/*.jsonl
 data/eval_results/
+data/ablation/
 
 # ---- Scratch ไฟล์จาก planning/skill (local working state, ไม่ใช่ project doc) ----
 findings.md

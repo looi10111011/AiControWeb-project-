@@ -264,14 +264,14 @@
     expected:
       location: /admin/users
 - task_id: LEAVE-APPLY-01
-  revision: 1
+  revision: 2
   level: L2
   fixture: base
   actors:
   - james.wilson
   goal:
-    description: Log in as "james.wilson" and apply for 2 days of Annual leave next month, then verify
-      the request shows as pending.
+    description: Log in as "james.wilson" and apply for Annual leave from 2026-03-02 to 2026-03-03, then
+      verify the request shows as pending.
   preconditions:
   - type: leave_balance.available
     employee_code: EMP-0008
@@ -290,14 +290,14 @@
       start_date: '2026-03-02'
       expected_status: pending
 - task_id: LEAVE-APPLY-02
-  revision: 1
+  revision: 2
   level: L2
   fixture: base
   actors:
   - sarah.chan
   goal:
-    description: Log in as "sarah.chan" and apply for 2 days of Annual leave next month, then verify the
-      request shows as pending.
+    description: Log in as "sarah.chan" and apply for Annual leave from 2026-03-02 to 2026-03-03, then
+      verify the request shows as pending.
   preconditions:
   - type: leave_balance.available
     employee_code: EMP-0011
@@ -316,14 +316,14 @@
       start_date: '2026-03-02'
       expected_status: pending
 - task_id: LEAVE-APPLY-03
-  revision: 1
+  revision: 2
   level: L2
   fixture: base
   actors:
   - matthew.lopez
   goal:
-    description: Log in as "matthew.lopez" and apply for 2 days of Annual leave next month, then verify
-      the request shows as pending.
+    description: Log in as "matthew.lopez" and apply for Annual leave from 2026-03-02 to 2026-03-03, then
+      verify the request shows as pending.
   preconditions:
   - type: leave_balance.available
     employee_code: EMP-0014
@@ -342,14 +342,14 @@
       start_date: '2026-03-02'
       expected_status: pending
 - task_id: LEAVE-APPLY-04
-  revision: 1
+  revision: 2
   level: L2
   fixture: base
   actors:
   - joseph.taylor
   goal:
-    description: Log in as "joseph.taylor" and apply for 2 days of Annual leave next month, then verify
-      the request shows as pending.
+    description: Log in as "joseph.taylor" and apply for Annual leave from 2026-03-02 to 2026-03-03, then
+      verify the request shows as pending.
   preconditions:
   - type: leave_balance.available
     employee_code: EMP-0018

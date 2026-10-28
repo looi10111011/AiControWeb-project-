@@ -1,0 +1,294 @@
+"""W_ablation: run_ablation.py / analyze_ablation.py — arm ต้อง patch ตามที่ประกาศและคืนค่าเดิมหลังออก,
+schedule ต้องสมดุลทุก rep, และ dry-run (stub agent) ต้องได้ FUNCTIONAL_FAIL ทุกช่อง (ไม่มี task ที่ผ่าน
+ได้โดยไม่ทำอะไร) โดยไม่แตะ LLM/browser
+"""
+
+import asyncio
+import json
+from collections import Counter
+
+import pytest
+
+from backend.app.config import settings
+from backend.app.core import llm, orchestrator
+from benchmark_target import analyze_ablation, run_ablation
+
+
+def _snapshot_patched_values() -> dict:
+    return {
+        (target is settings, attribute): getattr(target, attribute)
+        for arm_patches in run_ablation.ARM_PATCHES.values()
+        for target, attribute, _ in arm_patches + run_ablation.COMMON_PATCHES
+    }
+
+
+def test_every_arm_restores_original_values():
+    before = _snapshot_patched_values()
+    for arm in run_ablation.ARM_NAMES:
+        with run_ablation.arm_patches(arm):
+            pass
+    assert _snapshot_patched_values() == before
+
+
+def test_full_only_disables_procedural_capture():
+    compact_before = orchestrator._COMPACT_AFTER_STEPS
+    with run_ablation.arm_patches("FULL"):
+        assert settings.enable_procedural_memory_capture is False
+        assert orchestrator._COMPACT_AFTER_STEPS == compact_before
+        assert orchestrator._MAX_PREMATURE_TRUE_FINISH_RETRIES > 0
+
+
+def test_baseline_disables_all_three_groups():
+    with run_ablation.arm_patches("BASELINE"):
+        assert orchestrator._COMPACT_AFTER_STEPS >= 10**9
+        assert settings.snapshot_max_elements >= 10**9
+        assert settings.read_page_data_max_rows >= 10**9
+        for name in run_ablation._VERIFY_RETRY_CONSTANTS:
+            assert getattr(orchestrator, name) == 0, name
+        assert asyncio.run(orchestrator._scan_created_item_in_table(None, "anything")) is True
+
+
+def test_patched_helpers_accept_real_call_signatures():
+    """ลายเซ็นต้องตรงกับที่ run_task() เรียกจริง ไม่งั้น arm พังกลางรันจริงแทนที่จะพังในเทสต์"""
+    messages = [{"role": "user", "content": "x"}]
+    with run_ablation.arm_patches("BASELINE"):
+        assert orchestrator._compact_stale_user_turns(messages, "goal") == (messages, 0)
+        assert orchestrator._dedupe_stale_snapshots(messages, keep_last_full=1) is messages
+        assert orchestrator._dedupe_stale_gated(messages, keep_last_full=0) == (messages, 0)
+        sections = orchestrator._resolve_prompt_sections(
+            frozenset(), goal="g", plan_text=None, elements=[], allow_fill_secret=False,
+        )
+        assert sections == llm.ALL_PROMPT_SECTIONS
+
+
+def test_schedule_is_balanced_and_deterministic():
+    tasks, arms = ["A", "B", "C"], list(run_ablation.ARM_NAMES)
+    schedule = run_ablation.build_schedule(tasks, arms, reps=3, seed=7)
+    assert schedule == run_ablation.build_schedule(tasks, arms, reps=3, seed=7)
+    assert len(schedule) == len(tasks) * len(arms) * 3
+    for rep in (1, 2, 3):
+        cells = Counter((task, arm) for r, task, arm in schedule if r == rep)
+        assert set(cells) == {(t, a) for t in tasks for a in arms}
+        assert set(cells.values()) == {1}
+
+
+def test_schedule_can_continue_rep_numbering():
+    schedule = run_ablation.build_schedule(["A"], ["FULL", "BASELINE"], reps=2, seed=1, first_rep=2)
+    assert sorted({rep for rep, _, _ in schedule}) == [2, 3]
+    assert len(schedule) == 4
+
+
+def test_unsupported_verification_type_is_rejected():
+    with pytest.raises(SystemExit, match="INCONCLUSIVE"):
+        run_ablation.load_selected_tasks(["AUTH-LOGIN-INVALID-PASSWORD"])
+
+
+def test_total_tokens_does_not_double_count_openai_cache():
+    tokens = {"input": 1000, "output": 10, "cache_read": 400, "cache_creation": 0}
+    assert analyze_ablation.total_tokens(tokens, "openai") == 1010
+    assert analyze_ablation.uncached_input_tokens(tokens, "openai") == 600
+    assert analyze_ablation.total_tokens(tokens, "anthropic") == 1410
+
+
+def _record(arm, task_id, rep, passed, claimed, valid=True, tokens=None, steps=5, duration=10.0):
+    return {
+        "arm": arm, "task_id": task_id, "rep": rep, "try": 1, "valid": valid, "passed": passed,
+        "claimed_success": claimed, "telemetry_task_id": None, "steps": steps,
+        "tokens": tokens or {"input": 1000, "output": 10, "cache_read": 0, "cache_creation": 0},
+        "duration_seconds": duration,
+    }
+
+
+def test_summary_counts_false_success_and_skips_infra():
+    records = [
+        _record("FULL", "T1", 1, passed=True, claimed=True),
+        _record("FULL", "T1", 2, passed=False, claimed=True),
+        _record("FULL", "T1", 3, passed=False, claimed=None, valid=False),
+        _record("FULL", "T1", 4, passed=True, claimed=False),
+        _record("NO_VERIFY", "T1", 1, passed=False, claimed=True,
+                tokens={"input": 2000, "output": 10, "cache_read": 0, "cache_creation": 0}),
+    ]
+    rows = analyze_ablation.enrich(records, "openai", {}, {})
+    invalid = Counter(r["arm"] for r in records if not r["valid"])
+    full, no_verify = analyze_ablation.summarize_arms(rows, ["FULL", "NO_VERIFY"], invalid)
+    assert (full["valid_attempts"], full["infra_failures"], full["passed"]) == (3, 1, 2)
+    assert (full["false_success"], full["false_failure"]) == (1, 1)
+    assert full["success_rate"] == pytest.approx(2 / 3)
+    assert no_verify["false_success"] == 1
+    (delta,) = analyze_ablation.paired_deltas(rows, ["FULL", "NO_VERIFY"], "FULL")
+    assert delta["paired_tasks"] == 1
+    assert delta["mean_success_rate_diff"] == pytest.approx(-2 / 3)
+    assert delta["median_pct_change_total_tokens"] == pytest.approx((2010 - 1010) / 1010 * 100)
+
+
+_CODEX_400 = (
+    "Task stopped by an unexpected error at step 0: BadRequestError: Error code: 400 - "
+    "{'detail': \"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}"
+)
+
+
+_GEMINI_429_STEP_3 = (
+    "Task stopped by an unexpected error at step 3: ResourceExhausted: 429 You exceeded your current quota"
+)
+_GEMINI_500_STEP_5 = "Task stopped by an unexpected error at step 5: InternalServerError: 500 Internal error encountered."
+
+
+def test_provider_errors_are_infra_at_any_step():
+    from benchmark_target.runner.agent_adapters import AgentRunResult
+
+    assert run_ablation.provider_failed(AgentRunResult(False, 0, _CODEX_400, {}))
+    # rep 1 (2026-10-22): 429/500 กลาง task ถูกนับเป็นความผิดของ agent ใน BASELINE/FULL
+    assert run_ablation.provider_failed(AgentRunResult(False, 3, _GEMINI_429_STEP_3, {}))
+    assert run_ablation.provider_failed(AgentRunResult(False, 5, _GEMINI_500_STEP_5, {}))
+    # agent พูดถึง quota เองแต่ลูปไม่ได้ crash = ผลจริง
+    assert not run_ablation.provider_failed(AgentRunResult(False, 4, "The quota field on the form is invalid", {}))
+    assert not run_ablation.provider_failed(AgentRunResult(True, 0, "stub: no action taken", {}))
+    assert not run_ablation.provider_failed(None)
+
+
+def test_resume_reruns_cells_reclassified_as_provider_failure(tmp_path):
+    results_path = tmp_path / "abl-y.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({"session_id": "abl-y"}), encoding="utf-8")
+    rows = [
+        {**_record("BASELINE", "T1", 1, passed=False, claimed=False, steps=3), "agent_message": _GEMINI_429_STEP_3},
+        {**_record("FULL", "T1", 1, passed=True, claimed=True), "agent_message": "done"},
+    ]
+    results_path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _, done, tries_made = run_ablation._load_resume(results_path)
+    assert done == {("FULL", "T1", 1)}
+    assert tries_made[("BASELINE", "T1", 1)] == 1
+
+
+def test_session_stops_when_provider_keeps_failing(tmp_path, monkeypatch):
+    """smoke 2026-10-22: codex เลิกรับ gpt-5.5 — ทุกช่องต้องเป็น infra (ไม่โทษ agent) และหยุด session"""
+    from benchmark_target.runner.agent_adapters import AgentRunResult, StubAgentAdapter
+
+    monkeypatch.setattr(
+        run_ablation, "_make_adapter",
+        lambda *args: StubAgentAdapter([AgentRunResult(False, 0, _CODEX_400, {})]),
+    )
+    with pytest.raises(SystemExit, match="--resume"):
+        run_ablation.main([
+            "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,NO_VERIFY,BASELINE",
+            "--reps", "1", "--max-infra-retries", "0", "--max-consecutive-infra", "2",
+            "--out-dir", str(tmp_path),
+        ])
+    (results_path,) = tmp_path.glob("*.jsonl")
+    records = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert all(not r["valid"] and r["provider_failure"] for r in records)
+
+
+def test_resume_refuses_when_model_changed(tmp_path, monkeypatch):
+    results_path = tmp_path / "abl-x.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({
+        "session_id": "abl-x", "dry_run": False, "provider": "openai", "model": "retired-model",
+    }), encoding="utf-8")
+    monkeypatch.setattr(settings, "openai_model", "new-model")
+    with pytest.raises(SystemExit, match="เริ่ม session ใหม่"):
+        run_ablation.main(["--resume", str(results_path)])
+
+
+def test_analysis_reclassifies_records_written_before_provider_failure_field(tmp_path):
+    results_path = tmp_path / "old.jsonl"
+    results_path.with_suffix(".manifest.json").write_text(json.dumps({"session_id": "old"}), encoding="utf-8")
+    old = {**_record("FULL", "T1", 1, passed=False, claimed=False, steps=0), "agent_message": _CODEX_400}
+    results_path.write_text(json.dumps(old) + "\n", encoding="utf-8")
+    _, (record,) = analyze_ablation.load_session(results_path)
+    assert record["provider_failure"] is True
+    assert record["valid"] is False
+
+
+def _write_session(directory, session_id, records, **manifest_overrides):
+    path = directory / f"{session_id}.jsonl"
+    manifest = {
+        "session_id": session_id, "git_commit": "abc1234", "uncommitted_files": [], "dry_run": False,
+        "provider": "gemini", "model": "gemini-flash-lite-latest", "arms": ["FULL", "BASELINE"],
+        "reference_arm": "FULL", "tasks": ["T1"], "reps": 1, "first_rep": 1, "seed": 0, "max_steps": 20,
+        **manifest_overrides,
+    }
+    path.with_suffix(".manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    path.write_text("".join(json.dumps({**r, "agent_message": "done"}) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def test_sessions_started_in_same_second_get_distinct_ids(tmp_path, monkeypatch):
+    class _FrozenNow:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime as real
+
+            return real(2026, 10, 22, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(run_ablation, "datetime", _FrozenNow)
+    args = ["--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL", "--reps", "1",
+            "--out-dir", str(tmp_path)]
+    first, second = run_ablation.main(args), run_ablation.main(args)
+    assert first != second
+    assert len(first.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(second.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_combining_sessions_rejects_rep_clash(tmp_path):
+    first = _write_session(tmp_path, "abl-a", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    second = _write_session(tmp_path, "abl-b", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    with pytest.raises(SystemExit, match="--first-rep"):
+        analyze_ablation.load_sessions([first, second])
+
+
+def test_combining_sessions_rejects_different_model(tmp_path):
+    first = _write_session(tmp_path, "abl-a", [_record("FULL", "T1", 1, passed=True, claimed=True)])
+    second = _write_session(
+        tmp_path, "abl-b", [_record("FULL", "T1", 2, passed=True, claimed=True)], model="other-model",
+    )
+    with pytest.raises(SystemExit, match="model"):
+        analyze_ablation.load_sessions([first, second])
+
+
+def test_dry_run_combined_sessions(tmp_path):
+    """แผนหลังโควตาหมด: rep 1 รัน 3 arm, rep 2-3 รันแค่ FULL+BASELINE เป็นอีก session แล้ววิเคราะห์รวมกัน"""
+    first = run_ablation.main([
+        "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,NO_VERIFY,BASELINE",
+        "--reps", "1", "--out-dir", str(tmp_path),
+    ])
+    second = run_ablation.main([
+        "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE", "--arms", "FULL,BASELINE",
+        "--first-rep", "2", "--reps", "2", "--seed", "1", "--out-dir", str(tmp_path),
+    ])
+    assert second != first
+    result = analyze_ablation.analyze(
+        [first, second], tmp_path / "no_usage.jsonl", tmp_path / "no_trace.jsonl",
+    )
+    valid = {s["arm"]: s["valid_attempts"] for s in result["summaries"]}
+    assert valid == {"FULL": 3, "NO_VERIFY": 1, "BASELINE": 3}
+    assert result["report"].name.endswith("_combined_report.md")
+    report = result["report"].read_text(encoding="utf-8")
+    assert "rep 2–3" in report and "rep 1," in report
+    # commit เดียวกันทั้งสอง session — ห้ามมีคำเตือนเรื่องเทียบโค้ด (คำเตือนไฟล์ค้างขึ้นกับ working tree ไม่เช็ค)
+    code_warnings = ("เทียบโค้ดระหว่าง commit", "โค้ด agent/target ต่างกัน")
+    assert not any(w in report for w in code_warnings)
+
+    single = analyze_ablation.analyze(first, tmp_path / "no_usage.jsonl", tmp_path / "no_trace.jsonl")
+    assert not any(w in single["report"].read_text(encoding="utf-8") for w in code_warnings)
+
+
+def test_dry_run_end_to_end(tmp_path):
+    """stub บอกสำเร็จเสมอแต่ไม่ทำอะไร — ทุกช่องต้อง valid, DB ไม่ผ่าน และนับเป็น false success"""
+    results_path = run_ablation.main([
+        "--dry-run", "--tasks", "PIM-REACTIVATE-EMPLOYEE,TIME-APPROVE-BY-SUPERVISOR",
+        "--arms", "FULL,NO_VERIFY", "--reps", "1", "--out-dir", str(tmp_path),
+    ])
+    records = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 4
+    assert all(r["valid"] and not r["passed"] and r["claimed_success"] for r in records)
+    assert {r["failure_class"] for r in records} == {"FUNCTIONAL_FAIL"}
+
+    result = analyze_ablation.analyze(
+        results_path, tmp_path / "no_usage.jsonl", tmp_path / "no_trace.jsonl",
+    )
+    assert result["report"].exists()
+    assert [s["false_success"] for s in result["summaries"]] == [2, 2]
+
+    # resume บน session ที่ครบแล้วต้องไม่รันเพิ่ม
+    run_ablation.main(["--resume", str(results_path)])
+    assert len(results_path.read_text(encoding="utf-8").splitlines()) == 4

@@ -311,10 +311,13 @@ def build_l2(employees, users, candidates):
         _redirect("/admin/users"),
     ))
 
+    # r2: r1 said "next month" while the verifier pins start_date — the app runs on the real
+    # clock, so a correct agent filed a different month and always failed. The goal now names
+    # the exact dates the verifier checks.
     for i, ess in enumerate(ess_enabled[:4], start=1):
         tasks.append(_task(
             f"LEAVE-APPLY-{i:02d}", "L2", [ess["username"]],
-            f'Log in as "{ess["username"]}" and apply for 2 days of Annual leave next month, '
+            f'Log in as "{ess["username"]}" and apply for Annual leave from 2026-03-02 to 2026-03-03, '
             "then verify the request shows as pending.",
             f"{TARGET_BASE}/login",
             _custom("leave.request.status", employee_code=ess["employee_code"], leave_type="Annual",
@@ -322,6 +325,7 @@ def build_l2(employees, users, candidates):
             preconditions=[{"type": "leave_balance.available", "employee_code": ess["employee_code"],
                              "leave_type": "Annual", "min_days": 2}],
             allowed_changes=["leave_request.create"],
+            revision=2,
         ))
 
     tasks.append(_task(
